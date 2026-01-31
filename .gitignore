@@ -1,0 +1,12 @@
+# System
+.DS_Store
+*.log
+__pycache__/
+
+# Archive (Code source caché)
+_archive/
+.env
+
+# IDE
+.vscode/
+.idea/
