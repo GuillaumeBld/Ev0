@@ -94,7 +94,7 @@ def rank_by_value(
     - ev: Sort by expected value (edge * odds)
     - composite: Sort by edge * confidence
     """
-    def get_sort_key(rec: dict) -> float:
+    def get_sort_key(rec: dict[str, Any]) -> float:
         if method == "edge":
             return rec.get("edge", 0)
         elif method == "ev":

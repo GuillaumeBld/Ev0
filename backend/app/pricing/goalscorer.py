@@ -18,7 +18,7 @@ class GoalscorerPriceResult(TypedDict):
     lambda_intensity: float
     probability: float
     fair_odds: float
-    explanation: dict
+    explanation: dict[str, Any]
 
 
 def calculate_goalscorer_price(

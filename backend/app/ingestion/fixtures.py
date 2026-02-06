@@ -109,7 +109,7 @@ class FBrefFixtureParser:
         
         return fixtures
     
-    def _parse_row(self, row) -> dict[str, Any] | None:
+    def _parse_row(self, row: Any) -> dict[str, Any] | None:
         """Parse a single fixture row."""
         try:
             date_cell = row.find("td", {"data-stat": "date"})

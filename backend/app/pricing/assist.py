@@ -26,7 +26,7 @@ class AssistPriceResult(TypedDict):
     lambda_intensity: float
     probability: float
     fair_odds: float
-    explanation: dict
+    explanation: dict[str, Any]
 
 
 # Weights for composite creation score (should sum to 1)
@@ -48,7 +48,7 @@ def calculate_creation_score(
     passes_into_box_per_90: float = 0.0,
     progressive_passes_per_90: float = 0.0,
     league_averages: dict[str, float] | None = None,
-) -> tuple[float, dict]:
+) -> tuple[float, dict[str, Any]]:
     """
     Calculate composite creation score from multiple metrics.
     

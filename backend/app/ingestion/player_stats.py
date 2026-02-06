@@ -143,7 +143,7 @@ class FBrefPlayerStatsParser:
         
         return stats
     
-    def _parse_shooting_row(self, row) -> dict[str, Any] | None:
+    def _parse_shooting_row(self, row: Any) -> dict[str, Any] | None:
         """Parse a single shooting stats row."""
         try:
             player_cell = row.find("td", {"data-stat": "player"})
@@ -211,7 +211,7 @@ class FBrefPlayerStatsParser:
         
         return stats
     
-    def _parse_passing_row(self, row) -> dict[str, Any] | None:
+    def _parse_passing_row(self, row: Any) -> dict[str, Any] | None:
         """Parse a single passing stats row."""
         try:
             player_cell = row.find("td", {"data-stat": "player"})
@@ -270,7 +270,7 @@ class FBrefPlayerStatsParser:
         
         return stats
     
-    def _parse_gca_row(self, row) -> dict[str, Any] | None:
+    def _parse_gca_row(self, row: Any) -> dict[str, Any] | None:
         """Parse a single GCA stats row."""
         try:
             player_cell = row.find("td", {"data-stat": "player"})
@@ -292,7 +292,7 @@ class FBrefPlayerStatsParser:
         except Exception:
             return None
     
-    def _get_int(self, row, stat_name: str) -> int:
+    def _get_int(self, row: Any, stat_name: str) -> int:
         """Extract integer from cell."""
         cell = row.find("td", {"data-stat": stat_name})
         if not cell:
@@ -303,7 +303,7 @@ class FBrefPlayerStatsParser:
         except ValueError:
             return 0
     
-    def _get_float(self, row, stat_name: str) -> float:
+    def _get_float(self, row: Any, stat_name: str) -> float:
         """Extract float from cell."""
         cell = row.find("td", {"data-stat": stat_name})
         if not cell:
@@ -340,9 +340,9 @@ def fetch_player_stats(team_slug: str, season: str) -> list[dict[str, Any]]:
 
 
 def merge_player_stats(
-    shooting: list[dict],
-    passing: list[dict],
-    gca: list[dict] | None = None,
+    shooting: list[dict[str, Any]],
+    passing: list[dict[str, Any]],
+    gca: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Merge shooting, passing, and GCA stats for players.
