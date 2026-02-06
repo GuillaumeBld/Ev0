@@ -1,0 +1,62 @@
+# Dokploy configuration
+# https://dokploy.com/docs
+
+name: ev0
+description: Prematch Value Engine
+
+services:
+  - name: backend
+    type: docker
+    dockerfile: ./backend/Dockerfile
+    context: ./backend
+    port: 8000
+    healthCheck:
+      path: /health
+      interval: 30
+    env:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - JWT_SECRET=${JWT_SECRET}
+    domains:
+      - api.${DOMAIN}
+
+  - name: frontend
+    type: docker
+    dockerfile: ./frontend/Dockerfile
+    context: ./frontend
+    port: 3000
+    env:
+      - NEXT_PUBLIC_API_URL=https://api.${DOMAIN}
+      - NEXTAUTH_URL=https://app.${DOMAIN}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - ADMIN_USERNAME=${ADMIN_USERNAME}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+    domains:
+      - app.${DOMAIN}
+
+  - name: worker
+    type: docker
+    dockerfile: ./backend/Dockerfile
+    context: ./backend
+    command: python -m app.worker
+    env:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+
+databases:
+  - name: db
+    type: postgresql
+    version: "16"
+
+  - name: redis
+    type: redis
+    version: "7"
+
+# Optional: n8n for workflow automation
+# addons:
+#   - name: n8n
+#     type: docker
+#     image: n8nio/n8n:latest
+#     port: 5678
+#     domains:
+#       - n8n.${DOMAIN}

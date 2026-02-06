@@ -1,0 +1,186 @@
+version: "3.9"
+
+networks:
+  ev0-network:
+    external: false
+  traefik-public:
+    external: true
+
+volumes:
+  ev0_pgdata:
+  ev0_redis:
+  n8n_data:
+
+services:
+  # ===================
+  # REVERSE PROXY
+  # ===================
+  traefik:
+    image: traefik:v3.0
+    container_name: ev0-traefik
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-admin@example.com}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./letsencrypt:/letsencrypt
+    networks:
+      - ev0-network
+      - traefik-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.traefik.entrypoints=websecure"
+      - "traefik.http.routers.traefik.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.routers.traefik.middlewares=auth"
+      - "traefik.http.middlewares.auth.basicauth.users=${TRAEFIK_USERS:-admin:$$apr1$$xyz$$hashedpassword}"
+    restart: unless-stopped
+
+  # ===================
+  # DATABASE
+  # ===================
+  db:
+    image: postgres:16-alpine
+    container_name: ev0-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ev0}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ev0_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-ev0}
+    volumes:
+      - ev0_pgdata:/var/lib/postgresql/data
+    networks:
+      - ev0-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ev0}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ===================
+  # CACHE
+  # ===================
+  redis:
+    image: redis:7-alpine
+    container_name: ev0-redis
+    volumes:
+      - ev0_redis:/data
+    networks:
+      - ev0-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ===================
+  # BACKEND API
+  # ===================
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: ev0-backend
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ev0}:${POSTGRES_PASSWORD:-ev0_dev_password}@db:5432/${POSTGRES_DB:-ev0}
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://app.${DOMAIN:-localhost}}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ev0-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`api.${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.backend.loadbalancer.server.port=8000"
+    restart: unless-stopped
+
+  # ===================
+  # FRONTEND
+  # ===================
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: ev0-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: https://api.${DOMAIN:-localhost}
+      NEXTAUTH_URL: https://app.${DOMAIN:-localhost}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-change-me-in-production}
+    networks:
+      - ev0-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`app.${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.frontend.entrypoints=websecure"
+      - "traefik.http.routers.frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.frontend.loadbalancer.server.port=3000"
+    restart: unless-stopped
+
+  # ===================
+  # WORKER (Scheduled Jobs)
+  # ===================
+  worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: ev0-worker
+    command: python -m app.worker
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ev0}:${POSTGRES_PASSWORD:-ev0_dev_password}@db:5432/${POSTGRES_DB:-ev0}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ev0-network
+    restart: unless-stopped
+
+  # ===================
+  # N8N (Workflow Automation)
+  # ===================
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: ev0-n8n
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-admin}
+      - N8N_HOST=n8n.${DOMAIN:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://n8n.${DOMAIN:-localhost}/
+      - GENERIC_TIMEZONE=${TZ:-Europe/Paris}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - ev0-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.n8n.rule=Host(`n8n.${DOMAIN:-localhost}`)"
+      - "traefik.http.routers.n8n.entrypoints=websecure"
+      - "traefik.http.routers.n8n.tls.certresolver=letsencrypt"
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+    restart: unless-stopped
