@@ -17,7 +17,8 @@ from app.models import Fixture, Player, PlayerStats, OddsSnapshot, Recommendatio
 config = context.config
 
 # Override sqlalchemy.url with actual database URL
-config.set_main_option("sqlalchemy.url", settings.database_url)
+db_url = settings.database_url.replace("postgresql://", "postgresql+asyncpg://")
+config.set_main_option("sqlalchemy.url", db_url)
 
 # Logging
 if config.config_file_name is not None:
