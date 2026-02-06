@@ -1,0 +1,49 @@
+version: '3.8'
+    2 services:
+    3   db:
+    4     image: postgres:15-alpine
+    5     restart: unless-stopped
+    6     environment:
+    7       POSTGRES_USER: ev0
+    8       POSTGRES_PASSWORD: secure_password_change_me
+    9       POSTGRES_DB: ev0
+   10     volumes:
+   11       - ../files/postgres_data:/var/lib/postgresql/data
+   12     networks:
+   13       - dokploy-network
+   14   redis:
+   15     image: redis:7-alpine
+   16     restart: unless-stopped
+   17     volumes:
+   18       - ../files/redis_data:/data
+   19     networks:
+   20       - dokploy-network
+   21   backend:
+   22     build:
+   23       context: ./backend
+   24       dockerfile: Dockerfile
+   25     restart: unless-stopped
+   26     environment:
+   27       DATABASE_URL: postgresql://ev0:secure_password_change_me@db:5432/ev0
+   28       REDIS_URL: redis://redis:6379/0
+   29       CORS_ORIGINS: '["*"]'
+   30     depends_on:
+   31       - db
+   32       - redis
+   33     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+   34     networks:
+   35       - dokploy-network
+   36   frontend:
+   37     build:
+   38       context: ./frontend
+   39       dockerfile: Dockerfile
+   40     restart: unless-stopped
+   41     environment:
+   42       NEXT_PUBLIC_API_URL: http://localhost:8000
+   43     depends_on:
+   44       - backend
+   45     networks:
+   46       - dokploy-network
+   47 networks:
+   48   dokploy-network:
+   49     external: true
