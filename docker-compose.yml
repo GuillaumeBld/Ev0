@@ -1,49 +1,49 @@
 version: '3.8'
-  services:
-    db:
-      image: postgres:15-alpine
-      restart: unless-stopped
-      environment:
-        POSTGRES_USER: ev0
-        POSTGRES_PASSWORD: secure_password_change_me
-        POSTGRES_DB: ev0
-      volumes:
-         - ../files/postgres_data:/var/lib/postgresql/data
-      networks:
-         - dokploy-network
-    redis:
-      image: redis:7-alpine
-      restart: unless-stopped
-      volumes:
-         - ../files/redis_data:/data
-      networks:
-         - dokploy-network
-    backend:
-      build:
-        context: ./backend
-        dockerfile: Dockerfile
-      restart: unless-stopped
-      environment:
-        DATABASE_URL: postgresql://ev0:secure_password_change_me@db:5432/ev0
-        REDIS_URL: redis://redis:6379/0
-        CORS_ORIGINS: '["*"]'
-      depends_on:
-         - db
-         - redis
-      command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
-      networks:
-         - dokploy-network
-    frontend:
-      build:
-        context: ./frontend
-        dockerfile: Dockerfile
-      restart: unless-stopped
-      environment:
-        NEXT_PUBLIC_API_URL: http://localhost:8000
-      depends_on:
-         - backend
-      networks:
-         - dokploy-network
-  networks:
-    dokploy-network:
-      external: true
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ev0
+      POSTGRES_PASSWORD: secure_password_change_me
+      POSTGRES_DB: ev0
+    volumes:
+      - ../files/postgres_data:/var/lib/postgresql/data
+    networks:
+      - dokploy-network
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - ../files/redis_data:/data
+    networks:
+      - dokploy-network
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://ev0:secure_password_change_me@db:5432/ev0
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: '["*"]'
+    depends_on:
+      - db
+      - redis
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    networks:
+        - dokploy-network
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      - dokploy-network
+networks:
+  dokploy-network:
+    external: true
