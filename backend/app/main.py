@@ -6,7 +6,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import health, pricing, recommendations
+from app.api import health, players, pricing, recommendations
 from app.config import settings
 from app.db import engine
 
@@ -38,5 +38,6 @@ app.add_middleware(
 
 # Routers
 app.include_router(health.router, tags=["health"])
+app.include_router(players.router, prefix="/api/v1", tags=["players"])
 app.include_router(pricing.router, prefix="/api/v1", tags=["pricing"])
 app.include_router(recommendations.router, prefix="/api/v1", tags=["recommendations"])

@@ -11,7 +11,10 @@ import {
   LogOut,
   Activity,
   Target,
-  Zap
+  Zap,
+  Users,
+  Calendar,
+  Calculator
 } from 'lucide-react'
 import { clsx } from 'clsx'
 
@@ -21,11 +24,14 @@ interface SidebarProps {
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+  { name: 'Calculateur', href: '/dashboard/calculator', icon: Calculator },
   { name: 'Recommendations', href: '/dashboard/recommendations', icon: Target },
+  { name: 'Joueurs', href: '/dashboard/players', icon: Users },
+  { name: 'Matchs', href: '/dashboard/matches', icon: Calendar },
   { name: 'Backtest', href: '/dashboard/backtest', icon: TrendingUp },
-  { name: 'History', href: '/dashboard/history', icon: History },
-  { name: 'Data Health', href: '/dashboard/health', icon: Activity },
-  { name: 'Settings', href: '/dashboard/settings', icon: Settings },
+  { name: 'Historique', href: '/dashboard/history', icon: History },
+  { name: 'Santé', href: '/dashboard/health', icon: Activity },
+  { name: 'Paramètres', href: '/dashboard/settings', icon: Settings },
 ]
 
 export function Sidebar({ user }: SidebarProps) {
