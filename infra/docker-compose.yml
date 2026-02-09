@@ -95,11 +95,13 @@ services:
       context: ../backend
       dockerfile: Dockerfile
     container_name: ev0-backend
+    ports:
+      - "8000:8000"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-ev0}:${POSTGRES_PASSWORD:-ev0_dev_password}@db:5432/${POSTGRES_DB:-ev0}
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
-      CORS_ORIGINS: ${CORS_ORIGINS:-https://app.${DOMAIN:-localhost}}
+      CORS_ORIGINS_STR: ${CORS_ORIGINS:-http://localhost:3000,https://app.${DOMAIN:-localhost}}
     depends_on:
       db:
         condition: service_healthy
@@ -123,10 +125,14 @@ services:
       context: ../frontend
       dockerfile: Dockerfile
     container_name: ev0-frontend
+    ports:
+      - "3001:3000"
     environment:
-      NEXT_PUBLIC_API_URL: https://api.${DOMAIN:-localhost}
-      NEXTAUTH_URL: https://app.${DOMAIN:-localhost}
-      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-change-me-in-production}
+      NEXT_PUBLIC_API_URL: http://213.130.144.204:8000
+      NEXTAUTH_URL: http://213.130.144.204:3001
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-ev0-secret-key-2024}
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: ev0admin2024
     networks:
       - ev0-network
     labels:

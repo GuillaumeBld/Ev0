@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import get_session
+from app.db import get_db
 from app.models.players import Player, PlayerStats, Team
 
 router = APIRouter(prefix="/players", tags=["players"])
@@ -90,7 +90,7 @@ def stats_to_response(stats: PlayerStats | None) -> PlayerStatsResponse | None:
 
 @router.get("/", response_model=list[PlayerWithStats])
 async def list_players(
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_db),
     league: str | None = Query(None, description="Filter by league (ligue_1, premier_league)"),
     team: str | None = Query(None, description="Filter by team name"),
     search: str | None = Query(None, description="Search by player name"),
@@ -161,7 +161,7 @@ async def list_players(
 
 @router.get("/teams", response_model=list[TeamResponse])
 async def list_teams(
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_db),
     league: str | None = Query(None),
 ) -> list[dict[str, Any]]:
     """List all teams."""
@@ -195,7 +195,7 @@ async def list_teams(
 
 @router.get("/sync-status", response_model=SyncStatusResponse)
 async def get_sync_status(
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Get sync status."""
     
@@ -231,7 +231,7 @@ async def get_sync_status(
 @router.get("/{player_id}", response_model=PlayerWithStats)
 async def get_player(
     player_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Get a single player with all stats."""
     stmt = select(Player).where(Player.id == player_id)

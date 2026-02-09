@@ -21,6 +21,7 @@ dependencies = [
     "selectolax>=0.3.0",
     "apscheduler>=3.10.0",
     "python-dotenv>=1.0.0",
+    "soccerdata>=1.6.0",
 ]
 
 [project.optional-dependencies]
