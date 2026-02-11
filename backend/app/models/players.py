@@ -13,6 +13,7 @@ class DataSource(str, Enum):
     """Data source for player stats."""
     FBREF = "fbref"
     UNDERSTAT = "understat"
+    API_FOOTBALL = "api_football"
     AVERAGE = "average"  # Computed average of sources
 
 
@@ -27,6 +28,7 @@ class Player(Base, TimestampMixin):
     # External IDs for each source
     fbref_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     understat_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    api_football_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     
     # Basic info
     name: Mapped[str] = mapped_column(String(200), index=True)
@@ -110,6 +112,7 @@ class Team(Base, TimestampMixin):
     # External IDs for each source
     fbref_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     understat_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    api_football_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     
     name: Mapped[str] = mapped_column(String(200), index=True)
     normalized_name: Mapped[str] = mapped_column(String(200), index=True)

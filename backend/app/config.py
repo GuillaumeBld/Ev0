@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     # API Keys (optional)
     odds_api_key: str | None = None
     
+    # Data Ingestion APIs
+    firecrawl_api_key: str | None = None  # Firecrawl for web scraping
+    openrouter_api_key: str | None = None  # OpenRouter for LLM parsing
+    api_football_key: str | None = None  # API-Football for reliable data
+    
+    # LLM Parser settings
+    llm_parser_model: str = "anthropic/claude-sonnet-4-20250514"  # Fast, good at extraction
+    
     # Pricing parameters
     goalscorer_decay_lambda: float = 0.025
     assist_decay_lambda: float = 0.017

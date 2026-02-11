@@ -40,6 +40,7 @@ class PlayerWithStats(BaseModel):
     league: str | None
     
     # Stats by source
+    api_football: PlayerStatsResponse | None
     fbref: PlayerStatsResponse | None
     understat: PlayerStatsResponse | None
     average: PlayerStatsResponse | None
@@ -127,12 +128,14 @@ async def list_players(
         
         stats_by_source = {s.source: s for s in all_stats}
         
+        api_football = stats_by_source.get("api_football")
         fbref = stats_by_source.get("fbref")
         understat = stats_by_source.get("understat")
         average = stats_by_source.get("average")
         
         # Filter by minutes if specified
         max_minutes = max(
+            (api_football.minutes_played if api_football else 0),
             (fbref.minutes_played if fbref else 0),
             (understat.minutes_played if understat else 0),
         )
@@ -140,7 +143,7 @@ async def list_players(
             continue
         
         # Compute EV0 values (prefer average, fallback to available source)
-        ev0_source = average or fbref or understat
+        ev0_source = average or fbref or understat or api_football
         
         response.append({
             "id": player.id,
@@ -148,6 +151,7 @@ async def list_players(
             "team": player.team,
             "position": player.position,
             "league": player.league,
+            "api_football": stats_to_response(api_football),
             "fbref": stats_to_response(fbref),
             "understat": stats_to_response(understat),
             "average": stats_to_response(average),
@@ -251,10 +255,11 @@ async def get_player(
     
     stats_by_source = {s.source: s for s in all_stats}
     
+    api_football = stats_by_source.get("api_football")
     fbref = stats_by_source.get("fbref")
     understat = stats_by_source.get("understat")
     average = stats_by_source.get("average")
-    ev0_source = average or fbref or understat
+    ev0_source = average or fbref or understat or api_football
     
     return {
         "id": player.id,
@@ -262,6 +267,7 @@ async def get_player(
         "team": player.team,
         "position": player.position,
         "league": player.league,
+        "api_football": stats_to_response(api_football),
         "fbref": stats_to_response(fbref),
         "understat": stats_to_response(understat),
         "average": stats_to_response(average),
@@ -272,13 +278,24 @@ async def get_player(
 
 
 @router.post("/sync")
-async def trigger_sync():
-    """Trigger a full sync (runs in background)."""
-    # Import here to avoid circular imports
-    from app.ingestion.sync_all_players import sync_all
+async def trigger_sync(
+    strategy: str = Query("smart", description="Sync strategy: smart, main, or fallback"),
+):
+    """Trigger a player stats sync (runs in background).
+    
+    Strategies:
+    - smart: Auto-selects best available strategy
+    - main: Force Firecrawl + LLM + API-Football
+    - fallback: Force Firecrawl + LLM only
+    """
     import asyncio
+    from app.ingestion.smart_sync import smart_sync_all
     
     # Run in background
-    asyncio.create_task(sync_all())
+    asyncio.create_task(smart_sync_all())
     
-    return {"status": "sync_started", "message": "Sync started in background. Check /players/sync-status for progress."}
+    return {
+        "status": "sync_started",
+        "strategy": strategy,
+        "message": "Smart sync started in background. Check /players/sync-status for progress.",
+    }
