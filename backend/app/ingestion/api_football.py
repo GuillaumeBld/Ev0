@@ -17,8 +17,8 @@ LEAGUE_IDS = {
     "premier_league": 39,
 }
 
-# Current season
-SEASON = 2025
+# Current season (2024 = 2024/2025 season)
+SEASON = 2024
 
 
 class APIFootballClient:

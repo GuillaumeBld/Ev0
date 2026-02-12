@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     api_football_key: str | None = None  # API-Football for reliable data
     
     # LLM Parser settings
-    llm_parser_model: str = "anthropic/claude-sonnet-4-20250514"  # Fast, good at extraction
+    llm_parser_model: str = "anthropic/claude-3.5-sonnet"  # Fast, good at extraction
     
     # Pricing parameters
     goalscorer_decay_lambda: float = 0.025
