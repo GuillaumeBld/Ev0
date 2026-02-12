@@ -243,27 +243,55 @@ class LLMParser:
             return []
     
     def _try_direct_understat_extraction(self, html: str) -> list[dict[str, Any]]:
-        """Try to extract Understat data without LLM."""
-        # Multiple regex patterns for different HTML structures
+        """Try to extract Understat data without LLM.
+        
+        Uses technique from worldfootballR:
+        - stri_unescape_unicode() equivalent for hex escapes
+        - Extract JSON arrays from script tags
+        """
+        # First, try to find the playersData script block
+        # Pattern from worldfootballR: look for script containing playersData
+        script_pattern = r'<script[^>]*>([\s\S]*?playersData[\s\S]*?)</script>'
+        script_match = re.search(script_pattern, html)
+        
+        if not script_match:
+            print("  No script block with playersData found")
+            return []
+        
+        script_content = script_match.group(1)
+        
+        # Multiple regex patterns for JSON extraction
         patterns = [
             r"var\s+playersData\s*=\s*JSON\.parse\('(.+?)'\)",
             r'playersData\s*=\s*JSON\.parse\("(.+?)"\)',
-            r"playersData\s*=\s*(\[.+?\]);",
+            r"playersData\s*=\s*JSON\.parse\('(.+?)'\)\s*;",
         ]
         
         for pattern in patterns:
-            match = re.search(pattern, html, re.DOTALL)
+            match = re.search(pattern, script_content, re.DOTALL)
             if match:
                 try:
                     raw = match.group(1)
-                    # Decode hex escapes
+                    
+                    # Decode using stri_unescape_unicode equivalent:
+                    # 1. Handle \xNN hex escapes
                     decoded = re.sub(
                         r'\\x([0-9a-fA-F]{2})',
                         lambda m: chr(int(m.group(1), 16)),
                         raw
                     )
-                    # Handle unicode escapes
-                    decoded = decoded.encode().decode('unicode_escape')
+                    
+                    # 2. Handle \\uNNNN unicode escapes
+                    decoded = re.sub(
+                        r'\\u([0-9a-fA-F]{4})',
+                        lambda m: chr(int(m.group(1), 16)),
+                        decoded
+                    )
+                    
+                    # 3. Handle escaped quotes and backslashes
+                    decoded = decoded.replace("\\'", "'")
+                    decoded = decoded.replace('\\"', '"')
+                    decoded = decoded.replace('\\\\', '\\')
                     
                     data = json.loads(decoded)
                     
@@ -297,11 +325,55 @@ class LLMParser:
                         print(f"  Direct extraction successful: {len(players)} players")
                         return players
                         
+                except json.JSONDecodeError as e:
+                    print(f"  JSON decode error: {e}")
+                    # Try alternative: extract JSON array directly using qdapRegex approach
+                    try:
+                        # Find all JSON arrays in the decoded string
+                        array_match = re.search(r'\[[\s\S]+\]', decoded)
+                        if array_match:
+                            data = json.loads(array_match.group(0))
+                            players = self._parse_understat_players(data)
+                            if players:
+                                print(f"  Array extraction successful: {len(players)} players")
+                                return players
+                    except Exception as e2:
+                        print(f"  Array extraction failed: {e2}")
+                        
                 except Exception as e:
                     print(f"  Direct extraction attempt failed: {e}")
                     continue
         
         return []
+    
+    def _parse_understat_players(self, data: list) -> list[dict[str, Any]]:
+        """Parse Understat player data array."""
+        players = []
+        for p in data:
+            minutes = int(p.get("time", 0) or 0)
+            xg = float(p.get("xG", 0) or 0)
+            xa = float(p.get("xA", 0) or 0)
+            npxg = float(p.get("npxG", 0) or 0)
+            
+            players.append({
+                "understat_id": str(p.get("id", "")),
+                "name": p.get("player_name", ""),
+                "team": p.get("team_title", ""),
+                "position": p.get("position", ""),
+                "games": int(p.get("games", 0) or 0),
+                "minutes": minutes,
+                "goals": int(p.get("goals", 0) or 0),
+                "assists": int(p.get("assists", 0) or 0),
+                "xg": xg,
+                "npxg": npxg,
+                "xa": xa,
+                "shots": int(p.get("shots", 0) or 0),
+                "key_passes": int(p.get("key_passes", 0) or 0),
+                "xg_per_90": round((xg / minutes) * 90, 3) if minutes > 0 else 0.0,
+                "xa_per_90": round((xa / minutes) * 90, 3) if minutes > 0 else 0.0,
+                "npxg_per_90": round((npxg / minutes) * 90, 3) if minutes > 0 else 0.0,
+            })
+        return players
 
 
 async def get_llm_parser() -> LLMParser | None:
