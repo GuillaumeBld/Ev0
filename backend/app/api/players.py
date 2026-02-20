@@ -1,17 +1,67 @@
 """Player stats API endpoints."""
 
+import csv
+import io
 from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.ingestion.understat_scraper import fetch_understat_league, UNDERSTAT_LEAGUES
 from app.models.players import Player, PlayerStats, Team
 
 router = APIRouter(prefix="/players", tags=["players"])
+
+CSV_FIELDS = [
+    "name", "team", "position", "league",
+    "games", "minutes", "goals", "assists",
+    "xg", "npxg", "xa",
+    "shots", "key_passes",
+    "xg_per_90", "xa_per_90", "npxg_per_90",
+]
+
+
+@router.get("/export", summary="Export player stats as CSV")
+async def export_players_csv(
+    league: str | None = Query(
+        None,
+        description="League to export: ligue_1, premier_league, or omit for all",
+    ),
+) -> StreamingResponse:
+    """Stream all player stats as a UTF-8 CSV file.
+
+    Fetches live data from Understat — no database required.
+    """
+    leagues_to_fetch = (
+        [league] if league and league in UNDERSTAT_LEAGUES
+        else list(UNDERSTAT_LEAGUES.keys())
+    )
+
+    rows: list[dict] = []
+    for lg in leagues_to_fetch:
+        players, _ = await fetch_understat_league(lg)
+        for p in players:
+            p["league"] = lg
+            rows.append(p)
+
+    # Build CSV in memory
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=CSV_FIELDS, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
+    buf.seek(0)
+
+    filename = f"ev0_players_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 class PlayerStatsResponse(BaseModel):

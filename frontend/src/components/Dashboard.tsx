@@ -1,7 +1,8 @@
 'use client'
 
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { TrendingUp, TrendingDown, Target, AlertCircle } from 'lucide-react'
+import { TrendingUp, TrendingDown, Target, AlertCircle, Download } from 'lucide-react'
 import { RecommendationCard } from './RecommendationCard'
 
 interface DashboardProps {
@@ -49,13 +50,16 @@ export function Dashboard({ user }: DashboardProps) {
   return (
     <div className="p-8">
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white">
-          Bonjour, {user?.name} 👋
-        </h1>
-        <p className="text-gray-400 mt-1">
-          Voici vos recommandations du jour
-        </p>
+      <div className="flex items-start justify-between mb-8">
+        <div>
+          <h1 className="text-3xl font-bold text-white">
+            Bonjour, {user?.name} 👋
+          </h1>
+          <p className="text-gray-400 mt-1">
+            Voici vos recommandations du jour
+          </p>
+        </div>
+        <DownloadCsvButton />
       </div>
 
       {/* Stats Grid */}
@@ -111,6 +115,45 @@ export function Dashboard({ user }: DashboardProps) {
         )}
       </div>
     </div>
+  )
+}
+
+function DownloadCsvButton() {
+  const [loading, setLoading] = useState(false)
+
+  const handleDownload = async () => {
+    setLoading(true)
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+      const res = await fetch(`${apiUrl}/api/v1/players/export`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `ev0_players_${new Date().toISOString().slice(0, 10)}.csv`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('CSV export failed:', err)
+      alert('Export échoué — vérifiez que le backend est démarré.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <button
+      onClick={handleDownload}
+      disabled={loading}
+      className="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-brand-800 disabled:opacity-60 text-white text-sm font-medium rounded-lg transition-colors"
+    >
+      <Download className="w-4 h-4" />
+      {loading ? 'Téléchargement…' : 'Exporter CSV'}
+    </button>
   )
 }
 
