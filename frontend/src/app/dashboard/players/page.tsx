@@ -67,7 +67,7 @@ export default function PlayersPage() {
       params.set('min_minutes', minMinutes.toString())
       params.set('limit', '500')
 
-      const res = await fetch(`/api/v1/players/?${params}`)
+      const res = await fetch(`/api/v1/players?${params}`)
       if (res.ok) {
         const data = await res.json()
         setPlayers(data)

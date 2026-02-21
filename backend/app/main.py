@@ -25,6 +25,7 @@ app = FastAPI(
     description="Prematch Value Engine - Player Props Pricing",
     version="0.1.0",
     lifespan=lifespan,
+    redirect_slashes=False,
 )
 
 # CORS

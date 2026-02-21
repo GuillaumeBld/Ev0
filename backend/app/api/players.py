@@ -139,7 +139,7 @@ def stats_to_response(stats: PlayerStats | None) -> PlayerStatsResponse | None:
     )
 
 
-@router.get("/", response_model=list[PlayerWithStats])
+@router.get("", response_model=list[PlayerWithStats])
 async def list_players(
     session: AsyncSession = Depends(get_db),
     league: str | None = Query(None, description="Filter by league (ligue_1, premier_league)"),
