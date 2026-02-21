@@ -39,9 +39,7 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        DEPLOY_VERSION: "2026-02-21-v4"
+      dockerfile: Dockerfile.dev
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000
@@ -49,6 +47,9 @@ services:
       NEXTAUTH_URL: http://ev0-compose-z5hvqt-a4f9a7-213-130-144-204.traefik.me
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: ev0admin2024
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
     depends_on:
       - backend
     networks:

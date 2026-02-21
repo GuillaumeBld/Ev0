@@ -1,0 +1,16 @@
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install dependencies (will be overwritten by volume mount, but needed for initial image)
+COPY package*.json ./
+RUN npm ci
+
+EXPOSE 3000
+
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Build and start on container startup (reads from volume-mounted source)
+CMD ["sh", "-c", "npm ci --prefer-offline && npm run build && npm run start"]

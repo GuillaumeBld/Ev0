@@ -57,9 +57,11 @@ export default function PlayersPage() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [minMinutes, setMinMinutes] = useState(0)
   const [expandedPlayer, setExpandedPlayer] = useState<number | null>(null)
+  const [fetchError, setFetchError] = useState<string | null>(null)
 
   const fetchPlayers = useCallback(async () => {
     setLoading(true)
+    setFetchError(null)
     try {
       const params = new URLSearchParams()
       if (leagueFilter) params.set('league', leagueFilter)
@@ -67,13 +69,19 @@ export default function PlayersPage() {
       params.set('min_minutes', minMinutes.toString())
       params.set('limit', '500')
 
-      const res = await fetch(`/api/v1/players?${params}`)
+      const url = `/api/v1/players?${params}`
+      const res = await fetch(url)
       if (res.ok) {
         const data = await res.json()
         setPlayers(data)
+        setFetchError(null)
+      } else {
+        const text = await res.text()
+        setFetchError(`HTTP ${res.status}: ${text.slice(0, 200)}`)
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to fetch players:', err)
+      setFetchError(`Fetch error: ${err.message}`)
     } finally {
       setLoading(false)
     }
@@ -282,6 +290,13 @@ export default function PlayersPage() {
           <span className="text-gray-400">Moyenne EV0</span>
         </div>
       </div>
+
+      {/* Debug info */}
+      {fetchError && (
+        <div className="bg-red-900/50 border border-red-500 rounded-lg p-4 mb-4">
+          <p className="text-red-300 text-sm font-mono">{fetchError}</p>
+        </div>
+      )}
 
       {/* Table */}
       {loading ? (
