@@ -124,8 +124,7 @@ function DownloadCsvButton() {
   const handleDownload = async () => {
     setLoading(true)
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-      const res = await fetch(`${apiUrl}/api/v1/players/export`)
+      const res = await fetch('/api/v1/players/export')
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
       const blob = await res.blob()

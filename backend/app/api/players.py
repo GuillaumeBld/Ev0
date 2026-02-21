@@ -88,13 +88,13 @@ class PlayerWithStats(BaseModel):
     team: str | None
     position: str | None
     league: str | None
-    
+
     # Stats by source
     api_football: PlayerStatsResponse | None
     fbref: PlayerStatsResponse | None
     understat: PlayerStatsResponse | None
     average: PlayerStatsResponse | None
-    
+
     # Computed EV0 values (using average or best available)
     ev0_xg_per_90: float
     ev0_xa_per_90: float
@@ -150,22 +150,22 @@ async def list_players(
     offset: int = Query(0),
 ) -> list[dict[str, Any]]:
     """List players with stats from all sources."""
-    
+
     # Build query
     stmt = select(Player)
-    
+
     if league:
         stmt = stmt.where(Player.league == league.lower())
     if team:
         stmt = stmt.where(Player.team.ilike(f"%{team}%"))
     if search:
         stmt = stmt.where(Player.name.ilike(f"%{search}%"))
-    
+
     stmt = stmt.order_by(Player.name).offset(offset).limit(limit)
-    
+
     result = await session.execute(stmt)
     players = result.scalars().all()
-    
+
     response = []
     for player in players:
         # Get stats for each source
@@ -175,14 +175,14 @@ async def list_players(
         )
         stats_result = await session.execute(stats_stmt)
         all_stats = stats_result.scalars().all()
-        
+
         stats_by_source = {s.source: s for s in all_stats}
-        
+
         api_football = stats_by_source.get("api_football")
         fbref = stats_by_source.get("fbref")
         understat = stats_by_source.get("understat")
         average = stats_by_source.get("average")
-        
+
         # Filter by minutes if specified
         max_minutes = max(
             (api_football.minutes_played if api_football else 0),
@@ -191,10 +191,10 @@ async def list_players(
         )
         if max_minutes < min_minutes:
             continue
-        
+
         # Compute EV0 values (prefer average, fallback to available source)
         ev0_source = average or fbref or understat or api_football
-        
+
         response.append({
             "id": player.id,
             "name": player.name,
@@ -209,7 +209,7 @@ async def list_players(
             "ev0_xa_per_90": ev0_source.xa_per_90 if ev0_source and ev0_source.xa_per_90 else 0.0,
             "ev0_npxg_per_90": ev0_source.npxg_per_90 if ev0_source and ev0_source.npxg_per_90 else 0.0,
         })
-    
+
     return response
 
 
@@ -223,10 +223,10 @@ async def list_teams(
     if league:
         stmt = stmt.where(Team.league == league.lower())
     stmt = stmt.order_by(Team.name)
-    
+
     result = await session.execute(stmt)
     teams = result.scalars().all()
-    
+
     response = []
     for team in teams:
         # Count players
@@ -236,14 +236,14 @@ async def list_teams(
         )
         count_result = await session.execute(count_stmt)
         player_count = count_result.scalar() or 0
-        
+
         response.append({
             "id": team.id,
             "name": team.name,
             "league": team.league,
             "player_count": player_count,
         })
-    
+
     return response
 
 
@@ -252,7 +252,7 @@ async def get_sync_status(
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Get sync status."""
-    
+
     # Count L1
     l1_players = await session.execute(
         select(func.count(Player.id)).where(Player.league == "ligue_1")
@@ -260,7 +260,7 @@ async def get_sync_status(
     l1_teams = await session.execute(
         select(func.count(Team.id)).where(Team.league == "ligue_1")
     )
-    
+
     # Count PL
     pl_players = await session.execute(
         select(func.count(Player.id)).where(Player.league == "premier_league")
@@ -268,11 +268,11 @@ async def get_sync_status(
     pl_teams = await session.execute(
         select(func.count(Team.id)).where(Team.league == "premier_league")
     )
-    
+
     # Get last sync time
     last_sync_stmt = select(func.max(PlayerStats.as_of_utc))
     last_sync = await session.execute(last_sync_stmt)
-    
+
     return {
         "ligue_1_players": l1_players.scalar() or 0,
         "ligue_1_teams": l1_teams.scalar() or 0,
@@ -291,10 +291,10 @@ async def get_player(
     stmt = select(Player).where(Player.id == player_id)
     result = await session.execute(stmt)
     player = result.scalar_one_or_none()
-    
+
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
-    
+
     # Get stats
     stats_stmt = select(PlayerStats).where(
         PlayerStats.player_id == player.id,
@@ -302,15 +302,15 @@ async def get_player(
     )
     stats_result = await session.execute(stats_stmt)
     all_stats = stats_result.scalars().all()
-    
+
     stats_by_source = {s.source: s for s in all_stats}
-    
+
     api_football = stats_by_source.get("api_football")
     fbref = stats_by_source.get("fbref")
     understat = stats_by_source.get("understat")
     average = stats_by_source.get("average")
     ev0_source = average or fbref or understat or api_football
-    
+
     return {
         "id": player.id,
         "name": player.name,
@@ -329,41 +329,25 @@ async def get_player(
 
 @router.post("/sync")
 async def trigger_sync(
-    strategy: str = Query("smart", description="Sync strategy: smart, main, or fallback"),
+    strategy: str = Query("direct", description="Sync strategy: direct (Understat API), or smart (Firecrawl+LLM)"),
 ):
-    """Trigger a player stats sync (runs in background).
+    """Trigger a player stats sync.
 
     Strategies:
-    - smart: Auto-selects best available strategy
-    - main: Force Firecrawl + LLM + API-Football
-    - fallback: Force Firecrawl + LLM only
+    - direct: Uses Understat API directly (no API keys needed, fast)
+    - smart: Uses Firecrawl + LLM + API-Football (requires API keys)
     """
     import asyncio
-    from app.ingestion.smart_sync import smart_sync_all
 
-    # Run in background
-    asyncio.create_task(smart_sync_all())
+    if strategy == "smart":
+        from app.ingestion.smart_sync import smart_sync_all
+        asyncio.create_task(smart_sync_all())
+    else:
+        from app.ingestion.sync_all_players import sync_all
+        asyncio.create_task(sync_all())
 
     return {
         "status": "sync_started",
         "strategy": strategy,
-        "message": "Smart sync started in background. Check /players/sync-status for progress.",
-    }
-
-
-@router.post("/sync-understat", summary="Sync players from Understat only (no API keys needed)")
-async def trigger_understat_sync() -> dict:
-    """Fetch all players from Understat AJAX API and store to database.
-
-    Uses the working AJAX endpoint — no Firecrawl/LLM/API-Football keys needed.
-    Runs in background (~30s). Check /players/sync-status for progress.
-    """
-    import asyncio
-    from app.ingestion.sync_all_players import sync_all
-
-    asyncio.create_task(sync_all())
-
-    return {
-        "status": "sync_started",
-        "message": "Understat sync started. Check /players/sync-status for progress.",
+        "message": f"Sync ({strategy}) started in background. Check /players/sync-status for progress.",
     }

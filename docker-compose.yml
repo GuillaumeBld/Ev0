@@ -26,7 +26,7 @@ services:
     environment:
       DATABASE_URL: postgresql://ev0:secure_password_change_me@db:5432/ev0
       REDIS_URL: redis://redis:6379/0
-      CORS_ORIGINS: '["*"]'
+      CORS_ORIGINS_STR: "*"
     depends_on:
       - db
       - redis
@@ -37,11 +37,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      args:
-        NEXT_PUBLIC_API_URL: http://213.130.144.204:8000
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_API_URL: http://213.130.144.204:8000
+      BACKEND_URL: http://backend:8000
     depends_on:
       - backend
     networks:

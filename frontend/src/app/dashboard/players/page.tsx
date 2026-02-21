@@ -45,8 +45,6 @@ interface SyncStatus {
 type SortField = 'name' | 'team' | 'xg_per_90' | 'xa_per_90' | 'minutes'
 type SourceFilter = 'average' | 'fbref' | 'understat'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-
 export default function PlayersPage() {
   const [players, setPlayers] = useState<Player[]>([])
   const [loading, setLoading] = useState(true)
@@ -57,7 +55,7 @@ export default function PlayersPage() {
   const [sourceView, setSourceView] = useState<SourceFilter>('average')
   const [sortField, setSortField] = useState<SortField>('xg_per_90')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
-  const [minMinutes, setMinMinutes] = useState(450)
+  const [minMinutes, setMinMinutes] = useState(0)
   const [expandedPlayer, setExpandedPlayer] = useState<number | null>(null)
 
   const fetchPlayers = useCallback(async () => {
@@ -69,7 +67,7 @@ export default function PlayersPage() {
       params.set('min_minutes', minMinutes.toString())
       params.set('limit', '500')
 
-      const res = await fetch(`${API_URL}/api/v1/players?${params}`)
+      const res = await fetch(`/api/v1/players?${params}`)
       if (res.ok) {
         const data = await res.json()
         setPlayers(data)
@@ -83,7 +81,7 @@ export default function PlayersPage() {
 
   const fetchSyncStatus = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/v1/players/sync-status`)
+      const res = await fetch(`/api/v1/players/sync-status`)
       if (res.ok) {
         const data = await res.json()
         setSyncStatus(data)
@@ -101,8 +99,8 @@ export default function PlayersPage() {
   const triggerSync = async () => {
     setSyncing(true)
     try {
-      await fetch(`${API_URL}/api/v1/players/sync`, { method: 'POST' })
-      // Poll for updates
+      await fetch('/api/v1/players/sync?strategy=direct', { method: 'POST' })
+      // Poll for updates every 5s, auto-refresh after 60s
       const interval = setInterval(async () => {
         await fetchSyncStatus()
       }, 5000)
@@ -110,7 +108,8 @@ export default function PlayersPage() {
         clearInterval(interval)
         setSyncing(false)
         fetchPlayers()
-      }, 120000) // 2 min max
+        fetchSyncStatus()
+      }, 60000)
     } catch (err) {
       console.error('Sync failed:', err)
       setSyncing(false)
@@ -212,7 +211,7 @@ export default function PlayersPage() {
           )}
         >
           <RefreshCw className={clsx("w-4 h-4", syncing && "animate-spin")} />
-          {syncing ? 'Sync en cours...' : 'Sync FBref + Understat'}
+          {syncing ? 'Sync en cours...' : 'Sync Understat'}
         </button>
       </div>
 
