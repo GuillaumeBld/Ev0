@@ -5,13 +5,11 @@ Uses direct HTTP for Understat with proper JSON extraction.
 """
 
 import asyncio
-import json
 import re
 import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
-import httpx
 import pandas as pd
 
 try:
@@ -31,11 +29,10 @@ from app.models.players import Player, PlayerStats, Team
 SEASON = "2025-2026"
 SEASON_SD = "2526"  # For soccerdata
 
-# Understat mappings
-UNDERSTAT_LEAGUES = {
-    "ligue_1": "Ligue_1",
-    "premier_league": "EPL",
-}
+from app.ingestion.understat_scraper import (
+    fetch_understat_league,
+    UNDERSTAT_LEAGUES,
+)
 
 
 def normalize_name(name: str) -> str:
@@ -52,93 +49,6 @@ def calculate_per_90(stat: float, minutes: int) -> float:
     if minutes <= 0:
         return 0.0
     return round((stat / minutes) * 90, 3)
-
-
-# ============ UNDERSTAT FETCHING ============
-
-def _decode_understat_data(encoded: str) -> str:
-    """Decode Understat's hex-escaped JSON."""
-    def replace_hex(match):
-        return chr(int(match.group(1), 16))
-    return re.sub(r'\\x([0-9a-fA-F]{2})', replace_hex, encoded)
-
-
-async def fetch_understat_league(league: str) -> tuple[list[dict], list[dict]]:
-    """Fetch all players and teams from Understat league page."""
-    league_slug = UNDERSTAT_LEAGUES.get(league)
-    if not league_slug:
-        return [], []
-    
-    url = f"https://understat.com/league/{league_slug}/2025"
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            resp = await client.get(url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-            })
-            resp.raise_for_status()
-            html = resp.text
-        except Exception as e:
-            print(f"Error fetching Understat {league}: {e}")
-            return [], []
-    
-    players = []
-    teams = []
-    
-    # Extract playersData JSON
-    players_match = re.search(r"var\s+playersData\s*=\s*JSON\.parse\('(.+?)'\)", html, re.DOTALL)
-    if players_match:
-        try:
-            decoded = _decode_understat_data(players_match.group(1))
-            players_data = json.loads(decoded)
-            
-            for p in players_data:
-                minutes = int(p.get("time", 0))
-                xg = float(p.get("xG", 0))
-                xa = float(p.get("xA", 0))
-                npxg = float(p.get("npxG", 0))
-                
-                players.append({
-                    "understat_id": str(p.get("id")),
-                    "name": p.get("player_name", ""),
-                    "team": p.get("team_title", ""),
-                    "position": p.get("position", ""),
-                    "games": int(p.get("games", 0)),
-                    "minutes": minutes,
-                    "goals": int(p.get("goals", 0)),
-                    "assists": int(p.get("assists", 0)),
-                    "xg": xg,
-                    "xa": xa,
-                    "npxg": npxg,
-                    "shots": int(p.get("shots", 0)),
-                    "key_passes": int(p.get("key_passes", 0)),
-                    "xg_per_90": calculate_per_90(xg, minutes),
-                    "xa_per_90": calculate_per_90(xa, minutes),
-                    "npxg_per_90": calculate_per_90(npxg, minutes),
-                })
-        except (json.JSONDecodeError, Exception) as e:
-            print(f"Error parsing Understat players for {league}: {e}")
-    else:
-        print(f"No playersData found in HTML for {league}")
-    
-    # Extract teamsData JSON
-    teams_match = re.search(r"var\s+teamsData\s*=\s*JSON\.parse\('(.+?)'\)", html, re.DOTALL)
-    if teams_match:
-        try:
-            decoded = _decode_understat_data(teams_match.group(1))
-            teams_data = json.loads(decoded)
-            
-            for team_id, info in teams_data.items():
-                teams.append({
-                    "understat_id": team_id,
-                    "name": info.get("title", ""),
-                })
-        except (json.JSONDecodeError, Exception) as e:
-            print(f"Error parsing Understat teams for {league}: {e}")
-    
-    return players, teams
 
 
 # ============ FBREF FETCHING VIA SOCCERDATA ============

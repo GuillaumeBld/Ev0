@@ -332,7 +332,7 @@ async def trigger_sync(
     strategy: str = Query("smart", description="Sync strategy: smart, main, or fallback"),
 ):
     """Trigger a player stats sync (runs in background).
-    
+
     Strategies:
     - smart: Auto-selects best available strategy
     - main: Force Firecrawl + LLM + API-Football
@@ -340,12 +340,30 @@ async def trigger_sync(
     """
     import asyncio
     from app.ingestion.smart_sync import smart_sync_all
-    
+
     # Run in background
     asyncio.create_task(smart_sync_all())
-    
+
     return {
         "status": "sync_started",
         "strategy": strategy,
         "message": "Smart sync started in background. Check /players/sync-status for progress.",
+    }
+
+
+@router.post("/sync-understat", summary="Sync players from Understat only (no API keys needed)")
+async def trigger_understat_sync() -> dict:
+    """Fetch all players from Understat AJAX API and store to database.
+
+    Uses the working AJAX endpoint — no Firecrawl/LLM/API-Football keys needed.
+    Runs in background (~30s). Check /players/sync-status for progress.
+    """
+    import asyncio
+    from app.ingestion.sync_all_players import sync_all
+
+    asyncio.create_task(sync_all())
+
+    return {
+        "status": "sync_started",
+        "message": "Understat sync started. Check /players/sync-status for progress.",
     }
