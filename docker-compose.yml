@@ -27,7 +27,9 @@ services:
       DATABASE_URL: postgresql://ev0:secure_password_change_me@db:5432/ev0
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS_STR: "*"
-      DEPLOY_VERSION: "2026-02-21-v3"
+      DEPLOY_VERSION: "2026-02-21-v4"
+    volumes:
+      - ./backend:/app
     depends_on:
       - db
       - redis
@@ -38,6 +40,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        DEPLOY_VERSION: "2026-02-21-v4"
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000

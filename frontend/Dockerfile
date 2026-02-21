@@ -7,6 +7,9 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
+# Cache bust on deploy
+ARG DEPLOY_VERSION=unknown
+
 # Copy source
 COPY . .
 
