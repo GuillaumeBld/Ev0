@@ -166,22 +166,31 @@ async def list_players(
     result = await session.execute(stmt)
     players = result.scalars().all()
 
+    if not players:
+        return []
+
+    # Batch-fetch all stats for these players in ONE query (avoid N+1)
+    player_ids = [p.id for p in players]
+    stats_stmt = select(PlayerStats).where(
+        PlayerStats.player_id.in_(player_ids),
+        PlayerStats.season == "2025-2026",
+    )
+    stats_result = await session.execute(stats_stmt)
+    all_stats = stats_result.scalars().all()
+
+    # Group stats by player_id and source
+    stats_map: dict[int, dict[str, PlayerStats]] = {}
+    for s in all_stats:
+        stats_map.setdefault(s.player_id, {})[s.source] = s
+
     response = []
     for player in players:
-        # Get stats for each source
-        stats_stmt = select(PlayerStats).where(
-            PlayerStats.player_id == player.id,
-            PlayerStats.season == "2025-2026",
-        )
-        stats_result = await session.execute(stats_stmt)
-        all_stats = stats_result.scalars().all()
+        player_stats = stats_map.get(player.id, {})
 
-        stats_by_source = {s.source: s for s in all_stats}
-
-        api_football = stats_by_source.get("api_football")
-        fbref = stats_by_source.get("fbref")
-        understat = stats_by_source.get("understat")
-        average = stats_by_source.get("average")
+        api_football = player_stats.get("api_football")
+        fbref = player_stats.get("fbref")
+        understat = player_stats.get("understat")
+        average = player_stats.get("average")
 
         # Filter by minutes if specified
         max_minutes = max(
