@@ -2,13 +2,14 @@
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.settings import UserSettings
+from app.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,9 @@ async def get_settings(
 
 
 @router.put("/settings")
+@limiter.limit("10/minute")
 async def save_settings(
+    request: Request,
     body: SettingsUpdateRequest,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:

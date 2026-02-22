@@ -4,8 +4,8 @@ services:
     image: postgres:15-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-ev0}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_password_change_me}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in env}
       POSTGRES_DB: ${POSTGRES_DB:-ev0}
     volumes:
       - ../files/postgres_data:/var/lib/postgresql/data
@@ -14,6 +14,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-}
     volumes:
       - ../files/redis_data:/data
     networks:
@@ -23,31 +24,31 @@ services:
       context: ./backend
       dockerfile: Dockerfile
       args:
-        CACHE_BUST: "2026-02-22-v15"
+        CACHE_BUST: "2026-02-22-v16"
     restart: unless-stopped
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://ev0:secure_password_change_me@db:5432/ev0}
-      REDIS_URL: redis://redis:6379/0
-      CORS_ORIGINS_STR: ${CORS_ORIGINS_STR:-http://ev0-compose-z5hvqt-a4f9a7-213-130-144-204.traefik.me}
-      ODDS_API_KEY: ${ODDS_API_KEY:-f23a202732591c8cb45f14ca0ee32c45}
-      DEPLOY_VERSION: "2026-02-22-v15"
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in env}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CORS_ORIGINS_STR: ${CORS_ORIGINS_STR:?Set CORS_ORIGINS_STR in env}
+      ODDS_API_KEY: ${ODDS_API_KEY:?Set ODDS_API_KEY in env}
+      DEPLOY_VERSION: "2026-02-22-v16"
     depends_on:
       - db
       - redis
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     networks:
-        - dokploy-network
+      - dokploy-network
   worker:
     build:
       context: ./backend
       dockerfile: Dockerfile
       args:
-        CACHE_BUST: "2026-02-22-v15"
+        CACHE_BUST: "2026-02-22-v16"
     restart: unless-stopped
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://ev0:secure_password_change_me@db:5432/ev0}
-      REDIS_URL: redis://redis:6379/0
-      ODDS_API_KEY: ${ODDS_API_KEY:-f23a202732591c8cb45f14ca0ee32c45}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in env}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      ODDS_API_KEY: ${ODDS_API_KEY:?Set ODDS_API_KEY in env}
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       API_FOOTBALL_KEY: ${API_FOOTBALL_KEY:-}
@@ -58,6 +59,43 @@ services:
     command: python -m app.worker
     networks:
       - dokploy-network
+  db-backup:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER:?Set POSTGRES_USER in env}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in env}
+      PGDATABASE: ${POSTGRES_DB:-ev0}
+    volumes:
+      - ../files/db_backups:/backups
+    depends_on:
+      - db
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        echo "DB backup service started. Running daily at 03:00 UTC."
+        while true; do
+          CURRENT_HOUR=$$(date -u +%H)
+          CURRENT_MIN=$$(date -u +%M)
+          if [ "$$CURRENT_HOUR" = "03" ] && [ "$$CURRENT_MIN" = "00" ]; then
+            TIMESTAMP=$$(date -u +%Y%m%d_%H%M%S)
+            echo "[$$TIMESTAMP] Starting backup..."
+            pg_dump -Fc > /backups/ev0_$$TIMESTAMP.dump
+            if [ $$? -eq 0 ]; then
+              echo "[$$TIMESTAMP] Backup completed: ev0_$$TIMESTAMP.dump"
+              # Keep only last 7 days of backups
+              ls -t /backups/ev0_*.dump 2>/dev/null | tail -n +8 | xargs -r rm
+              echo "Cleanup done. Kept last 7 backups."
+            else
+              echo "[$$TIMESTAMP] Backup FAILED!"
+            fi
+          fi
+          sleep 60
+        done
+    networks:
+      - dokploy-network
   frontend:
     build:
       context: ./frontend
@@ -65,10 +103,10 @@ services:
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000
-      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-ev0-secret-key-2024}
-      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://ev0-compose-z5hvqt-a4f9a7-213-130-144-204.traefik.me}
-      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-ev0admin2024}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?Set NEXTAUTH_SECRET in env}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:?Set NEXTAUTH_URL in env}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?Set ADMIN_USERNAME in env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in env}
     volumes:
       - ./frontend:/app
       - /app/node_modules

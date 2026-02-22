@@ -3,13 +3,14 @@
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.bankroll import BankrollEntry
+from app.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,9 @@ async def get_bankroll(
 
 
 @router.post("/bankroll/deposit", response_model=BankrollTransactionOut)
+@limiter.limit("10/minute")
 async def deposit(
+    request: Request,
     body: BankrollTransactionRequest,
     db: AsyncSession = Depends(get_db),
 ):
@@ -134,7 +137,9 @@ async def deposit(
 
 
 @router.post("/bankroll/withdraw", response_model=BankrollTransactionOut)
+@limiter.limit("10/minute")
 async def withdraw(
+    request: Request,
     body: BankrollTransactionRequest,
     db: AsyncSession = Depends(get_db),
 ):

@@ -4,7 +4,7 @@ import logging
 from datetime import date, datetime, timezone
 from enum import Enum
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,7 @@ from app.db import get_db
 from app.models.recommendations import Recommendation as RecommendationModel
 from app.models.bankroll import BankrollEntry
 from app.services.recommendation_service import get_recommendations_for_date
+from app.rate_limit import limiter
 from app.strategy.selector import RecommendationFilter
 
 logger = logging.getLogger(__name__)
@@ -170,7 +171,9 @@ class RecommendationUpdateResponse(BaseModel):
 
 
 @router.patch("/recommendations/{recommendation_id}", response_model=RecommendationUpdateResponse)
+@limiter.limit("30/minute")
 async def update_recommendation(
+    request: Request,
     recommendation_id: int,
     body: RecommendationUpdate,
     db: AsyncSession = Depends(get_db),
