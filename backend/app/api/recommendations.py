@@ -56,9 +56,10 @@ class RecommendationsResponse(BaseModel):
     date: str
     count: int
     recommendations: list[Recommendation]
+    debug_error: str | None = None
 
 
-@router.get("/recommendations", response_model=RecommendationsResponse)
+@router.get("/recommendations")
 async def get_recommendations(
     db: AsyncSession = Depends(get_db),
     target_date: date | None = Query(None, description="Date for recommendations (default: today)"),
@@ -70,6 +71,8 @@ async def get_recommendations(
     effective_date = target_date or date.today()
     dt = datetime.combine(effective_date, datetime.min.time(), tzinfo=timezone.utc)
 
+    import traceback as _tb
+    _debug_error = None
     try:
         from app.services.recommendation_service import get_recommendations_for_date
         from app.strategy.selector import RecommendationFilter as _RF
@@ -81,6 +84,7 @@ async def get_recommendations(
         raw_recs = await get_recommendations_for_date(dt, db, filter_config)
     except Exception as exc:
         logger.error("Failed to generate recommendations: %s", exc, exc_info=True)
+        _debug_error = _tb.format_exc()
         raw_recs = []
 
     # Transform to response models
@@ -108,6 +112,7 @@ async def get_recommendations(
         date=str(effective_date),
         count=len(recommendations),
         recommendations=recommendations,
+        debug_error=_debug_error,
     )
 
 
