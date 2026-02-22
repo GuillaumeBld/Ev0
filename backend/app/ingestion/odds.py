@@ -22,11 +22,14 @@ SPORT_KEYS = {
     "premier_league": "soccer_epl",
 }
 
-# Market keys for player props
+# Market keys for player props (The Odds API v4 naming)
 MARKET_KEYS = {
-    "goalscorer": "player_anytime_goalscorer",
+    "goalscorer": "player_goal_scorer_anytime",
     "assist": "player_assist",  # May not be available on all bookmakers
 }
+
+# Regions to fetch odds from
+REGIONS = ["eu", "uk", "us"]
 
 # Supported bookmakers (French + international)
 BOOKMAKERS = [
@@ -154,7 +157,7 @@ class OddsAPIClient:
         sport_key: str,
         event_id: str,
         market: str,
-        bookmakers: list[str] | None = None,
+        regions: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get player props odds for an event.
@@ -162,14 +165,14 @@ class OddsAPIClient:
         Args:
             sport_key: Sport key (e.g. "soccer_france_ligue_one")
             event_id: Event ID from get_events
-            market: "player_anytime_goalscorer" or "player_assist"
-            bookmakers: List of bookmaker keys to fetch
+            market: Market key (e.g. "player_goal_scorer_anytime")
+            regions: List of region keys to fetch (default: eu, uk, us)
 
         Returns:
             List of odds dicts with player_name, bookmaker, odds
         """
-        if bookmakers is None:
-            bookmakers = BOOKMAKERS
+        if regions is None:
+            regions = REGIONS
 
         async with httpx.AsyncClient() as client:
             response = await client.get(
@@ -177,7 +180,7 @@ class OddsAPIClient:
                 params={
                     "apiKey": self.api_key,
                     "markets": market,
-                    "bookmakers": ",".join(bookmakers),
+                    "regions": ",".join(regions),
                 },
                 timeout=30.0,
             )
@@ -189,22 +192,32 @@ class OddsAPIClient:
             return self._parse_player_props(data)
     
     def _parse_player_props(self, data: dict) -> list[dict[str, Any]]:
-        """Parse player props from API response."""
+        """Parse player props from API response.
+
+        The Odds API v4 player props format:
+        - outcome.name = "Yes" (always)
+        - outcome.description = "Player Name"
+        - outcome.price = decimal odds
+        """
         results = []
-        
+
         bookmakers = data.get("bookmakers", [])
         for bm in bookmakers:
             bookmaker_key = bm.get("key", "")
-            
+
             for market in bm.get("markets", []):
                 for outcome in market.get("outcomes", []):
+                    # Player name is in 'description', not 'name'
+                    player_name = outcome.get("description") or outcome.get("name", "")
+                    if not player_name or player_name == "Yes":
+                        continue
                     results.append({
-                        "player_name": outcome.get("name", ""),
+                        "player_name": player_name,
                         "bookmaker": bookmaker_key,
                         "odds": outcome.get("price", 0.0),
                         "market_key": market.get("key", ""),
                     })
-        
+
         return results
 
 
