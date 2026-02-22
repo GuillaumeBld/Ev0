@@ -68,7 +68,7 @@ def filter_recommendations(
             continue
         
         # Market filter
-        market = rec.get("market", "")
+        market = rec.get("market_type") or rec.get("market", "")
         if config.markets and market not in config.markets:
             continue
         
