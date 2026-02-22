@@ -16,3 +16,10 @@ async def readiness_check() -> dict[str, str]:
     """Readiness check endpoint."""
     # TODO: Check DB and Redis connectivity
     return {"status": "ready"}
+
+
+@router.get("/version")
+async def version_check() -> dict[str, str]:
+    """Code version check."""
+    import os
+    return {"deploy_version": os.environ.get("DEPLOY_VERSION", "unknown"), "code_version": "2026-02-22-debug-v2"}
