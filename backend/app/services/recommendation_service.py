@@ -333,7 +333,10 @@ async def get_recommendations_for_date(
             "sample_fixture": fixtures[0] if fixtures else None,
             "sample_players": list(player_stats.keys())[:10],
             "odds_fixture_ids": list(odds_data.keys())[:5],
-            "sample_odds": odds_data.get(fixtures[0]["fixture_id"], [])[:3] if fixtures else [],
+            "sample_odds": odds_data.get(fixtures[0]["fixture_id"], [])[:5] if fixtures else [],
+            "all_odds_players": sorted(set(
+                o["player_name"] for odds_list in odds_data.values() for o in odds_list
+            ))[:30],
         }
         return recs, debug_info
 
