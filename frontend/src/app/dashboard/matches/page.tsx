@@ -44,9 +44,9 @@ export default function MatchesPage() {
   }
 
   return (
-    <div className="p-8">
+    <div className="p-4 md:p-8">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white">Matchs</h1>
           <p className="text-gray-400 mt-1">{matches.length} matchs enregistrés</p>
@@ -105,17 +105,17 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
   return (
     <div className="bg-gray-800 rounded-xl overflow-hidden">
       <div className="p-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
             {/* Date/Time */}
-            <div className="text-center w-20">
+            <div className="text-left sm:text-center sm:w-20">
               <p className="text-sm text-gray-400">{match.date}</p>
               <p className="text-lg font-bold text-white">{match.time}</p>
             </div>
 
             {/* Teams */}
             <div className="flex items-center gap-3">
-              <span className="text-white font-medium w-32 text-right">{match.homeTeam}</span>
+              <span className="text-white font-medium text-right">{match.homeTeam}</span>
               {match.status === 'finished' ? (
                 <span className="text-2xl font-bold text-white px-3">
                   {match.homeScore} - {match.awayScore}
@@ -123,26 +123,27 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
               ) : (
                 <span className="text-gray-500 px-3">vs</span>
               )}
-              <span className="text-white font-medium w-32">{match.awayTeam}</span>
+              <span className="text-white font-medium">{match.awayTeam}</span>
             </div>
 
-            {/* League Badge */}
-            <span className={clsx(
-              'px-2 py-1 rounded text-xs',
-              match.league === 'ligue1' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400'
-            )}>
-              {match.league === 'ligue1' ? '🇫🇷 L1' : '🏴󠁧󠁢󠁥󠁮󠁧󠁿 PL'}
-            </span>
+            {/* League Badge + Status */}
+            <div className="flex flex-wrap gap-2">
+              <span className={clsx(
+                'px-2 py-1 rounded text-xs',
+                match.league === 'ligue1' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400'
+              )}>
+                {match.league === 'ligue1' ? '🇫🇷 L1' : '🏴󠁧󠁢󠁥󠁮󠁧󠁿 PL'}
+              </span>
 
-            {/* Status */}
-            <span className={clsx(
-              'px-2 py-1 rounded text-xs',
-              match.status === 'upcoming' ? 'bg-yellow-500/20 text-yellow-400' :
-              match.status === 'live' ? 'bg-green-500/20 text-green-400 animate-pulse' :
-              'bg-gray-500/20 text-gray-400'
-            )}>
-              {match.status === 'upcoming' ? 'À venir' : match.status === 'live' ? 'En cours' : 'Terminé'}
-            </span>
+              <span className={clsx(
+                'px-2 py-1 rounded text-xs',
+                match.status === 'upcoming' ? 'bg-yellow-500/20 text-yellow-400' :
+                match.status === 'live' ? 'bg-green-500/20 text-green-400 animate-pulse' :
+                'bg-gray-500/20 text-gray-400'
+              )}>
+                {match.status === 'upcoming' ? 'À venir' : match.status === 'live' ? 'En cours' : 'Terminé'}
+              </span>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -233,7 +234,7 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
         
         <div className="space-y-4">
           {/* Date & Time */}
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm text-gray-400 mb-1">Date</label>
               <input
@@ -266,7 +267,7 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
           </div>
 
           {/* Teams */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-gray-400 mb-1">Équipe domicile</label>
               <input
@@ -294,13 +295,13 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
             <h3 className="text-sm font-medium text-gray-400 mb-3">Cotes bookmaker</h3>
             
             {/* Add Odd Form */}
-            <div className="flex gap-2 mb-3">
+            <div className="flex flex-wrap gap-2 mb-3">
               <input
                 type="text"
                 placeholder="Joueur"
                 value={newOdd.player}
                 onChange={(e) => setNewOdd({ ...newOdd, player: e.target.value })}
-                className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
+                className="flex-1 min-w-0 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
               />
               <select
                 value={newOdd.market}

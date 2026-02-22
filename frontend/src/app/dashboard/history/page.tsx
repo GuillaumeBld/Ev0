@@ -45,9 +45,9 @@ export default function HistoryPage() {
   }
 
   return (
-    <div className="p-8">
+    <div className="p-4 md:p-8">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white">Historique</h1>
           <p className="text-gray-400 mt-1">
@@ -93,6 +93,7 @@ export default function HistoryPage() {
 
       {/* Table */}
       <div className="bg-gray-800 rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
             <tr className="border-b border-gray-700">
@@ -101,16 +102,16 @@ export default function HistoryPage() {
                   Date
                 </SortButton>
               </th>
-              <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Match</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-400 hidden md:table-cell">Match</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Joueur</th>
-              <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Marché</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-400 hidden md:table-cell">Marché</th>
               <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">Cote</th>
               <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">
                 <SortButton field="edge" current={sortField} dir={sortDir} onClick={setSortField} setDir={setSortDir}>
                   Edge
                 </SortButton>
               </th>
-              <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">Mise</th>
+              <th className="px-4 py-3 text-right text-sm font-medium text-gray-400 hidden md:table-cell">Mise</th>
               <th className="px-4 py-3 text-center text-sm font-medium text-gray-400">Status</th>
               <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">
                 <SortButton field="pnl" current={sortField} dir={sortDir} onClick={setSortField} setDir={setSortDir}>
@@ -125,9 +126,9 @@ export default function HistoryPage() {
                 <td className="px-4 py-3 text-sm text-gray-300">
                   {new Date(bet.date).toLocaleDateString('fr-FR')}
                 </td>
-                <td className="px-4 py-3 text-sm text-white">{bet.fixture}</td>
+                <td className="px-4 py-3 text-sm text-white hidden md:table-cell">{bet.fixture}</td>
                 <td className="px-4 py-3 text-sm text-white font-medium">{bet.player}</td>
-                <td className="px-4 py-3">
+                <td className="px-4 py-3 hidden md:table-cell">
                   <span className={clsx(
                     'px-2 py-0.5 rounded text-xs',
                     bet.market === 'goalscorer' ? 'bg-orange-500/20 text-orange-400' : 'bg-blue-500/20 text-blue-400'
@@ -137,7 +138,7 @@ export default function HistoryPage() {
                 </td>
                 <td className="px-4 py-3 text-sm text-right text-gray-300">{bet.odds.toFixed(2)}</td>
                 <td className="px-4 py-3 text-sm text-right text-green-400">+{(bet.edge * 100).toFixed(1)}%</td>
-                <td className="px-4 py-3 text-sm text-right text-gray-300">{bet.stake}€</td>
+                <td className="px-4 py-3 text-sm text-right text-gray-300 hidden md:table-cell">{bet.stake}€</td>
                 <td className="px-4 py-3 text-center">
                   <StatusBadge status={bet.status} />
                 </td>
@@ -151,6 +152,7 @@ export default function HistoryPage() {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   )

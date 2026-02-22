@@ -68,7 +68,7 @@ export default function CalculatorPage() {
   }, [marketType, xgPer90, expectedMinutes, conversionRate, opponentFactor, formFactor, xaPer90, creationScore, teammateFinishing, marketOdds])
 
   return (
-    <div className="p-8 max-w-4xl">
+    <div className="p-4 md:p-8 max-w-4xl">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-white flex items-center gap-2">
           <Calculator className="w-6 h-6" />

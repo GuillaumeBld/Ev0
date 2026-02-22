@@ -12,7 +12,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="p-8 max-w-4xl">
+    <div className="p-4 md:p-8 max-w-4xl">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-white">Paramètres</h1>
         <p className="text-gray-400 mt-1">Configuration du système Ev0</p>
@@ -47,7 +47,7 @@ export default function SettingsPage() {
           title="Stratégie"
           description="Paramètres de sélection et de mise"
         >
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <InputField
               label="Edge minimum"
               type="number"
@@ -135,7 +135,7 @@ export default function SettingsPage() {
           title="Données"
           description="Paramètres d'ingestion et de stockage"
         >
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <SelectField
               label="Fréquence sync fixtures"
               options={[

@@ -42,7 +42,7 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
       status === 'rejected' && 'opacity-50'
     )}>
       {/* Main content */}
-      <div className="p-5">
+      <div className="p-4 sm:p-5">
         <div className="flex items-start justify-between">
           <div>
             <div className="flex items-center gap-2">
@@ -66,7 +66,7 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
 
           {/* Edge badge */}
           <div className="text-right">
-            <div className="text-2xl font-bold text-green-400">
+            <div className="text-xl sm:text-2xl font-bold text-green-400">
               +{edgePercent}%
             </div>
             <div className="text-xs text-gray-500">edge</div>

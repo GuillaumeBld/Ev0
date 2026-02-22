@@ -190,9 +190,9 @@ export default function PlayersPage() {
   }
 
   return (
-    <div className="p-8">
+    <div className="p-4 md:p-8">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white">Joueurs</h1>
           <p className="text-gray-400 mt-1">
@@ -320,10 +320,11 @@ export default function PlayersPage() {
         </div>
       ) : (
         <div className="bg-gray-800 rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-700">
-                <th 
+                <th
                   className="px-4 py-3 text-left text-sm font-medium text-gray-400 cursor-pointer hover:text-white"
                   onClick={() => handleSort('name')}
                 >
@@ -331,7 +332,7 @@ export default function PlayersPage() {
                     Joueur <SortIcon field="name" />
                   </div>
                 </th>
-                <th 
+                <th
                   className="px-4 py-3 text-left text-sm font-medium text-gray-400 cursor-pointer hover:text-white"
                   onClick={() => handleSort('team')}
                 >
@@ -339,8 +340,8 @@ export default function PlayersPage() {
                     Équipe <SortIcon field="team" />
                   </div>
                 </th>
-                <th className="px-4 py-3 text-center text-sm font-medium text-gray-400">Pos</th>
-                <th 
+                <th className="px-4 py-3 text-center text-sm font-medium text-gray-400 hidden md:table-cell">Pos</th>
+                <th
                   className="px-4 py-3 text-right text-sm font-medium text-gray-400 cursor-pointer hover:text-white"
                   onClick={() => handleSort('minutes')}
                 >
@@ -348,9 +349,9 @@ export default function PlayersPage() {
                     Mins <SortIcon field="minutes" />
                   </div>
                 </th>
-                <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">Buts</th>
-                <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">xG</th>
-                <th 
+                <th className="px-4 py-3 text-right text-sm font-medium text-gray-400 hidden md:table-cell">Buts</th>
+                <th className="px-4 py-3 text-right text-sm font-medium text-gray-400 hidden md:table-cell">xG</th>
+                <th
                   className="px-4 py-3 text-right text-sm font-medium text-gray-400 cursor-pointer hover:text-white"
                   onClick={() => handleSort('xg_per_90')}
                 >
@@ -358,9 +359,9 @@ export default function PlayersPage() {
                     xG/90 <SortIcon field="xg_per_90" />
                   </div>
                 </th>
-                <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">PD</th>
-                <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">xA</th>
-                <th 
+                <th className="px-4 py-3 text-right text-sm font-medium text-gray-400 hidden md:table-cell">PD</th>
+                <th className="px-4 py-3 text-right text-sm font-medium text-gray-400 hidden md:table-cell">xA</th>
+                <th
                   className="px-4 py-3 text-right text-sm font-medium text-gray-400 cursor-pointer hover:text-white"
                   onClick={() => handleSort('xa_per_90')}
                 >
@@ -368,7 +369,7 @@ export default function PlayersPage() {
                     xA/90 <SortIcon field="xa_per_90" />
                   </div>
                 </th>
-                <th className="px-4 py-3 text-center text-sm font-medium text-gray-400">Δ Source</th>
+                <th className="px-4 py-3 text-center text-sm font-medium text-gray-400 hidden md:table-cell">Δ Source</th>
               </tr>
             </thead>
             <tbody>
@@ -390,7 +391,7 @@ export default function PlayersPage() {
                     >
                       <td className="px-4 py-3 text-sm text-white font-medium">{player.name}</td>
                       <td className="px-4 py-3 text-sm text-gray-300">{player.team || '-'}</td>
-                      <td className="px-4 py-3 text-center">
+                      <td className="px-4 py-3 text-center hidden md:table-cell">
                         <span className={clsx(
                           'px-2 py-0.5 rounded text-xs font-medium',
                           player.position?.includes('F') ? 'bg-red-500/20 text-red-400' :
@@ -402,17 +403,17 @@ export default function PlayersPage() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-sm text-right text-gray-300">{stats?.minutes || 0}</td>
-                      <td className="px-4 py-3 text-sm text-right text-white font-medium">{stats?.goals || 0}</td>
-                      <td className="px-4 py-3 text-sm text-right text-gray-300">{(stats?.xg || 0).toFixed(1)}</td>
+                      <td className="px-4 py-3 text-sm text-right text-white font-medium hidden md:table-cell">{stats?.goals || 0}</td>
+                      <td className="px-4 py-3 text-sm text-right text-gray-300 hidden md:table-cell">{(stats?.xg || 0).toFixed(1)}</td>
                       <td className="px-4 py-3 text-sm text-right text-green-400 font-medium">
                         {(stats?.xg_per_90 || 0).toFixed(2)}
                       </td>
-                      <td className="px-4 py-3 text-sm text-right text-white font-medium">{stats?.assists || 0}</td>
-                      <td className="px-4 py-3 text-sm text-right text-gray-300">{(stats?.xa || 0).toFixed(1)}</td>
+                      <td className="px-4 py-3 text-sm text-right text-white font-medium hidden md:table-cell">{stats?.assists || 0}</td>
+                      <td className="px-4 py-3 text-sm text-right text-gray-300 hidden md:table-cell">{(stats?.xa || 0).toFixed(1)}</td>
                       <td className="px-4 py-3 text-sm text-right text-blue-400 font-medium">
                         {(stats?.xa_per_90 || 0).toFixed(2)}
                       </td>
-                      <td className="px-4 py-3 text-center">
+                      <td className="px-4 py-3 text-center hidden md:table-cell">
                         {player.fbref && player.understat ? (
                           <div className="flex items-center justify-center gap-1">
                             {xgDiff && Math.abs(xgDiff.diff) >= 0.05 && (
@@ -432,7 +433,7 @@ export default function PlayersPage() {
                     {isExpanded && (
                       <tr className="bg-gray-900/50">
                         <td colSpan={11} className="px-4 py-4">
-                          <div className="grid grid-cols-3 gap-4">
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             {/* FBref */}
                             <div className="bg-blue-500/10 rounded-lg p-4 border border-blue-500/30">
                               <div className="flex items-center gap-2 mb-3">
@@ -522,6 +523,7 @@ export default function PlayersPage() {
               })}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
