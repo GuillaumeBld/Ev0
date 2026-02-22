@@ -99,7 +99,7 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000
@@ -107,9 +107,6 @@ services:
       NEXTAUTH_URL: ${NEXTAUTH_URL:?Set NEXTAUTH_URL in env}
       ADMIN_USERNAME: ${ADMIN_USERNAME:?Set ADMIN_USERNAME in env}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in env}
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
     depends_on:
       - backend
     networks:
