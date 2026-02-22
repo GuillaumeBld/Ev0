@@ -123,7 +123,7 @@ def check_correlation(bet1: dict[str, Any], bet2: dict[str, Any]) -> float:
     same_team = bet1.get("team") == bet2.get("team")
     
     # Same player (extremely correlated for goal + assist)
-    same_player = bet1.get("player") == bet2.get("player")
+    same_player = bet1.get("player_name") == bet2.get("player_name")
     
     if same_player:
         return 0.9

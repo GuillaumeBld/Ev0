@@ -3,6 +3,7 @@
 Fetches player props odds (goalscorer, assist) from multiple bookmakers.
 """
 
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -12,6 +13,8 @@ from typing import Any
 import httpx
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # The Odds API endpoints
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
@@ -273,7 +276,7 @@ async def ingest_odds_for_league(
         
         except Exception as e:
             # Log but continue with other events
-            print(f"Error fetching odds for {event_id}: {e}")
+            logger.warning("Error fetching odds for %s: %s", event_id, e)
             continue
     
     return snapshots

@@ -3,6 +3,7 @@ import { getSession } from 'next-auth/react'
 
 export const api = axios.create({
   baseURL: '',
+  timeout: 30000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -24,7 +25,6 @@ export interface Recommendation {
   fixture_id: string
   fixture_name: string
   kickoff_utc: string
-  player_id: string
   player_name: string
   team: string
   market_type: 'goalscorer' | 'assist'

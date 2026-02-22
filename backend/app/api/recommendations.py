@@ -9,6 +9,8 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.services.recommendation_service import get_recommendations_for_date
+from app.strategy.selector import RecommendationFilter
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +39,6 @@ class Recommendation(BaseModel):
     fixture_id: str
     fixture_name: str
     kickoff_utc: str
-    player_id: str
     player_name: str
     team: str
     market_type: MarketType
@@ -56,11 +57,10 @@ class RecommendationsResponse(BaseModel):
     date: str
     count: int
     recommendations: list[Recommendation]
-    debug_error: str | None = None
-    debug_info: dict | None = None
+    error: str | None = None
 
 
-@router.get("/recommendations")
+@router.get("/recommendations", response_model=RecommendationsResponse)
 async def get_recommendations(
     db: AsyncSession = Depends(get_db),
     target_date: date | None = Query(None, description="Date for recommendations (default: today)"),
@@ -72,21 +72,17 @@ async def get_recommendations(
     effective_date = target_date or date.today()
     dt = datetime.combine(effective_date, datetime.min.time(), tzinfo=timezone.utc)
 
-    import traceback as _tb
-    _debug_error = None
-    _debug_info: dict = {}
+    error_msg = None
     try:
-        from app.services.recommendation_service import get_recommendations_for_date
-        from app.strategy.selector import RecommendationFilter as _RF
-        filter_config = _RF(min_edge=min_edge)
+        filter_config = RecommendationFilter(min_edge=min_edge)
         if market_type:
             filter_config.markets = [market_type.value]
         if league:
             filter_config.leagues = [league]
-        raw_recs, _debug_info = await get_recommendations_for_date(dt, db, filter_config, debug=True)
+        raw_recs, _ = await get_recommendations_for_date(dt, db, filter_config)
     except Exception as exc:
         logger.error("Failed to generate recommendations: %s", exc, exc_info=True)
-        _debug_error = _tb.format_exc()
+        error_msg = "Failed to generate recommendations. Please try again later."
         raw_recs = []
 
     # Transform to response models
@@ -97,7 +93,6 @@ async def get_recommendations(
             fixture_id=rec.get("fixture_id", ""),
             fixture_name=rec.get("fixture_name", ""),
             kickoff_utc=str(rec.get("kickoff_utc", "")),
-            player_id="",
             player_name=rec.get("player_name", ""),
             team=rec.get("team", ""),
             market_type=rec.get("market_type", "goalscorer"),
@@ -114,36 +109,11 @@ async def get_recommendations(
         date=str(effective_date),
         count=len(recommendations),
         recommendations=recommendations,
-        debug_error=_debug_error,
-        debug_info=_debug_info or None,
+        error=error_msg,
     )
-
-
-@router.get("/recommendations-debug")
-async def debug_recommendations(
-    db: AsyncSession = Depends(get_db),
-    target_date: date | None = Query(None),
-):
-    """Debug endpoint — returns raw error if pipeline fails."""
-    import traceback
-    effective_date = target_date or date.today()
-    dt = datetime.combine(effective_date, datetime.min.time(), tzinfo=timezone.utc)
-    try:
-        from app.services.recommendation_service import get_recommendations_for_date as _get_recs
-        raw_recs = await _get_recs(dt, db)
-        return {"status": "ok", "count": len(raw_recs), "sample": raw_recs[:2]}
-    except Exception as exc:
-        return {"status": "error", "error": str(exc), "traceback": traceback.format_exc()}
-
-
-@router.get("/recommendations-ping")
-async def ping_recommendations():
-    """Minimal test to check if router loads."""
-    return {"status": "router_ok"}
 
 
 @router.get("/recommendations/{recommendation_id}", response_model=Recommendation)
 async def get_recommendation_detail(recommendation_id: str) -> Recommendation:
     """Get detailed information about a specific recommendation."""
-    # TODO: Implement
     raise NotImplementedError("Not yet implemented")

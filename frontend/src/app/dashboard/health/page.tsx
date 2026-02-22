@@ -28,8 +28,45 @@ interface DataQuality {
 export default function HealthPage() {
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['health'],
-    queryFn: async () => mockHealthData,
-    refetchInterval: 30000, // Refresh every 30s
+    queryFn: async () => {
+      try {
+        const [healthRes, readyRes] = await Promise.all([
+          fetch('/health').then(r => r.json()).catch(() => ({ status: 'down' })),
+          fetch('/ready').then(r => r.json()).catch(() => ({ status: 'down', checks: {} })),
+        ])
+
+        const dbCheck = readyRes.checks?.db || { status: 'down' }
+
+        const services: ServiceHealth[] = [
+          {
+            name: 'API Backend',
+            status: healthRes.status === 'healthy' ? 'healthy' : 'down',
+            lastCheck: 'maintenant',
+          },
+          {
+            name: 'PostgreSQL',
+            status: dbCheck.status === 'healthy' ? 'healthy' : 'down',
+            latency: dbCheck.latency_ms,
+            lastCheck: 'maintenant',
+          },
+        ]
+
+        return {
+          services,
+          dataQuality: [] as DataQuality[],
+          events: [] as { level: string; message: string; timestamp: string }[],
+        }
+      } catch {
+        return {
+          services: [
+            { name: 'API Backend', status: 'down' as const, lastCheck: 'maintenant' },
+          ],
+          dataQuality: [] as DataQuality[],
+          events: [{ level: 'error', message: 'Impossible de contacter le backend', timestamp: 'maintenant' }],
+        }
+      }
+    },
+    refetchInterval: 30000,
   })
 
   return (
@@ -177,24 +214,3 @@ function FreshnessBadge({ freshness }: { freshness: 'fresh' | 'stale' | 'outdate
   )
 }
 
-const mockHealthData = {
-  services: [
-    { name: 'API Backend', status: 'healthy' as const, latency: 45, lastCheck: 'il y a 30s' },
-    { name: 'PostgreSQL', status: 'healthy' as const, latency: 12, lastCheck: 'il y a 30s' },
-    { name: 'Redis', status: 'healthy' as const, latency: 2, lastCheck: 'il y a 30s' },
-    { name: 'Odds API', status: 'degraded' as const, latency: 850, lastCheck: 'il y a 30s', details: 'Latence élevée' },
-  ],
-  dataQuality: [
-    { source: 'FBref - Ligue 1', lastSync: 'il y a 2h', recordCount: 1250, freshness: 'fresh' as const, issues: [] },
-    { source: 'FBref - Premier League', lastSync: 'il y a 2h', recordCount: 1480, freshness: 'fresh' as const, issues: [] },
-    { source: 'Odds - Betclic', lastSync: 'il y a 15m', recordCount: 320, freshness: 'fresh' as const, issues: [] },
-    { source: 'Odds - Unibet', lastSync: 'il y a 1h', recordCount: 280, freshness: 'stale' as const, issues: ['Données manquantes pour 3 matchs'] },
-    { source: 'Odds - PMU', lastSync: 'il y a 4h', recordCount: 150, freshness: 'outdated' as const, issues: ['Sync échoué', 'Rate limit atteint'] },
-  ],
-  events: [
-    { level: 'info', message: 'Sync FBref terminé - 45 joueurs mis à jour', timestamp: 'il y a 2h' },
-    { level: 'warning', message: 'Odds API latence élevée (850ms)', timestamp: 'il y a 30m' },
-    { level: 'info', message: 'Recommendations générées - 12 picks VALUE', timestamp: 'il y a 1h' },
-    { level: 'error', message: 'PMU sync échoué - rate limit', timestamp: 'il y a 4h' },
-  ],
-}

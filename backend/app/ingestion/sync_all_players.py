@@ -307,7 +307,7 @@ async def sync_league(league: str):
     
     # 2. Fetch FBref data
     print(f"\nFetching FBref data for {league}...")
-    fbref_players, fbref_teams = fetch_fbref_data(league)
+    fbref_players, fbref_teams = await asyncio.to_thread(fetch_fbref_data, league)
     print(f"  Found {len(fbref_players)} players from FBref")
     print(f"  Found {len(fbref_teams)} teams from FBref")
     

@@ -4,9 +4,9 @@ services:
     image: postgres:15-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ev0
-      POSTGRES_PASSWORD: secure_password_change_me
-      POSTGRES_DB: ev0
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - ../files/postgres_data:/var/lib/postgresql/data
     networks:
@@ -23,14 +23,14 @@ services:
       context: ./backend
       dockerfile: Dockerfile
       args:
-        CACHE_BUST: "2026-02-22-v7"
+        CACHE_BUST: "2026-02-22-v8"
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://ev0:secure_password_change_me@db:5432/ev0
+      DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: redis://redis:6379/0
-      CORS_ORIGINS_STR: "*"
-      ODDS_API_KEY: "f23a202732591c8cb45f14ca0ee32c45"
-      DEPLOY_VERSION: "2026-02-22-v7"
+      CORS_ORIGINS_STR: ${CORS_ORIGINS_STR}
+      ODDS_API_KEY: ${ODDS_API_KEY}
+      DEPLOY_VERSION: "2026-02-22-v8"
     depends_on:
       - db
       - redis
@@ -44,10 +44,10 @@ services:
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000
-      NEXTAUTH_SECRET: ev0-secret-key-2024
-      NEXTAUTH_URL: http://ev0-compose-z5hvqt-a4f9a7-213-130-144-204.traefik.me
-      ADMIN_USERNAME: admin
-      ADMIN_PASSWORD: ev0admin2024
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      NEXTAUTH_URL: ${NEXTAUTH_URL}
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
     volumes:
       - ./frontend:/app
       - /app/node_modules

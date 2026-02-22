@@ -138,7 +138,7 @@ def calculate_assist_price(
     probability = 1 - math.exp(-adjusted_lambda)
     
     # Fair odds
-    fair_odds = 1 / probability if probability > 0 else float("inf")
+    fair_odds = 1 / probability if probability > 0 else 99999.0
     
     explanation = {
         "inputs": {

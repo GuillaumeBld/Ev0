@@ -59,7 +59,7 @@ def calculate_goalscorer_price(
     probability = 1 - math.exp(-adjusted_lambda)
     
     # Fair odds (decimal)
-    fair_odds = 1 / probability if probability > 0 else float("inf")
+    fair_odds = 1 / probability if probability > 0 else 99999.0
     
     # Build explanation payload
     explanation = {
@@ -111,11 +111,10 @@ def calculate_edge(fair_odds: float, market_odds: float) -> float:
     Returns:
         Edge as decimal (e.g., 0.10 = 10% edge)
     """
-    fair_prob = 1 / fair_odds
-    market_prob = 1 / market_odds
-    
+    if fair_odds <= 0 or market_odds <= 0:
+        return 0.0
+
     # Edge = (market_odds / fair_odds) - 1
-    # Or equivalently: (fair_prob - market_prob) / market_prob
     return (market_odds / fair_odds) - 1
 
 

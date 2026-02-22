@@ -143,10 +143,9 @@ async def generate_recommendations(
             
             all_recommendations.append(recommendation)
     
-    # Store match stats on the module level for debug access
-    generate_recommendations._last_match_stats = {
-        "matched": _matched, "unmatched": _unmatched, "unmatched_names": _unmatched_names
-    }
+    logger.info("Player matching: %d matched, %d unmatched", _matched, _unmatched)
+    if _unmatched_names:
+        logger.debug("Unmatched players (sample): %s", _unmatched_names[:10])
 
     # Apply strategy selection
     selection = select_bets(all_recommendations, filter_config)
@@ -180,9 +179,21 @@ def _find_player_stats(
     return None
 
 
-def _infer_team(player_name: str, home_team: str, away_team: str) -> str:
-    """Try to infer player's team (placeholder - needs proper mapping)."""
-    # This would need a proper player-team mapping
+def _infer_team(
+    player_name: str,
+    home_team: str,
+    away_team: str,
+    player_stats: dict[str, dict[str, Any]] | None = None,
+) -> str:
+    """Try to infer player's team.
+
+    Checks the player_stats dict first (which has team from DB).
+    Falls back to home_team as a last resort.
+    """
+    if player_stats:
+        stats = _find_player_stats(player_name, player_stats)
+        if stats and stats.get("team"):
+            return stats["team"]
     return home_team
 
 
@@ -203,12 +214,11 @@ async def get_recommendations_for_date(
     target_date: datetime,
     db: AsyncSession,
     filter_config: RecommendationFilter | None = None,
-    **kwargs,
 ) -> tuple[list[dict[str, Any]], dict]:
     """
     Get recommendations for a specific date.
 
-    Returns (recommendations, debug_info) tuple.
+    Returns (recommendations, metadata) tuple.
     """
     try:
         odds_client = OddsAPIClient()
@@ -323,19 +333,10 @@ async def get_recommendations_for_date(
     for rec in recs:
         rec["id"] = str(uuid.uuid4())
 
-    total_odds = sum(len(v) for v in odds_data.values())
-    debug_info = {
+    metadata = {
         "fixtures_count": len(fixtures),
         "player_stats_count": len(player_stats),
-        "total_odds_entries": total_odds,
-        "recommendations_before_filter": len(recs),
-        "sample_fixture": fixtures[0] if fixtures else None,
-        "sample_players": list(player_stats.keys())[:10],
-        "odds_fixture_ids": list(odds_data.keys())[:5],
-        "sample_odds": odds_data.get(fixtures[0]["fixture_id"], [])[:5] if fixtures else [],
-        "all_odds_players": sorted(set(
-            o["player_name"] for odds_list in odds_data.values() for o in odds_list
-        ))[:30],
-        "match_stats": getattr(generate_recommendations, "_last_match_stats", {}),
+        "total_odds_entries": sum(len(v) for v in odds_data.values()),
+        "recommendations_count": len(recs),
     }
-    return recs, debug_info
+    return recs, metadata

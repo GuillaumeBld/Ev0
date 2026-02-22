@@ -4,56 +4,55 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { TrendingUp, TrendingDown, Target, AlertCircle, Download } from 'lucide-react'
 import { RecommendationCard } from './RecommendationCard'
+import { getRecommendations } from '@/lib/api'
 
 interface DashboardProps {
   user: any
 }
 
-// Mock data - replace with API calls
-const mockStats = {
-  todayRecommendations: 5,
-  avgEdge: 0.082,
-  winRate: 0.54,
-  monthlyRoi: 0.067,
+function parseOpponent(fixtureName: string, team: string): string {
+  const parts = fixtureName.split(' vs ')
+  if (parts.length === 2) {
+    return parts[0].trim() === team ? parts[1].trim() : parts[0].trim()
+  }
+  return fixtureName
 }
 
-const mockRecommendations = [
-  {
-    id: '1',
-    player: 'Kylian Mbappé',
-    team: 'Paris Saint-Germain',
-    opponent: 'Olympique Lyon',
-    market: 'Buteur',
-    fairOdds: 1.95,
-    bestOdds: 2.25,
-    bookmaker: 'Betclic',
-    edge: 0.154,
-    confidence: 0.82,
-    kickoff: '2024-02-01T20:45:00Z',
-  },
-  {
-    id: '2',
-    player: 'Ousmane Dembélé',
-    team: 'Paris Saint-Germain',
-    opponent: 'Olympique Lyon',
-    market: 'Passeur',
-    fairOdds: 3.20,
-    bestOdds: 3.75,
-    bookmaker: 'Unibet',
-    edge: 0.172,
-    confidence: 0.75,
-    kickoff: '2024-02-01T20:45:00Z',
-  },
-]
-
 export function Dashboard({ user }: DashboardProps) {
+  const { data: recsData, isLoading } = useQuery({
+    queryKey: ['dashboard-recommendations'],
+    queryFn: async () => {
+      const response = await getRecommendations({ min_edge: 0.05 })
+      const recs = (response.recommendations || []).map((rec: any) => ({
+        id: rec.id,
+        player: rec.player_name,
+        team: rec.team,
+        opponent: parseOpponent(rec.fixture_name, rec.team),
+        market: rec.market_type,
+        fairOdds: rec.fair_odds,
+        bestOdds: rec.best_odds,
+        bookmaker: rec.best_bookmaker,
+        edge: rec.edge,
+        confidence: rec.confidence,
+        kickoff: rec.kickoff_utc,
+        explanation: rec.explanation,
+      }))
+      return recs
+    },
+  })
+
+  const recommendations = recsData || []
+  const avgEdge = recommendations.length > 0
+    ? recommendations.reduce((sum: number, r: any) => sum + r.edge, 0) / recommendations.length
+    : 0
+
   return (
     <div className="p-8">
       {/* Header */}
       <div className="flex items-start justify-between mb-8">
         <div>
           <h1 className="text-3xl font-bold text-white">
-            Bonjour, {user?.name} 👋
+            Bonjour, {user?.name}
           </h1>
           <p className="text-gray-400 mt-1">
             Voici vos recommandations du jour
@@ -66,29 +65,29 @@ export function Dashboard({ user }: DashboardProps) {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         <StatCard
           title="Recommandations"
-          value={mockStats.todayRecommendations.toString()}
+          value={isLoading ? '...' : recommendations.length.toString()}
           subtitle="aujourd'hui"
           icon={Target}
           color="brand"
         />
         <StatCard
           title="Edge Moyen"
-          value={`${(mockStats.avgEdge * 100).toFixed(1)}%`}
+          value={isLoading ? '...' : `${(avgEdge * 100).toFixed(1)}%`}
           subtitle="sur les picks"
           icon={TrendingUp}
           color="green"
         />
         <StatCard
           title="Win Rate"
-          value={`${(mockStats.winRate * 100).toFixed(0)}%`}
-          subtitle="30 derniers jours"
+          value="—"
+          subtitle="bientot disponible"
           icon={TrendingUp}
           color="blue"
         />
         <StatCard
           title="ROI Mensuel"
-          value={`+${(mockStats.monthlyRoi * 100).toFixed(1)}%`}
-          subtitle="ce mois"
+          value="—"
+          subtitle="bientot disponible"
           icon={TrendingUp}
           color="purple"
         />
@@ -97,15 +96,21 @@ export function Dashboard({ user }: DashboardProps) {
       {/* Recommendations */}
       <div>
         <h2 className="text-xl font-semibold text-white mb-4">
-          🎯 Picks Value
+          Picks Value
         </h2>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {mockRecommendations.map((rec) => (
-            <RecommendationCard key={rec.id} recommendation={rec} />
-          ))}
-        </div>
-
-        {mockRecommendations.length === 0 && (
+        {isLoading ? (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {[1, 2].map((i) => (
+              <div key={i} className="bg-gray-800 rounded-xl h-48 animate-pulse" />
+            ))}
+          </div>
+        ) : recommendations.length > 0 ? (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {recommendations.slice(0, 4).map((rec: any) => (
+              <RecommendationCard key={rec.id} recommendation={rec} />
+            ))}
+          </div>
+        ) : (
           <div className="bg-gray-800 rounded-xl p-8 text-center">
             <AlertCircle className="w-12 h-12 text-gray-500 mx-auto mb-4" />
             <p className="text-gray-400">

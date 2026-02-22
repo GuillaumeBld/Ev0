@@ -233,19 +233,25 @@ async def list_teams(
         stmt = stmt.where(Team.league == league.lower())
     stmt = stmt.order_by(Team.name)
 
+    # Single query: teams + player count via LEFT JOIN
+    count_subq = (
+        select(Player.team, Player.league, func.count(Player.id).label("cnt"))
+        .group_by(Player.team, Player.league)
+        .subquery()
+    )
+    stmt = (
+        stmt.outerjoin(
+            count_subq,
+            (Team.name == count_subq.c.team) & (Team.league == count_subq.c.league),
+        )
+        .add_columns(func.coalesce(count_subq.c.cnt, 0).label("player_count"))
+    )
+
     result = await session.execute(stmt)
-    teams = result.scalars().all()
+    rows = result.all()
 
     response = []
-    for team in teams:
-        # Count players
-        count_stmt = select(func.count(Player.id)).where(
-            Player.team.ilike(f"%{team.name}%"),
-            Player.league == team.league,
-        )
-        count_result = await session.execute(count_stmt)
-        player_count = count_result.scalar() or 0
-
+    for team, player_count in rows:
         response.append({
             "id": team.id,
             "name": team.name,

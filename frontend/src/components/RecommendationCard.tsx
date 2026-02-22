@@ -31,10 +31,9 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
   const confidencePercent = (rec.confidence * 100).toFixed(0)
 
   const kickoffDate = new Date(rec.kickoff)
-  const timeStr = kickoffDate.toLocaleTimeString('fr-FR', { 
-    hour: '2-digit', 
-    minute: '2-digit' 
-  })
+  const timeStr = rec.kickoff
+    ? `${String(kickoffDate.getUTCHours()).padStart(2, '0')}:${String(kickoffDate.getUTCMinutes()).padStart(2, '0')} UTC`
+    : '--:--'
 
   return (
     <div className={clsx(

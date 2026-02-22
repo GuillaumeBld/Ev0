@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Filter, RefreshCw, TrendingUp, Calendar } from 'lucide-react'
 import { RecommendationCard } from '@/components/RecommendationCard'
@@ -29,7 +29,6 @@ interface ApiRecommendation {
   fixture_id: string
   fixture_name: string
   kickoff_utc: string
-  player_id: string
   player_name: string
   team: string
   market_type: 'goalscorer' | 'assist'
@@ -45,12 +44,15 @@ interface ApiRecommendation {
 export default function RecommendationsPage() {
   const [marketFilter, setMarketFilter] = useState<MarketFilter>('all')
   const [edgeFilter, setEdgeFilter] = useState<EdgeFilter>('5+')
-  const [selectedDate, setSelectedDate] = useState<string>(
-    new Date().toISOString().split('T')[0]
-  )
+  const [selectedDate, setSelectedDate] = useState<string>('')
 
-  const { data, isLoading, refetch } = useQuery({
+  useEffect(() => {
+    setSelectedDate(new Date().toISOString().split('T')[0])
+  }, [])
+
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['recommendations', selectedDate, marketFilter, edgeFilter],
+    enabled: !!selectedDate,
     queryFn: async () => {
       const minEdge = edgeFilterToMinEdge(edgeFilter)
       const response = await getRecommendations({
@@ -146,6 +148,22 @@ export default function RecommendationsPage() {
           ))}
         </div>
       </div>
+
+      {/* Error Banner */}
+      {isError && (
+        <div className="mb-6 bg-red-500/10 border border-red-500/30 rounded-lg p-4 flex items-center justify-between">
+          <p className="text-sm text-red-400">
+            Erreur lors du chargement des recommandations.{' '}
+            {error instanceof Error ? error.message : ''}
+          </p>
+          <button
+            onClick={() => refetch()}
+            className="text-sm text-red-300 hover:text-white underline"
+          >
+            Réessayer
+          </button>
+        </div>
+      )}
 
       {/* Recommendations Grid */}
       {isLoading ? (
