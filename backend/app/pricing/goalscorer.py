@@ -53,7 +53,7 @@ def calculate_goalscorer_price(
     )
     
     # Ensure lambda is positive and reasonable
-    adjusted_lambda = max(0.001, min(adjusted_lambda, 3.0))
+    adjusted_lambda = max(0.01, min(adjusted_lambda, 3.0))
     
     # Poisson: P(X >= 1) = 1 - P(X = 0) = 1 - e^(-λ)
     probability = 1 - math.exp(-adjusted_lambda)

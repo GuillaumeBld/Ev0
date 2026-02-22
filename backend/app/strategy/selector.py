@@ -14,7 +14,7 @@ class RecommendationFilter:
     
     # Edge filters
     min_edge: float = 0.05
-    max_edge: float = 1.0  # Sanity check
+    max_edge: float = 0.50  # Sanity check — edges above 50% are model errors
     
     # Confidence filters
     min_confidence: float = 0.50

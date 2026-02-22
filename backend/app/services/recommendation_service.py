@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.odds import OddsAPIClient, SPORT_KEYS, MARKET_KEYS
+from app.ingestion.odds import OddsAPIClient, SPORT_KEYS, MARKET_KEYS, normalize_selection_name
 from app.models.players import Player, PlayerStats
 from app.pricing.goalscorer import calculate_goalscorer_price, calculate_edge
 from app.pricing.assist import calculate_assist_price
@@ -20,12 +20,22 @@ from app.strategy.selector import select_bets, RecommendationFilter
 
 logger = logging.getLogger(__name__)
 
+# Position-based xG/xA defaults for players with stats in DB but missing per-90 values
+POSITION_DEFAULTS: dict[str, dict[str, float]] = {
+    "FW": {"xg_per_90": 0.35, "xa_per_90": 0.15},
+    "MF": {"xg_per_90": 0.10, "xa_per_90": 0.12},
+    "DF": {"xg_per_90": 0.03, "xa_per_90": 0.03},
+    "GK": {"xg_per_90": 0.00, "xa_per_90": 0.00},
+}
+DEFAULT_POSITION_FALLBACK = {"xg_per_90": 0.10, "xa_per_90": 0.08}  # Unknown position
+
 
 async def generate_recommendations(
     fixtures: list[dict[str, Any]],
     player_stats: dict[str, dict[str, Any]],  # player_name -> stats
     odds_data: dict[str, list[dict[str, Any]]],  # fixture_id -> odds list
     filter_config: RecommendationFilter | None = None,
+    team_strengths: dict[str, float] | None = None,  # team -> xG per match
 ) -> list[dict[str, Any]]:
     """
     Generate betting recommendations for upcoming fixtures.
@@ -48,7 +58,14 @@ async def generate_recommendations(
     all_recommendations = []
     _matched = 0
     _unmatched = 0
+    _skipped_position = 0
     _unmatched_names: list[str] = []
+
+    # Build normalized index for better matching (Step 6)
+    normalized_index: dict[str, dict] = {}
+    for name, s in player_stats.items():
+        norm_key = normalize_selection_name(name)
+        normalized_index[norm_key] = s
 
     for fixture in fixtures:
         fixture_id = fixture.get("fixture_id") or fixture.get("id")
@@ -69,26 +86,33 @@ async def generate_recommendations(
             if not player_name or market_odds <= 1:
                 continue
 
-            # Find player stats
-            stats = _find_player_stats(player_name, player_stats)
+            # Find player stats (Step 1 & 6: skip unmatched players entirely)
+            stats = _find_player_stats(player_name, player_stats, normalized_index)
             if not stats:
                 _unmatched += 1
                 if len(_unmatched_names) < 20:
                     _unmatched_names.append(player_name)
                 continue
+
+            # Step 1: Skip GKs — they essentially never score/assist
+            position = stats.get("position")
+            if position == "GK":
+                _skipped_position += 1
+                continue
+
             _matched += 1
-            
+
             # Determine team
             team = stats.get("team") or _infer_team(player_name, home_team, away_team)
-            
-            # Calculate opponent factor
+
+            # Calculate opponent factor (Step 5: use team strengths)
             opponent = away_team if team == home_team else home_team
-            opponent_factor = _get_opponent_factor(opponent, market_type)
-            
+            opponent_factor = _get_opponent_factor(opponent, market_type, team_strengths)
+
             # Calculate fair price
             if market_type == "goalscorer":
                 pricing = calculate_goalscorer_price(
-                    xg_per_90=stats.get("xg_per_90", 0.3),
+                    xg_per_90=stats.get("xg_per_90", 0.10),
                     expected_minutes=stats.get("expected_minutes", 75),
                     conversion_rate=stats.get("conversion_rate", 1.0),
                     opponent_xga_factor=opponent_factor,
@@ -96,32 +120,42 @@ async def generate_recommendations(
                 )
             else:  # assist
                 pricing = calculate_assist_price(
-                    xa_per_90=stats.get("xa_per_90", 0.15),
+                    xa_per_90=stats.get("xa_per_90", 0.08),
                     expected_minutes=stats.get("expected_minutes", 75),
                     creation_score=stats.get("creation_score", 1.0),
                     teammate_finishing_factor=stats.get("teammate_finishing", 1.0),
                     opponent_defense_factor=opponent_factor,
                     form_factor=stats.get("form_factor", 1.0),
                 )
-            
+
             # Calculate edge
             fair_odds = pricing["fair_odds"]
             edge = calculate_edge(fair_odds, market_odds)
-            
-            # Determine classification
-            if edge >= 0.10:
+
+            # Step 4: Confidence based on data quality, not edge magnitude
+            matches = stats.get("matches_played", 0) or 0
+            pos_defaults = POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK) if position else DEFAULT_POSITION_FALLBACK
+            has_real_xg = (
+                stats.get("xg_per_90") is not None
+                and stats.get("xg_per_90") != pos_defaults.get("xg_per_90")
+            )
+            if matches >= 10 and has_real_xg:
+                confidence = 0.80
+            elif matches >= 5 and has_real_xg:
+                confidence = 0.65
+            elif matches >= 3:
+                confidence = 0.55
+            else:
+                confidence = 0.40
+
+            # Classification still depends on edge
+            if edge >= 0.05:
                 classification = "VALUE"
-                confidence = min(0.95, 0.7 + edge)
-            elif edge >= 0.05:
-                classification = "VALUE"
-                confidence = 0.6 + edge
             elif edge >= 0.0:
                 classification = "NO_VALUE"
-                confidence = 0.5
             else:
                 classification = "AVOID"
-                confidence = max(0.2, 0.4 + edge)
-            
+
             recommendation = {
                 "fixture_id": fixture_id,
                 "fixture_name": f"{home_team} vs {away_team}",
@@ -140,10 +174,13 @@ async def generate_recommendations(
                 "confidence": confidence,
                 "explanation": pricing["explanation"],
             }
-            
+
             all_recommendations.append(recommendation)
-    
-    logger.info("Player matching: %d matched, %d unmatched", _matched, _unmatched)
+
+    logger.info(
+        "Player matching: %d matched, %d unmatched, %d skipped (GK)",
+        _matched, _unmatched, _skipped_position,
+    )
     if _unmatched_names:
         logger.debug("Unmatched players (sample): %s", _unmatched_names[:10])
 
@@ -156,18 +193,25 @@ async def generate_recommendations(
 def _find_player_stats(
     player_name: str,
     stats_dict: dict[str, dict],
+    normalized_index: dict[str, dict] | None = None,
 ) -> dict[str, Any] | None:
-    """Find player stats by name (fuzzy matching)."""
+    """Find player stats by name with normalized matching."""
     # Direct match
     if player_name in stats_dict:
         return stats_dict[player_name]
-    
-    # Normalized match
+
+    # Normalized match using normalize_selection_name (handles accents, punctuation, etc.)
+    if normalized_index:
+        norm_key = normalize_selection_name(player_name)
+        if norm_key in normalized_index:
+            return normalized_index[norm_key]
+
+    # Fallback: basic normalized match
     normalized = player_name.lower().replace(" ", "-")
     for key, stats in stats_dict.items():
         if key.lower().replace(" ", "-") == normalized:
             return stats
-    
+
     # Partial match (last name)
     parts = player_name.split()
     if parts:
@@ -175,7 +219,7 @@ def _find_player_stats(
         for key, stats in stats_dict.items():
             if last_name in key.lower():
                 return stats
-    
+
     return None
 
 
@@ -197,17 +241,75 @@ def _infer_team(
     return home_team
 
 
-def _get_opponent_factor(opponent: str, market_type: str) -> float:
+def _get_opponent_factor(
+    opponent: str,
+    market_type: str,
+    team_strengths: dict[str, float] | None = None,
+) -> float:
     """
     Get opponent defensive factor.
-    
+
     > 1.0 = weak defense (good for attacker)
     < 1.0 = strong defense (bad for attacker)
-    
-    Placeholder - should use actual xGA data.
+
+    Uses opponent attacking xG as a proxy: a team with high attacking xG
+    likely has a weaker defense (they play open). We invert so that facing
+    a weak-attacking opponent (strong defense) yields factor < 1.0.
+
+    Applies 40% shrinkage toward neutral (1.0) to avoid overweighting.
+    Clamped to [0.7, 1.4].
     """
-    # Default to neutral
-    return 1.0
+    if not team_strengths or opponent not in team_strengths:
+        return 1.0
+
+    opponent_xg = team_strengths[opponent]
+    league_avg = sum(team_strengths.values()) / len(team_strengths) if team_strengths else 1.0
+
+    if opponent_xg <= 0 or league_avg <= 0:
+        return 1.0
+
+    # Higher opponent attack xG → they concede more (play open) → good for our player
+    raw_factor = opponent_xg / league_avg
+    # 40% shrinkage toward neutral
+    shrunk_factor = 0.6 * raw_factor + 0.4 * 1.0
+    # Clamp to reasonable range
+    return max(0.7, min(1.4, shrunk_factor))
+
+
+async def _compute_team_strengths(db: AsyncSession) -> dict[str, float]:
+    """
+    Compute average xG per match for each team from PlayerStats.
+
+    Returns dict of team_name -> xG_per_match (sum of player xG / matches).
+    Used as a proxy for team attacking strength / opponent defensive weakness.
+    """
+    result = await db.execute(
+        select(
+            Player.team,
+            func.sum(PlayerStats.xg).label("total_xg"),
+            func.sum(PlayerStats.matches_played).label("total_matches"),
+        )
+        .join(Player, Player.id == PlayerStats.player_id)
+        .where(Player.team.isnot(None))
+        .group_by(Player.team)
+    )
+
+    strengths: dict[str, float] = {}
+    for row in result.all():
+        team_name = row[0]
+        total_xg = row[1] or 0.0
+        total_matches = row[2] or 0
+        if total_matches > 0 and team_name:
+            # Average xG per match across all players on the team
+            strengths[team_name] = total_xg / total_matches
+
+    if strengths:
+        logger.info(
+            "Team strengths computed: %d teams, avg xG/match=%.3f",
+            len(strengths),
+            sum(strengths.values()) / len(strengths),
+        )
+    return strengths
 
 
 async def get_recommendations_for_date(
@@ -295,7 +397,7 @@ async def get_recommendations_for_date(
     )
 
     result = await db.execute(
-        select(PlayerStats, Player.name, Player.team)
+        select(PlayerStats, Player.name, Player.team, Player.position, Player.normalized_name)
         .join(Player, Player.id == PlayerStats.player_id)
         .join(
             latest_subq,
@@ -309,25 +411,45 @@ async def get_recommendations_for_date(
         stats: PlayerStats = row[0]
         player_name: str = row[1]
         team: str | None = row[2]
+        position: str | None = row[3]
+        normalized_name: str | None = row[4]
+
+        # Step 1: Skip GKs at the data loading stage too
+        if position == "GK":
+            continue
 
         minutes = stats.minutes_played or 0
         matches = stats.matches_played or 1
         expected_minutes = minutes / matches if matches > 0 else 75.0
-        conversion_rate = (stats.goals / stats.xg) if stats.xg and stats.xg > 0 else 1.0
+
+        # Step 2: Clamp conversion rate to [0.5, 2.0], require >= 3 matches
+        raw_cr = (stats.goals / stats.xg) if stats.xg and stats.xg > 0 else 1.0
+        conversion_rate = max(0.5, min(2.0, raw_cr)) if (stats.matches_played or 0) >= 3 else 1.0
+
+        # Step 1: Position-based defaults for missing xG/xA
+        pos_defaults = POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK) if position else DEFAULT_POSITION_FALLBACK
+        xg_per_90 = stats.xg_per_90 if stats.xg_per_90 is not None else pos_defaults["xg_per_90"]
+        xa_per_90 = stats.xa_per_90 if stats.xa_per_90 is not None else pos_defaults["xa_per_90"]
 
         player_stats[player_name] = {
-            "xg_per_90": stats.xg_per_90 or 0.3,
-            "xa_per_90": stats.xa_per_90 or 0.15,
+            "xg_per_90": xg_per_90,
+            "xa_per_90": xa_per_90,
             "expected_minutes": expected_minutes,
             "conversion_rate": conversion_rate,
             "team": team,
+            "position": position,
             "goals": stats.goals,
             "assists": stats.assists,
             "matches_played": stats.matches_played,
         }
 
+    # Step 5: Compute team strengths for opponent factor
+    team_strengths = await _compute_team_strengths(db)
+
     # 3. Generate recommendations
-    recs = await generate_recommendations(fixtures, player_stats, odds_data, filter_config)
+    recs = await generate_recommendations(
+        fixtures, player_stats, odds_data, filter_config, team_strengths,
+    )
 
     # 4. Add unique IDs
     for rec in recs:
