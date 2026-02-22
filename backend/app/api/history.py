@@ -8,6 +8,7 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.models.bankroll import BankrollEntry
 from app.models.fixtures import Fixture
 from app.models.recommendations import Recommendation
 
@@ -30,6 +31,7 @@ class HistoryItem(BaseModel):
     status: str
     result: str | None
     pnl: float | None
+    stake: float | None
 
 
 class HistoryResponse(BaseModel):
@@ -79,6 +81,21 @@ async def get_history(
     result = await db.execute(stmt)
     rows = result.all()
 
+    # Fetch stakes from bankroll entries for these recommendations
+    rec_ids = [row[0].id for row in rows]
+    stake_map: dict[int, float] = {}
+    if rec_ids:
+        stake_result = await db.execute(
+            select(BankrollEntry.recommendation_id, BankrollEntry.stake)
+            .where(
+                BankrollEntry.recommendation_id.in_(rec_ids),
+                BankrollEntry.entry_type == "bet_placed",
+            )
+        )
+        for rid, stake in stake_result.all():
+            if rid is not None:
+                stake_map[rid] = stake or 10.0
+
     bets = []
     for rec, home_team, away_team in rows:
         fixture_name = f"{home_team} vs {away_team}"
@@ -100,6 +117,7 @@ async def get_history(
             status=display_status,
             result=rec.result,
             pnl=rec.pnl or 0.0,
+            stake=stake_map.get(rec.id),
         ))
 
     return HistoryResponse(count=len(bets), bets=bets)
@@ -129,9 +147,23 @@ async def get_stats(
     settled = wins + losses
     win_rate = (wins / settled) if settled > 0 else 0.0
 
-    # ROI = total_pnl / total_staked
-    # Assume flat 10€ stake per bet for staked calculation
-    total_staked = settled * 10.0
+    # ROI = total_pnl / total_staked (from bankroll entries)
+    settled_rec_ids = [r.id for r in recs if r.result in ("won", "lost")]
+    total_staked = 0.0
+    if settled_rec_ids:
+        stake_result = await db.execute(
+            select(func.coalesce(func.sum(BankrollEntry.stake), 0.0))
+            .where(
+                BankrollEntry.recommendation_id.in_(settled_rec_ids),
+                BankrollEntry.entry_type == "bet_placed",
+            )
+        )
+        total_staked = float(stake_result.scalar() or 0.0)
+
+    # Fallback to flat 10€ if no bankroll entries exist
+    if total_staked == 0.0 and settled > 0:
+        total_staked = settled * 10.0
+
     roi = (total_pnl / total_staked) if total_staked > 0 else 0.0
 
     return StatsResponse(

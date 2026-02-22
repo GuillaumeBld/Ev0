@@ -33,7 +33,7 @@ function historyItemToBet(item: HistoryItem): HistoricalBet {
     player: item.player_name,
     market: item.market_type as 'goalscorer' | 'assist',
     odds: item.best_odds,
-    stake: 10,
+    stake: item.stake ?? 10,
     edge: item.edge,
     status: (item.status || 'pending') as BetStatus,
     pnl: item.pnl ?? 0,

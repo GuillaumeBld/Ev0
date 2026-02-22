@@ -6,7 +6,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import backtest, fixtures, health, history, players, pricing, recommendations
+from app.api import backtest, bankroll, fixtures, health, history, players, pricing, recommendations
 from app.cache import close_redis
 from app.config import settings
 from app.db import engine
@@ -47,3 +47,4 @@ app.include_router(recommendations.router, prefix="/api/v1", tags=["recommendati
 app.include_router(fixtures.router, prefix="/api/v1", tags=["fixtures"])
 app.include_router(history.router, prefix="/api/v1", tags=["history"])
 app.include_router(backtest.router, prefix="/api/v1", tags=["backtest"])
+app.include_router(bankroll.router, prefix="/api/v1", tags=["bankroll"])

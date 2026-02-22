@@ -23,14 +23,14 @@ services:
       context: ./backend
       dockerfile: Dockerfile
       args:
-        CACHE_BUST: "2026-02-22-v12"
+        CACHE_BUST: "2026-02-22-v13"
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://ev0:secure_password_change_me@db:5432/ev0}
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS_STR: ${CORS_ORIGINS_STR:-http://ev0-compose-z5hvqt-a4f9a7-213-130-144-204.traefik.me}
       ODDS_API_KEY: ${ODDS_API_KEY:-f23a202732591c8cb45f14ca0ee32c45}
-      DEPLOY_VERSION: "2026-02-22-v12"
+      DEPLOY_VERSION: "2026-02-22-v13"
     depends_on:
       - db
       - redis
@@ -42,7 +42,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
       args:
-        CACHE_BUST: "2026-02-22-v12"
+        CACHE_BUST: "2026-02-22-v13"
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://ev0:secure_password_change_me@db:5432/ev0}

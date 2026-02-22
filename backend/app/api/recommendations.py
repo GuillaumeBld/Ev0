@@ -4,11 +4,14 @@ import logging
 from datetime import date, datetime, timezone
 from enum import Enum
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.models.recommendations import Recommendation as RecommendationModel
+from app.models.bankroll import BankrollEntry
 from app.services.recommendation_service import get_recommendations_for_date
 from app.strategy.selector import RecommendationFilter
 
@@ -113,7 +116,187 @@ async def get_recommendations(
     )
 
 
-@router.get("/recommendations/{recommendation_id}", response_model=Recommendation)
-async def get_recommendation_detail(recommendation_id: str) -> Recommendation:
+@router.get("/recommendations/{recommendation_id}")
+async def get_recommendation_detail(
+    recommendation_id: int,
+    db: AsyncSession = Depends(get_db),
+):
     """Get detailed information about a specific recommendation."""
-    raise NotImplementedError("Not yet implemented")
+    result = await db.execute(
+        select(RecommendationModel).where(RecommendationModel.id == recommendation_id)
+    )
+    rec = result.scalar_one_or_none()
+    if not rec:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+
+    return {
+        "id": rec.id,
+        "fixture_id": rec.fixture_id,
+        "player_name": rec.player_name,
+        "market_type": rec.market_type,
+        "fair_odds": rec.fair_odds,
+        "best_bookmaker": rec.best_bookmaker,
+        "best_odds": rec.best_odds,
+        "edge": rec.edge,
+        "classification": rec.classification,
+        "confidence": rec.confidence,
+        "explanation": rec.explanation,
+        "status": rec.status,
+        "result": rec.result,
+        "pnl": rec.pnl,
+        "generated_utc": str(rec.generated_utc) if rec.generated_utc else None,
+        "decided_utc": str(rec.decided_utc) if rec.decided_utc else None,
+        "settled_utc": str(rec.settled_utc) if rec.settled_utc else None,
+    }
+
+
+# ── PATCH: Approve / Reject / Record Result ──────────────────────
+
+class RecommendationUpdate(BaseModel):
+    """Update a recommendation's status or result."""
+    status: str | None = None          # approved, rejected, executed
+    result: str | None = None          # won, lost, void, push
+    stake: float | None = None         # stake amount (for bankroll tracking)
+    operator_notes: str | None = None
+
+
+class RecommendationUpdateResponse(BaseModel):
+    id: int
+    status: str
+    result: str | None
+    pnl: float | None
+    decided_utc: str | None
+    settled_utc: str | None
+
+
+@router.patch("/recommendations/{recommendation_id}", response_model=RecommendationUpdateResponse)
+async def update_recommendation(
+    recommendation_id: int,
+    body: RecommendationUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Update a recommendation: approve/reject or record result.
+
+    - Set status to 'approved' or 'rejected' to decide on a bet.
+    - Set result to 'won' or 'lost' to settle and compute P&L.
+    - Optionally provide stake for bankroll tracking.
+    """
+    result = await db.execute(
+        select(RecommendationModel).where(RecommendationModel.id == recommendation_id)
+    )
+    rec = result.scalar_one_or_none()
+    if not rec:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+
+    now = datetime.now(timezone.utc)
+
+    # Update status (approve/reject)
+    if body.status:
+        valid_statuses = {"pending", "approved", "rejected", "executed"}
+        if body.status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {body.status}")
+        rec.status = body.status
+        rec.decided_utc = now
+
+        # When approving with a stake, record in bankroll
+        if body.status in ("approved", "executed") and body.stake and body.stake > 0:
+            await _record_bet_placed(db, rec, body.stake, now)
+
+    # Update operator notes
+    if body.operator_notes is not None:
+        rec.operator_notes = body.operator_notes
+
+    # Record result (settle the bet)
+    if body.result:
+        valid_results = {"won", "lost", "void", "push"}
+        if body.result not in valid_results:
+            raise HTTPException(status_code=400, detail=f"Invalid result: {body.result}")
+
+        rec.result = body.result
+        rec.settled_utc = now
+
+        # Compute P&L
+        stake = body.stake or 10.0  # Default to 10€ if no stake provided
+        if body.result == "won":
+            rec.pnl = round(stake * (rec.best_odds - 1), 2)
+        elif body.result == "lost":
+            rec.pnl = round(-stake, 2)
+        else:  # void, push
+            rec.pnl = 0.0
+
+        # Record settlement in bankroll
+        await _record_bet_settled(db, rec, stake, now)
+
+    await db.commit()
+    await db.refresh(rec)
+
+    return RecommendationUpdateResponse(
+        id=rec.id,
+        status=rec.status,
+        result=rec.result,
+        pnl=rec.pnl,
+        decided_utc=str(rec.decided_utc) if rec.decided_utc else None,
+        settled_utc=str(rec.settled_utc) if rec.settled_utc else None,
+    )
+
+
+async def _get_current_balance(db: AsyncSession) -> float:
+    """Get the current bankroll balance."""
+    result = await db.execute(
+        select(BankrollEntry)
+        .order_by(BankrollEntry.transacted_utc.desc())
+        .limit(1)
+    )
+    latest = result.scalar_one_or_none()
+    return latest.balance_after if latest else 0.0
+
+
+async def _record_bet_placed(
+    db: AsyncSession,
+    rec: RecommendationModel,
+    stake: float,
+    now: datetime,
+) -> None:
+    """Record a bet placement in the bankroll."""
+    balance = await _get_current_balance(db)
+    entry = BankrollEntry(
+        entry_type="bet_placed",
+        amount=-stake,
+        balance_after=round(balance - stake, 2),
+        recommendation_id=rec.id,
+        stake=stake,
+        notes=f"{rec.player_name} {rec.market_type} @{rec.best_odds}",
+        transacted_utc=now,
+    )
+    db.add(entry)
+    await db.flush()
+
+
+async def _record_bet_settled(
+    db: AsyncSession,
+    rec: RecommendationModel,
+    stake: float,
+    now: datetime,
+) -> None:
+    """Record a bet settlement in the bankroll."""
+    balance = await _get_current_balance(db)
+
+    if rec.result == "won":
+        amount = round(stake * rec.best_odds, 2)  # Return stake + profit
+    elif rec.result == "lost":
+        amount = 0.0  # Already deducted at placement
+    else:  # void, push
+        amount = stake  # Return stake
+
+    entry = BankrollEntry(
+        entry_type="bet_settled",
+        amount=amount,
+        balance_after=round(balance + amount, 2),
+        recommendation_id=rec.id,
+        stake=stake,
+        notes=f"{rec.result}: {rec.player_name} pnl={rec.pnl}",
+        transacted_utc=now,
+    )
+    db.add(entry)
+    await db.flush()

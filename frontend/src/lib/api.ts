@@ -171,6 +171,7 @@ export interface HistoryItem {
   status: string
   result: string | null
   pnl: number | null
+  stake: number | null
 }
 
 export interface HistoryResponse {
@@ -223,5 +224,68 @@ export interface BacktestResults {
 
 export async function runBacktest(config: BacktestConfig): Promise<BacktestResults> {
   const { data } = await api.post('/api/v1/backtest', config)
+  return data
+}
+
+// ── Recommendation Actions ──────────────────────────────────────
+
+export interface RecommendationUpdateBody {
+  status?: 'approved' | 'rejected' | 'executed'
+  result?: 'won' | 'lost' | 'void' | 'push'
+  stake?: number
+  operator_notes?: string
+}
+
+export interface RecommendationUpdateResponse {
+  id: number
+  status: string
+  result: string | null
+  pnl: number | null
+  decided_utc: string | null
+  settled_utc: string | null
+}
+
+export async function patchRecommendation(
+  id: string | number,
+  body: RecommendationUpdateBody,
+): Promise<RecommendationUpdateResponse> {
+  const { data } = await api.patch(`/api/v1/recommendations/${id}`, body)
+  return data
+}
+
+// ── Bankroll ────────────────────────────────────────────────────
+
+export interface BankrollTransaction {
+  id: number
+  entry_type: string
+  amount: number
+  balance_after: number
+  recommendation_id: number | null
+  stake: number | null
+  notes: string | null
+  transacted_utc: string
+}
+
+export interface BankrollResponse {
+  balance: number
+  total_deposited: number
+  total_withdrawn: number
+  total_staked: number
+  total_won: number
+  transactions: BankrollTransaction[]
+}
+
+export async function getBankroll(): Promise<BankrollResponse> {
+  const { data } = await api.get('/api/v1/bankroll')
+  return data
+}
+
+export async function depositBankroll(amount: number, notes?: string): Promise<BankrollTransaction> {
+  const { data } = await api.post('/api/v1/bankroll/deposit', { amount, notes })
+  return data
+}
+
+export async function withdrawBankroll(amount: number, notes?: string): Promise<BankrollTransaction> {
+  const { data } = await api.post('/api/v1/bankroll/withdraw', { amount, notes })
   return data
 }
