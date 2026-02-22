@@ -55,9 +55,29 @@ export default function PlayersPage() {
   const [sourceView, setSourceView] = useState<SourceFilter>('average')
   const [sortField, setSortField] = useState<SortField>('xg_per_90')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [teamFilter, setTeamFilter] = useState<string>('')
+  const [teams, setTeams] = useState<string[]>([])
   const [minMinutes, setMinMinutes] = useState(0)
   const [expandedPlayer, setExpandedPlayer] = useState<number | null>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
+
+  const fetchTeams = useCallback(async (league: string) => {
+    try {
+      const params = new URLSearchParams({ limit: '100' })
+      if (league) params.set('league', league)
+      const res = await fetch(`/api/v1/players/teams?${params}`)
+      if (res.ok) {
+        const data: { name: string; league: string }[] = await res.json()
+        // Only keep single-team entries (no commas = no mid-season transfers)
+        setTeams(data.filter(t => !t.name.includes(',')).map(t => t.name))
+      }
+    } catch { /* ignore */ }
+  }, [])
+
+  useEffect(() => {
+    setTeamFilter('')
+    fetchTeams(leagueFilter)
+  }, [leagueFilter, fetchTeams])
 
   const fetchPlayers = useCallback(async () => {
     setLoading(true)
@@ -65,6 +85,7 @@ export default function PlayersPage() {
     try {
       const params = new URLSearchParams()
       if (leagueFilter) params.set('league', leagueFilter)
+      if (teamFilter) params.set('team', teamFilter)
       if (search) params.set('search', search)
       params.set('min_minutes', minMinutes.toString())
       params.set('limit', '500')
@@ -85,7 +106,7 @@ export default function PlayersPage() {
     } finally {
       setLoading(false)
     }
-  }, [leagueFilter, search, minMinutes])
+  }, [leagueFilter, teamFilter, search, minMinutes])
 
   const fetchSyncStatus = useCallback(async () => {
     try {
@@ -224,7 +245,7 @@ export default function PlayersPage() {
       </div>
 
       {/* Filters */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
           <input
@@ -244,6 +265,17 @@ export default function PlayersPage() {
           <option value="">Toutes les ligues</option>
           <option value="ligue_1">Ligue 1</option>
           <option value="premier_league">Premier League</option>
+        </select>
+
+        <select
+          value={teamFilter}
+          onChange={(e) => setTeamFilter(e.target.value)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-brand-500"
+        >
+          <option value="">Toutes les équipes</option>
+          {teams.map(t => (
+            <option key={t} value={t}>{t}</option>
+          ))}
         </select>
 
         <select
