@@ -28,13 +28,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS_STR: "*"
       ODDS_API_KEY: "f23a202732591c8cb45f14ca0ee32c45"
-      DEPLOY_VERSION: "2026-02-22-v6"
-    volumes:
-      - ./backend:/app
+      DEPLOY_VERSION: "2026-02-22-v7"
     depends_on:
       - db
       - redis
-    command: sh -c "pip install -e . && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     networks:
         - dokploy-network
   frontend:
