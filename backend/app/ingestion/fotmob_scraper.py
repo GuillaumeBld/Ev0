@@ -4,6 +4,8 @@ FotMob serves per-stat player lists as gzip-compressed JSON files on their CDN.
 These are publicly accessible without Cloudflare Turnstile restrictions.
 """
 
+import json
+
 import httpx
 
 
@@ -52,7 +54,8 @@ async def _get_season_id(client: httpx.AsyncClient, league_id: int) -> int | Non
     try:
         resp = await client.get(f"{_API}/leagues", params={"id": league_id}, headers=_HEADERS)
         resp.raise_for_status()
-        data = resp.json()
+        # Use explicit UTF-8 to avoid httpx misdetecting encoding from BOM/Content-Type
+        data = json.loads(resp.content.decode("utf-8", errors="replace"))
         links = data.get("stats", {}).get("seasonStatLinks", [])
         for link in links:
             if link.get("Name") == FOTMOB_SEASON_NAME:
@@ -76,7 +79,7 @@ async def _fetch_stat_list(
     try:
         resp = await client.get(url, headers=_HEADERS, timeout=20.0)
         resp.raise_for_status()
-        data = resp.json()
+        data = json.loads(resp.content.decode("utf-8", errors="replace"))
         for top_list in data.get("TopLists", []):
             if top_list.get("StatName") == stat_name:
                 return top_list.get("StatList", [])
