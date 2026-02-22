@@ -1,11 +1,14 @@
 'use client'
 
 import { useState } from 'react'
-import { 
+import { useQuery } from '@tanstack/react-query'
+import {
   CheckCircle, XCircle, Clock, Filter, Download,
   ChevronDown, ChevronUp
 } from 'lucide-react'
 import { clsx } from 'clsx'
+import { getHistory } from '@/lib/api'
+import type { HistoryItem } from '@/lib/api'
 
 type BetStatus = 'won' | 'lost' | 'pending' | 'void'
 
@@ -22,13 +25,34 @@ interface HistoricalBet {
   pnl: number
 }
 
+function historyItemToBet(item: HistoryItem): HistoricalBet {
+  return {
+    id: item.id.toString(),
+    date: item.date,
+    fixture: item.fixture_name,
+    player: item.player_name,
+    market: item.market_type as 'goalscorer' | 'assist',
+    odds: item.best_odds,
+    stake: 10,
+    edge: item.edge,
+    status: (item.status || 'pending') as BetStatus,
+    pnl: item.pnl ?? 0,
+  }
+}
+
 export default function HistoryPage() {
   const [statusFilter, setStatusFilter] = useState<BetStatus | 'all'>('all')
   const [sortField, setSortField] = useState<'date' | 'pnl' | 'edge'>('date')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
-  const filteredBets = mockBets
-    .filter(bet => statusFilter === 'all' || bet.status === statusFilter)
+  const { data, isLoading } = useQuery({
+    queryKey: ['history', statusFilter],
+    queryFn: () => getHistory(statusFilter !== 'all' ? { status: statusFilter } : {}),
+  })
+
+  const allBets = (data?.bets || []).map(historyItemToBet)
+
+  const filteredBets = allBets
     .sort((a, b) => {
       const mult = sortDir === 'asc' ? 1 : -1
       if (sortField === 'date') return mult * (new Date(b.date).getTime() - new Date(a.date).getTime())
@@ -37,11 +61,11 @@ export default function HistoryPage() {
     })
 
   const stats = {
-    total: mockBets.length,
-    won: mockBets.filter(b => b.status === 'won').length,
-    lost: mockBets.filter(b => b.status === 'lost').length,
-    pending: mockBets.filter(b => b.status === 'pending').length,
-    totalPnl: mockBets.reduce((sum, b) => sum + b.pnl, 0),
+    total: allBets.length,
+    won: allBets.filter(b => b.status === 'won').length,
+    lost: allBets.filter(b => b.status === 'lost').length,
+    pending: allBets.filter(b => b.status === 'pending').length,
+    totalPnl: allBets.reduce((sum, b) => sum + b.pnl, 0),
   }
 
   return (
@@ -62,13 +86,13 @@ export default function HistoryPage() {
 
       {/* Stats Summary */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
-        <StatBox label="Total" value={stats.total} />
-        <StatBox label="Gagnés" value={stats.won} color="green" />
-        <StatBox label="Perdus" value={stats.lost} color="red" />
-        <StatBox label="En cours" value={stats.pending} color="yellow" />
-        <StatBox 
-          label="P&L" 
-          value={`${stats.totalPnl >= 0 ? '+' : ''}${stats.totalPnl.toFixed(2)}€`}
+        <StatBox label="Total" value={isLoading ? '...' : stats.total} />
+        <StatBox label="Gagnés" value={isLoading ? '...' : stats.won} color="green" />
+        <StatBox label="Perdus" value={isLoading ? '...' : stats.lost} color="red" />
+        <StatBox label="En cours" value={isLoading ? '...' : stats.pending} color="yellow" />
+        <StatBox
+          label="P&L"
+          value={isLoading ? '...' : `${stats.totalPnl >= 0 ? '+' : ''}${stats.totalPnl.toFixed(2)}€`}
           color={stats.totalPnl >= 0 ? 'green' : 'red'}
         />
       </div>
@@ -121,35 +145,49 @@ export default function HistoryPage() {
             </tr>
           </thead>
           <tbody>
-            {filteredBets.map((bet) => (
-              <tr key={bet.id} className="border-b border-gray-700/50 hover:bg-gray-700/30">
-                <td className="px-4 py-3 text-sm text-gray-300">
-                  {new Date(bet.date).toLocaleDateString('fr-FR')}
-                </td>
-                <td className="px-4 py-3 text-sm text-white hidden md:table-cell">{bet.fixture}</td>
-                <td className="px-4 py-3 text-sm text-white font-medium">{bet.player}</td>
-                <td className="px-4 py-3 hidden md:table-cell">
-                  <span className={clsx(
-                    'px-2 py-0.5 rounded text-xs',
-                    bet.market === 'goalscorer' ? 'bg-orange-500/20 text-orange-400' : 'bg-blue-500/20 text-blue-400'
-                  )}>
-                    {bet.market === 'goalscorer' ? '🎯' : '🅰️'}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-sm text-right text-gray-300">{bet.odds.toFixed(2)}</td>
-                <td className="px-4 py-3 text-sm text-right text-green-400">+{(bet.edge * 100).toFixed(1)}%</td>
-                <td className="px-4 py-3 text-sm text-right text-gray-300 hidden md:table-cell">{bet.stake}€</td>
-                <td className="px-4 py-3 text-center">
-                  <StatusBadge status={bet.status} />
-                </td>
-                <td className={clsx(
-                  'px-4 py-3 text-sm text-right font-medium',
-                  bet.pnl > 0 ? 'text-green-400' : bet.pnl < 0 ? 'text-red-400' : 'text-gray-400'
-                )}>
-                  {bet.pnl > 0 ? '+' : ''}{bet.pnl.toFixed(2)}€
+            {isLoading ? (
+              <tr>
+                <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
+                  Chargement...
                 </td>
               </tr>
-            ))}
+            ) : filteredBets.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
+                  Aucun pari trouvé
+                </td>
+              </tr>
+            ) : (
+              filteredBets.map((bet) => (
+                <tr key={bet.id} className="border-b border-gray-700/50 hover:bg-gray-700/30">
+                  <td className="px-4 py-3 text-sm text-gray-300">
+                    {new Date(bet.date).toLocaleDateString('fr-FR')}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-white hidden md:table-cell">{bet.fixture}</td>
+                  <td className="px-4 py-3 text-sm text-white font-medium">{bet.player}</td>
+                  <td className="px-4 py-3 hidden md:table-cell">
+                    <span className={clsx(
+                      'px-2 py-0.5 rounded text-xs',
+                      bet.market === 'goalscorer' ? 'bg-orange-500/20 text-orange-400' : 'bg-blue-500/20 text-blue-400'
+                    )}>
+                      {bet.market === 'goalscorer' ? 'Buteur' : 'Passeur'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-sm text-right text-gray-300">{bet.odds.toFixed(2)}</td>
+                  <td className="px-4 py-3 text-sm text-right text-green-400">+{(bet.edge * 100).toFixed(1)}%</td>
+                  <td className="px-4 py-3 text-sm text-right text-gray-300 hidden md:table-cell">{bet.stake}€</td>
+                  <td className="px-4 py-3 text-center">
+                    <StatusBadge status={bet.status} />
+                  </td>
+                  <td className={clsx(
+                    'px-4 py-3 text-sm text-right font-medium',
+                    bet.pnl > 0 ? 'text-green-400' : bet.pnl < 0 ? 'text-red-400' : 'text-gray-400'
+                  )}>
+                    {bet.pnl > 0 ? '+' : ''}{bet.pnl.toFixed(2)}€
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
         </div>
@@ -159,11 +197,11 @@ export default function HistoryPage() {
 }
 
 function StatBox({ label, value, color }: { label: string; value: string | number; color?: string }) {
-  const colorClass = color === 'green' ? 'text-green-400' 
+  const colorClass = color === 'green' ? 'text-green-400'
     : color === 'red' ? 'text-red-400'
     : color === 'yellow' ? 'text-yellow-400'
     : 'text-white'
-  
+
   return (
     <div className="bg-gray-800 rounded-lg p-4">
       <p className="text-xs text-gray-500">{label}</p>
@@ -185,9 +223,9 @@ function StatusBadge({ status }: { status: BetStatus }) {
   }
 }
 
-function SortButton({ 
-  field, current, dir, onClick, setDir, children 
-}: { 
+function SortButton({
+  field, current, dir, onClick, setDir, children
+}: {
   field: string
   current: string
   dir: 'asc' | 'desc'
@@ -196,7 +234,7 @@ function SortButton({
   children: React.ReactNode
 }) {
   const isActive = field === current
-  
+
   return (
     <button
       onClick={() => {
@@ -214,11 +252,3 @@ function SortButton({
     </button>
   )
 }
-
-const mockBets: HistoricalBet[] = [
-  { id: '1', date: '2024-01-28', fixture: 'PSG vs Lyon', player: 'Mbappé', market: 'goalscorer', odds: 2.25, stake: 10, edge: 0.15, status: 'won', pnl: 12.50 },
-  { id: '2', date: '2024-01-28', fixture: 'PSG vs Lyon', player: 'Dembélé', market: 'assist', odds: 3.50, stake: 10, edge: 0.12, status: 'lost', pnl: -10 },
-  { id: '3', date: '2024-01-27', fixture: 'Liverpool vs Arsenal', player: 'Salah', market: 'goalscorer', odds: 2.40, stake: 15, edge: 0.18, status: 'won', pnl: 21 },
-  { id: '4', date: '2024-01-27', fixture: 'Liverpool vs Arsenal', player: 'Saka', market: 'goalscorer', odds: 3.20, stake: 10, edge: 0.10, status: 'lost', pnl: -10 },
-  { id: '5', date: '2024-02-01', fixture: 'Monaco vs Marseille', player: 'Ben Yedder', market: 'goalscorer', odds: 2.60, stake: 10, edge: 0.11, status: 'pending', pnl: 0 },
-]

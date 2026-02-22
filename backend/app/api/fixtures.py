@@ -1,0 +1,207 @@
+"""Fixtures API endpoints."""
+
+import logging
+import uuid
+from datetime import date, datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.db import get_db
+from app.models.fixtures import Fixture
+from app.models.odds import OddsSnapshot
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+# ── Response models ──────────────────────────────────────────────
+
+class OddsSnapshotOut(BaseModel):
+    id: int
+    player_name: str
+    market_type: str
+    bookmaker: str
+    odds: float
+    implied_probability: float
+    snapshot_utc: str
+
+
+class FixtureOut(BaseModel):
+    id: int
+    external_id: str
+    league: str
+    season: str
+    matchweek: int | None
+    home_team: str
+    away_team: str
+    kickoff_utc: str
+    status: str
+    home_score: int | None
+    away_score: int | None
+    odds_count: int
+    odds: list[OddsSnapshotOut]
+
+
+class FixtureCreate(BaseModel):
+    date: str
+    time: str
+    home_team: str
+    away_team: str
+    league: str = "ligue1"
+    season: str = "2024-25"
+
+
+class FixturesResponse(BaseModel):
+    count: int
+    fixtures: list[FixtureOut]
+
+
+# ── Endpoints ────────────────────────────────────────────────────
+
+@router.get("/fixtures", response_model=FixturesResponse)
+async def list_fixtures(
+    db: AsyncSession = Depends(get_db),
+    league: str | None = Query(None),
+    status: str | None = Query(None),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    limit: int = Query(50, le=200),
+):
+    """List fixtures with optional filters."""
+    stmt = (
+        select(Fixture)
+        .options(selectinload(Fixture.odds_snapshots))
+        .order_by(Fixture.kickoff_utc.desc())
+        .limit(limit)
+    )
+
+    if league:
+        stmt = stmt.where(Fixture.league == league)
+    if status:
+        # Map frontend filter values to DB status
+        status_map = {"upcoming": "scheduled", "finished": "finished", "live": "live"}
+        db_status = status_map.get(status, status)
+        stmt = stmt.where(Fixture.status == db_status)
+    if from_date:
+        stmt = stmt.where(Fixture.kickoff_utc >= datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc))
+    if to_date:
+        stmt = stmt.where(Fixture.kickoff_utc <= datetime.combine(to_date, datetime.max.time(), tzinfo=timezone.utc))
+
+    result = await db.execute(stmt)
+    fixtures = result.scalars().all()
+
+    items = []
+    for f in fixtures:
+        odds_out = [
+            OddsSnapshotOut(
+                id=o.id,
+                player_name=o.player_name,
+                market_type=o.market_type,
+                bookmaker=o.bookmaker,
+                odds=o.odds,
+                implied_probability=o.implied_probability,
+                snapshot_utc=str(o.snapshot_utc),
+            )
+            for o in f.odds_snapshots
+        ]
+        items.append(FixtureOut(
+            id=f.id,
+            external_id=f.external_id,
+            league=f.league,
+            season=f.season,
+            matchweek=f.matchweek,
+            home_team=f.home_team,
+            away_team=f.away_team,
+            kickoff_utc=str(f.kickoff_utc),
+            status=f.status,
+            home_score=f.home_score,
+            away_score=f.away_score,
+            odds_count=len(f.odds_snapshots),
+            odds=odds_out,
+        ))
+
+    return FixturesResponse(count=len(items), fixtures=items)
+
+
+@router.post("/fixtures", response_model=FixtureOut, status_code=201)
+async def create_fixture(
+    body: FixtureCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a fixture manually."""
+    kickoff = datetime.fromisoformat(f"{body.date}T{body.time}:00+00:00")
+    external_id = f"manual_{uuid.uuid4().hex[:12]}"
+
+    fixture = Fixture(
+        external_id=external_id,
+        league=body.league,
+        season=body.season,
+        home_team=body.home_team,
+        away_team=body.away_team,
+        kickoff_utc=kickoff,
+        status="scheduled",
+    )
+    db.add(fixture)
+    await db.commit()
+    await db.refresh(fixture)
+
+    return FixtureOut(
+        id=fixture.id,
+        external_id=fixture.external_id,
+        league=fixture.league,
+        season=fixture.season,
+        matchweek=fixture.matchweek,
+        home_team=fixture.home_team,
+        away_team=fixture.away_team,
+        kickoff_utc=str(fixture.kickoff_utc),
+        status=fixture.status,
+        home_score=fixture.home_score,
+        away_score=fixture.away_score,
+        odds_count=0,
+        odds=[],
+    )
+
+
+@router.delete("/fixtures/{fixture_id}", status_code=204)
+async def delete_fixture(
+    fixture_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a fixture."""
+    result = await db.execute(select(Fixture).where(Fixture.id == fixture_id))
+    fixture = result.scalar_one_or_none()
+    if not fixture:
+        raise HTTPException(status_code=404, detail="Fixture not found")
+    await db.delete(fixture)
+    await db.commit()
+
+
+@router.get("/fixtures/{fixture_id}/odds", response_model=list[OddsSnapshotOut])
+async def get_fixture_odds(
+    fixture_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get odds snapshots for a fixture."""
+    result = await db.execute(
+        select(OddsSnapshot)
+        .where(OddsSnapshot.fixture_id == fixture_id)
+        .order_by(OddsSnapshot.snapshot_utc.desc())
+    )
+    snapshots = result.scalars().all()
+    return [
+        OddsSnapshotOut(
+            id=o.id,
+            player_name=o.player_name,
+            market_type=o.market_type,
+            bookmaker=o.bookmaker,
+            odds=o.odds,
+            implied_probability=o.implied_probability,
+            snapshot_utc=str(o.snapshot_utc),
+        )
+        for o in snapshots
+    ]

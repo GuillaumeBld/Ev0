@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { TrendingUp, Target, AlertCircle, Download } from 'lucide-react'
 import { RecommendationCard } from './RecommendationCard'
-import { getRecommendations } from '@/lib/api'
+import { getRecommendations, getStats } from '@/lib/api'
 
 interface DashboardProps {
   user: any
@@ -39,6 +39,11 @@ export function Dashboard({ user }: DashboardProps) {
       }))
       return recs
     },
+  })
+
+  const { data: statsData } = useQuery({
+    queryKey: ['dashboard-stats'],
+    queryFn: getStats,
   })
 
   const recommendations = recsData || []
@@ -79,15 +84,23 @@ export function Dashboard({ user }: DashboardProps) {
         />
         <StatCard
           title="Win Rate"
-          value="—"
-          subtitle="bientot disponible"
+          value={statsData && statsData.total_bets > 0
+            ? `${(statsData.win_rate * 100).toFixed(1)}%`
+            : '—'}
+          subtitle={statsData && statsData.total_bets > 0
+            ? `${statsData.wins}W / ${statsData.losses}L`
+            : 'aucun historique'}
           icon={TrendingUp}
           color="blue"
         />
         <StatCard
           title="ROI Mensuel"
-          value="—"
-          subtitle="bientot disponible"
+          value={statsData && statsData.total_bets > 0
+            ? `${(statsData.roi * 100).toFixed(1)}%`
+            : '—'}
+          subtitle={statsData && statsData.total_bets > 0
+            ? `sur ${statsData.total_bets} paris`
+            : 'aucun historique'}
           icon={TrendingUp}
           color="purple"
         />

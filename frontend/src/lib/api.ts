@@ -90,3 +90,138 @@ export async function getHealth() {
   const { data } = await api.get('/health')
   return data
 }
+
+// ── Fixtures ────────────────────────────────────────────────────
+
+export interface OddsSnapshotOut {
+  id: number
+  player_name: string
+  market_type: string
+  bookmaker: string
+  odds: number
+  implied_probability: number
+  snapshot_utc: string
+}
+
+export interface FixtureOut {
+  id: number
+  external_id: string
+  league: string
+  season: string
+  matchweek: number | null
+  home_team: string
+  away_team: string
+  kickoff_utc: string
+  status: string
+  home_score: number | null
+  away_score: number | null
+  odds_count: number
+  odds: OddsSnapshotOut[]
+}
+
+export interface FixturesResponse {
+  count: number
+  fixtures: FixtureOut[]
+}
+
+export interface FixtureCreateData {
+  date: string
+  time: string
+  home_team: string
+  away_team: string
+  league: string
+  season?: string
+}
+
+export async function getFixtures(params?: {
+  league?: string
+  status?: string
+  from_date?: string
+  to_date?: string
+}): Promise<FixturesResponse> {
+  const { data } = await api.get('/api/v1/fixtures', { params })
+  return data
+}
+
+export async function createFixture(body: FixtureCreateData): Promise<FixtureOut> {
+  const { data } = await api.post('/api/v1/fixtures', body)
+  return data
+}
+
+export async function deleteFixture(id: number): Promise<void> {
+  await api.delete(`/api/v1/fixtures/${id}`)
+}
+
+export async function getFixtureOdds(id: number): Promise<OddsSnapshotOut[]> {
+  const { data } = await api.get(`/api/v1/fixtures/${id}/odds`)
+  return data
+}
+
+// ── History & Stats ─────────────────────────────────────────────
+
+export interface HistoryItem {
+  id: number
+  date: string
+  fixture_name: string
+  player_name: string
+  market_type: string
+  best_odds: number
+  edge: number
+  best_bookmaker: string
+  status: string
+  result: string | null
+  pnl: number | null
+}
+
+export interface HistoryResponse {
+  count: number
+  bets: HistoryItem[]
+}
+
+export interface StatsResponse {
+  total_bets: number
+  wins: number
+  losses: number
+  pending: number
+  total_pnl: number
+  win_rate: number
+  roi: number
+}
+
+export async function getHistory(params?: {
+  status?: string
+}): Promise<HistoryResponse> {
+  const { data } = await api.get('/api/v1/history', { params })
+  return data
+}
+
+export async function getStats(): Promise<StatsResponse> {
+  const { data } = await api.get('/api/v1/stats')
+  return data
+}
+
+// ── Backtest ────────────────────────────────────────────────────
+
+export interface BacktestConfig {
+  period: string
+  min_edge: number
+  stake_method: string
+  markets: string
+}
+
+export interface BacktestResults {
+  roi: number
+  brierScore: number
+  winRate: number
+  wins: number
+  losses: number
+  totalBets: number
+  pnlCurve: { date: string; cumPnl: number }[]
+  calibration: { predicted: number; actual: number; count: number }[]
+  edgeDistribution: { bucket: string; count: number; roi: number }[]
+}
+
+export async function runBacktest(config: BacktestConfig): Promise<BacktestResults> {
+  const { data } = await api.post('/api/v1/backtest', config)
+  return data
+}

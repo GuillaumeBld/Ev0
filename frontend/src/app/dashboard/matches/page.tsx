@@ -1,9 +1,12 @@
 'use client'
 
 import { useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Calendar, Clock, Trash2, ChevronRight } from 'lucide-react'
 import { clsx } from 'clsx'
 import Link from 'next/link'
+import { getFixtures, createFixture, deleteFixture } from '@/lib/api'
+import type { FixtureOut } from '@/lib/api'
 
 interface Match {
   id: string
@@ -23,23 +26,74 @@ interface Match {
   }[]
 }
 
+function fixtureToMatch(f: FixtureOut): Match {
+  const kickoff = new Date(f.kickoff_utc)
+  const statusMap: Record<string, Match['status']> = {
+    scheduled: 'upcoming',
+    live: 'live',
+    finished: 'finished',
+    postponed: 'upcoming',
+  }
+  return {
+    id: f.id.toString(),
+    date: kickoff.toISOString().split('T')[0],
+    time: kickoff.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+    homeTeam: f.home_team,
+    awayTeam: f.away_team,
+    league: f.league as Match['league'],
+    status: statusMap[f.status] || 'upcoming',
+    homeScore: f.home_score ?? undefined,
+    awayScore: f.away_score ?? undefined,
+    odds: f.odds.map(o => ({
+      player: o.player_name,
+      market: o.market_type as 'goalscorer' | 'assist',
+      bookmaker: o.bookmaker,
+      odds: o.odds,
+    })),
+  }
+}
+
 export default function MatchesPage() {
-  const [matches, setMatches] = useState<Match[]>(mockMatches)
+  const queryClient = useQueryClient()
   const [showAddForm, setShowAddForm] = useState(false)
   const [filter, setFilter] = useState<'all' | 'upcoming' | 'finished'>('upcoming')
 
-  const filteredMatches = matches.filter(m => 
-    filter === 'all' || m.status === filter
-  )
+  const { data, isLoading } = useQuery({
+    queryKey: ['fixtures', filter],
+    queryFn: () => getFixtures(filter !== 'all' ? { status: filter } : {}),
+  })
+
+  const matches = (data?.fixtures || []).map(fixtureToMatch)
+
+  const createMutation = useMutation({
+    mutationFn: (match: Omit<Match, 'id'>) =>
+      createFixture({
+        date: match.date,
+        time: match.time,
+        home_team: match.homeTeam,
+        away_team: match.awayTeam,
+        league: match.league,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['fixtures'] })
+      setShowAddForm(false)
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => deleteFixture(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['fixtures'] })
+    },
+  })
 
   const handleAdd = (match: Omit<Match, 'id'>) => {
-    setMatches(prev => [...prev, { ...match, id: Date.now().toString() }])
-    setShowAddForm(false)
+    createMutation.mutate(match)
   }
 
   const handleDelete = (id: string) => {
     if (confirm('Supprimer ce match ?')) {
-      setMatches(prev => prev.filter(m => m.id !== id))
+      deleteMutation.mutate(Number(id))
     }
   }
 
@@ -83,18 +137,29 @@ export default function MatchesPage() {
         <MatchForm onSave={handleAdd} onCancel={() => setShowAddForm(false)} />
       )}
 
+      {/* Loading */}
+      {isLoading && (
+        <div className="space-y-4">
+          {[1, 2].map((i) => (
+            <div key={i} className="bg-gray-800 rounded-xl h-24 animate-pulse" />
+          ))}
+        </div>
+      )}
+
       {/* Matches Grid */}
-      <div className="space-y-4">
-        {filteredMatches.map((match) => (
-          <MatchCard key={match.id} match={match} onDelete={handleDelete} />
-        ))}
-        {filteredMatches.length === 0 && (
-          <div className="bg-gray-800 rounded-xl p-8 text-center">
-            <Calendar className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-            <p className="text-gray-400">Aucun match trouvé</p>
-          </div>
-        )}
-      </div>
+      {!isLoading && (
+        <div className="space-y-4">
+          {matches.map((match) => (
+            <MatchCard key={match.id} match={match} onDelete={handleDelete} />
+          ))}
+          {matches.length === 0 && (
+            <div className="bg-gray-800 rounded-xl p-8 text-center">
+              <Calendar className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+              <p className="text-gray-400">Aucun match trouvé</p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -132,7 +197,7 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
                 'px-2 py-1 rounded text-xs',
                 match.league === 'ligue1' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400'
               )}>
-                {match.league === 'ligue1' ? '🇫🇷 L1' : '🏴󠁧󠁢󠁥󠁮󠁧󠁿 PL'}
+                {match.league === 'ligue1' ? 'L1' : 'PL'}
               </span>
 
               <span className={clsx(
@@ -173,9 +238,9 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
               onClick={() => setExpanded(!expanded)}
               className="text-sm text-gray-400 hover:text-white transition-colors"
             >
-              {expanded ? 'Masquer les cotes ▲' : 'Voir les cotes ▼'}
+              {expanded ? 'Masquer les cotes' : 'Voir les cotes'}
             </button>
-            
+
             {expanded && (
               <div className="mt-3 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
                 {match.odds.map((odd, i) => (
@@ -186,7 +251,7 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
                         'text-xs',
                         odd.market === 'goalscorer' ? 'text-orange-400' : 'text-blue-400'
                       )}>
-                        {odd.market === 'goalscorer' ? '🎯' : '🅰️'}
+                        {odd.market === 'goalscorer' ? 'Buteur' : 'Passeur'}
                       </span>
                       <span className="text-sm text-green-400 font-medium">{odd.odds.toFixed(2)}</span>
                       <span className="text-xs text-gray-500">{odd.bookmaker}</span>
@@ -231,7 +296,7 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 overflow-auto py-8">
       <div className="bg-gray-800 rounded-xl p-6 w-full max-w-2xl mx-4">
         <h2 className="text-xl font-bold text-white mb-4">Ajouter un match</h2>
-        
+
         <div className="space-y-4">
           {/* Date & Time */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -260,8 +325,8 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
                 onChange={(e) => setData({ ...data, league: e.target.value as Match['league'] })}
                 className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
               >
-                <option value="ligue1">🇫🇷 Ligue 1</option>
-                <option value="premier_league">🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League</option>
+                <option value="ligue1">Ligue 1</option>
+                <option value="premier_league">Premier League</option>
               </select>
             </div>
           </div>
@@ -293,7 +358,7 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
           {/* Odds Section */}
           <div className="border-t border-gray-700 pt-4">
             <h3 className="text-sm font-medium text-gray-400 mb-3">Cotes bookmaker</h3>
-            
+
             {/* Add Odd Form */}
             <div className="flex flex-wrap gap-2 mb-3">
               <input
@@ -308,8 +373,8 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
                 onChange={(e) => setNewOdd({ ...newOdd, market: e.target.value as 'goalscorer' | 'assist' })}
                 className="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm"
               >
-                <option value="goalscorer">🎯 Buteur</option>
-                <option value="assist">🅰️ Passeur</option>
+                <option value="goalscorer">Buteur</option>
+                <option value="assist">Passeur</option>
               </select>
               <select
                 value={newOdd.bookmaker}
@@ -342,7 +407,7 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
                 {data.odds.map((odd, i) => (
                   <div key={i} className="flex items-center gap-2 bg-gray-700 rounded-lg px-3 py-1.5">
                     <span className="text-sm text-white">{odd.player}</span>
-                    <span className="text-xs text-gray-400">{odd.market === 'goalscorer' ? '🎯' : '🅰️'}</span>
+                    <span className="text-xs text-gray-400">{odd.market === 'goalscorer' ? 'Buteur' : 'Passeur'}</span>
                     <span className="text-sm text-green-400">{odd.odds}</span>
                     <button
                       onClick={() => setData({ ...data, odds: data.odds.filter((_, j) => j !== i) })}
@@ -372,45 +437,3 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
     </div>
   )
 }
-
-const mockMatches: Match[] = [
-  {
-    id: '1',
-    date: '2024-02-10',
-    time: '21:00',
-    homeTeam: 'Paris Saint-Germain',
-    awayTeam: 'Olympique Lyon',
-    league: 'ligue1',
-    status: 'upcoming',
-    odds: [
-      { player: 'Mbappé', market: 'goalscorer', bookmaker: 'Betclic', odds: 2.25 },
-      { player: 'Dembélé', market: 'goalscorer', bookmaker: 'Betclic', odds: 3.50 },
-      { player: 'Dembélé', market: 'assist', bookmaker: 'Unibet', odds: 3.20 },
-    ],
-  },
-  {
-    id: '2',
-    date: '2024-02-10',
-    time: '17:30',
-    homeTeam: 'Liverpool',
-    awayTeam: 'Manchester City',
-    league: 'premier_league',
-    status: 'upcoming',
-    odds: [
-      { player: 'Salah', market: 'goalscorer', bookmaker: 'Betclic', odds: 2.40 },
-      { player: 'Haaland', market: 'goalscorer', bookmaker: 'Betclic', odds: 1.85 },
-    ],
-  },
-  {
-    id: '3',
-    date: '2024-02-03',
-    time: '21:00',
-    homeTeam: 'Monaco',
-    awayTeam: 'Marseille',
-    league: 'ligue1',
-    status: 'finished',
-    homeScore: 2,
-    awayScore: 1,
-    odds: [],
-  },
-]

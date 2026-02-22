@@ -6,7 +6,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import health, players, pricing, recommendations
+from app.api import backtest, fixtures, health, history, players, pricing, recommendations
 from app.config import settings
 from app.db import engine
 
@@ -42,3 +42,6 @@ app.include_router(health.router, tags=["health"])
 app.include_router(players.router, prefix="/api/v1", tags=["players"])
 app.include_router(pricing.router, prefix="/api/v1", tags=["pricing"])
 app.include_router(recommendations.router, prefix="/api/v1", tags=["recommendations"])
+app.include_router(fixtures.router, prefix="/api/v1", tags=["fixtures"])
+app.include_router(history.router, prefix="/api/v1", tags=["history"])
+app.include_router(backtest.router, prefix="/api/v1", tags=["backtest"])
