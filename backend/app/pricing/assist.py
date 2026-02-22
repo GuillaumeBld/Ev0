@@ -17,7 +17,7 @@ Formula:
 """
 
 import math
-from typing import TypedDict
+from typing import Any, TypedDict
 
 
 class AssistPriceResult(TypedDict):
