@@ -1,7 +1,7 @@
-"""FotMob scraper using the unofficial JSON API.
+"""FotMob scraper using the CDN JSON endpoints (data.fotmob.com).
 
-FotMob exposes a JSON API that returns player season stats by stat category.
-No API keys required — public read-only endpoints.
+FotMob serves per-stat player lists as gzip-compressed JSON files on their CDN.
+These are publicly accessible without Cloudflare Turnstile restrictions.
 """
 
 import httpx
@@ -13,6 +13,9 @@ FOTMOB_LEAGUES = {
     "premier_league": 47,
 }
 
+# Season name to match — must match what FotMob calls the current season
+FOTMOB_SEASON_NAME = "2025/2026"
+
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -20,21 +23,21 @@ _HEADERS = {
         "Chrome/120.0.0.0 Safari/537.36"
     ),
     "Referer": "https://www.fotmob.com/",
+    "Accept-Encoding": "gzip, deflate, br",
     "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
 }
 
 _API = "https://www.fotmob.com/api"
+_CDN = "https://data.fotmob.com"
 
-# Stat keys to fetch from the leagueseasondeepstats endpoint
-_STAT_KEYS = [
-    "goals",
-    "expected_goals",
-    "assists",
-    "expected_assists",
-    "minutes_played",
-    "shots",
-]
+# CDN stat file names to fetch and how to map them onto our schema
+_STATS = {
+    "goals": "goals",
+    "goal_assist": "assists",
+    "expected_goals": "xg",
+    "expected_assists": "xa",
+    "mins_played": "minutes",
+}
 
 
 def calculate_per_90(stat: float, minutes: int) -> float:
@@ -44,78 +47,46 @@ def calculate_per_90(stat: float, minutes: int) -> float:
     return round((stat / minutes) * 90, 3)
 
 
-async def _get_current_season_id(client: httpx.AsyncClient, league_id: int) -> int | None:
-    """Return the most recent season ID for the given league."""
+async def _get_season_id(client: httpx.AsyncClient, league_id: int) -> int | None:
+    """Return the TournamentId for the current season from the leagues endpoint."""
     try:
-        resp = await client.get(
-            f"{_API}/leagues",
-            params={"id": league_id},
-            headers=_HEADERS,
-        )
+        resp = await client.get(f"{_API}/leagues", params={"id": league_id}, headers=_HEADERS)
         resp.raise_for_status()
         data = resp.json()
-        seasons = data.get("seasons", [])
-        if not seasons:
-            return None
-        # First entry is the most recent season
-        return seasons[0].get("id")
+        links = data.get("stats", {}).get("seasonStatLinks", [])
+        for link in links:
+            if link.get("Name") == FOTMOB_SEASON_NAME:
+                return link["TournamentId"]
+        # Fallback: use the first (most recent) entry
+        if links:
+            return links[0]["TournamentId"]
     except Exception as e:
         print(f"  Error fetching FotMob season ID for league {league_id}: {e}")
-        return None
+    return None
 
 
-async def _fetch_stat(
+async def _fetch_stat_list(
     client: httpx.AsyncClient,
     league_id: int,
     season_id: int,
-    stat: str,
+    stat_name: str,
 ) -> list[dict]:
-    """Fetch player records for one stat category."""
+    """Download and parse one CDN stat file, returning the StatList."""
+    url = f"{_CDN}/stats/{league_id}/season/{season_id}/{stat_name}.json"
     try:
-        resp = await client.get(
-            f"{_API}/leagueseasondeepstats",
-            params={
-                "id": league_id,
-                "season": season_id,
-                "type": "players",
-                "stat": stat,
-            },
-            headers=_HEADERS,
-            timeout=20.0,
-        )
+        resp = await client.get(url, headers=_HEADERS, timeout=20.0)
         resp.raise_for_status()
         data = resp.json()
-        return data.get("players", []) or []
+        for top_list in data.get("TopLists", []):
+            if top_list.get("StatName") == stat_name:
+                return top_list.get("StatList", [])
+        # If only one TopList, return it regardless of StatName
+        top_lists = data.get("TopLists", [])
+        if len(top_lists) == 1:
+            return top_lists[0].get("StatList", [])
     except Exception as e:
-        print(f"  Error fetching FotMob stat={stat} league={league_id}: {e}")
-        return []
-
-
-def _stat_value(record: dict) -> float:
-    """Extract the numeric stat value from a player record."""
-    for key in ("statValue", "value", "stat", "total"):
-        val = record.get(key)
-        if val is not None:
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                pass
-    return 0.0
-
-
-def _player_name(record: dict) -> str:
-    """Extract player name from a record."""
-    return (
-        record.get("playerName")
-        or record.get("name")
-        or (record.get("player") or {}).get("name", "")
-        or ""
-    )
-
-
-def _team_name(record: dict) -> str:
-    """Extract team name from a record."""
-    return record.get("teamName") or (record.get("team") or {}).get("name", "") or ""
+        print(f"  Error fetching FotMob {stat_name} (league={league_id}): {e}")
+    return []
 
 
 async def fetch_fotmob_league(league: str) -> tuple[list[dict], list[dict]]:
@@ -125,41 +96,42 @@ async def fetch_fotmob_league(league: str) -> tuple[list[dict], list[dict]]:
         league: ligue_1 or premier_league
 
     Returns:
-        Tuple of (players list, teams list)
+        Tuple of (players list, teams list) using the standard schema.
     """
     league_id = FOTMOB_LEAGUES.get(league)
     if not league_id:
         raise ValueError(f"Unknown league: {league}")
 
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        season_id = await _get_current_season_id(client, league_id)
+        season_id = await _get_season_id(client, league_id)
         if not season_id:
             print(f"  Could not determine FotMob season ID for {league}")
             return [], []
 
         print(f"  FotMob season_id={season_id} for {league}")
 
-        raw_by_stat: dict[str, list[dict]] = {}
-        for stat in _STAT_KEYS:
-            records = await _fetch_stat(client, league_id, season_id, stat)
-            raw_by_stat[stat] = records
-            print(f"    {stat}: {len(records)} records")
+        # Fetch each stat file
+        raw_by_field: dict[str, list[dict]] = {}
+        for stat_name in _STATS:
+            records = await _fetch_stat_list(client, league_id, season_id, stat_name)
+            raw_by_field[stat_name] = records
+            print(f"    {stat_name}: {len(records)} records")
 
-    # Merge all stat records by player ID
-    player_map: dict[str, dict] = {}
+    # Merge by player ID
+    player_map: dict[int, dict] = {}
 
-    for stat, records in raw_by_stat.items():
-        for r in records:
-            pid = str(r.get("id") or r.get("playerId") or "")
+    for stat_name, field in _STATS.items():
+        for r in raw_by_field.get(stat_name, []):
+            pid = r.get("ParticiantId")  # FotMob typo: "Particiant"
             if not pid:
                 continue
 
             if pid not in player_map:
                 player_map[pid] = {
-                    "fotmob_id": pid,
-                    "name": _player_name(r),
-                    "team": _team_name(r),
-                    "position": r.get("position", ""),
+                    "fotmob_id": str(pid),
+                    "name": r.get("ParticipantName", ""),
+                    "team": r.get("TeamName", ""),
+                    "position": "",
                     "games": 0,
                     "minutes": 0,
                     "goals": 0,
@@ -172,26 +144,20 @@ async def fetch_fotmob_league(league: str) -> tuple[list[dict], list[dict]]:
                 }
 
             p = player_map[pid]
-            val = _stat_value(r)
+            val = r.get("StatValue", 0) or 0
 
-            if stat == "goals":
+            if field == "goals":
                 p["goals"] = int(val)
-            elif stat == "expected_goals":
-                p["xg"] = round(val, 3)
-                p["npxg"] = round(val, 3)  # FotMob does not split npxG separately
-            elif stat == "assists":
+            elif field == "assists":
                 p["assists"] = int(val)
-            elif stat == "expected_assists":
-                p["xa"] = round(val, 3)
-            elif stat == "minutes_played":
+            elif field == "xg":
+                p["xg"] = round(float(val), 3)
+                p["npxg"] = round(float(val), 3)  # FotMob doesn't split npxG
+            elif field == "xa":
+                p["xa"] = round(float(val), 3)
+            elif field == "minutes":
                 p["minutes"] = int(val)
-                for apps_key in ("matchesPlayed", "appearances", "apps", "matches"):
-                    apps = r.get(apps_key)
-                    if apps is not None:
-                        p["games"] = int(apps)
-                        break
-            elif stat == "shots":
-                p["shots"] = int(val)
+                p["games"] = int(r.get("MatchesPlayed", 0) or 0)
 
     # Compute per-90 stats
     players: list[dict] = []
@@ -204,7 +170,7 @@ async def fetch_fotmob_league(league: str) -> tuple[list[dict], list[dict]]:
         p["npxg_per_90"] = calculate_per_90(p["npxg"], minutes)
         players.append(p)
 
-    # Derive unique teams from player list
+    # Derive unique teams
     seen: set[str] = set()
     teams: list[dict] = []
     for p in players:
