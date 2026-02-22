@@ -129,6 +129,12 @@ async def debug_recommendations(
         return {"status": "error", "error": str(exc), "traceback": traceback.format_exc()}
 
 
+@router.get("/recommendations-ping")
+async def ping_recommendations():
+    """Minimal test to check if router loads."""
+    return {"status": "router_ok"}
+
+
 @router.get("/recommendations/{recommendation_id}", response_model=Recommendation)
 async def get_recommendation_detail(recommendation_id: str) -> Recommendation:
     """Get detailed information about a specific recommendation."""
