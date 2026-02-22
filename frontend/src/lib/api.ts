@@ -35,6 +35,7 @@ export interface Recommendation {
   classification: 'VALUE' | 'NO_VALUE' | 'AVOID'
   confidence: number
   explanation: Record<string, any>
+  error?: string | null
 }
 
 export interface PriceRequest {

@@ -15,6 +15,10 @@ const nextConfig = {
         source: '/health',
         destination: `${process.env.BACKEND_URL || 'http://backend:8000'}/health`,
       },
+      {
+        source: '/ready',
+        destination: `${process.env.BACKEND_URL || 'http://backend:8000'}/ready`,
+      },
     ]
   },
 }

@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { TrendingUp, TrendingDown, Target, AlertCircle, Download } from 'lucide-react'
+import { TrendingUp, Target, AlertCircle, Download } from 'lucide-react'
 import { RecommendationCard } from './RecommendationCard'
 import { getRecommendations } from '@/lib/api'
 
