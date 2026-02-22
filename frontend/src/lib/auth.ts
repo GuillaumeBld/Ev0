@@ -52,4 +52,18 @@ export const authOptions: NextAuthOptions = {
     strategy: 'jwt',
     maxAge: 24 * 60 * 60, // 24 hours
   },
+  events: {},
+  // On invalid/unreadable JWT (e.g. secret rotation), return null to clear the session
+  // instead of crashing with a white screen
+  jwt: {
+    // @ts-ignore — nextauth v4 calls this on decode errors
+    decode: async (params) => {
+      try {
+        const { decode } = await import('next-auth/jwt')
+        return await decode(params)
+      } catch {
+        return null
+      }
+    },
+  },
 }
