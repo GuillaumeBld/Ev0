@@ -46,30 +46,37 @@ async def generate_recommendations(
         List of recommendation dicts
     """
     all_recommendations = []
-    
+    _matched = 0
+    _unmatched = 0
+    _unmatched_names: list[str] = []
+
     for fixture in fixtures:
         fixture_id = fixture.get("fixture_id") or fixture.get("id")
         home_team = fixture.get("home_team")
         away_team = fixture.get("away_team")
         kickoff = fixture.get("kickoff_utc")
         league = fixture.get("league")
-        
+
         # Get odds for this fixture
         fixture_odds = odds_data.get(fixture_id, [])
-        
+
         for odds_entry in fixture_odds:
             player_name = odds_entry.get("player_name")
             market_type = odds_entry.get("market_type", "goalscorer")
             market_odds = odds_entry.get("odds", 0)
             bookmaker = odds_entry.get("bookmaker", "unknown")
-            
+
             if not player_name or market_odds <= 1:
                 continue
-            
+
             # Find player stats
             stats = _find_player_stats(player_name, player_stats)
             if not stats:
+                _unmatched += 1
+                if len(_unmatched_names) < 20:
+                    _unmatched_names.append(player_name)
                 continue
+            _matched += 1
             
             # Determine team
             team = stats.get("team") or _infer_team(player_name, home_team, away_team)
@@ -136,9 +143,14 @@ async def generate_recommendations(
             
             all_recommendations.append(recommendation)
     
+    # Store match stats on the module level for debug access
+    generate_recommendations._last_match_stats = {
+        "matched": _matched, "unmatched": _unmatched, "unmatched_names": _unmatched_names
+    }
+
     # Apply strategy selection
     selection = select_bets(all_recommendations, filter_config)
-    
+
     return selection.selected
 
 
@@ -324,5 +336,6 @@ async def get_recommendations_for_date(
         "all_odds_players": sorted(set(
             o["player_name"] for odds_list in odds_data.values() for o in odds_list
         ))[:30],
+        "match_stats": getattr(generate_recommendations, "_last_match_stats", {}),
     }
     return recs, debug_info
