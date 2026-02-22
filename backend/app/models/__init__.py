@@ -6,6 +6,7 @@ from app.models.fixtures import Fixture
 from app.models.players import Player, PlayerStats, Team, DataSource
 from app.models.odds import OddsSnapshot
 from app.models.recommendations import Recommendation
+from app.models.settings import UserSettings
 
 __all__ = [
     "Base",
@@ -17,4 +18,5 @@ __all__ = [
     "PlayerStats",
     "Recommendation",
     "Team",
+    "UserSettings",
 ]

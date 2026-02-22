@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Calendar, Clock, Trash2, ChevronRight } from 'lucide-react'
 import { clsx } from 'clsx'
 import Link from 'next/link'
-import { getFixtures, createFixture, deleteFixture } from '@/lib/api'
+import { getFixtures, createFixture, deleteFixture, createOdds } from '@/lib/api'
 import type { FixtureOut } from '@/lib/api'
 
 interface Match {
@@ -66,14 +66,25 @@ export default function MatchesPage() {
   const matches = (data?.fixtures || []).map(fixtureToMatch)
 
   const createMutation = useMutation({
-    mutationFn: (match: Omit<Match, 'id'>) =>
-      createFixture({
+    mutationFn: async (match: Omit<Match, 'id'>) => {
+      const fixture = await createFixture({
         date: match.date,
         time: match.time,
         home_team: match.homeTeam,
         away_team: match.awayTeam,
         league: match.league,
-      }),
+      })
+      // Create odds entries for the new fixture
+      for (const odd of match.odds) {
+        await createOdds(fixture.id, {
+          player_name: odd.player,
+          market_type: odd.market,
+          bookmaker: odd.bookmaker,
+          odds: odd.odds,
+        })
+      }
+      return fixture
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['fixtures'] })
       setShowAddForm(false)

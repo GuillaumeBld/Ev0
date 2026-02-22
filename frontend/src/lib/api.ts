@@ -157,6 +157,18 @@ export async function getFixtureOdds(id: number): Promise<OddsSnapshotOut[]> {
   return data
 }
 
+export interface OddsCreateData {
+  player_name: string
+  market_type: string
+  bookmaker: string
+  odds: number
+}
+
+export async function createOdds(fixtureId: number, body: OddsCreateData): Promise<OddsSnapshotOut> {
+  const { data } = await api.post(`/api/v1/fixtures/${fixtureId}/odds`, body)
+  return data
+}
+
 // ── History & Stats ─────────────────────────────────────────────
 
 export interface HistoryItem {
@@ -287,5 +299,17 @@ export async function depositBankroll(amount: number, notes?: string): Promise<B
 
 export async function withdrawBankroll(amount: number, notes?: string): Promise<BankrollTransaction> {
   const { data } = await api.post('/api/v1/bankroll/withdraw', { amount, notes })
+  return data
+}
+
+// ── Settings ────────────────────────────────────────────────────
+
+export async function getSettings(): Promise<Record<string, string>> {
+  const { data } = await api.get('/api/v1/settings')
+  return data
+}
+
+export async function saveSettings(settings: Record<string, string>): Promise<Record<string, string>> {
+  const { data } = await api.put('/api/v1/settings', { settings })
   return data
 }

@@ -47,6 +47,13 @@ class FixtureOut(BaseModel):
     odds: list[OddsSnapshotOut]
 
 
+class OddsCreate(BaseModel):
+    player_name: str
+    market_type: str = "goalscorer"
+    bookmaker: str = "Betclic"
+    odds: float
+
+
 class FixtureCreate(BaseModel):
     date: str
     time: str
@@ -205,3 +212,43 @@ async def get_fixture_odds(
         )
         for o in snapshots
     ]
+
+
+@router.post("/fixtures/{fixture_id}/odds", response_model=OddsSnapshotOut, status_code=201)
+async def create_odds(
+    fixture_id: int,
+    body: OddsCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a manual odds snapshot for a fixture."""
+    result = await db.execute(select(Fixture).where(Fixture.id == fixture_id))
+    fixture = result.scalar_one_or_none()
+    if not fixture:
+        raise HTTPException(status_code=404, detail="Fixture not found")
+
+    if body.odds <= 1.0:
+        raise HTTPException(status_code=400, detail="Odds must be greater than 1.0")
+
+    now = datetime.now(timezone.utc)
+    snapshot = OddsSnapshot(
+        fixture_id=fixture_id,
+        player_name=body.player_name,
+        market_type=body.market_type,
+        bookmaker=body.bookmaker,
+        odds=body.odds,
+        implied_probability=round(1.0 / body.odds, 6),
+        snapshot_utc=now,
+    )
+    db.add(snapshot)
+    await db.commit()
+    await db.refresh(snapshot)
+
+    return OddsSnapshotOut(
+        id=snapshot.id,
+        player_name=snapshot.player_name,
+        market_type=snapshot.market_type,
+        bookmaker=snapshot.bookmaker,
+        odds=snapshot.odds,
+        implied_probability=snapshot.implied_probability,
+        snapshot_utc=str(snapshot.snapshot_utc),
+    )

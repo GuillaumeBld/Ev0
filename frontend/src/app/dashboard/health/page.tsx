@@ -1,9 +1,9 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { 
+import {
   CheckCircle, XCircle, AlertTriangle, RefreshCw,
-  Database, Clock, Wifi, Server
+  Database, Clock, Server
 } from 'lucide-react'
 import { clsx } from 'clsx'
 
@@ -14,12 +14,11 @@ interface ServiceHealth {
   status: HealthStatus
   latency?: number
   lastCheck: string
-  details?: string
 }
 
 interface DataQuality {
   source: string
-  lastSync: string
+  lastSync: string | null
   recordCount: number
   freshness: 'fresh' | 'stale' | 'outdated'
   issues: string[]
@@ -30,9 +29,10 @@ export default function HealthPage() {
     queryKey: ['health'],
     queryFn: async () => {
       try {
-        const [healthRes, readyRes] = await Promise.all([
+        const [healthRes, readyRes, dqRes] = await Promise.all([
           fetch('/health').then(r => r.json()).catch(() => ({ status: 'down' })),
           fetch('/ready').then(r => r.json()).catch(() => ({ status: 'down', checks: {} })),
+          fetch('/data-quality').then(r => r.json()).catch(() => []),
         ])
 
         const dbCheck = readyRes.checks?.db || { status: 'down' }
@@ -51,18 +51,21 @@ export default function HealthPage() {
           },
         ]
 
-        return {
-          services,
-          dataQuality: [] as DataQuality[],
-          events: [] as { level: string; message: string; timestamp: string }[],
-        }
+        const dataQuality: DataQuality[] = (dqRes || []).map((item: any) => ({
+          source: item.source,
+          lastSync: item.last_sync,
+          recordCount: item.record_count,
+          freshness: item.freshness as DataQuality['freshness'],
+          issues: item.issues || [],
+        }))
+
+        return { services, dataQuality }
       } catch {
         return {
           services: [
             { name: 'API Backend', status: 'down' as const, lastCheck: 'maintenant' },
           ],
           dataQuality: [] as DataQuality[],
-          events: [{ level: 'error', message: 'Impossible de contacter le backend', timestamp: 'maintenant' }],
         }
       }
     },
@@ -74,9 +77,9 @@ export default function HealthPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-white">Santé Système</h1>
+          <h1 className="text-2xl font-bold text-white">Sante Systeme</h1>
           <p className="text-gray-400 mt-1">
-            Monitoring des services et qualité des données
+            Monitoring des services et qualite des donnees
           </p>
         </div>
         <button
@@ -84,7 +87,7 @@ export default function HealthPage() {
           className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
         >
           <RefreshCw className="w-4 h-4" />
-          Rafraîchir
+          Rafraichir
         </button>
       </div>
 
@@ -105,7 +108,7 @@ export default function HealthPage() {
       <div className="mb-8">
         <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
           <Database className="w-5 h-5" />
-          Qualité des Données
+          Qualite des Donnees
         </h2>
         <div className="bg-gray-800 rounded-xl overflow-hidden">
           <table className="w-full">
@@ -114,37 +117,53 @@ export default function HealthPage() {
                 <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Source</th>
                 <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Dernier Sync</th>
                 <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">Records</th>
-                <th className="px-4 py-3 text-center text-sm font-medium text-gray-400">Fraîcheur</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Problèmes</th>
+                <th className="px-4 py-3 text-center text-sm font-medium text-gray-400">Fraicheur</th>
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Problemes</th>
               </tr>
             </thead>
             <tbody>
-              {data?.dataQuality.map((dq) => (
-                <tr key={dq.source} className="border-b border-gray-700/50">
-                  <td className="px-4 py-3 text-sm text-white font-medium">{dq.source}</td>
-                  <td className="px-4 py-3 text-sm text-gray-300">{dq.lastSync}</td>
-                  <td className="px-4 py-3 text-sm text-right text-gray-300">
-                    {dq.recordCount.toLocaleString()}
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <FreshnessBadge freshness={dq.freshness} />
-                  </td>
-                  <td className="px-4 py-3">
-                    {dq.issues.length === 0 ? (
-                      <span className="text-sm text-green-400">Aucun</span>
-                    ) : (
-                      <div className="space-y-1">
-                        {dq.issues.map((issue, i) => (
-                          <div key={i} className="flex items-center gap-1 text-sm text-yellow-400">
-                            <AlertTriangle className="w-3 h-3" />
-                            {issue}
-                          </div>
-                        ))}
-                      </div>
-                    )}
+              {isLoading ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-gray-400">
+                    Chargement...
                   </td>
                 </tr>
-              ))}
+              ) : data?.dataQuality && data.dataQuality.length > 0 ? (
+                data.dataQuality.map((dq) => (
+                  <tr key={dq.source} className="border-b border-gray-700/50">
+                    <td className="px-4 py-3 text-sm text-white font-medium">{dq.source}</td>
+                    <td className="px-4 py-3 text-sm text-gray-300">
+                      {dq.lastSync ? formatSyncTime(dq.lastSync) : 'Jamais'}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-right text-gray-300">
+                      {dq.recordCount.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <FreshnessBadge freshness={dq.freshness} />
+                    </td>
+                    <td className="px-4 py-3">
+                      {dq.issues.length === 0 ? (
+                        <span className="text-sm text-green-400">Aucun</span>
+                      ) : (
+                        <div className="space-y-1">
+                          {dq.issues.map((issue, i) => (
+                            <div key={i} className="flex items-center gap-1 text-sm text-yellow-400">
+                              <AlertTriangle className="w-3 h-3" />
+                              {issue}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-gray-400">
+                    Aucune donnee disponible
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -154,26 +173,31 @@ export default function HealthPage() {
       <div>
         <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
           <Clock className="w-5 h-5" />
-          Événements Récents
+          Evenements Recents
         </h2>
-        <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-          {data?.events.map((event, i) => (
-            <div key={i} className="flex items-start gap-3">
-              <div className={clsx(
-                'w-2 h-2 rounded-full mt-1.5',
-                event.level === 'info' ? 'bg-blue-400' :
-                event.level === 'warning' ? 'bg-yellow-400' : 'bg-red-400'
-              )} />
-              <div className="flex-1">
-                <p className="text-sm text-white">{event.message}</p>
-                <p className="text-xs text-gray-500">{event.timestamp}</p>
-              </div>
-            </div>
-          ))}
+        <div className="bg-gray-800 rounded-xl p-4">
+          <p className="text-sm text-gray-500 text-center py-4">
+            Aucun evenement recent
+          </p>
         </div>
       </div>
     </div>
   )
+}
+
+function formatSyncTime(isoStr: string): string {
+  try {
+    const d = new Date(isoStr)
+    return d.toLocaleString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  } catch {
+    return isoStr
+  }
 }
 
 function ServiceCard({ service }: { service: ServiceHealth }) {
@@ -194,7 +218,7 @@ function ServiceCard({ service }: { service: ServiceHealth }) {
       </div>
       <div className="text-sm text-gray-400">
         {service.latency && <p>Latence: {service.latency}ms</p>}
-        <p>Vérifié: {service.lastCheck}</p>
+        <p>Verifie: {service.lastCheck}</p>
       </div>
     </div>
   )
@@ -204,7 +228,7 @@ function FreshnessBadge({ freshness }: { freshness: 'fresh' | 'stale' | 'outdate
   const config = {
     fresh: { label: 'Frais', color: 'bg-green-500/20 text-green-400' },
     stale: { label: 'Ancien', color: 'bg-yellow-500/20 text-yellow-400' },
-    outdated: { label: 'Périmé', color: 'bg-red-500/20 text-red-400' },
+    outdated: { label: 'Perime', color: 'bg-red-500/20 text-red-400' },
   }
 
   return (
@@ -213,4 +237,3 @@ function FreshnessBadge({ freshness }: { freshness: 'fresh' | 'stale' | 'outdate
     </span>
   )
 }
-

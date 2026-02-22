@@ -11,7 +11,7 @@ from alembic import context
 
 from app.config import settings
 from app.models.base import Base
-from app.models import BankrollEntry, Fixture, Player, PlayerStats, OddsSnapshot, Recommendation
+from app.models import BankrollEntry, Fixture, Player, PlayerStats, OddsSnapshot, Recommendation, UserSettings
 
 # Alembic Config object
 config = context.config

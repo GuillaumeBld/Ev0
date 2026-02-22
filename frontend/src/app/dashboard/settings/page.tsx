@@ -1,42 +1,106 @@
 'use client'
 
-import { useState } from 'react'
-import { Save, Key, Bell, Sliders, Database } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Save, Key, Bell, Sliders, Database, Loader2 } from 'lucide-react'
+import { getSettings, saveSettings } from '@/lib/api'
+
+const DEFAULTS: Record<string, string> = {
+  odds_api_key: '',
+  fbref_user_agent: 'Ev0-Bot/1.0',
+  min_edge: '5',
+  min_confidence: '60',
+  min_odds: '1.5',
+  max_odds: '10',
+  stake_method: 'flat',
+  flat_stake: '10',
+  max_per_match: '50',
+  max_per_day: '200',
+  notify_value_pick: 'true',
+  notify_daily_report: 'true',
+  notify_data_quality: 'false',
+  alert_email: '',
+  sync_fixtures_freq: 'daily',
+  sync_odds_freq: '1h',
+  retention: '1y',
+  active_leagues: 'both',
+}
 
 export default function SettingsPage() {
-  const [saved, setSaved] = useState(false)
+  const queryClient = useQueryClient()
+  const [form, setForm] = useState<Record<string, string>>(DEFAULTS)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+
+  const { data: savedSettings, isLoading } = useQuery({
+    queryKey: ['settings'],
+    queryFn: getSettings,
+  })
+
+  // Populate form with saved settings when loaded
+  useEffect(() => {
+    if (savedSettings) {
+      setForm((prev) => ({ ...prev, ...savedSettings }))
+    }
+  }, [savedSettings])
+
+  const mutation = useMutation({
+    mutationFn: () => saveSettings(form),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+      setSaveStatus('saved')
+      setTimeout(() => setSaveStatus('idle'), 2000)
+    },
+    onError: () => {
+      setSaveStatus('error')
+      setTimeout(() => setSaveStatus('idle'), 3000)
+    },
+  })
+
+  const set = (key: string, value: string) => {
+    setForm((prev) => ({ ...prev, [key]: value }))
+  }
 
   const handleSave = () => {
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    mutation.mutate()
+  }
+
+  if (isLoading) {
+    return (
+      <div className="p-4 md:p-8 max-w-4xl flex items-center justify-center min-h-[50vh]">
+        <Loader2 className="w-8 h-8 text-brand-400 animate-spin" />
+      </div>
+    )
   }
 
   return (
     <div className="p-4 md:p-8 max-w-4xl">
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-white">Paramètres</h1>
-        <p className="text-gray-400 mt-1">Configuration du système Ev0</p>
+        <h1 className="text-2xl font-bold text-white">Parametres</h1>
+        <p className="text-gray-400 mt-1">Configuration du systeme Ev0</p>
       </div>
 
       <div className="space-y-6">
         {/* API Keys */}
         <SettingsSection
           icon={Key}
-          title="Clés API"
-          description="Configuration des accès aux services externes"
+          title="Cles API"
+          description="Configuration des acces aux services externes"
         >
           <div className="space-y-4">
             <InputField
               label="The Odds API Key"
               type="password"
-              placeholder="••••••••••••••••"
-              helper="https://the-odds-api.com pour obtenir une clé"
+              placeholder="Votre cle API"
+              value={form.odds_api_key}
+              onChange={(v) => set('odds_api_key', v)}
+              helper="https://the-odds-api.com pour obtenir une cle"
             />
             <InputField
               label="FBref User Agent"
               type="text"
-              defaultValue="Ev0-Bot/1.0"
-              helper="Identifiant pour les requêtes FBref"
+              value={form.fbref_user_agent}
+              onChange={(v) => set('fbref_user_agent', v)}
+              helper="Identifiant pour les requetes FBref"
             />
           </div>
         </SettingsSection>
@@ -44,34 +108,40 @@ export default function SettingsPage() {
         {/* Strategy Settings */}
         <SettingsSection
           icon={Sliders}
-          title="Stratégie"
-          description="Paramètres de sélection et de mise"
+          title="Strategie"
+          description="Parametres de selection et de mise"
         >
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <InputField
               label="Edge minimum"
               type="number"
-              defaultValue="5"
+              value={form.min_edge}
+              onChange={(v) => set('min_edge', v)}
               suffix="%"
             />
             <InputField
               label="Confidence minimum"
               type="number"
-              defaultValue="60"
+              value={form.min_confidence}
+              onChange={(v) => set('min_confidence', v)}
               suffix="%"
             />
             <InputField
               label="Cote minimum"
               type="number"
-              defaultValue="1.5"
+              value={form.min_odds}
+              onChange={(v) => set('min_odds', v)}
             />
             <InputField
               label="Cote maximum"
               type="number"
-              defaultValue="10"
+              value={form.max_odds}
+              onChange={(v) => set('max_odds', v)}
             />
             <SelectField
-              label="Méthode de mise"
+              label="Methode de mise"
+              value={form.stake_method}
+              onChange={(v) => set('stake_method', v)}
               options={[
                 { value: 'flat', label: 'Flat (fixe)' },
                 { value: 'kelly25', label: 'Kelly 25%' },
@@ -81,20 +151,23 @@ export default function SettingsPage() {
             <InputField
               label="Mise flat"
               type="number"
-              defaultValue="10"
-              suffix="€"
+              value={form.flat_stake}
+              onChange={(v) => set('flat_stake', v)}
+              suffix="EUR"
             />
             <InputField
               label="Max par match"
               type="number"
-              defaultValue="50"
-              suffix="€"
+              value={form.max_per_match}
+              onChange={(v) => set('max_per_match', v)}
+              suffix="EUR"
             />
             <InputField
               label="Max par jour"
               type="number"
-              defaultValue="200"
-              suffix="€"
+              value={form.max_per_day}
+              onChange={(v) => set('max_per_day', v)}
+              suffix="EUR"
             />
           </div>
         </SettingsSection>
@@ -108,23 +181,28 @@ export default function SettingsPage() {
           <div className="space-y-3">
             <ToggleField
               label="Alerte nouveau pick VALUE"
-              description="Notification quand un pick avec edge > 10% est détecté"
-              defaultChecked={true}
+              description="Notification quand un pick avec edge > 10% est detecte"
+              checked={form.notify_value_pick === 'true'}
+              onChange={(v) => set('notify_value_pick', v ? 'true' : 'false')}
             />
             <ToggleField
               label="Rapport quotidien"
-              description="Résumé des performances envoyé chaque soir"
-              defaultChecked={true}
+              description="Resume des performances envoye chaque soir"
+              checked={form.notify_daily_report === 'true'}
+              onChange={(v) => set('notify_daily_report', v ? 'true' : 'false')}
             />
             <ToggleField
-              label="Alerte qualité données"
-              description="Notification si une source de données est en erreur"
-              defaultChecked={false}
+              label="Alerte qualite donnees"
+              description="Notification si une source de donnees est en erreur"
+              checked={form.notify_data_quality === 'true'}
+              onChange={(v) => set('notify_data_quality', v ? 'true' : 'false')}
             />
             <InputField
               label="Email pour les alertes"
               type="email"
               placeholder="votre@email.com"
+              value={form.alert_email}
+              onChange={(v) => set('alert_email', v)}
             />
           </div>
         </SettingsSection>
@@ -132,12 +210,14 @@ export default function SettingsPage() {
         {/* Data Settings */}
         <SettingsSection
           icon={Database}
-          title="Données"
-          description="Paramètres d'ingestion et de stockage"
+          title="Donnees"
+          description="Parametres d'ingestion et de stockage"
         >
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <SelectField
-              label="Fréquence sync fixtures"
+              label="Frequence sync fixtures"
+              value={form.sync_fixtures_freq}
+              onChange={(v) => set('sync_fixtures_freq', v)}
               options={[
                 { value: 'daily', label: 'Quotidien (06:00)' },
                 { value: 'twice', label: '2x par jour' },
@@ -145,7 +225,9 @@ export default function SettingsPage() {
               ]}
             />
             <SelectField
-              label="Fréquence sync odds"
+              label="Frequence sync odds"
+              value={form.sync_odds_freq}
+              onChange={(v) => set('sync_odds_freq', v)}
               options={[
                 { value: '15min', label: 'Toutes les 15 min' },
                 { value: '30min', label: 'Toutes les 30 min' },
@@ -153,7 +235,9 @@ export default function SettingsPage() {
               ]}
             />
             <SelectField
-              label="Rétention historique"
+              label="Retention historique"
+              value={form.retention}
+              onChange={(v) => set('retention', v)}
               options={[
                 { value: '6m', label: '6 mois' },
                 { value: '1y', label: '1 an' },
@@ -162,6 +246,8 @@ export default function SettingsPage() {
             />
             <SelectField
               label="Ligues actives"
+              value={form.active_leagues}
+              onChange={(v) => set('active_leagues', v)}
               options={[
                 { value: 'both', label: 'Ligue 1 + Premier League' },
                 { value: 'ligue1', label: 'Ligue 1 uniquement' },
@@ -172,13 +258,21 @@ export default function SettingsPage() {
         </SettingsSection>
 
         {/* Save Button */}
-        <div className="flex justify-end pt-4">
+        <div className="flex items-center justify-end gap-3 pt-4">
+          {saveStatus === 'error' && (
+            <span className="text-sm text-red-400">Erreur lors de la sauvegarde</span>
+          )}
           <button
             onClick={handleSave}
-            className="flex items-center gap-2 px-6 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg transition-colors"
+            disabled={mutation.isPending}
+            className="flex items-center gap-2 px-6 py-2 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white rounded-lg transition-colors"
           >
-            <Save className="w-4 h-4" />
-            {saved ? 'Sauvegardé !' : 'Sauvegarder'}
+            {mutation.isPending ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4" />
+            )}
+            {saveStatus === 'saved' ? 'Sauvegarde !' : 'Sauvegarder'}
           </button>
         </div>
       </div>
@@ -186,12 +280,12 @@ export default function SettingsPage() {
   )
 }
 
-function SettingsSection({ 
-  icon: Icon, 
-  title, 
-  description, 
-  children 
-}: { 
+function SettingsSection({
+  icon: Icon,
+  title,
+  description,
+  children,
+}: {
   icon: any
   title: string
   description: string
@@ -213,18 +307,20 @@ function SettingsSection({
   )
 }
 
-function InputField({ 
-  label, 
-  type, 
-  placeholder, 
-  defaultValue,
+function InputField({
+  label,
+  type,
+  placeholder,
+  value,
+  onChange,
   suffix,
   helper,
-}: { 
+}: {
   label: string
   type: string
   placeholder?: string
-  defaultValue?: string
+  value: string
+  onChange: (v: string) => void
   suffix?: string
   helper?: string
 }) {
@@ -235,7 +331,8 @@ function InputField({
         <input
           type={type}
           placeholder={placeholder}
-          defaultValue={defaultValue}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
           className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500"
         />
         {suffix && (
@@ -249,17 +346,25 @@ function InputField({
   )
 }
 
-function SelectField({ 
-  label, 
+function SelectField({
+  label,
+  value,
+  onChange,
   options,
-}: { 
+}: {
   label: string
+  value: string
+  onChange: (v: string) => void
   options: { value: string; label: string }[]
 }) {
   return (
     <div>
       <label className="block text-sm text-gray-300 mb-1">{label}</label>
-      <select className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-brand-500">
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-brand-500"
+      >
         {options.map((opt) => (
           <option key={opt.value} value={opt.value}>{opt.label}</option>
         ))}
@@ -268,17 +373,17 @@ function SelectField({
   )
 }
 
-function ToggleField({ 
-  label, 
+function ToggleField({
+  label,
   description,
-  defaultChecked,
-}: { 
+  checked,
+  onChange,
+}: {
   label: string
   description: string
-  defaultChecked?: boolean
+  checked: boolean
+  onChange: (v: boolean) => void
 }) {
-  const [checked, setChecked] = useState(defaultChecked || false)
-
   return (
     <div className="flex items-center justify-between py-2">
       <div>
@@ -286,7 +391,7 @@ function ToggleField({
         <p className="text-xs text-gray-500">{description}</p>
       </div>
       <button
-        onClick={() => setChecked(!checked)}
+        onClick={() => onChange(!checked)}
         className={`relative w-11 h-6 rounded-full transition-colors ${
           checked ? 'bg-brand-600' : 'bg-gray-600'
         }`}
