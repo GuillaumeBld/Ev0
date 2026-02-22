@@ -93,6 +93,7 @@ class PlayerWithStats(BaseModel):
     api_football: PlayerStatsResponse | None
     fbref: PlayerStatsResponse | None
     understat: PlayerStatsResponse | None
+    fotmob: PlayerStatsResponse | None
     average: PlayerStatsResponse | None
 
     # Computed EV0 values (using average or best available)
@@ -190,6 +191,7 @@ async def list_players(
         api_football = player_stats.get("api_football")
         fbref = player_stats.get("fbref")
         understat = player_stats.get("understat")
+        fotmob = player_stats.get("fotmob")
         average = player_stats.get("average")
 
         # Filter by minutes if specified
@@ -197,12 +199,13 @@ async def list_players(
             (api_football.minutes_played if api_football else 0),
             (fbref.minutes_played if fbref else 0),
             (understat.minutes_played if understat else 0),
+            (fotmob.minutes_played if fotmob else 0),
         )
         if max_minutes < min_minutes:
             continue
 
         # Compute EV0 values (prefer average, fallback to available source)
-        ev0_source = average or fbref or understat or api_football
+        ev0_source = average or fbref or fotmob or understat or api_football
 
         response.append({
             "id": player.id,
@@ -213,6 +216,7 @@ async def list_players(
             "api_football": stats_to_response(api_football),
             "fbref": stats_to_response(fbref),
             "understat": stats_to_response(understat),
+            "fotmob": stats_to_response(fotmob),
             "average": stats_to_response(average),
             "ev0_xg_per_90": ev0_source.xg_per_90 if ev0_source and ev0_source.xg_per_90 else 0.0,
             "ev0_xa_per_90": ev0_source.xa_per_90 if ev0_source and ev0_source.xa_per_90 else 0.0,
@@ -323,8 +327,9 @@ async def get_player(
     api_football = stats_by_source.get("api_football")
     fbref = stats_by_source.get("fbref")
     understat = stats_by_source.get("understat")
+    fotmob = stats_by_source.get("fotmob")
     average = stats_by_source.get("average")
-    ev0_source = average or fbref or understat or api_football
+    ev0_source = average or fbref or fotmob or understat or api_football
 
     return {
         "id": player.id,
@@ -335,6 +340,7 @@ async def get_player(
         "api_football": stats_to_response(api_football),
         "fbref": stats_to_response(fbref),
         "understat": stats_to_response(understat),
+        "fotmob": stats_to_response(fotmob),
         "average": stats_to_response(average),
         "ev0_xg_per_90": ev0_source.xg_per_90 if ev0_source and ev0_source.xg_per_90 else 0.0,
         "ev0_xa_per_90": ev0_source.xa_per_90 if ev0_source and ev0_source.xa_per_90 else 0.0,

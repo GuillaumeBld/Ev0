@@ -33,6 +33,7 @@ from app.ingestion.understat_scraper import (
     fetch_understat_league,
     UNDERSTAT_LEAGUES,
 )
+from app.ingestion.fotmob_scraper import fetch_fotmob_league
 
 
 def normalize_name(name: str) -> str:
@@ -267,7 +268,7 @@ async def compute_and_store_averages(session: AsyncSession, player_id: int, leag
         PlayerStats.player_id == player_id,
         PlayerStats.league == league,
         PlayerStats.season == SEASON,
-        PlayerStats.source.in_(["fbref", "understat"]),
+        PlayerStats.source.in_(["fbref", "understat", "fotmob"]),
     )
     result = await session.execute(stmt)
     sources = result.scalars().all()
@@ -305,13 +306,19 @@ async def sync_league(league: str):
     print(f"  Found {len(understat_players)} players from Understat")
     print(f"  Found {len(understat_teams)} teams from Understat")
     
-    # 2. Fetch FBref data
+    # 2. Fetch FotMob data
+    print(f"\nFetching FotMob data for {league}...")
+    fotmob_players, fotmob_teams = await fetch_fotmob_league(league)
+    print(f"  Found {len(fotmob_players)} players from FotMob")
+    print(f"  Found {len(fotmob_teams)} teams from FotMob")
+
+    # 3. Fetch FBref data (optional, may be empty if soccerdata unavailable)
     print(f"\nFetching FBref data for {league}...")
     fbref_players, fbref_teams = await asyncio.to_thread(fetch_fbref_data, league)
     print(f"  Found {len(fbref_players)} players from FBref")
     print(f"  Found {len(fbref_teams)} teams from FBref")
-    
-    # 3. Store in database
+
+    # 4. Store in database
     print(f"\nStoring in database...")
     async with async_session() as session:
         # Store teams
@@ -319,11 +326,14 @@ async def sync_league(league: str):
         for t in understat_teams:
             await upsert_team(session, league, {"name": t["name"], "understat_id": t.get("understat_id")})
             team_count += 1
+        for t in fotmob_teams:
+            await upsert_team(session, league, {"name": t["name"]})
+            team_count += 1
         for t in fbref_teams:
             await upsert_team(session, league, {"name": t["name"], "fbref_id": t.get("fbref_id")})
             team_count += 1
         print(f"  Upserted {team_count} team records")
-        
+
         # Store Understat players
         for p in understat_players:
             player = await upsert_player(session, league, {
@@ -334,7 +344,17 @@ async def sync_league(league: str):
             })
             await store_stats(session, player.id, league, "understat", p)
         print(f"  Stored {len(understat_players)} Understat player records")
-        
+
+        # Store FotMob players
+        for p in fotmob_players:
+            player = await upsert_player(session, league, {
+                "name": p["name"],
+                "team": p["team"],
+                "position": p.get("position"),
+            })
+            await store_stats(session, player.id, league, "fotmob", p)
+        print(f"  Stored {len(fotmob_players)} FotMob player records")
+
         # Store FBref players
         for p in fbref_players:
             player = await upsert_player(session, league, {
