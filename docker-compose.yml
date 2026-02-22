@@ -27,7 +27,8 @@ services:
       DATABASE_URL: postgresql://ev0:secure_password_change_me@db:5432/ev0
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS_STR: "*"
-      DEPLOY_VERSION: "2026-02-21-v4"
+      ODDS_API_KEY: "f23a202732591c8cb45f14ca0ee32c45"
+      DEPLOY_VERSION: "2026-02-21-v5"
     volumes:
       - ./backend:/app
     depends_on:

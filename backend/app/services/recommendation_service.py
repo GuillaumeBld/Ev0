@@ -4,12 +4,21 @@ Combines pricing engine, odds data, and strategy to generate
 actionable betting recommendations.
 """
 
+import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.ingestion.odds import OddsAPIClient, SPORT_KEYS, MARKET_KEYS
+from app.models.players import Player, PlayerStats
 from app.pricing.goalscorer import calculate_goalscorer_price, calculate_edge
 from app.pricing.assist import calculate_assist_price
 from app.strategy.selector import select_bets, RecommendationFilter
+
+logger = logging.getLogger(__name__)
 
 
 async def generate_recommendations(
@@ -180,19 +189,128 @@ def _get_opponent_factor(opponent: str, market_type: str) -> float:
 
 async def get_recommendations_for_date(
     target_date: datetime,
+    db: AsyncSession,
     filter_config: RecommendationFilter | None = None,
 ) -> list[dict[str, Any]]:
     """
     Get recommendations for a specific date.
-    
-    This is a high-level function that:
-    1. Fetches fixtures for the date
-    2. Fetches player stats
-    3. Fetches latest odds
-    4. Generates recommendations
-    
-    Placeholder - needs actual data layer integration.
+
+    1. Fetches fixtures from Odds API for each league
+    2. Fetches player props for each event
+    3. Loads player stats from DB
+    4. Generates recommendations via the pricing pipeline
     """
-    # TODO: Integrate with actual data layer
-    # For now, return empty
-    return []
+    try:
+        odds_client = OddsAPIClient()
+    except ValueError:
+        logger.warning("ODDS_API_KEY not configured – returning empty recommendations")
+        return []
+
+    fixtures: list[dict[str, Any]] = []
+    odds_data: dict[str, list[dict[str, Any]]] = {}
+
+    # 1. Fetch events + player props for each league
+    for league, sport_key in SPORT_KEYS.items():
+        try:
+            events = await odds_client.get_events(sport_key)
+        except Exception as exc:
+            logger.error("Failed to fetch events for %s: %s", league, exc)
+            continue
+
+        for event in events:
+            event_id = event.get("id")
+            if not event_id:
+                continue
+
+            # Filter to target date (commence_time is ISO-8601)
+            commence = event.get("commence_time", "")
+            if commence:
+                try:
+                    event_dt = datetime.fromisoformat(commence.replace("Z", "+00:00"))
+                    if event_dt.date() != target_date.date():
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
+            fixtures.append({
+                "fixture_id": event_id,
+                "home_team": event.get("home_team", ""),
+                "away_team": event.get("away_team", ""),
+                "kickoff_utc": commence,
+                "league": league,
+            })
+
+            # Fetch player props for goalscorer (primary market)
+            fixture_odds: list[dict[str, Any]] = []
+            for market_type, market_key in MARKET_KEYS.items():
+                try:
+                    props = await odds_client.get_player_props(
+                        sport_key, event_id, market_key
+                    )
+                    for p in props:
+                        fixture_odds.append({
+                            "player_name": p["player_name"],
+                            "market_type": market_type,
+                            "odds": p["odds"],
+                            "bookmaker": p["bookmaker"],
+                        })
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to fetch %s props for event %s: %s",
+                        market_type, event_id, exc,
+                    )
+            odds_data[event_id] = fixture_odds
+
+    if not fixtures:
+        return []
+
+    # 2. Load player stats from DB (latest snapshot per player)
+    latest_subq = (
+        select(
+            PlayerStats.player_id,
+            func.max(PlayerStats.as_of_utc).label("max_date"),
+        )
+        .group_by(PlayerStats.player_id)
+        .subquery()
+    )
+
+    result = await db.execute(
+        select(PlayerStats, Player.name, Player.team)
+        .join(Player, Player.id == PlayerStats.player_id)
+        .join(
+            latest_subq,
+            (PlayerStats.player_id == latest_subq.c.player_id)
+            & (PlayerStats.as_of_utc == latest_subq.c.max_date),
+        )
+    )
+
+    player_stats: dict[str, dict[str, Any]] = {}
+    for row in result.all():
+        stats: PlayerStats = row[0]
+        player_name: str = row[1]
+        team: str | None = row[2]
+
+        minutes = stats.minutes_played or 0
+        matches = stats.matches_played or 1
+        expected_minutes = minutes / matches if matches > 0 else 75.0
+        conversion_rate = (stats.goals / stats.xg) if stats.xg and stats.xg > 0 else 1.0
+
+        player_stats[player_name] = {
+            "xg_per_90": stats.xg_per_90 or 0.3,
+            "xa_per_90": stats.xa_per_90 or 0.15,
+            "expected_minutes": expected_minutes,
+            "conversion_rate": conversion_rate,
+            "team": team,
+            "goals": stats.goals,
+            "assists": stats.assists,
+            "matches_played": stats.matches_played,
+        }
+
+    # 3. Generate recommendations
+    recs = await generate_recommendations(fixtures, player_stats, odds_data, filter_config)
+
+    # 4. Add unique IDs
+    for rec in recs:
+        rec["id"] = str(uuid.uuid4())
+
+    return recs

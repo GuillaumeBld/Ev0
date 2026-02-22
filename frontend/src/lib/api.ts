@@ -62,7 +62,11 @@ export async function getRecommendations(params?: {
   market_type?: string
   min_edge?: number
 }) {
-  const { data } = await api.get('/api/v1/recommendations', { params })
+  const queryParams: Record<string, string | number> = {}
+  if (params?.date) queryParams.target_date = params.date
+  if (params?.market_type) queryParams.market_type = params.market_type
+  if (params?.min_edge != null) queryParams.min_edge = params.min_edge
+  const { data } = await api.get('/api/v1/recommendations', { params: queryParams })
   return data
 }
 

@@ -151,27 +151,29 @@ class OddsAPIClient:
     
     async def get_player_props(
         self,
+        sport_key: str,
         event_id: str,
         market: str,
         bookmakers: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get player props odds for an event.
-        
+
         Args:
+            sport_key: Sport key (e.g. "soccer_france_ligue_one")
             event_id: Event ID from get_events
             market: "player_anytime_goalscorer" or "player_assist"
             bookmakers: List of bookmaker keys to fetch
-        
+
         Returns:
             List of odds dicts with player_name, bookmaker, odds
         """
         if bookmakers is None:
             bookmakers = BOOKMAKERS
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{self.base_url}/sports/{event_id}/odds",
+                f"{self.base_url}/sports/{sport_key}/events/{event_id}/odds",
                 params={
                     "apiKey": self.api_key,
                     "markets": market,
@@ -242,7 +244,7 @@ async def ingest_odds_for_league(
             continue
         
         try:
-            odds_data = await client.get_player_props(event_id, market_key)
+            odds_data = await client.get_player_props(sport_key, event_id, market_key)
             
             for od in odds_data:
                 snapshot = OddsSnapshot(

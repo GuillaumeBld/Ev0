@@ -16,6 +16,7 @@ interface Recommendation {
   edge: number
   confidence: number
   kickoff: string
+  explanation?: Record<string, any>
 }
 
 interface RecommendationCardProps {
@@ -48,11 +49,11 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
             <div className="flex items-center gap-2">
               <span className={clsx(
                 'px-2 py-0.5 rounded text-xs font-medium',
-                rec.market === 'Buteur' 
-                  ? 'bg-orange-500/20 text-orange-400' 
+                rec.market === 'goalscorer'
+                  ? 'bg-orange-500/20 text-orange-400'
                   : 'bg-blue-500/20 text-blue-400'
               )}>
-                {rec.market === 'Buteur' ? '🎯' : '🅰️'} {rec.market}
+                {rec.market === 'goalscorer' ? '🎯 Buteur' : '🅰️ Passeur'}
               </span>
               <span className="text-xs text-gray-500">{timeStr}</span>
             </div>
@@ -154,9 +155,35 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
       {expanded && (
         <div className="px-5 pb-5 border-t border-gray-700 pt-4">
           <div className="text-sm text-gray-400 space-y-2">
-            <p><strong className="text-gray-300">Calcul:</strong> Poisson λ basé sur xG/90, ajustements adversaire et forme</p>
-            <p><strong className="text-gray-300">Inputs:</strong> xG/90 = 0.52, mins attendues = 85, forme = 1.08</p>
-            <p><strong className="text-gray-300">Lambda:</strong> 0.47 → P(score) = 37.5%</p>
+            {rec.explanation?.inputs ? (() => {
+              const inputs = rec.explanation.inputs
+              const calc = rec.explanation.calculation || {}
+              const isGoalscorer = rec.market === 'goalscorer' || rec.market === 'Buteur'
+              return (
+                <>
+                  <p>
+                    <strong className="text-gray-300">Calcul:</strong>{' '}
+                    {calc.formula || 'Poisson λ basé sur xG/90, ajustements adversaire et forme'}
+                  </p>
+                  <p>
+                    <strong className="text-gray-300">Inputs:</strong>{' '}
+                    {isGoalscorer
+                      ? `xG/90 = ${inputs.xg_per_90?.toFixed(2) ?? '—'}, mins attendues = ${inputs.expected_minutes?.toFixed(0) ?? '—'}, forme = ${inputs.form_factor?.toFixed(2) ?? '—'}`
+                      : `xA/90 = ${inputs.xa_per_90?.toFixed(2) ?? '—'}, mins attendues = ${inputs.expected_minutes?.toFixed(0) ?? '—'}, forme = ${inputs.form_factor?.toFixed(2) ?? '—'}`
+                    }
+                  </p>
+                  <p>
+                    <strong className="text-gray-300">Lambda:</strong>{' '}
+                    {calc.adjusted_lambda?.toFixed(3) ?? '—'} → {isGoalscorer ? 'P(score)' : 'P(assist)'} = {rec.fairOdds > 0 ? `${(100 / rec.fairOdds).toFixed(1)}%` : '—'}
+                  </p>
+                  {rec.explanation.interpretation && (
+                    <p className="italic text-gray-500">{rec.explanation.interpretation}</p>
+                  )}
+                </>
+              )
+            })() : (
+              <p>Aucun détail de calcul disponible.</p>
+            )}
           </div>
         </div>
       )}

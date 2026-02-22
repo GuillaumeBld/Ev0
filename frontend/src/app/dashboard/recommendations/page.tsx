@@ -4,10 +4,43 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Filter, RefreshCw, TrendingUp, Calendar } from 'lucide-react'
 import { RecommendationCard } from '@/components/RecommendationCard'
-import { api } from '@/lib/api'
+import { getRecommendations } from '@/lib/api'
 
 type MarketFilter = 'all' | 'goalscorer' | 'assist'
 type EdgeFilter = 'all' | '5+' | '10+' | '15+'
+
+function edgeFilterToMinEdge(f: EdgeFilter): number | undefined {
+  if (f === '5+') return 0.05
+  if (f === '10+') return 0.10
+  if (f === '15+') return 0.15
+  return undefined
+}
+
+function parseOpponent(fixtureName: string, team: string): string {
+  const parts = fixtureName.split(' vs ')
+  if (parts.length === 2) {
+    return parts[0].trim() === team ? parts[1].trim() : parts[0].trim()
+  }
+  return fixtureName
+}
+
+interface ApiRecommendation {
+  id: string
+  fixture_id: string
+  fixture_name: string
+  kickoff_utc: string
+  player_id: string
+  player_name: string
+  team: string
+  market_type: 'goalscorer' | 'assist'
+  fair_odds: number
+  best_bookmaker: string
+  best_odds: number
+  edge: number
+  classification: string
+  confidence: number
+  explanation: Record<string, any>
+}
 
 export default function RecommendationsPage() {
   const [marketFilter, setMarketFilter] = useState<MarketFilter>('all')
@@ -19,18 +52,32 @@ export default function RecommendationsPage() {
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['recommendations', selectedDate, marketFilter, edgeFilter],
     queryFn: async () => {
-      // TODO: Replace with actual API call
-      return mockRecommendations
+      const minEdge = edgeFilterToMinEdge(edgeFilter)
+      const response = await getRecommendations({
+        date: selectedDate,
+        market_type: marketFilter !== 'all' ? marketFilter : undefined,
+        min_edge: minEdge,
+      })
+
+      const recs: ApiRecommendation[] = response.recommendations || []
+      return recs.map((rec) => ({
+        id: rec.id,
+        player: rec.player_name,
+        team: rec.team,
+        opponent: parseOpponent(rec.fixture_name, rec.team),
+        market: rec.market_type,
+        fairOdds: rec.fair_odds,
+        bestOdds: rec.best_odds,
+        bookmaker: rec.best_bookmaker,
+        edge: rec.edge,
+        confidence: rec.confidence,
+        kickoff: rec.kickoff_utc,
+        explanation: rec.explanation,
+      }))
     },
   })
 
-  const filteredRecs = (data || []).filter(rec => {
-    if (marketFilter !== 'all' && rec.market !== marketFilter) return false
-    if (edgeFilter === '5+' && rec.edge < 0.05) return false
-    if (edgeFilter === '10+' && rec.edge < 0.10) return false
-    if (edgeFilter === '15+' && rec.edge < 0.15) return false
-    return true
-  })
+  const filteredRecs = data || []
 
   return (
     <div className="p-8">
@@ -122,59 +169,3 @@ export default function RecommendationsPage() {
     </div>
   )
 }
-
-// Mock data
-const mockRecommendations = [
-  {
-    id: '1',
-    player: 'Kylian Mbappé',
-    team: 'Paris Saint-Germain',
-    opponent: 'Olympique Lyon',
-    market: 'goalscorer',
-    fairOdds: 1.95,
-    bestOdds: 2.25,
-    bookmaker: 'Betclic',
-    edge: 0.154,
-    confidence: 0.82,
-    kickoff: '2024-02-01T20:45:00Z',
-  },
-  {
-    id: '2',
-    player: 'Ousmane Dembélé',
-    team: 'Paris Saint-Germain',
-    opponent: 'Olympique Lyon',
-    market: 'assist',
-    fairOdds: 3.20,
-    bestOdds: 3.75,
-    bookmaker: 'Unibet',
-    edge: 0.172,
-    confidence: 0.75,
-    kickoff: '2024-02-01T20:45:00Z',
-  },
-  {
-    id: '3',
-    player: 'Mohamed Salah',
-    team: 'Liverpool',
-    opponent: 'Manchester City',
-    market: 'goalscorer',
-    fairOdds: 2.10,
-    bestOdds: 2.45,
-    bookmaker: 'Betclic',
-    edge: 0.167,
-    confidence: 0.88,
-    kickoff: '2024-02-01T17:30:00Z',
-  },
-  {
-    id: '4',
-    player: 'Kevin De Bruyne',
-    team: 'Manchester City',
-    opponent: 'Liverpool',
-    market: 'assist',
-    fairOdds: 2.80,
-    bestOdds: 3.10,
-    bookmaker: 'PMU',
-    edge: 0.107,
-    confidence: 0.79,
-    kickoff: '2024-02-01T17:30:00Z',
-  },
-]
