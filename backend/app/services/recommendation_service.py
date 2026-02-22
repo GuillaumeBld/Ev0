@@ -30,6 +30,35 @@ POSITION_DEFAULTS: dict[str, dict[str, float]] = {
 DEFAULT_POSITION_FALLBACK = {"xg_per_90": 0.10, "xa_per_90": 0.08}  # Unknown position
 
 
+def _normalize_position(raw_position: str | None) -> str | None:
+    """Map various position formats to canonical FW/MF/DF/GK.
+
+    Understat uses e.g. "F M S", "D S", "GK S", "M S".
+    FBref uses "FW", "MF", "DF", "GK".
+    We pick the primary role from multi-position strings.
+    """
+    if not raw_position:
+        return None
+    pos = raw_position.strip().upper()
+    # Direct match for standard codes
+    if pos in POSITION_DEFAULTS:
+        return pos
+    # Check for GK first (always takes priority)
+    if "GK" in pos:
+        return "GK"
+    # Forward indicators
+    if pos.startswith("F") or "FW" in pos:
+        return "FW"
+    # Defender indicators
+    if pos.startswith("D") or "DF" in pos or "CB" in pos:
+        return "DF"
+    # Midfielder indicators
+    if pos.startswith("M") or "MF" in pos or "AM" in pos:
+        return "MF"
+    # Understat "S" alone means Sub — treat as unknown
+    return None
+
+
 async def generate_recommendations(
     fixtures: list[dict[str, Any]],
     player_stats: dict[str, dict[str, Any]],  # player_name -> stats
@@ -419,8 +448,9 @@ async def get_recommendations_for_date(
             stats: PlayerStats = row[0]
             player_name: str = row[1]
             team: str | None = row[2]
-            position: str | None = row[3]
+            raw_position: str | None = row[3]
             normalized_name: str | None = row[4]
+            position = _normalize_position(raw_position)
 
             # Step 1: Skip GKs at the data loading stage too
             if position == "GK":
