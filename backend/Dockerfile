@@ -12,6 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml .
 RUN pip install --no-cache-dir -e .
 
+# Cache buster — changes on every deploy
+ARG CACHE_BUST=1
+
 # Copy application
 COPY . .
 

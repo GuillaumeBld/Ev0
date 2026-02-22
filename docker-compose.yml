@@ -22,6 +22,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        CACHE_BUST: "2026-02-22-v7"
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://ev0:secure_password_change_me@db:5432/ev0
