@@ -169,23 +169,23 @@ class TestCorrelationCheck:
 
     def test_same_team_correlated(self):
         bets = [
-            {"fixture_id": "f1", "player": "Mbappe", "team": "PSG"},
-            {"fixture_id": "f2", "player": "Hakimi", "team": "PSG"},
+            {"fixture_id": "f1", "player_name": "Mbappe", "team": "PSG"},
+            {"fixture_id": "f2", "player_name": "Hakimi", "team": "PSG"},
         ]
-        
+
         correlation = check_correlation(bets[0], bets[1])
-        
+
         # Same team, different match = moderate correlation
         assert 0.2 <= correlation <= 0.6
 
     def test_different_teams_uncorrelated(self):
         bets = [
-            {"fixture_id": "f1", "player": "Mbappe", "team": "PSG"},
-            {"fixture_id": "f2", "player": "Salah", "team": "Liverpool"},
+            {"fixture_id": "f1", "player_name": "Mbappe", "team": "PSG"},
+            {"fixture_id": "f2", "player_name": "Salah", "team": "Liverpool"},
         ]
-        
+
         correlation = check_correlation(bets[0], bets[1])
-        
+
         # Different everything = low correlation
         assert correlation < 0.2
 

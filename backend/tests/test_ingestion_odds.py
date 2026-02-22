@@ -137,7 +137,7 @@ class TestOddsAPIClient:
             json=Mock(return_value=sample_response)
         )
         
-        odds = await client.get_player_props("abc123", "player_goal_scorer")
+        odds = await client.get_player_props("soccer_france_ligue_one", "abc123", "player_goal_scorer")
         
         assert len(odds) > 0
         assert odds[0]["player_name"] == "Kylian Mbappe"
