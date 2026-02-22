@@ -387,61 +387,73 @@ async def get_recommendations_for_date(
         return [], {"fixtures_count": 0, "odds_data_keys": list(odds_data.keys()), "stage": "no_fixtures_for_date"}
 
     # 2. Load player stats from DB (latest snapshot per player)
-    latest_subq = (
-        select(
-            PlayerStats.player_id,
-            func.max(PlayerStats.as_of_utc).label("max_date"),
+    #    Try Redis cache first to avoid repeated DB queries
+    from app.cache import get_cached_player_stats_map, cache_player_stats_map
+
+    cached_stats = await get_cached_player_stats_map()
+    if cached_stats is not None:
+        logger.info("Using cached player stats (%d players)", len(cached_stats))
+        player_stats = cached_stats
+    else:
+        latest_subq = (
+            select(
+                PlayerStats.player_id,
+                func.max(PlayerStats.as_of_utc).label("max_date"),
+            )
+            .group_by(PlayerStats.player_id)
+            .subquery()
         )
-        .group_by(PlayerStats.player_id)
-        .subquery()
-    )
 
-    result = await db.execute(
-        select(PlayerStats, Player.name, Player.team, Player.position, Player.normalized_name)
-        .join(Player, Player.id == PlayerStats.player_id)
-        .join(
-            latest_subq,
-            (PlayerStats.player_id == latest_subq.c.player_id)
-            & (PlayerStats.as_of_utc == latest_subq.c.max_date),
+        result = await db.execute(
+            select(PlayerStats, Player.name, Player.team, Player.position, Player.normalized_name)
+            .join(Player, Player.id == PlayerStats.player_id)
+            .join(
+                latest_subq,
+                (PlayerStats.player_id == latest_subq.c.player_id)
+                & (PlayerStats.as_of_utc == latest_subq.c.max_date),
+            )
         )
-    )
 
-    player_stats: dict[str, dict[str, Any]] = {}
-    for row in result.all():
-        stats: PlayerStats = row[0]
-        player_name: str = row[1]
-        team: str | None = row[2]
-        position: str | None = row[3]
-        normalized_name: str | None = row[4]
+        player_stats: dict[str, dict[str, Any]] = {}
+        for row in result.all():
+            stats: PlayerStats = row[0]
+            player_name: str = row[1]
+            team: str | None = row[2]
+            position: str | None = row[3]
+            normalized_name: str | None = row[4]
 
-        # Step 1: Skip GKs at the data loading stage too
-        if position == "GK":
-            continue
+            # Step 1: Skip GKs at the data loading stage too
+            if position == "GK":
+                continue
 
-        minutes = stats.minutes_played or 0
-        matches = stats.matches_played or 1
-        expected_minutes = minutes / matches if matches > 0 else 75.0
+            minutes = stats.minutes_played or 0
+            matches = stats.matches_played or 1
+            expected_minutes = minutes / matches if matches > 0 else 75.0
 
-        # Step 2: Clamp conversion rate to [0.5, 2.0], require >= 3 matches
-        raw_cr = (stats.goals / stats.xg) if stats.xg and stats.xg > 0 else 1.0
-        conversion_rate = max(0.5, min(2.0, raw_cr)) if (stats.matches_played or 0) >= 3 else 1.0
+            # Step 2: Clamp conversion rate to [0.5, 2.0], require >= 3 matches
+            raw_cr = (stats.goals / stats.xg) if stats.xg and stats.xg > 0 else 1.0
+            conversion_rate = max(0.5, min(2.0, raw_cr)) if (stats.matches_played or 0) >= 3 else 1.0
 
-        # Step 1: Position-based defaults for missing xG/xA
-        pos_defaults = POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK) if position else DEFAULT_POSITION_FALLBACK
-        xg_per_90 = stats.xg_per_90 if stats.xg_per_90 is not None else pos_defaults["xg_per_90"]
-        xa_per_90 = stats.xa_per_90 if stats.xa_per_90 is not None else pos_defaults["xa_per_90"]
+            # Step 1: Position-based defaults for missing xG/xA
+            pos_defaults = POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK) if position else DEFAULT_POSITION_FALLBACK
+            xg_per_90 = stats.xg_per_90 if stats.xg_per_90 is not None else pos_defaults["xg_per_90"]
+            xa_per_90 = stats.xa_per_90 if stats.xa_per_90 is not None else pos_defaults["xa_per_90"]
 
-        player_stats[player_name] = {
-            "xg_per_90": xg_per_90,
-            "xa_per_90": xa_per_90,
-            "expected_minutes": expected_minutes,
-            "conversion_rate": conversion_rate,
-            "team": team,
-            "position": position,
-            "goals": stats.goals,
-            "assists": stats.assists,
-            "matches_played": stats.matches_played,
-        }
+            player_stats[player_name] = {
+                "xg_per_90": xg_per_90,
+                "xa_per_90": xa_per_90,
+                "expected_minutes": expected_minutes,
+                "conversion_rate": conversion_rate,
+                "team": team,
+                "position": position,
+                "goals": stats.goals,
+                "assists": stats.assists,
+                "matches_played": stats.matches_played,
+            }
+
+        # Cache for next request
+        if player_stats:
+            await cache_player_stats_map(player_stats)
 
     # Step 5: Compute team strengths for opponent factor
     team_strengths = await _compute_team_strengths(db)

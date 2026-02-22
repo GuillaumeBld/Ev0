@@ -140,20 +140,30 @@ class OddsAPIClient:
     async def get_events(self, sport_key: str) -> list[dict[str, Any]]:
         """
         Get upcoming events for a sport.
-        
+
         Returns list of events with id, home_team, away_team, commence_time.
+        Uses Redis cache to avoid hammering the API.
         """
+        from app.cache import get_cached_odds_events, cache_odds_events
+
+        cached = await get_cached_odds_events(sport_key)
+        if cached is not None:
+            logger.debug("Cache HIT for events %s (%d events)", sport_key, len(cached))
+            return cached
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{self.base_url}/sports/{sport_key}/events",
                 params={"apiKey": self.api_key},
                 timeout=30.0,
             )
-            
+
             if response.status_code != 200:
                 raise Exception(f"Odds API error: {response.status_code}")
-            
-            return response.json()
+
+            events = response.json()
+            await cache_odds_events(sport_key, events)
+            return events
     
     async def get_player_props(
         self,
@@ -172,8 +182,16 @@ class OddsAPIClient:
             regions: List of region keys to fetch (default: eu, uk, us)
 
         Returns:
-            List of odds dicts with player_name, bookmaker, odds
+            List of odds dicts with player_name, bookmaker, odds.
+            Uses Redis cache to avoid hammering the API.
         """
+        from app.cache import get_cached_player_props, cache_player_props
+
+        cached = await get_cached_player_props(sport_key, event_id, market)
+        if cached is not None:
+            logger.debug("Cache HIT for props %s/%s/%s", sport_key, event_id, market)
+            return cached
+
         if regions is None:
             regions = REGIONS
 
@@ -187,12 +205,14 @@ class OddsAPIClient:
                 },
                 timeout=30.0,
             )
-            
+
             if response.status_code != 200:
                 raise Exception(f"Odds API error: {response.status_code}")
-            
+
             data = response.json()
-            return self._parse_player_props(data)
+            props = self._parse_player_props(data)
+            await cache_player_props(sport_key, event_id, market, props)
+            return props
     
     def _parse_player_props(self, data: dict) -> list[dict[str, Any]]:
         """Parse player props from API response.

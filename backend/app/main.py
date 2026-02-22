@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import backtest, fixtures, health, history, players, pricing, recommendations
+from app.cache import close_redis
 from app.config import settings
 from app.db import engine
 
@@ -17,6 +18,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     yield
     # Shutdown
+    await close_redis()
     await engine.dispose()
 
 

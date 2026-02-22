@@ -23,20 +23,41 @@ services:
       context: ./backend
       dockerfile: Dockerfile
       args:
-        CACHE_BUST: "2026-02-22-v10"
+        CACHE_BUST: "2026-02-22-v11"
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://ev0:secure_password_change_me@db:5432/ev0}
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS_STR: ${CORS_ORIGINS_STR:-http://ev0-compose-z5hvqt-a4f9a7-213-130-144-204.traefik.me}
       ODDS_API_KEY: ${ODDS_API_KEY:-f23a202732591c8cb45f14ca0ee32c45}
-      DEPLOY_VERSION: "2026-02-22-v10"
+      DEPLOY_VERSION: "2026-02-22-v11"
     depends_on:
       - db
       - redis
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     networks:
         - dokploy-network
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        CACHE_BUST: "2026-02-22-v11"
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://ev0:secure_password_change_me@db:5432/ev0}
+      REDIS_URL: redis://redis:6379/0
+      ODDS_API_KEY: ${ODDS_API_KEY:-f23a202732591c8cb45f14ca0ee32c45}
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      API_FOOTBALL_KEY: ${API_FOOTBALL_KEY:-}
+    depends_on:
+      - db
+      - redis
+      - backend
+    command: python -m app.worker
+    networks:
+      - dokploy-network
   frontend:
     build:
       context: ./frontend
