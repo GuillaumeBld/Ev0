@@ -18,6 +18,13 @@ FOTMOB_LEAGUES = {
 # Season name to match — must match what FotMob calls the current season
 FOTMOB_SEASON_NAME = "2025/2026"
 
+# Hardcoded season IDs for 2025/2026 (TournamentId from FotMob's seasonStatLinks)
+# Avoids calling www.fotmob.com (can be rate-limited/blocked); only data.fotmob.com CDN is used
+FOTMOB_SEASON_IDS = {
+    "ligue_1": 27212,
+    "premier_league": 27110,
+}
+
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -105,8 +112,12 @@ async def fetch_fotmob_league(league: str) -> tuple[list[dict], list[dict]]:
     if not league_id:
         raise ValueError(f"Unknown league: {league}")
 
+    # Use hardcoded season ID first; fall back to API discovery
+    season_id: int | None = FOTMOB_SEASON_IDS.get(league)
+
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        season_id = await _get_season_id(client, league_id)
+        if season_id is None:
+            season_id = await _get_season_id(client, league_id)
         if not season_id:
             print(f"  Could not determine FotMob season ID for {league}")
             return [], []
