@@ -113,7 +113,7 @@ async def get_recommendations(
     )
 
 
-@router.get("/recommendations/debug")
+@router.get("/recommendations-debug")
 async def debug_recommendations(
     db: AsyncSession = Depends(get_db),
     target_date: date | None = Query(None),
