@@ -82,7 +82,7 @@ async def get_recommendations(
     try:
         raw_recs = await get_recommendations_for_date(dt, db, filter_config)
     except Exception as exc:
-        logger.error("Failed to generate recommendations: %s", exc)
+        logger.error("Failed to generate recommendations: %s", exc, exc_info=True)
         raw_recs = []
 
     # Transform to response models
@@ -111,6 +111,22 @@ async def get_recommendations(
         count=len(recommendations),
         recommendations=recommendations,
     )
+
+
+@router.get("/recommendations/debug")
+async def debug_recommendations(
+    db: AsyncSession = Depends(get_db),
+    target_date: date | None = Query(None),
+):
+    """Debug endpoint — returns raw error if pipeline fails."""
+    import traceback
+    effective_date = target_date or date.today()
+    dt = datetime.combine(effective_date, datetime.min.time(), tzinfo=timezone.utc)
+    try:
+        raw_recs = await get_recommendations_for_date(dt, db)
+        return {"status": "ok", "count": len(raw_recs), "sample": raw_recs[:2]}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "traceback": traceback.format_exc()}
 
 
 @router.get("/recommendations/{recommendation_id}", response_model=Recommendation)
