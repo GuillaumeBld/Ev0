@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import String, Float, Integer, DateTime, ForeignKey, Text
+from sqlalchemy import DateTime, Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -26,7 +26,9 @@ class BankrollEntry(Base, TimestampMixin):
 
     # Optional link to recommendation (for bet entries)
     recommendation_id: Mapped[int | None] = mapped_column(
-        ForeignKey("recommendations.id"), nullable=True, index=True,
+        ForeignKey("recommendations.id"),
+        nullable=True,
+        index=True,
     )
 
     # Stake amount (for bet entries)

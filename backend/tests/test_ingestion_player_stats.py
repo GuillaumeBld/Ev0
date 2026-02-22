@@ -3,16 +3,16 @@
 RED phase: Failing tests for goalscorer and assist stats.
 """
 
-import pytest
-from datetime import datetime
 from unittest.mock import Mock, patch
+
+import pytest
 
 from app.ingestion.player_stats import (
     FBrefPlayerStatsParser,
+    calculate_form_factor,
+    calculate_per_90,
     fetch_player_stats,
     normalize_player_name,
-    calculate_per_90,
-    calculate_form_factor,
 )
 
 
@@ -54,7 +54,7 @@ class TestCalculateFormFactor:
         # Last 5 matches: recent has higher weight
         recent_xg = [0.8, 0.6, 0.5, 0.4, 0.3]  # Most recent first
         factor = calculate_form_factor(recent_xg, decay_lambda=0.025)
-        
+
         # Should be influenced more by recent (0.8) than old (0.3)
         assert factor > 0.5
 
@@ -122,7 +122,7 @@ class TestFBrefPlayerStatsParser:
     def test_parses_shooting_stats(self, sample_shooting_html):
         parser = FBrefPlayerStatsParser()
         stats = parser.parse_shooting(sample_shooting_html)
-        
+
         assert len(stats) == 2
         mbappe = stats[0]
         assert mbappe["player_name"] == "Kylian Mbappé"
@@ -134,7 +134,7 @@ class TestFBrefPlayerStatsParser:
     def test_parses_passing_stats(self, sample_passing_html):
         parser = FBrefPlayerStatsParser()
         stats = parser.parse_passing(sample_passing_html)
-        
+
         assert len(stats) == 1
         mbappe = stats[0]
         assert mbappe["assists"] == 8
@@ -144,7 +144,7 @@ class TestFBrefPlayerStatsParser:
     def test_calculates_per90_automatically(self, sample_shooting_html):
         parser = FBrefPlayerStatsParser()
         stats = parser.parse_shooting(sample_shooting_html)
-        
+
         mbappe = stats[0]
         # 12.5 xG in 1800 minutes = 0.625 per 90
         assert "xg_per_90" in mbappe
@@ -157,8 +157,7 @@ class TestFetchPlayerStats:
     @patch("app.ingestion.player_stats.httpx.get")
     def test_fetches_team_stats(self, mock_get):
         mock_get.return_value = Mock(
-            status_code=200,
-            text="<html><table id='stats_shooting'><tbody></tbody></table></html>"
+            status_code=200, text="<html><table id='stats_shooting'><tbody></tbody></table></html>"
         )
 
         result = fetch_player_stats("paris-saint-germain", "2024-2025")
@@ -169,12 +168,9 @@ class TestFetchPlayerStats:
     @patch("app.ingestion.player_stats.httpx.get")
     def test_combines_shooting_and_passing(self, mock_get):
         """Stats should merge shooting and passing data per player."""
-        mock_get.return_value = Mock(
-            status_code=200,
-            text="<html></html>"
-        )
-        
+        mock_get.return_value = Mock(status_code=200, text="<html></html>")
+
         # This tests the merge logic
         # Implementation should combine both stat types
-        stats = fetch_player_stats("liverpool", "2024-2025")
+        fetch_player_stats("liverpool", "2024-2025")
         # After merge, each player should have both xg and xa

@@ -1,8 +1,8 @@
 """Recommendations API endpoints."""
 
 import logging
-from datetime import date, datetime, timezone
-from enum import Enum
+from datetime import UTC, date, datetime
+from enum import StrEnum
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -10,10 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.models.recommendations import Recommendation as RecommendationModel
 from app.models.bankroll import BankrollEntry
-from app.services.recommendation_service import get_recommendations_for_date
+from app.models.recommendations import Recommendation as RecommendationModel
 from app.rate_limit import limiter
+from app.services.recommendation_service import get_recommendations_for_date
 from app.strategy.selector import RecommendationFilter
 
 logger = logging.getLogger(__name__)
@@ -21,14 +21,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-class MarketType(str, Enum):
+class MarketType(StrEnum):
     """Market type enum."""
 
     GOALSCORER = "goalscorer"
     ASSIST = "assist"
 
 
-class Classification(str, Enum):
+class Classification(StrEnum):
     """Recommendation classification."""
 
     VALUE = "VALUE"
@@ -74,7 +74,7 @@ async def get_recommendations(
 ) -> RecommendationsResponse:
     """Get betting recommendations for a given date."""
     effective_date = target_date or date.today()
-    dt = datetime.combine(effective_date, datetime.min.time(), tzinfo=timezone.utc)
+    dt = datetime.combine(effective_date, datetime.min.time(), tzinfo=UTC)
 
     error_msg = None
     try:
@@ -92,22 +92,24 @@ async def get_recommendations(
     # Transform to response models
     recommendations = []
     for rec in raw_recs:
-        recommendations.append(Recommendation(
-            id=rec.get("id", ""),
-            fixture_id=rec.get("fixture_id", ""),
-            fixture_name=rec.get("fixture_name", ""),
-            kickoff_utc=str(rec.get("kickoff_utc", "")),
-            player_name=rec.get("player_name", ""),
-            team=rec.get("team", ""),
-            market_type=rec.get("market_type", "goalscorer"),
-            fair_odds=rec.get("fair_odds", 0.0),
-            best_bookmaker=rec.get("best_bookmaker", ""),
-            best_odds=rec.get("market_odds", 0.0),
-            edge=rec.get("edge", 0.0),
-            classification=rec.get("classification", "NO_VALUE"),
-            confidence=rec.get("confidence", 0.5),
-            explanation=rec.get("explanation", {}),
-        ))
+        recommendations.append(
+            Recommendation(
+                id=rec.get("id", ""),
+                fixture_id=rec.get("fixture_id", ""),
+                fixture_name=rec.get("fixture_name", ""),
+                kickoff_utc=str(rec.get("kickoff_utc", "")),
+                player_name=rec.get("player_name", ""),
+                team=rec.get("team", ""),
+                market_type=rec.get("market_type", "goalscorer"),
+                fair_odds=rec.get("fair_odds", 0.0),
+                best_bookmaker=rec.get("best_bookmaker", ""),
+                best_odds=rec.get("market_odds", 0.0),
+                edge=rec.get("edge", 0.0),
+                classification=rec.get("classification", "NO_VALUE"),
+                confidence=rec.get("confidence", 0.5),
+                explanation=rec.get("explanation", {}),
+            )
+        )
 
     return RecommendationsResponse(
         date=str(effective_date),
@@ -153,11 +155,13 @@ async def get_recommendation_detail(
 
 # ── PATCH: Approve / Reject / Record Result ──────────────────────
 
+
 class RecommendationUpdate(BaseModel):
     """Update a recommendation's status or result."""
-    status: str | None = None          # approved, rejected, executed
-    result: str | None = None          # won, lost, void, push
-    stake: float | None = None         # stake amount (for bankroll tracking)
+
+    status: str | None = None  # approved, rejected, executed
+    result: str | None = None  # won, lost, void, push
+    stake: float | None = None  # stake amount (for bankroll tracking)
     operator_notes: str | None = None
 
 
@@ -192,7 +196,7 @@ async def update_recommendation(
     if not rec:
         raise HTTPException(status_code=404, detail="Recommendation not found")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Update status (approve/reject)
     if body.status:
@@ -247,9 +251,7 @@ async def update_recommendation(
 async def _get_current_balance(db: AsyncSession) -> float:
     """Get the current bankroll balance."""
     result = await db.execute(
-        select(BankrollEntry)
-        .order_by(BankrollEntry.transacted_utc.desc())
-        .limit(1)
+        select(BankrollEntry).order_by(BankrollEntry.transacted_utc.desc()).limit(1)
     )
     latest = result.scalar_one_or_none()
     return latest.balance_after if latest else 0.0

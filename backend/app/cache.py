@@ -71,9 +71,9 @@ async def cache_delete(pattern: str) -> None:
 # ── Domain-specific cache helpers ────────────────────────────────
 
 # TTLs
-ODDS_EVENTS_TTL = 300       # 5 min — list of upcoming events
+ODDS_EVENTS_TTL = 300  # 5 min — list of upcoming events
 ODDS_PLAYER_PROPS_TTL = 120  # 2 min — player props per event
-PLAYER_STATS_TTL = 3600      # 1 hour — DB player stats
+PLAYER_STATS_TTL = 3600  # 1 hour — DB player stats
 
 
 async def cache_odds_events(sport_key: str, events: list[dict]) -> None:

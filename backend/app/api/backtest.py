@@ -1,9 +1,8 @@
 """Backtest API endpoint."""
 
 import logging
-import math
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -20,11 +19,12 @@ router = APIRouter()
 
 # ── Request / Response models ────────────────────────────────────
 
+
 class BacktestConfig(BaseModel):
-    period: str = "6m"            # 6m, 12m, season_2023_24
-    min_edge: float = 0.05        # 5%
-    stake_method: str = "flat_10" # flat_10, kelly_25, kelly_10
-    markets: str = "all"          # all, goalscorer, assist
+    period: str = "6m"  # 6m, 12m, season_2023_24
+    min_edge: float = 0.05  # 5%
+    stake_method: str = "flat_10"  # flat_10, kelly_25, kelly_10
+    markets: str = "all"  # all, goalscorer, assist
 
 
 class PnlPoint(BaseModel):
@@ -58,6 +58,7 @@ class BacktestResponse(BaseModel):
 
 # ── Endpoint ─────────────────────────────────────────────────────
 
+
 @router.post("/backtest", response_model=BacktestResponse)
 async def run_backtest(
     config: BacktestConfig,
@@ -65,12 +66,12 @@ async def run_backtest(
 ):
     """Run a backtest on historical settled recommendations."""
     # Determine date range
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if config.period == "12m":
         start = now - timedelta(days=365)
     elif config.period == "season_2023_24":
-        start = datetime(2023, 8, 1, tzinfo=timezone.utc)
-        now = datetime(2024, 6, 30, tzinfo=timezone.utc)
+        start = datetime(2023, 8, 1, tzinfo=UTC)
+        now = datetime(2024, 6, 30, tzinfo=UTC)
     else:  # default 6m
         start = now - timedelta(days=180)
 
@@ -97,8 +98,15 @@ async def run_backtest(
     # If no data, return zeroed results
     if not recs:
         return BacktestResponse(
-            roi=0, brierScore=0, winRate=0, wins=0, losses=0, totalBets=0,
-            pnlCurve=[], calibration=[], edgeDistribution=[],
+            roi=0,
+            brierScore=0,
+            winRate=0,
+            wins=0,
+            losses=0,
+            totalBets=0,
+            pnlCurve=[],
+            calibration=[],
+            edgeDistribution=[],
         )
 
     # Compute stake per bet
@@ -128,7 +136,9 @@ async def run_backtest(
     }
 
     # Calibration bins
-    cal_bins: dict[int, dict] = defaultdict(lambda: {"predicted_sum": 0.0, "actual_sum": 0, "count": 0})
+    cal_bins: dict[int, dict] = defaultdict(
+        lambda: {"predicted_sum": 0.0, "actual_sum": 0, "count": 0}
+    )
 
     for rec in recs:
         stake = compute_stake(rec)
@@ -149,7 +159,11 @@ async def run_backtest(
         monthly_pnl[month_key] += pnl
 
         # Brier score: (predicted_prob - outcome)^2
-        predicted_prob = rec.fair_probability if rec.fair_probability else (1.0 / rec.fair_odds if rec.fair_odds > 0 else 0.5)
+        predicted_prob = (
+            rec.fair_probability
+            if rec.fair_probability
+            else (1.0 / rec.fair_odds if rec.fair_odds > 0 else 0.5)
+        )
         outcome = 1.0 if is_win else 0.0
         brier_sum += (predicted_prob - outcome) ** 2
 
@@ -191,22 +205,26 @@ async def run_backtest(
     for bin_idx in sorted(cal_bins.keys()):
         b = cal_bins[bin_idx]
         if b["count"] > 0:
-            calibration.append(CalibrationPoint(
-                predicted=round(b["predicted_sum"] / b["count"], 3),
-                actual=round(b["actual_sum"] / b["count"], 3),
-                count=b["count"],
-            ))
+            calibration.append(
+                CalibrationPoint(
+                    predicted=round(b["predicted_sum"] / b["count"], 3),
+                    actual=round(b["actual_sum"] / b["count"], 3),
+                    count=b["count"],
+                )
+            )
 
     # Build edge distribution
     edge_dist = []
     for bucket_name in ["5-8%", "8-12%", "12-15%", "15%+"]:
         b = edge_buckets[bucket_name]
         bucket_roi = (b["pnl"] / b["staked"] * 100) if b["staked"] > 0 else 0.0
-        edge_dist.append(EdgeBucket(
-            bucket=bucket_name,
-            count=b["count"],
-            roi=round(bucket_roi, 1),
-        ))
+        edge_dist.append(
+            EdgeBucket(
+                bucket=bucket_name,
+                count=int(b["count"]),
+                roi=round(bucket_roi, 1),
+            )
+        )
 
     return BacktestResponse(
         roi=round(roi, 4),

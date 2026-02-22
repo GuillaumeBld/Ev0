@@ -1,7 +1,7 @@
 """Bankroll management API endpoints."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -18,6 +18,7 @@ router = APIRouter()
 
 
 # ── Response / Request models ───────────────────────────────────
+
 
 class BankrollTransactionRequest(BaseModel):
     amount: float
@@ -46,6 +47,7 @@ class BankrollResponse(BaseModel):
 
 # ── Endpoints ───────────────────────────────────────────────────
 
+
 @router.get("/bankroll", response_model=BankrollResponse)
 async def get_bankroll(
     db: AsyncSession = Depends(get_db),
@@ -53,9 +55,7 @@ async def get_bankroll(
 ):
     """Get bankroll balance and recent transactions."""
     result = await db.execute(
-        select(BankrollEntry)
-        .order_by(BankrollEntry.transacted_utc.desc())
-        .limit(limit)
+        select(BankrollEntry).order_by(BankrollEntry.transacted_utc.desc()).limit(limit)
     )
     entries = result.scalars().all()
 
@@ -105,14 +105,12 @@ async def deposit(
 
     # Get current balance
     result = await db.execute(
-        select(BankrollEntry)
-        .order_by(BankrollEntry.transacted_utc.desc())
-        .limit(1)
+        select(BankrollEntry).order_by(BankrollEntry.transacted_utc.desc()).limit(1)
     )
     latest = result.scalar_one_or_none()
     current_balance = latest.balance_after if latest else 0.0
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     entry = BankrollEntry(
         entry_type="deposit",
         amount=body.amount,
@@ -149,9 +147,7 @@ async def withdraw(
 
     # Get current balance
     result = await db.execute(
-        select(BankrollEntry)
-        .order_by(BankrollEntry.transacted_utc.desc())
-        .limit(1)
+        select(BankrollEntry).order_by(BankrollEntry.transacted_utc.desc()).limit(1)
     )
     latest = result.scalar_one_or_none()
     current_balance = latest.balance_after if latest else 0.0
@@ -159,7 +155,7 @@ async def withdraw(
     if body.amount > current_balance:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     entry = BankrollEntry(
         entry_type="withdrawal",
         amount=-body.amount,

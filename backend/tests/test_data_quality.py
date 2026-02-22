@@ -24,7 +24,6 @@ import pytest
 
 from app.ingestion.understat_scraper import calculate_per_90
 
-
 # ============================================================
 # Data Quality Validators
 # ============================================================
@@ -32,7 +31,7 @@ from app.ingestion.understat_scraper import calculate_per_90
 REQUIRED_FIELDS = ("name", "team", "position", "minutes", "xg", "xa", "npxg")
 
 # Statistical plausibility bounds (per 90 min)
-MAX_XG_PER_90 = 2.0    # No player sustains > 2.0 xG/90 over a season
+MAX_XG_PER_90 = 2.0  # No player sustains > 2.0 xG/90 over a season
 MAX_XA_PER_90 = 2.0
 PER_90_TOLERANCE = 0.01  # Float rounding tolerance
 
@@ -117,19 +116,13 @@ def validate_player(player: dict[str, Any]) -> list[str]:
         computed_xg_90 = calculate_per_90(xg, minutes)
         stored_xg_90 = float(player.get("xg_per_90", 0.0))
         if abs(computed_xg_90 - stored_xg_90) > PER_90_TOLERANCE:
-            err(
-                f"xG/90 mismatch: computed {computed_xg_90:.3f} "
-                f"vs stored {stored_xg_90:.3f}"
-            )
+            err(f"xG/90 mismatch: computed {computed_xg_90:.3f} vs stored {stored_xg_90:.3f}")
 
         xa = float(player.get("xa", 0))
         computed_xa_90 = calculate_per_90(xa, minutes)
         stored_xa_90 = float(player.get("xa_per_90", 0.0))
         if abs(computed_xa_90 - stored_xa_90) > PER_90_TOLERANCE:
-            err(
-                f"xA/90 mismatch: computed {computed_xa_90:.3f} "
-                f"vs stored {stored_xa_90:.3f}"
-            )
+            err(f"xA/90 mismatch: computed {computed_xa_90:.3f} vs stored {stored_xa_90:.3f}")
 
     return errors
 
@@ -149,7 +142,7 @@ def find_duplicates(players: list[dict[str, Any]]) -> list[str]:
     for p in players:
         key = (p.get("name", ""), p.get("team", ""))
         if key in seen:
-            dupes.append(f"Duplicate #{seen[key]+1}: {key[0]} @ {key[1]}")
+            dupes.append(f"Duplicate #{seen[key] + 1}: {key[0]} @ {key[1]}")
         else:
             seen[key] = len(seen)
     return dupes
@@ -158,6 +151,7 @@ def find_duplicates(players: list[dict[str, Any]]) -> list[str]:
 # ============================================================
 # Fixtures
 # ============================================================
+
 
 def _make_player(**overrides: Any) -> dict[str, Any]:
     """Create a valid baseline player dict, optionally overriding fields."""
@@ -185,6 +179,7 @@ def _make_player(**overrides: Any) -> dict[str, Any]:
 # ============================================================
 # Unit Tests: validate_player
 # ============================================================
+
 
 class TestValidatePlayer:
     def test_valid_player_has_no_errors(self):
@@ -231,15 +226,25 @@ class TestValidatePlayer:
         assert any("mismatch" in e for e in errors)
 
     def test_zero_minutes_skips_per90_checks(self):
-        p = _make_player(minutes=0, xg=0.0, npxg=0.0, xa=0.0,
-                         xg_per_90=0.0, xa_per_90=0.0, npxg_per_90=0.0)
+        p = _make_player(
+            minutes=0, xg=0.0, npxg=0.0, xa=0.0, xg_per_90=0.0, xa_per_90=0.0, npxg_per_90=0.0
+        )
         errors = validate_player(p)
         assert not any("mismatch" in e for e in errors)
 
     def test_player_with_zero_stats_is_valid(self):
-        p = _make_player(goals=0, assists=0, xg=0.0, npxg=0.0, xa=0.0,
-                         shots=0, key_passes=0, xg_per_90=0.0,
-                         xa_per_90=0.0, npxg_per_90=0.0)
+        p = _make_player(
+            goals=0,
+            assists=0,
+            xg=0.0,
+            npxg=0.0,
+            xa=0.0,
+            shots=0,
+            key_passes=0,
+            xg_per_90=0.0,
+            xa_per_90=0.0,
+            npxg_per_90=0.0,
+        )
         assert validate_player(p) == []
 
 
@@ -247,27 +252,32 @@ class TestValidatePlayer:
 # Unit Tests: find_duplicates
 # ============================================================
 
+
 class TestFindDuplicates:
     def test_unique_players_returns_empty(self):
-        players = [_make_player(name="Mbappé", team="PSG"),
-                   _make_player(name="Salah", team="Liverpool")]
+        players = [
+            _make_player(name="Mbappé", team="PSG"),
+            _make_player(name="Salah", team="Liverpool"),
+        ]
         assert find_duplicates(players) == []
 
     def test_same_name_same_team_is_duplicate(self):
-        players = [_make_player(name="David", team="PSG"),
-                   _make_player(name="David", team="PSG")]
+        players = [_make_player(name="David", team="PSG"), _make_player(name="David", team="PSG")]
         assert len(find_duplicates(players)) == 1
 
     def test_same_name_different_teams_is_not_duplicate(self):
         """Transfer case: same name, different clubs."""
-        players = [_make_player(name="David", team="Atletico"),
-                   _make_player(name="David", team="Napoli")]
+        players = [
+            _make_player(name="David", team="Atletico"),
+            _make_player(name="David", team="Napoli"),
+        ]
         assert find_duplicates(players) == []
 
 
 # ============================================================
 # Unit Tests: check_quality (full dataset)
 # ============================================================
+
 
 class TestCheckQuality:
     def test_clean_dataset_is_healthy(self):
@@ -297,6 +307,7 @@ class TestCheckQuality:
 # Integration Tests: Live Understat Scraping
 # ============================================================
 
+
 @pytest.mark.integration
 class TestUnderstatLiveScraping:
     """Integration tests that hit the real Understat website.
@@ -308,11 +319,13 @@ class TestUnderstatLiveScraping:
     @pytest.fixture(scope="class")
     async def ligue1_data(self):
         from app.ingestion.understat_scraper import fetch_understat_league
+
         return await fetch_understat_league("ligue_1")
 
     @pytest.fixture(scope="class")
     async def pl_data(self):
         from app.ingestion.understat_scraper import fetch_understat_league
+
         return await fetch_understat_league("premier_league")
 
     # --- Coverage ---
@@ -345,8 +358,7 @@ class TestUnderstatLiveScraping:
 
         assert len(dupes) == 0, f"Duplicate players: {dupes}"
         assert report.is_healthy, (
-            f"Quality too low ({report.pass_rate:.1%})\n"
-            f"Sample errors: {report.errors[:10]}"
+            f"Quality too low ({report.pass_rate:.1%})\nSample errors: {report.errors[:10]}"
         )
 
     @pytest.mark.asyncio
@@ -361,8 +373,7 @@ class TestUnderstatLiveScraping:
 
         assert len(dupes) == 0, f"Duplicate players: {dupes}"
         assert report.is_healthy, (
-            f"Quality too low ({report.pass_rate:.1%})\n"
-            f"Sample errors: {report.errors[:10]}"
+            f"Quality too low ({report.pass_rate:.1%})\nSample errors: {report.errors[:10]}"
         )
 
     # --- Benchmarks ---
@@ -396,17 +407,16 @@ class TestUnderstatLiveScraping:
 # Helpers
 # ============================================================
 
-def _print_quality_report(
-    league: str, report: QualityReport, dupes: list[str]
-) -> None:
-    print(f"\n{'='*50}")
+
+def _print_quality_report(league: str, report: QualityReport, dupes: list[str]) -> None:
+    print(f"\n{'=' * 50}")
     print(f"Data Quality: {league}")
     print(f"  Total players : {report.total}")
     print(f"  Passed        : {report.passed} ({report.pass_rate:.1%})")
     print(f"  Failed        : {report.failed}")
     print(f"  Duplicates    : {len(dupes)}")
     if report.errors:
-        print(f"  Errors (first 5):")
+        print("  Errors (first 5):")
         for e in report.errors[:5]:
             print(f"    - {e}")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")

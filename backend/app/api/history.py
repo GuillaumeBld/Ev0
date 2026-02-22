@@ -255,7 +255,13 @@ async def get_stats_breakdown(
 
         # P&L trend
         cumulative += pnl
-        dt = str(rec.settled_utc.date()) if rec.settled_utc else str(rec.generated_utc.date()) if rec.generated_utc else ""
+        dt = (
+            str(rec.settled_utc.date())
+            if rec.settled_utc
+            else str(rec.generated_utc.date())
+            if rec.generated_utc
+            else ""
+        )
         pnl_trend.append(PnlPoint(date=dt, pnl=round(pnl, 2), cumulative=round(cumulative, 2)))
 
     def _to_breakdown(buckets: dict[str, dict]) -> list[BreakdownItem]:

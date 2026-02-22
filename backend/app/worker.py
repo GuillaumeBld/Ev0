@@ -62,7 +62,7 @@ def _get_leagues(user_settings: dict[str, str]) -> list[str]:
                 return parsed
         except (json.JSONDecodeError, TypeError):
             # Comma-separated fallback
-            leagues = [l.strip() for l in raw.split(",") if l.strip()]
+            leagues = [lg.strip() for lg in raw.split(",") if lg.strip()]
             if leagues:
                 return leagues
     return DEFAULT_LEAGUES

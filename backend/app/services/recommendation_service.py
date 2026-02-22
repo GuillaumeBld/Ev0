@@ -6,17 +6,17 @@ actionable betting recommendations.
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.odds import OddsAPIClient, SPORT_KEYS, MARKET_KEYS, normalize_selection_name
+from app.ingestion.odds import MARKET_KEYS, SPORT_KEYS, OddsAPIClient, normalize_selection_name
 from app.models.players import Player, PlayerStats
-from app.pricing.goalscorer import calculate_goalscorer_price, calculate_edge
 from app.pricing.assist import calculate_assist_price
-from app.strategy.selector import select_bets, RecommendationFilter
+from app.pricing.goalscorer import calculate_edge, calculate_goalscorer_price
+from app.strategy.selector import RecommendationFilter, select_bets
 
 logger = logging.getLogger(__name__)
 
@@ -68,19 +68,19 @@ async def generate_recommendations(
 ) -> list[dict[str, Any]]:
     """
     Generate betting recommendations for upcoming fixtures.
-    
+
     Pipeline:
     1. For each fixture, get relevant players
     2. For each player, calculate fair price
     3. Compare to market odds, calculate edge
     4. Apply strategy filters and selection
-    
+
     Args:
         fixtures: List of upcoming fixtures
         player_stats: Player stats keyed by normalized name
         odds_data: Market odds keyed by fixture_id
         filter_config: Optional filter configuration
-    
+
     Returns:
         List of recommendation dicts
     """
@@ -97,9 +97,9 @@ async def generate_recommendations(
         normalized_index[norm_key] = s
 
     for fixture in fixtures:
-        fixture_id = fixture.get("fixture_id") or fixture.get("id")
-        home_team = fixture.get("home_team")
-        away_team = fixture.get("away_team")
+        fixture_id = str(fixture.get("fixture_id") or fixture.get("id") or "")
+        home_team = str(fixture.get("home_team") or "")
+        away_team = str(fixture.get("away_team") or "")
         kickoff = fixture.get("kickoff_utc")
         league = fixture.get("league")
 
@@ -163,11 +163,14 @@ async def generate_recommendations(
 
             # Step 4: Confidence based on data quality, not edge magnitude
             matches = stats.get("matches_played", 0) or 0
-            pos_defaults = POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK) if position else DEFAULT_POSITION_FALLBACK
-            has_real_xg = (
-                stats.get("xg_per_90") is not None
-                and stats.get("xg_per_90") != pos_defaults.get("xg_per_90")
+            pos_defaults = (
+                POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK)
+                if position
+                else DEFAULT_POSITION_FALLBACK
             )
+            has_real_xg = stats.get("xg_per_90") is not None and stats.get(
+                "xg_per_90"
+            ) != pos_defaults.get("xg_per_90")
             if matches >= 10 and has_real_xg:
                 confidence = 0.80
             elif matches >= 5 and has_real_xg:
@@ -208,7 +211,9 @@ async def generate_recommendations(
 
     logger.info(
         "Player matching: %d matched, %d unmatched, %d skipped (GK)",
-        _matched, _unmatched, _skipped_position,
+        _matched,
+        _unmatched,
+        _skipped_position,
     )
     if _unmatched_names:
         logger.debug("Unmatched players (sample): %s", _unmatched_names[:10])
@@ -383,41 +388,49 @@ async def get_recommendations_for_date(
                 except (ValueError, TypeError):
                     pass
 
-            fixtures.append({
-                "fixture_id": event_id,
-                "home_team": event.get("home_team", ""),
-                "away_team": event.get("away_team", ""),
-                "kickoff_utc": commence,
-                "league": league,
-            })
+            fixtures.append(
+                {
+                    "fixture_id": event_id,
+                    "home_team": event.get("home_team", ""),
+                    "away_team": event.get("away_team", ""),
+                    "kickoff_utc": commence,
+                    "league": league,
+                }
+            )
 
             # Fetch player props for goalscorer (primary market)
             fixture_odds: list[dict[str, Any]] = []
             for market_type, market_key in MARKET_KEYS.items():
                 try:
-                    props = await odds_client.get_player_props(
-                        sport_key, event_id, market_key
-                    )
+                    props = await odds_client.get_player_props(sport_key, event_id, market_key)
                     for p in props:
-                        fixture_odds.append({
-                            "player_name": p["player_name"],
-                            "market_type": market_type,
-                            "odds": p["odds"],
-                            "bookmaker": p["bookmaker"],
-                        })
+                        fixture_odds.append(
+                            {
+                                "player_name": p["player_name"],
+                                "market_type": market_type,
+                                "odds": p["odds"],
+                                "bookmaker": p["bookmaker"],
+                            }
+                        )
                 except Exception as exc:
                     logger.warning(
                         "Failed to fetch %s props for event %s: %s",
-                        market_type, event_id, exc,
+                        market_type,
+                        event_id,
+                        exc,
                     )
             odds_data[event_id] = fixture_odds
 
     if not fixtures:
-        return [], {"fixtures_count": 0, "odds_data_keys": list(odds_data.keys()), "stage": "no_fixtures_for_date"}
+        return [], {
+            "fixtures_count": 0,
+            "odds_data_keys": list(odds_data.keys()),
+            "stage": "no_fixtures_for_date",
+        }
 
     # 2. Load player stats from DB (latest snapshot per player)
     #    Try Redis cache first to avoid repeated DB queries
-    from app.cache import get_cached_player_stats_map, cache_player_stats_map
+    from app.cache import cache_player_stats_map, get_cached_player_stats_map
 
     cached_stats = await get_cached_player_stats_map()
     if cached_stats is not None:
@@ -443,13 +456,13 @@ async def get_recommendations_for_date(
             )
         )
 
-        player_stats: dict[str, dict[str, Any]] = {}
+        player_stats = {}
         for row in result.all():
             stats: PlayerStats = row[0]
             player_name: str = row[1]
             team: str | None = row[2]
             raw_position: str | None = row[3]
-            normalized_name: str | None = row[4]
+            _normalized_name: str | None = row[4]
             position = _normalize_position(raw_position)
 
             # Step 1: Skip GKs at the data loading stage too
@@ -462,12 +475,22 @@ async def get_recommendations_for_date(
 
             # Step 2: Clamp conversion rate to [0.5, 2.0], require >= 3 matches
             raw_cr = (stats.goals / stats.xg) if stats.xg and stats.xg > 0 else 1.0
-            conversion_rate = max(0.5, min(2.0, raw_cr)) if (stats.matches_played or 0) >= 3 else 1.0
+            conversion_rate = (
+                max(0.5, min(2.0, raw_cr)) if (stats.matches_played or 0) >= 3 else 1.0
+            )
 
             # Step 1: Position-based defaults for missing xG/xA
-            pos_defaults = POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK) if position else DEFAULT_POSITION_FALLBACK
-            xg_per_90 = stats.xg_per_90 if stats.xg_per_90 is not None else pos_defaults["xg_per_90"]
-            xa_per_90 = stats.xa_per_90 if stats.xa_per_90 is not None else pos_defaults["xa_per_90"]
+            pos_defaults = (
+                POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK)
+                if position
+                else DEFAULT_POSITION_FALLBACK
+            )
+            xg_per_90 = (
+                stats.xg_per_90 if stats.xg_per_90 is not None else pos_defaults["xg_per_90"]
+            )
+            xa_per_90 = (
+                stats.xa_per_90 if stats.xa_per_90 is not None else pos_defaults["xa_per_90"]
+            )
 
             player_stats[player_name] = {
                 "xg_per_90": xg_per_90,
@@ -490,7 +513,11 @@ async def get_recommendations_for_date(
 
     # 3. Generate recommendations
     recs = await generate_recommendations(
-        fixtures, player_stats, odds_data, filter_config, team_strengths,
+        fixtures,
+        player_stats,
+        odds_data,
+        filter_config,
+        team_strengths,
     )
 
     # 4. Add unique IDs

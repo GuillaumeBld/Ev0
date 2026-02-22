@@ -8,21 +8,32 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.ingestion.understat_scraper import fetch_understat_league, UNDERSTAT_LEAGUES
+from app.ingestion.understat_scraper import UNDERSTAT_LEAGUES, fetch_understat_league
 from app.models.players import Player, PlayerStats, Team
 
 router = APIRouter(prefix="/players", tags=["players"])
 
 CSV_FIELDS = [
-    "name", "team", "position", "league",
-    "games", "minutes", "goals", "assists",
-    "xg", "npxg", "xa",
-    "shots", "key_passes",
-    "xg_per_90", "xa_per_90", "npxg_per_90",
+    "name",
+    "team",
+    "position",
+    "league",
+    "games",
+    "minutes",
+    "goals",
+    "assists",
+    "xg",
+    "npxg",
+    "xa",
+    "shots",
+    "key_passes",
+    "xg_per_90",
+    "xa_per_90",
+    "npxg_per_90",
 ]
 
 
@@ -38,8 +49,7 @@ async def export_players_csv(
     Fetches live data from Understat — no database required.
     """
     leagues_to_fetch = (
-        [league] if league and league in UNDERSTAT_LEAGUES
-        else list(UNDERSTAT_LEAGUES.keys())
+        [league] if league and league in UNDERSTAT_LEAGUES else list(UNDERSTAT_LEAGUES.keys())
     )
 
     rows: list[dict] = []
@@ -66,6 +76,7 @@ async def export_players_csv(
 
 class PlayerStatsResponse(BaseModel):
     """Player stats from a specific source."""
+
     source: str
     minutes: int
     goals: int
@@ -83,6 +94,7 @@ class PlayerStatsResponse(BaseModel):
 
 class PlayerWithStats(BaseModel):
     """Player with stats from all sources."""
+
     id: int
     name: str
     team: str | None
@@ -104,6 +116,7 @@ class PlayerWithStats(BaseModel):
 
 class TeamResponse(BaseModel):
     """Team info."""
+
     id: int
     name: str
     league: str
@@ -112,6 +125,7 @@ class TeamResponse(BaseModel):
 
 class SyncStatusResponse(BaseModel):
     """Sync status."""
+
     ligue_1_players: int
     ligue_1_teams: int
     premier_league_players: int
@@ -207,21 +221,29 @@ async def list_players(
         # Compute EV0 values (prefer average, fallback to available source)
         ev0_source = average or fbref or fotmob or understat or api_football
 
-        response.append({
-            "id": player.id,
-            "name": player.name,
-            "team": player.team,
-            "position": player.position,
-            "league": player.league,
-            "api_football": stats_to_response(api_football),
-            "fbref": stats_to_response(fbref),
-            "understat": stats_to_response(understat),
-            "fotmob": stats_to_response(fotmob),
-            "average": stats_to_response(average),
-            "ev0_xg_per_90": ev0_source.xg_per_90 if ev0_source and ev0_source.xg_per_90 else 0.0,
-            "ev0_xa_per_90": ev0_source.xa_per_90 if ev0_source and ev0_source.xa_per_90 else 0.0,
-            "ev0_npxg_per_90": ev0_source.npxg_per_90 if ev0_source and ev0_source.npxg_per_90 else 0.0,
-        })
+        response.append(
+            {
+                "id": player.id,
+                "name": player.name,
+                "team": player.team,
+                "position": player.position,
+                "league": player.league,
+                "api_football": stats_to_response(api_football),
+                "fbref": stats_to_response(fbref),
+                "understat": stats_to_response(understat),
+                "fotmob": stats_to_response(fotmob),
+                "average": stats_to_response(average),
+                "ev0_xg_per_90": ev0_source.xg_per_90
+                if ev0_source and ev0_source.xg_per_90
+                else 0.0,
+                "ev0_xa_per_90": ev0_source.xa_per_90
+                if ev0_source and ev0_source.xa_per_90
+                else 0.0,
+                "ev0_npxg_per_90": ev0_source.npxg_per_90
+                if ev0_source and ev0_source.npxg_per_90
+                else 0.0,
+            }
+        )
 
     return response
 
@@ -243,25 +265,24 @@ async def list_teams(
         .group_by(Player.team, Player.league)
         .subquery()
     )
-    stmt = (
-        stmt.outerjoin(
-            count_subq,
-            (Team.name == count_subq.c.team) & (Team.league == count_subq.c.league),
-        )
-        .add_columns(func.coalesce(count_subq.c.cnt, 0).label("player_count"))
-    )
+    stmt = stmt.outerjoin(
+        count_subq,
+        (Team.name == count_subq.c.team) & (Team.league == count_subq.c.league),
+    ).add_columns(func.coalesce(count_subq.c.cnt, 0).label("player_count"))
 
     result = await session.execute(stmt)
     rows = result.all()
 
     response = []
     for team, player_count in rows:
-        response.append({
-            "id": team.id,
-            "name": team.name,
-            "league": team.league,
-            "player_count": player_count,
-        })
+        response.append(
+            {
+                "id": team.id,
+                "name": team.name,
+                "league": team.league,
+                "player_count": player_count,
+            }
+        )
 
     return response
 
@@ -276,9 +297,7 @@ async def get_sync_status(
     l1_players = await session.execute(
         select(func.count(Player.id)).where(Player.league == "ligue_1")
     )
-    l1_teams = await session.execute(
-        select(func.count(Team.id)).where(Team.league == "ligue_1")
-    )
+    l1_teams = await session.execute(select(func.count(Team.id)).where(Team.league == "ligue_1"))
 
     # Count PL
     pl_players = await session.execute(
@@ -350,7 +369,9 @@ async def get_player(
 
 @router.post("/sync")
 async def trigger_sync(
-    strategy: str = Query("direct", description="Sync strategy: direct (Understat API), or smart (Firecrawl+LLM)"),
+    strategy: str = Query(
+        "direct", description="Sync strategy: direct (Understat API), or smart (Firecrawl+LLM)"
+    ),
 ):
     """Trigger a player stats sync.
 
@@ -362,9 +383,11 @@ async def trigger_sync(
 
     if strategy == "smart":
         from app.ingestion.smart_sync import smart_sync_all
+
         asyncio.create_task(smart_sync_all())
     else:
         from app.ingestion.sync_all_players import sync_all
+
         asyncio.create_task(sync_all())
 
     return {

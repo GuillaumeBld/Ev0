@@ -2,7 +2,7 @@
 
 import os
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -61,8 +61,8 @@ class DataQualityItem(BaseModel):
 def _freshness(last_sync: datetime | None) -> str:
     if last_sync is None:
         return "outdated"
-    now = datetime.now(timezone.utc)
-    age = now - last_sync.replace(tzinfo=timezone.utc) if last_sync.tzinfo is None else now - last_sync
+    now = datetime.now(UTC)
+    age = now - last_sync.replace(tzinfo=UTC) if last_sync.tzinfo is None else now - last_sync
     if age < timedelta(hours=24):
         return "fresh"
     elif age < timedelta(hours=72):
@@ -76,19 +76,19 @@ async def data_quality(db: AsyncSession = Depends(get_db)):
     items: list[DataQualityItem] = []
 
     # Fixtures
-    result = await db.execute(
-        select(func.count(Fixture.id), func.max(Fixture.updated_at))
-    )
+    result = await db.execute(select(func.count(Fixture.id), func.max(Fixture.updated_at)))
     count, last = result.one()
     fresh = _freshness(last)
     issues = [] if count and count > 0 else ["Aucun fixture en base"]
-    items.append(DataQualityItem(
-        source="Fixtures",
-        last_sync=str(last) if last else None,
-        record_count=count or 0,
-        freshness=fresh,
-        issues=issues,
-    ))
+    items.append(
+        DataQualityItem(
+            source="Fixtures",
+            last_sync=str(last) if last else None,
+            record_count=count or 0,
+            freshness=fresh,
+            issues=issues,
+        )
+    )
 
     # Odds Snapshots
     result = await db.execute(
@@ -97,28 +97,30 @@ async def data_quality(db: AsyncSession = Depends(get_db)):
     count, last = result.one()
     fresh = _freshness(last)
     issues = [] if count and count > 0 else ["Aucun snapshot de cotes"]
-    items.append(DataQualityItem(
-        source="Odds Snapshots",
-        last_sync=str(last) if last else None,
-        record_count=count or 0,
-        freshness=fresh,
-        issues=issues,
-    ))
+    items.append(
+        DataQualityItem(
+            source="Odds Snapshots",
+            last_sync=str(last) if last else None,
+            record_count=count or 0,
+            freshness=fresh,
+            issues=issues,
+        )
+    )
 
     # Player Stats
-    result = await db.execute(
-        select(func.count(PlayerStats.id), func.max(PlayerStats.as_of_utc))
-    )
+    result = await db.execute(select(func.count(PlayerStats.id), func.max(PlayerStats.as_of_utc)))
     count, last = result.one()
     fresh = _freshness(last)
     issues = [] if count and count > 0 else ["Aucune stat joueur"]
-    items.append(DataQualityItem(
-        source="Player Stats",
-        last_sync=str(last) if last else None,
-        record_count=count or 0,
-        freshness=fresh,
-        issues=issues,
-    ))
+    items.append(
+        DataQualityItem(
+            source="Player Stats",
+            last_sync=str(last) if last else None,
+            record_count=count or 0,
+            freshness=fresh,
+            issues=issues,
+        )
+    )
 
     # Recommendations
     result = await db.execute(
@@ -127,12 +129,14 @@ async def data_quality(db: AsyncSession = Depends(get_db)):
     count, last = result.one()
     fresh = _freshness(last)
     issues = [] if count and count > 0 else ["Aucune recommandation generee"]
-    items.append(DataQualityItem(
-        source="Recommendations",
-        last_sync=str(last) if last else None,
-        record_count=count or 0,
-        freshness=fresh,
-        issues=issues,
-    ))
+    items.append(
+        DataQualityItem(
+            source="Recommendations",
+            last_sync=str(last) if last else None,
+            record_count=count or 0,
+            freshness=fresh,
+            issues=issues,
+        )
+    )
 
     return items

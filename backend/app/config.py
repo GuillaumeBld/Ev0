@@ -3,15 +3,15 @@
 from pydantic_settings import BaseSettings
 
 
-class Settings(BaseSettings):
+class Settings(BaseSettings):  # type: ignore[misc]
     """Application settings loaded from environment."""
 
     # Database
     database_url: str = "postgresql://ev0:ev0_dev_password@localhost:5432/ev0"
-    
+
     # Redis
     redis_url: str = "redis://localhost:6379/0"
-    
+
     # CORS (comma-separated origins, or "*" for all)
     cors_origins_str: str = "*"
 
@@ -40,6 +40,7 @@ class Settings(BaseSettings):
         # Handle JSON array format (e.g. '["*"]')
         if raw.startswith("["):
             import json
+
             try:
                 return json.loads(raw)
             except json.JSONDecodeError:

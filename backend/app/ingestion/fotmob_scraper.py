@@ -8,7 +8,6 @@ import json
 
 import httpx
 
-
 # FotMob league IDs
 FOTMOB_LEAGUES = {
     "ligue_1": 53,

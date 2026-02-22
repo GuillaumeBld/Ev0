@@ -14,7 +14,7 @@ from typing import Any, TypedDict
 
 class GoalscorerPriceResult(TypedDict):
     """Result of goalscorer pricing calculation."""
-    
+
     lambda_intensity: float
     probability: float
     fair_odds: float
@@ -30,37 +30,32 @@ def calculate_goalscorer_price(
 ) -> GoalscorerPriceResult:
     """
     Calculate fair price for anytime goalscorer market.
-    
+
     Args:
         xg_per_90: Player's expected goals per 90 minutes (historical average)
         expected_minutes: Expected minutes to play in the match
         conversion_rate: Player's finishing skill (actual goals / npxG), rolling 15 matches
         opponent_xga_factor: Opponent defensive factor (opponent_xGA / league_avg_xGA)
         form_factor: Recent form adjustment from exponential decay
-    
+
     Returns:
         Pricing result with lambda, probability, fair odds, and explanation
     """
     # Calculate base lambda (expected goals for this match)
     base_lambda = xg_per_90 * (expected_minutes / 90.0)
-    
+
     # Apply adjustments
-    adjusted_lambda = (
-        base_lambda
-        * conversion_rate
-        * opponent_xga_factor
-        * form_factor
-    )
-    
+    adjusted_lambda = base_lambda * conversion_rate * opponent_xga_factor * form_factor
+
     # Ensure lambda is positive and reasonable
     adjusted_lambda = max(0.01, min(adjusted_lambda, 3.0))
-    
+
     # Poisson: P(X >= 1) = 1 - P(X = 0) = 1 - e^(-λ)
     probability = 1 - math.exp(-adjusted_lambda)
-    
+
     # Fair odds (decimal)
     fair_odds = 1 / probability if probability > 0 else 99999.0
-    
+
     # Build explanation payload
     explanation = {
         "inputs": {
@@ -77,7 +72,7 @@ def calculate_goalscorer_price(
         },
         "interpretation": _interpret_probability(probability),
     }
-    
+
     return GoalscorerPriceResult(
         lambda_intensity=round(adjusted_lambda, 4),
         probability=round(probability, 4),
@@ -103,11 +98,11 @@ def _interpret_probability(prob: float) -> str:
 def calculate_edge(fair_odds: float, market_odds: float) -> float:
     """
     Calculate edge vs market odds.
-    
+
     Args:
         fair_odds: Our calculated fair odds
         market_odds: Bookmaker's offered odds
-    
+
     Returns:
         Edge as decimal (e.g., 0.10 = 10% edge)
     """
@@ -121,17 +116,17 @@ def calculate_edge(fair_odds: float, market_odds: float) -> float:
 def remove_margin(odds_list: list[float]) -> list[float]:
     """
     Remove bookmaker margin from odds using proportional method.
-    
+
     Args:
         odds_list: List of decimal odds for all selections in market
-    
+
     Returns:
         List of fair odds with margin removed
     """
     # Calculate overround (total implied probability)
     total_prob = sum(1 / o for o in odds_list)
-    
+
     # Remove margin proportionally
     fair_odds = [o * total_prob for o in odds_list]
-    
+
     return fair_odds

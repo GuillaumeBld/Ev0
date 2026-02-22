@@ -22,7 +22,7 @@ from typing import Any, TypedDict
 
 class AssistPriceResult(TypedDict):
     """Result of assist pricing calculation."""
-    
+
     lambda_intensity: float
     probability: float
     fair_odds: float
@@ -51,9 +51,9 @@ def calculate_creation_score(
 ) -> tuple[float, dict[str, Any]]:
     """
     Calculate composite creation score from multiple metrics.
-    
+
     Each metric is normalized by league average, then weighted.
-    
+
     Returns:
         Tuple of (creation_score, component_breakdown)
     """
@@ -67,23 +67,24 @@ def calculate_creation_score(
         "progressive_passes": 4.0,
     }
     avgs = league_averages or defaults
-    
+
     # Normalize each metric
     components = {
         "xa": (xa_per_90 / avgs["xa"]) if avgs["xa"] > 0 else 1.0,
         "key_passes": (key_passes_per_90 / avgs["key_passes"]) if avgs["key_passes"] > 0 else 1.0,
         "sca": (sca_per_90 / avgs["sca"]) if avgs["sca"] > 0 else 1.0,
         "crosses": (crosses_per_90 / avgs["crosses"]) if avgs["crosses"] > 0 else 1.0,
-        "passes_into_box": (passes_into_box_per_90 / avgs["passes_into_box"]) if avgs["passes_into_box"] > 0 else 1.0,
-        "progressive_passes": (progressive_passes_per_90 / avgs["progressive_passes"]) if avgs["progressive_passes"] > 0 else 1.0,
+        "passes_into_box": (passes_into_box_per_90 / avgs["passes_into_box"])
+        if avgs["passes_into_box"] > 0
+        else 1.0,
+        "progressive_passes": (progressive_passes_per_90 / avgs["progressive_passes"])
+        if avgs["progressive_passes"] > 0
+        else 1.0,
     }
-    
+
     # Weighted sum
-    score = sum(
-        components[key] * CREATION_WEIGHTS[key]
-        for key in CREATION_WEIGHTS
-    )
-    
+    score = sum(components[key] * CREATION_WEIGHTS[key] for key in CREATION_WEIGHTS)
+
     breakdown = {
         key: {
             "raw": locals().get(f"{key}_per_90", xa_per_90 if key == "xa" else 0),
@@ -93,7 +94,7 @@ def calculate_creation_score(
         }
         for key in CREATION_WEIGHTS
     }
-    
+
     return score, breakdown
 
 
@@ -107,7 +108,7 @@ def calculate_assist_price(
 ) -> AssistPriceResult:
     """
     Calculate fair price for anytime assist market.
-    
+
     Args:
         xa_per_90: Player's expected assists per 90 minutes
         expected_minutes: Expected minutes to play
@@ -115,13 +116,13 @@ def calculate_assist_price(
         teammate_finishing_factor: Team's finishing quality (goals/xG)
         opponent_defense_factor: Opponent's defensive weakness (xGA/league_avg)
         form_factor: Recent form from exponential decay
-    
+
     Returns:
         Pricing result with lambda, probability, fair odds, and explanation
     """
     # Base expected assists for this match
     base_lambda = xa_per_90 * (expected_minutes / 90.0)
-    
+
     # Apply adjustments
     adjusted_lambda = (
         base_lambda
@@ -130,16 +131,16 @@ def calculate_assist_price(
         * opponent_defense_factor
         * form_factor
     )
-    
+
     # Clamp to reasonable range
     adjusted_lambda = max(0.01, min(adjusted_lambda, 2.0))
-    
+
     # Poisson: P(X >= 1) = 1 - e^(-λ)
     probability = 1 - math.exp(-adjusted_lambda)
-    
+
     # Fair odds
     fair_odds = 1 / probability if probability > 0 else 99999.0
-    
+
     explanation = {
         "inputs": {
             "xa_per_90": xa_per_90,
@@ -156,7 +157,7 @@ def calculate_assist_price(
         },
         "interpretation": _interpret_assist_probability(probability),
     }
-    
+
     return AssistPriceResult(
         lambda_intensity=round(adjusted_lambda, 4),
         probability=round(probability, 4),

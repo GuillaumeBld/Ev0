@@ -18,6 +18,7 @@ router = APIRouter()
 
 class SettingsUpdateRequest(BaseModel):
     """Dict of key-value pairs to upsert."""
+
     settings: dict[str, str]
 
 
@@ -40,9 +41,7 @@ async def save_settings(
 ) -> dict[str, str]:
     """Upsert user settings. Accepts a dict of key-value pairs."""
     for key, value in body.settings.items():
-        result = await db.execute(
-            select(UserSettings).where(UserSettings.key == key)
-        )
+        result = await db.execute(select(UserSettings).where(UserSettings.key == key))
         existing = result.scalar_one_or_none()
         if existing:
             existing.value = value

@@ -4,16 +4,14 @@ RED phase: Write failing tests first.
 """
 
 import pytest
-from datetime import datetime, date
 
 from app.strategy.selector import (
     RecommendationFilter,
-    SelectionResult,
+    apply_exposure_limits,
+    calculate_kelly_stake,
+    check_correlation,
     filter_recommendations,
     rank_by_value,
-    check_correlation,
-    calculate_kelly_stake,
-    apply_exposure_limits,
 )
 
 
@@ -71,18 +69,18 @@ class TestRecommendationFilter:
 
     def test_filters_by_min_edge(self, sample_recommendations):
         filter_config = RecommendationFilter(min_edge=0.10)
-        
+
         result = filter_recommendations(sample_recommendations, filter_config)
-        
+
         # Only Mbappe (12%) and Salah (15%) should pass
         assert len(result) == 2
         assert all(r["edge"] >= 0.10 for r in result)
 
     def test_filters_by_min_confidence(self, sample_recommendations):
         filter_config = RecommendationFilter(min_confidence=0.80)
-        
+
         result = filter_recommendations(sample_recommendations, filter_config)
-        
+
         assert all(r["confidence"] >= 0.80 for r in result)
 
     def test_filters_by_odds_range(self, sample_recommendations):
@@ -90,9 +88,9 @@ class TestRecommendationFilter:
             min_odds=2.0,
             max_odds=3.0,
         )
-        
+
         result = filter_recommendations(sample_recommendations, filter_config)
-        
+
         assert all(2.0 <= r["market_odds"] <= 3.0 for r in result)
 
     def test_combined_filters(self, sample_recommendations):
@@ -102,9 +100,9 @@ class TestRecommendationFilter:
             min_odds=2.0,
             max_odds=4.0,
         )
-        
+
         result = filter_recommendations(sample_recommendations, filter_config)
-        
+
         for r in result:
             assert r["edge"] >= 0.05
             assert r["confidence"] >= 0.70
@@ -120,9 +118,9 @@ class TestRankByValue:
             {"id": "2", "edge": 0.15, "confidence": 0.75},
             {"id": "3", "edge": 0.08, "confidence": 0.90},
         ]
-        
+
         ranked = rank_by_value(recs, method="edge")
-        
+
         # Highest edge first
         assert ranked[0]["id"] == "2"
         assert ranked[1]["id"] == "1"
@@ -134,9 +132,9 @@ class TestRankByValue:
             {"id": "2", "edge": 0.05, "market_odds": 5.0},  # EV: 0.25
             {"id": "3", "edge": 0.08, "market_odds": 3.0},  # EV: 0.24
         ]
-        
+
         ranked = rank_by_value(recs, method="ev")
-        
+
         # Highest EV first
         assert ranked[0]["id"] == "2"
 
@@ -147,9 +145,9 @@ class TestRankByValue:
             {"id": "2", "edge": 0.15, "confidence": 0.50},  # 0.075
             {"id": "3", "edge": 0.08, "confidence": 0.90},  # 0.072
         ]
-        
+
         ranked = rank_by_value(recs, method="composite")
-        
+
         assert ranked[0]["id"] == "1"
 
 
@@ -161,9 +159,9 @@ class TestCorrelationCheck:
             {"fixture_id": "f1", "player": "Mbappe", "team": "PSG"},
             {"fixture_id": "f1", "player": "Dembele", "team": "PSG"},
         ]
-        
+
         correlation = check_correlation(bets[0], bets[1])
-        
+
         # Same match = high correlation
         assert correlation > 0.5
 
@@ -200,7 +198,7 @@ class TestKellyStake:
             bankroll=1000,
             fraction=0.25,
         )
-        
+
         # Edge = (3 * 0.4 - 0.6) / 2 = 0.3
         # Full Kelly = 30% of bankroll
         # Quarter Kelly = 7.5%
@@ -213,7 +211,7 @@ class TestKellyStake:
             bankroll=1000,
             fraction=0.25,
         )
-        
+
         assert stake == 0
 
     def test_negative_edge_gives_zero_stake(self):
@@ -223,14 +221,14 @@ class TestKellyStake:
             bankroll=1000,
             fraction=0.25,
         )
-        
+
         # We think 30%, market thinks 33% - negative edge
         assert stake == 0
 
     def test_respects_fraction(self):
         full_kelly = calculate_kelly_stake(0.40, 3.0, 1000, 1.0)
         quarter_kelly = calculate_kelly_stake(0.40, 3.0, 1000, 0.25)
-        
+
         assert abs(quarter_kelly - full_kelly * 0.25) < 0.01
 
 
@@ -243,13 +241,13 @@ class TestExposureLimits:
             {"fixture_id": "f1", "stake": 50},
             {"fixture_id": "f1", "stake": 50},
         ]
-        
+
         limited = apply_exposure_limits(
             bets,
             max_per_match=100,
             max_per_day=500,
         )
-        
+
         # Total for f1 should be capped at 100
         f1_total = sum(b["stake"] for b in limited if b["fixture_id"] == "f1")
         assert f1_total <= 100
@@ -261,12 +259,12 @@ class TestExposureLimits:
             {"fixture_id": "f3", "stake": 100},
             {"fixture_id": "f4", "stake": 100},
         ]
-        
+
         limited = apply_exposure_limits(
             bets,
             max_per_match=150,
             max_per_day=250,
         )
-        
+
         total = sum(b["stake"] for b in limited)
         assert total <= 250

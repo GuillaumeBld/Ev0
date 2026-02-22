@@ -8,10 +8,8 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-
 from app.config import settings
 from app.models.base import Base
-from app.models import BankrollEntry, Fixture, Player, PlayerStats, OddsSnapshot, Recommendation, UserSettings
 
 # Alembic Config object
 config = context.config

@@ -3,20 +3,20 @@
 Handles storing fixtures, player stats, and odds snapshots.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Fixture, Player, PlayerStats, OddsSnapshot, Recommendation
+from app.models import Fixture, OddsSnapshot, Player, PlayerStats, Recommendation
 
 
 async def upsert_fixture(session: AsyncSession, data: dict[str, Any]) -> Fixture:
     """
     Insert or update a fixture.
-    
+
     Uses fixture_id (external_id) as the unique key.
     """
     stmt = insert(Fixture).values(
@@ -30,7 +30,7 @@ async def upsert_fixture(session: AsyncSession, data: dict[str, Any]) -> Fixture
         away_score=data.get("away_score"),
         status="finished" if data.get("home_score") is not None else "scheduled",
     )
-    
+
     # On conflict, update scores and status
     stmt = stmt.on_conflict_do_update(
         index_elements=["external_id"],
@@ -38,17 +38,15 @@ async def upsert_fixture(session: AsyncSession, data: dict[str, Any]) -> Fixture
             "home_score": stmt.excluded.home_score,
             "away_score": stmt.excluded.away_score,
             "status": stmt.excluded.status,
-            "updated_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(UTC),
         },
     )
-    
+
     await session.execute(stmt)
     await session.commit()
-    
+
     # Fetch and return
-    result = await session.execute(
-        select(Fixture).where(Fixture.external_id == data["fixture_id"])
-    )
+    result = await session.execute(select(Fixture).where(Fixture.external_id == data["fixture_id"]))
     return result.scalar_one()
 
 
@@ -61,20 +59,20 @@ async def upsert_player(session: AsyncSession, data: dict[str, Any]) -> Player:
         team=data.get("team"),
         position=data.get("position"),
     )
-    
+
     stmt = stmt.on_conflict_do_update(
         index_elements=["external_id"],
         set_={
             "name": stmt.excluded.name,
             "team": stmt.excluded.team,
             "position": stmt.excluded.position,
-            "updated_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(UTC),
         },
     )
-    
+
     await session.execute(stmt)
     await session.commit()
-    
+
     result = await session.execute(
         select(Player).where(Player.external_id == data.get("player_id", data["player_name"]))
     )
@@ -89,8 +87,8 @@ async def store_player_stats(
     stats: dict[str, Any],
 ) -> PlayerStats:
     """Store a player stats snapshot."""
-    now = datetime.now(timezone.utc)
-    
+    now = datetime.now(UTC)
+
     player_stats = PlayerStats(
         player_id=player_id,
         as_of_utc=now,
@@ -113,11 +111,11 @@ async def store_player_stats(
         xg_per_90=stats.get("xg_per_90"),
         xa_per_90=stats.get("xa_per_90"),
     )
-    
+
     session.add(player_stats)
     await session.commit()
     await session.refresh(player_stats)
-    
+
     return player_stats
 
 
@@ -131,8 +129,8 @@ async def store_odds_snapshot(
     raw_data: dict | None = None,
 ) -> OddsSnapshot:
     """Store an odds snapshot."""
-    now = datetime.now(timezone.utc)
-    
+    now = datetime.now(UTC)
+
     snapshot = OddsSnapshot(
         fixture_id=fixture_id,
         player_name=player_name,
@@ -143,11 +141,11 @@ async def store_odds_snapshot(
         snapshot_utc=now,
         raw_data=raw_data,
     )
-    
+
     session.add(snapshot)
     await session.commit()
     await session.refresh(snapshot)
-    
+
     return snapshot
 
 
@@ -162,8 +160,8 @@ async def store_recommendation(
     edge: float,
 ) -> Recommendation:
     """Store a generated recommendation."""
-    now = datetime.now(timezone.utc)
-    
+    now = datetime.now(UTC)
+
     # Classify based on edge
     if edge >= 0.10:
         classification = "VALUE"
@@ -177,7 +175,7 @@ async def store_recommendation(
     else:
         classification = "AVOID"
         confidence = 0.3
-    
+
     rec = Recommendation(
         fixture_id=fixture_id,
         player_name=player_name,
@@ -193,11 +191,11 @@ async def store_recommendation(
         explanation=pricing_result["explanation"],
         generated_utc=now,
     )
-    
+
     session.add(rec)
     await session.commit()
     await session.refresh(rec)
-    
+
     return rec
 
 
@@ -206,9 +204,9 @@ async def get_upcoming_fixtures(
     hours_ahead: int = 48,
 ) -> list[Fixture]:
     """Get fixtures in the next N hours."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now + timedelta(hours=hours_ahead)
-    
+
     result = await session.execute(
         select(Fixture)
         .where(Fixture.kickoff_utc >= now)
@@ -216,7 +214,7 @@ async def get_upcoming_fixtures(
         .where(Fixture.status == "scheduled")
         .order_by(Fixture.kickoff_utc)
     )
-    
+
     return list(result.scalars().all())
 
 
@@ -233,7 +231,7 @@ async def get_latest_player_stats(
         .order_by(PlayerStats.as_of_utc.desc())
         .limit(1)
     )
-    
+
     return result.scalar_one_or_none()
 
 
@@ -244,7 +242,7 @@ async def get_best_odds_for_fixture(
 ) -> dict[str, OddsSnapshot]:
     """Get best odds per player for a fixture."""
     from sqlalchemy import func
-    
+
     # Subquery to get max odds per player
     subq = (
         select(
@@ -256,7 +254,7 @@ async def get_best_odds_for_fixture(
         .group_by(OddsSnapshot.player_name)
         .subquery()
     )
-    
+
     # Join to get full snapshot with best odds
     result = await session.execute(
         select(OddsSnapshot)
@@ -268,5 +266,5 @@ async def get_best_odds_for_fixture(
         .where(OddsSnapshot.fixture_id == fixture_id)
         .where(OddsSnapshot.market_type == market_type)
     )
-    
+
     return {snap.player_name: snap for snap in result.scalars().all()}

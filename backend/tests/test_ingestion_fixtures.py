@@ -3,15 +3,15 @@
 RED phase: Write failing tests first.
 """
 
-import pytest
-from datetime import datetime, date
 from unittest.mock import Mock, patch
+
+import pytest
 
 from app.ingestion.fixtures import (
     FBrefFixtureParser,
     fetch_league_fixtures,
-    normalize_team_name,
     generate_fixture_id,
+    normalize_team_name,
 )
 
 
@@ -83,7 +83,7 @@ class TestFBrefFixtureParser:
     def test_parses_fixtures(self, sample_html):
         parser = FBrefFixtureParser()
         fixtures = parser.parse(sample_html)
-        
+
         assert len(fixtures) == 2
         assert fixtures[0]["home_team"] == "Paris S-G"
         assert fixtures[0]["away_team"] == "Le Havre"
@@ -91,14 +91,14 @@ class TestFBrefFixtureParser:
     def test_parses_date_correctly(self, sample_html):
         parser = FBrefFixtureParser()
         fixtures = parser.parse(sample_html)
-        
+
         assert fixtures[0]["date"] == "2024-08-16"
         assert fixtures[0]["time"] == "21:00"
 
     def test_parses_score_when_available(self, sample_html):
         parser = FBrefFixtureParser()
         fixtures = parser.parse(sample_html)
-        
+
         assert fixtures[0]["home_score"] == 4
         assert fixtures[0]["away_score"] == 1
 
@@ -118,7 +118,7 @@ class TestFBrefFixtureParser:
         """
         parser = FBrefFixtureParser()
         fixtures = parser.parse(html)
-        
+
         assert fixtures[0]["home_score"] is None
         assert fixtures[0]["away_score"] is None
 
@@ -128,47 +128,42 @@ class TestFetchLeagueFixtures:
 
     @patch("app.ingestion.fixtures.httpx.get")
     def test_fetches_ligue1(self, mock_get):
-        mock_get.return_value = Mock(
-            status_code=200,
-            text="<html>...</html>"
-        )
-        
+        mock_get.return_value = Mock(status_code=200, text="<html>...</html>")
+
         # Should not raise
         fetch_league_fixtures("ligue1", "2024-2025")
-        
+
         # Verify correct URL called
         call_url = mock_get.call_args[0][0]
         assert "Ligue-1" in call_url or "ligue-1" in call_url.lower()
 
     @patch("app.ingestion.fixtures.httpx.get")
     def test_fetches_premier_league(self, mock_get):
-        mock_get.return_value = Mock(
-            status_code=200,
-            text="<html>...</html>"
-        )
-        
+        mock_get.return_value = Mock(status_code=200, text="<html>...</html>")
+
         fetch_league_fixtures("premier_league", "2024-2025")
-        
+
         call_url = mock_get.call_args[0][0]
         assert "Premier-League" in call_url
 
     @patch("app.ingestion.fixtures.httpx.get")
     def test_raises_on_http_error(self, mock_get):
         mock_get.return_value = Mock(status_code=404)
-        
-        with pytest.raises(Exception):
+
+        with pytest.raises((Exception, RuntimeError)):
             fetch_league_fixtures("ligue1", "2024-2025")
 
     @patch("app.ingestion.fixtures.httpx.get")
     def test_respects_rate_limit(self, mock_get):
         """FBref requires 3+ seconds between requests."""
         mock_get.return_value = Mock(status_code=200, text="<html></html>")
-        
+
         import time
+
         start = time.time()
         fetch_league_fixtures("ligue1", "2024-2025")
         fetch_league_fixtures("premier_league", "2024-2025")
         elapsed = time.time() - start
-        
+
         # Should have waited at least 3 seconds between calls
         assert elapsed >= 3.0

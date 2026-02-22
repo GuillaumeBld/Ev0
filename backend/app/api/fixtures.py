@@ -2,11 +2,11 @@
 
 import logging
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -20,6 +20,7 @@ router = APIRouter()
 
 
 # ── Response models ──────────────────────────────────────────────
+
 
 class OddsSnapshotOut(BaseModel):
     id: int
@@ -70,6 +71,7 @@ class FixturesResponse(BaseModel):
 
 # ── Endpoints ────────────────────────────────────────────────────
 
+
 @router.get("/fixtures", response_model=FixturesResponse)
 async def list_fixtures(
     db: AsyncSession = Depends(get_db),
@@ -95,9 +97,13 @@ async def list_fixtures(
         db_status = status_map.get(status, status)
         stmt = stmt.where(Fixture.status == db_status)
     if from_date:
-        stmt = stmt.where(Fixture.kickoff_utc >= datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc))
+        stmt = stmt.where(
+            Fixture.kickoff_utc >= datetime.combine(from_date, datetime.min.time(), tzinfo=UTC)
+        )
     if to_date:
-        stmt = stmt.where(Fixture.kickoff_utc <= datetime.combine(to_date, datetime.max.time(), tzinfo=timezone.utc))
+        stmt = stmt.where(
+            Fixture.kickoff_utc <= datetime.combine(to_date, datetime.max.time(), tzinfo=UTC)
+        )
 
     result = await db.execute(stmt)
     fixtures = result.scalars().all()
@@ -116,21 +122,23 @@ async def list_fixtures(
             )
             for o in f.odds_snapshots
         ]
-        items.append(FixtureOut(
-            id=f.id,
-            external_id=f.external_id,
-            league=f.league,
-            season=f.season,
-            matchweek=f.matchweek,
-            home_team=f.home_team,
-            away_team=f.away_team,
-            kickoff_utc=str(f.kickoff_utc),
-            status=f.status,
-            home_score=f.home_score,
-            away_score=f.away_score,
-            odds_count=len(f.odds_snapshots),
-            odds=odds_out,
-        ))
+        items.append(
+            FixtureOut(
+                id=f.id,
+                external_id=f.external_id,
+                league=f.league,
+                season=f.season,
+                matchweek=f.matchweek,
+                home_team=f.home_team,
+                away_team=f.away_team,
+                kickoff_utc=str(f.kickoff_utc),
+                status=f.status,
+                home_score=f.home_score,
+                away_score=f.away_score,
+                odds_count=len(f.odds_snapshots),
+                odds=odds_out,
+            )
+        )
 
     return FixturesResponse(count=len(items), fixtures=items)
 
@@ -229,7 +237,7 @@ async def create_odds(
     if body.odds <= 1.0:
         raise HTTPException(status_code=400, detail="Odds must be greater than 1.0")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     snapshot = OddsSnapshot(
         fixture_id=fixture_id,
         player_name=body.player_name,

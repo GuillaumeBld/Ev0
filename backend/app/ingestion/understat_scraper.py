@@ -8,7 +8,6 @@ import json
 
 import httpx
 
-
 # Understat league slugs
 UNDERSTAT_LEAGUES = {
     "ligue_1": "Ligue_1",
@@ -73,9 +72,7 @@ async def fetch_understat_league(league: str) -> tuple[list[dict], list[dict]]:
     if not slug:
         raise ValueError(f"Unknown league: {league}")
 
-    async with httpx.AsyncClient(
-        timeout=30.0, follow_redirects=True, base_url=_BASE_URL
-    ) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, base_url=_BASE_URL) as client:
         try:
             resp = await client.post(
                 "main/getPlayersStats/",
@@ -112,16 +109,16 @@ async def fetch_understat_league(league: str) -> tuple[list[dict], list[dict]]:
 # Quick test
 if __name__ == "__main__":
     import asyncio
-    
+
     async def test():
         players, teams = await fetch_understat_league("ligue_1")
         print(f"\nLigue 1: {len(players)} players, {len(teams)} teams")
         if players:
             print(f"Sample: {players[0]}")
-        
+
         players, teams = await fetch_understat_league("premier_league")
         print(f"\nPremier League: {len(players)} players, {len(teams)} teams")
         if players:
             print(f"Sample: {players[0]}")
-    
+
     asyncio.run(test())
