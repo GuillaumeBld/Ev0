@@ -19,6 +19,21 @@ api.interceptors.request.use(async (config) => {
   return config
 })
 
+// Handle 429 rate limit: retry once after delay
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const { config, response } = error
+    if (response?.status === 429 && !config._retried) {
+      config._retried = true
+      const retryAfter = parseInt(response.headers['retry-after'] || '5', 10)
+      await new Promise((r) => setTimeout(r, retryAfter * 1000))
+      return api(config)
+    }
+    return Promise.reject(error)
+  }
+)
+
 // Types
 export interface Recommendation {
   id: string
@@ -210,6 +225,32 @@ export async function getHistory(params?: {
 
 export async function getStats(): Promise<StatsResponse> {
   const { data } = await api.get('/api/v1/stats')
+  return data
+}
+
+export interface BreakdownItem {
+  label: string
+  bets: number
+  wins: number
+  losses: number
+  pnl: number
+  roi: number
+}
+
+export interface PnlPoint {
+  date: string
+  pnl: number
+  cumulative: number
+}
+
+export interface StatsBreakdownResponse {
+  by_market: BreakdownItem[]
+  by_league: BreakdownItem[]
+  pnl_trend: PnlPoint[]
+}
+
+export async function getStatsBreakdown(): Promise<StatsBreakdownResponse> {
+  const { data } = await api.get('/api/v1/stats/breakdown')
   return data
 }
 

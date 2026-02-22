@@ -4,7 +4,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -18,6 +18,7 @@ router = APIRouter()
 
 
 # ── Response models ──────────────────────────────────────────────
+
 
 class HistoryItem(BaseModel):
     id: int
@@ -49,7 +50,29 @@ class StatsResponse(BaseModel):
     roi: float
 
 
+class BreakdownItem(BaseModel):
+    label: str
+    bets: int
+    wins: int
+    losses: int
+    pnl: float
+    roi: float
+
+
+class PnlPoint(BaseModel):
+    date: str
+    pnl: float
+    cumulative: float
+
+
+class StatsBreakdownResponse(BaseModel):
+    by_market: list[BreakdownItem]
+    by_league: list[BreakdownItem]
+    pnl_trend: list[PnlPoint]
+
+
 # ── Endpoints ────────────────────────────────────────────────────
+
 
 @router.get("/history", response_model=HistoryResponse)
 async def get_history(
@@ -86,8 +109,7 @@ async def get_history(
     stake_map: dict[int, float] = {}
     if rec_ids:
         stake_result = await db.execute(
-            select(BankrollEntry.recommendation_id, BankrollEntry.stake)
-            .where(
+            select(BankrollEntry.recommendation_id, BankrollEntry.stake).where(
                 BankrollEntry.recommendation_id.in_(rec_ids),
                 BankrollEntry.entry_type == "bet_placed",
             )
@@ -99,26 +121,24 @@ async def get_history(
     bets = []
     for rec, home_team, away_team in rows:
         fixture_name = f"{home_team} vs {away_team}"
-        # Determine display status
-        if rec.result:
-            display_status = rec.result  # won, lost, void, push
-        else:
-            display_status = "pending"
+        display_status = rec.result or "pending"
 
-        bets.append(HistoryItem(
-            id=rec.id,
-            date=str(rec.generated_utc.date()) if rec.generated_utc else "",
-            fixture_name=fixture_name,
-            player_name=rec.player_name,
-            market_type=rec.market_type,
-            best_odds=rec.best_odds,
-            edge=rec.edge,
-            best_bookmaker=rec.best_bookmaker,
-            status=display_status,
-            result=rec.result,
-            pnl=rec.pnl or 0.0,
-            stake=stake_map.get(rec.id),
-        ))
+        bets.append(
+            HistoryItem(
+                id=rec.id,
+                date=str(rec.generated_utc.date()) if rec.generated_utc else "",
+                fixture_name=fixture_name,
+                player_name=rec.player_name,
+                market_type=rec.market_type,
+                best_odds=rec.best_odds,
+                edge=rec.edge,
+                best_bookmaker=rec.best_bookmaker,
+                status=display_status,
+                result=rec.result,
+                pnl=rec.pnl or 0.0,
+                stake=stake_map.get(rec.id),
+            )
+        )
 
     return HistoryResponse(count=len(bets), bets=bets)
 
@@ -152,8 +172,7 @@ async def get_stats(
     total_staked = 0.0
     if settled_rec_ids:
         stake_result = await db.execute(
-            select(func.coalesce(func.sum(BankrollEntry.stake), 0.0))
-            .where(
+            select(func.coalesce(func.sum(BankrollEntry.stake), 0.0)).where(
                 BankrollEntry.recommendation_id.in_(settled_rec_ids),
                 BankrollEntry.entry_type == "bet_placed",
             )
@@ -174,4 +193,89 @@ async def get_stats(
         total_pnl=round(total_pnl, 2),
         win_rate=round(win_rate, 4),
         roi=round(roi, 4),
+    )
+
+
+@router.get("/stats/breakdown", response_model=StatsBreakdownResponse)
+async def get_stats_breakdown(
+    db: AsyncSession = Depends(get_db),
+):
+    """Performance breakdown by market type, league, and P&L trend."""
+    # Fetch all settled recommendations with fixture info
+    result = await db.execute(
+        select(Recommendation, Fixture.home_team, Fixture.away_team, Fixture.league)
+        .join(Fixture, Recommendation.fixture_id == Fixture.id)
+        .where(Recommendation.result.in_(["won", "lost"]))
+        .order_by(Recommendation.settled_utc.asc())
+    )
+    rows = result.all()
+
+    # Fetch stakes
+    rec_ids = [row[0].id for row in rows]
+    stake_map: dict[int, float] = {}
+    if rec_ids:
+        stake_result = await db.execute(
+            select(BankrollEntry.recommendation_id, BankrollEntry.stake).where(
+                BankrollEntry.recommendation_id.in_(rec_ids),
+                BankrollEntry.entry_type == "bet_placed",
+            )
+        )
+        for rid, stake in stake_result.all():
+            if rid is not None:
+                stake_map[rid] = stake or 10.0
+
+    # Build breakdowns
+    market_buckets: dict[str, dict] = {}
+    league_buckets: dict[str, dict] = {}
+    pnl_trend: list[PnlPoint] = []
+    cumulative = 0.0
+
+    for rec, _home, _away, league in rows:
+        pnl = rec.pnl or 0.0
+        is_win = rec.result == "won"
+        stake = stake_map.get(rec.id, 10.0)
+
+        # Market breakdown
+        mt = rec.market_type or "unknown"
+        if mt not in market_buckets:
+            market_buckets[mt] = {"bets": 0, "wins": 0, "losses": 0, "pnl": 0.0, "staked": 0.0}
+        market_buckets[mt]["bets"] += 1
+        market_buckets[mt]["wins" if is_win else "losses"] += 1
+        market_buckets[mt]["pnl"] += pnl
+        market_buckets[mt]["staked"] += stake
+
+        # League breakdown
+        lg = league or "unknown"
+        if lg not in league_buckets:
+            league_buckets[lg] = {"bets": 0, "wins": 0, "losses": 0, "pnl": 0.0, "staked": 0.0}
+        league_buckets[lg]["bets"] += 1
+        league_buckets[lg]["wins" if is_win else "losses"] += 1
+        league_buckets[lg]["pnl"] += pnl
+        league_buckets[lg]["staked"] += stake
+
+        # P&L trend
+        cumulative += pnl
+        dt = str(rec.settled_utc.date()) if rec.settled_utc else str(rec.generated_utc.date()) if rec.generated_utc else ""
+        pnl_trend.append(PnlPoint(date=dt, pnl=round(pnl, 2), cumulative=round(cumulative, 2)))
+
+    def _to_breakdown(buckets: dict[str, dict]) -> list[BreakdownItem]:
+        items = []
+        for label, b in buckets.items():
+            staked = b["staked"]
+            items.append(
+                BreakdownItem(
+                    label=label,
+                    bets=b["bets"],
+                    wins=b["wins"],
+                    losses=b["losses"],
+                    pnl=round(b["pnl"], 2),
+                    roi=round(b["pnl"] / staked, 4) if staked > 0 else 0.0,
+                )
+            )
+        return items
+
+    return StatsBreakdownResponse(
+        by_market=_to_breakdown(market_buckets),
+        by_league=_to_breakdown(league_buckets),
+        pnl_trend=pnl_trend,
     )

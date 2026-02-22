@@ -2,9 +2,11 @@
 
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { TrendingUp, Target, AlertCircle, Download } from 'lucide-react'
+import { TrendingUp, Target, AlertCircle, Download, BarChart3 } from 'lucide-react'
+import { clsx } from 'clsx'
 import { RecommendationCard } from './RecommendationCard'
-import { getRecommendations, getStats } from '@/lib/api'
+import { getRecommendations, getStats, getStatsBreakdown } from '@/lib/api'
+import type { BreakdownItem, PnlPoint } from '@/lib/api'
 
 interface DashboardProps {
   user: any
@@ -44,6 +46,11 @@ export function Dashboard({ user }: DashboardProps) {
   const { data: statsData } = useQuery({
     queryKey: ['dashboard-stats'],
     queryFn: getStats,
+  })
+
+  const { data: breakdown } = useQuery({
+    queryKey: ['dashboard-breakdown'],
+    queryFn: getStatsBreakdown,
   })
 
   const recommendations = recsData || []
@@ -105,6 +112,41 @@ export function Dashboard({ user }: DashboardProps) {
           color="purple"
         />
       </div>
+
+      {/* Performance Analytics */}
+      {breakdown && (breakdown.by_market.length > 0 || breakdown.pnl_trend.length > 0) && (
+        <div className="mb-8">
+          <h2 className="text-xl font-semibold text-white mb-4 flex items-center gap-2">
+            <BarChart3 className="w-5 h-5" />
+            Performance
+          </h2>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* P&L Trend */}
+            {breakdown.pnl_trend.length > 0 && (
+              <div className="bg-gray-800 rounded-xl p-6">
+                <h3 className="text-sm font-medium text-gray-400 mb-4">Courbe P&L</h3>
+                <PnlChart data={breakdown.pnl_trend} />
+              </div>
+            )}
+
+            {/* Breakdown Tables */}
+            <div className="space-y-6">
+              {breakdown.by_market.length > 0 && (
+                <div className="bg-gray-800 rounded-xl p-6">
+                  <h3 className="text-sm font-medium text-gray-400 mb-3">Par marche</h3>
+                  <BreakdownTable items={breakdown.by_market} />
+                </div>
+              )}
+              {breakdown.by_league.length > 0 && (
+                <div className="bg-gray-800 rounded-xl p-6">
+                  <h3 className="text-sm font-medium text-gray-400 mb-3">Par ligue</h3>
+                  <BreakdownTable items={breakdown.by_league} />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Recommendations */}
       <div>
@@ -201,6 +243,85 @@ function StatCard({ title, value, subtitle, icon: Icon, color }: StatCardProps) 
         <div className={`p-3 rounded-lg ${colorClasses[color]}`}>
           <Icon className="w-6 h-6" />
         </div>
+      </div>
+    </div>
+  )
+}
+
+function BreakdownTable({ items }: { items: BreakdownItem[] }) {
+  return (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="text-gray-500 text-xs">
+          <th className="text-left pb-2">Label</th>
+          <th className="text-right pb-2">Paris</th>
+          <th className="text-right pb-2">W/L</th>
+          <th className="text-right pb-2">P&L</th>
+          <th className="text-right pb-2">ROI</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((item) => (
+          <tr key={item.label} className="border-t border-gray-700/50">
+            <td className="py-2 text-white font-medium capitalize">{item.label.replace('_', ' ')}</td>
+            <td className="py-2 text-right text-gray-400">{item.bets}</td>
+            <td className="py-2 text-right text-gray-400">{item.wins}/{item.losses}</td>
+            <td className={clsx('py-2 text-right font-medium', item.pnl >= 0 ? 'text-green-400' : 'text-red-400')}>
+              {item.pnl >= 0 ? '+' : ''}{item.pnl.toFixed(2)}
+            </td>
+            <td className={clsx('py-2 text-right', item.roi >= 0 ? 'text-green-400' : 'text-red-400')}>
+              {(item.roi * 100).toFixed(1)}%
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+function PnlChart({ data }: { data: PnlPoint[] }) {
+  if (data.length === 0) return null
+
+  const values = data.map((d) => d.cumulative)
+  const max = Math.max(...values, 0)
+  const min = Math.min(...values, 0)
+  const range = max - min || 1
+  const height = 120
+  const width = 100 // percentage
+
+  // Build SVG path
+  const points = data.map((d, i) => {
+    const x = data.length === 1 ? 50 : (i / (data.length - 1)) * width
+    const y = height - ((d.cumulative - min) / range) * height
+    return `${x},${y}`
+  })
+  const linePath = `M ${points.join(' L ')}`
+
+  // Zero line position
+  const zeroY = height - ((0 - min) / range) * height
+
+  const lastPoint = data[data.length - 1]
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full" preserveAspectRatio="none" style={{ height: '120px' }}>
+        {/* Zero line */}
+        <line x1="0" y1={zeroY} x2={width} y2={zeroY} stroke="#374151" strokeWidth="0.3" strokeDasharray="2,2" />
+        {/* P&L line */}
+        <polyline
+          points={points.join(' ')}
+          fill="none"
+          stroke={lastPoint.cumulative >= 0 ? '#4ade80' : '#f87171'}
+          strokeWidth="1.5"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+      <div className="flex justify-between mt-2 text-xs text-gray-500">
+        <span>{data[0].date}</span>
+        <span className={clsx('font-medium', lastPoint.cumulative >= 0 ? 'text-green-400' : 'text-red-400')}>
+          {lastPoint.cumulative >= 0 ? '+' : ''}{lastPoint.cumulative.toFixed(2)} EUR
+        </span>
+        <span>{lastPoint.date}</span>
       </div>
     </div>
   )

@@ -8,13 +8,14 @@ Runs periodic jobs via APScheduler:
 """
 
 import asyncio
+import json
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from sqlalchemy import select
 
 from app.cache import close_redis
 from app.config import settings
@@ -22,13 +23,11 @@ from app.db import async_session, engine
 from app.ingestion.fixtures import fetch_league_fixtures
 from app.ingestion.odds import ingest_odds_for_league
 from app.ingestion.storage import (
-    get_best_odds_for_fixture,
-    get_latest_player_stats,
-    get_upcoming_fixtures,
     store_odds_snapshot,
     store_recommendation,
     upsert_fixture,
 )
+from app.models.settings import UserSettings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,23 +35,54 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Leagues to ingest
-LEAGUES = ["ligue1", "premier_league"]
+# Defaults (used when no user settings exist)
+DEFAULT_LEAGUES = ["ligue1", "premier_league"]
 CURRENT_SEASON = "2024-2025"
 
 
+async def _load_user_settings() -> dict[str, str]:
+    """Load all user settings from the database."""
+    try:
+        async with async_session() as session:
+            result = await session.execute(select(UserSettings))
+            rows = result.scalars().all()
+            return {row.key: row.value for row in rows}
+    except Exception as exc:
+        logger.warning("Failed to load user settings, using defaults: %s", exc)
+        return {}
+
+
+def _get_leagues(user_settings: dict[str, str]) -> list[str]:
+    """Get active leagues from user settings or defaults."""
+    raw = user_settings.get("active_leagues", "")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list) and parsed:
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            # Comma-separated fallback
+            leagues = [l.strip() for l in raw.split(",") if l.strip()]
+            if leagues:
+                return leagues
+    return DEFAULT_LEAGUES
+
+
 # ── Job 1: Fixtures Sync ─────────────────────────────────────────
+
 
 async def job_sync_fixtures():
     """Sync fixtures from FBref for all leagues and store in DB."""
     logger.info("=== Starting fixtures sync ===")
 
-    for league in LEAGUES:
+    user_settings = await _load_user_settings()
+    leagues = _get_leagues(user_settings)
+    logger.info("Active leagues: %s", leagues)
+
+    for league in leagues:
         try:
             # fetch_league_fixtures is synchronous (HTTP + BS4)
-            fixtures = await asyncio.to_thread(
-                fetch_league_fixtures, league, CURRENT_SEASON
-            )
+            fixtures = await asyncio.to_thread(fetch_league_fixtures, league, CURRENT_SEASON)
             logger.info("Fetched %d fixtures for %s", len(fixtures), league)
 
             stored = 0
@@ -75,6 +105,7 @@ async def job_sync_fixtures():
 
 # ── Job 2: Player Stats Sync ─────────────────────────────────────
 
+
 async def job_sync_player_stats():
     """Sync player stats from Understat + FBref.
 
@@ -88,12 +119,15 @@ async def job_sync_player_stats():
         # Falls back gracefully if API keys missing
         try:
             from app.ingestion.smart_sync import smart_sync_all
+
             results = await smart_sync_all()
             for r in results:
                 status = "OK" if r.get("success") else "FAIL"
                 logger.info(
                     "Smart sync %s: %s (strategy=%s)",
-                    r.get("league"), status, r.get("strategy"),
+                    r.get("league"),
+                    status,
+                    r.get("strategy"),
                 )
             logger.info("=== Player stats sync complete (smart) ===")
             return
@@ -102,6 +136,7 @@ async def job_sync_player_stats():
 
         # Fallback: direct FBref + Understat sync
         from app.ingestion.sync_all_players import sync_all
+
         await sync_all()
         logger.info("=== Player stats sync complete (direct) ===")
 
@@ -111,6 +146,7 @@ async def job_sync_player_stats():
 
 # ── Job 3: Odds Snapshot ─────────────────────────────────────────
 
+
 async def job_snapshot_odds():
     """Snapshot odds from The Odds API for upcoming matches and store in DB."""
     logger.info("=== Starting odds snapshot ===")
@@ -119,7 +155,11 @@ async def job_snapshot_odds():
         logger.warning("ODDS_API_KEY not configured, skipping odds snapshot")
         return
 
-    for league in LEAGUES:
+    user_settings = await _load_user_settings()
+    leagues = _get_leagues(user_settings)
+    logger.info("Active leagues for odds: %s", leagues)
+
+    for league in leagues:
         for market in ["goalscorer", "assist"]:
             try:
                 snapshots = await ingest_odds_for_league(league, market)
@@ -130,8 +170,6 @@ async def job_snapshot_odds():
 
                 stored = 0
                 async with async_session() as session:
-                    # We need fixture DB IDs. Build a map of external_id -> fixture
-                    from sqlalchemy import select
                     from app.models.fixtures import Fixture
 
                     result = await session.execute(select(Fixture))
@@ -161,12 +199,15 @@ async def job_snapshot_odds():
                 logger.info("Stored %d/%d odds for %s %s", stored, len(snapshots), league, market)
 
             except Exception as exc:
-                logger.error("Error snapshotting %s %s odds: %s", league, market, exc, exc_info=True)
+                logger.error(
+                    "Error snapshotting %s %s odds: %s", league, market, exc, exc_info=True
+                )
 
     logger.info("=== Odds snapshot complete ===")
 
 
 # ── Job 4: Recommendation Generation ─────────────────────────────
+
 
 async def job_generate_recommendations():
     """Generate betting recommendations for upcoming matches.
@@ -187,9 +228,27 @@ async def job_generate_recommendations():
         from app.services.recommendation_service import get_recommendations_for_date
         from app.strategy.selector import RecommendationFilter
 
+        user_settings = await _load_user_settings()
+
+        # Build filter from user settings (fall back to defaults)
+        filter_config = RecommendationFilter(
+            min_edge=float(user_settings.get("min_edge", settings.min_edge_threshold)),
+            min_confidence=float(user_settings.get("min_confidence", 0.50)),
+            min_odds=float(user_settings.get("min_odds", 1.3)),
+            max_odds=float(user_settings.get("max_odds", 15.0)),
+            leagues=_get_leagues(user_settings),
+        )
+        logger.info(
+            "Recommendation filter: min_edge=%.2f, min_conf=%.2f, odds=[%.1f-%.1f], leagues=%s",
+            filter_config.min_edge,
+            filter_config.min_confidence,
+            filter_config.min_odds,
+            filter_config.max_odds,
+            filter_config.leagues,
+        )
+
         # Generate for today
-        now = datetime.now(timezone.utc)
-        filter_config = RecommendationFilter(min_edge=settings.min_edge_threshold)
+        now = datetime.now(UTC)
 
         recs, metadata = await async_session_scoped_call(
             get_recommendations_for_date, now, filter_config
@@ -207,8 +266,6 @@ async def job_generate_recommendations():
         if recs:
             stored = 0
             async with async_session() as session:
-                # Map fixture external IDs to DB IDs
-                from sqlalchemy import select
                 from app.models.fixtures import Fixture
 
                 result = await session.execute(select(Fixture))
@@ -255,6 +312,7 @@ async def async_session_scoped_call(func, dt, filter_config):
 
 # ── Scheduler Setup ───────────────────────────────────────────────
 
+
 def create_scheduler() -> AsyncIOScheduler:
     """Create and configure the scheduler."""
     scheduler = AsyncIOScheduler()
@@ -299,6 +357,7 @@ def create_scheduler() -> AsyncIOScheduler:
 
 
 # ── Main Entry Point ──────────────────────────────────────────────
+
 
 async def main():
     """Main worker entry point."""

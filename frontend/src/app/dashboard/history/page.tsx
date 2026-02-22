@@ -1,13 +1,13 @@
 'use client'
 
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  CheckCircle, XCircle, Clock, Filter, Download,
-  ChevronDown, ChevronUp
+  CheckCircle, XCircle, Clock, Download,
+  ChevronDown, ChevronUp, Loader2, MinusCircle
 } from 'lucide-react'
 import { clsx } from 'clsx'
-import { getHistory } from '@/lib/api'
+import { getHistory, patchRecommendation } from '@/lib/api'
 import type { HistoryItem } from '@/lib/api'
 
 type BetStatus = 'won' | 'lost' | 'pending' | 'void'
@@ -41,6 +41,7 @@ function historyItemToBet(item: HistoryItem): HistoricalBet {
 }
 
 export default function HistoryPage() {
+  const queryClient = useQueryClient()
   const [statusFilter, setStatusFilter] = useState<BetStatus | 'all'>('all')
   const [sortField, setSortField] = useState<'date' | 'pnl' | 'edge'>('date')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
@@ -48,6 +49,15 @@ export default function HistoryPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['history', statusFilter],
     queryFn: () => getHistory(statusFilter !== 'all' ? { status: statusFilter } : {}),
+  })
+
+  const settleMutation = useMutation({
+    mutationFn: ({ id, result }: { id: string; result: 'won' | 'lost' | 'void' }) =>
+      patchRecommendation(id, { result }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['history'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
+    },
   })
 
   const allBets = (data?.bets || []).map(historyItemToBet)
@@ -87,12 +97,12 @@ export default function HistoryPage() {
       {/* Stats Summary */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
         <StatBox label="Total" value={isLoading ? '...' : stats.total} />
-        <StatBox label="Gagnés" value={isLoading ? '...' : stats.won} color="green" />
+        <StatBox label="Gagnes" value={isLoading ? '...' : stats.won} color="green" />
         <StatBox label="Perdus" value={isLoading ? '...' : stats.lost} color="red" />
         <StatBox label="En cours" value={isLoading ? '...' : stats.pending} color="yellow" />
         <StatBox
           label="P&L"
-          value={isLoading ? '...' : `${stats.totalPnl >= 0 ? '+' : ''}${stats.totalPnl.toFixed(2)}€`}
+          value={isLoading ? '...' : `${stats.totalPnl >= 0 ? '+' : ''}${stats.totalPnl.toFixed(2)}EUR`}
           color={stats.totalPnl >= 0 ? 'green' : 'red'}
         />
       </div>
@@ -110,7 +120,7 @@ export default function HistoryPage() {
                 : 'bg-gray-800 text-gray-400 hover:text-white'
             )}
           >
-            {status === 'all' ? 'Tous' : status === 'won' ? 'Gagnés' : status === 'lost' ? 'Perdus' : 'En cours'}
+            {status === 'all' ? 'Tous' : status === 'won' ? 'Gagnes' : status === 'lost' ? 'Perdus' : 'En cours'}
           </button>
         ))}
       </div>
@@ -128,7 +138,7 @@ export default function HistoryPage() {
               </th>
               <th className="px-4 py-3 text-left text-sm font-medium text-gray-400 hidden md:table-cell">Match</th>
               <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Joueur</th>
-              <th className="px-4 py-3 text-left text-sm font-medium text-gray-400 hidden md:table-cell">Marché</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-400 hidden md:table-cell">Marche</th>
               <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">Cote</th>
               <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">
                 <SortButton field="edge" current={sortField} dir={sortDir} onClick={setSortField} setDir={setSortDir}>
@@ -136,7 +146,7 @@ export default function HistoryPage() {
                 </SortButton>
               </th>
               <th className="px-4 py-3 text-right text-sm font-medium text-gray-400 hidden md:table-cell">Mise</th>
-              <th className="px-4 py-3 text-center text-sm font-medium text-gray-400">Status</th>
+              <th className="px-4 py-3 text-center text-sm font-medium text-gray-400">Resultat</th>
               <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">
                 <SortButton field="pnl" current={sortField} dir={sortDir} onClick={setSortField} setDir={setSortDir}>
                   P&L
@@ -154,7 +164,7 @@ export default function HistoryPage() {
             ) : filteredBets.length === 0 ? (
               <tr>
                 <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
-                  Aucun pari trouvé
+                  Aucun pari trouve
                 </td>
               </tr>
             ) : (
@@ -175,15 +185,23 @@ export default function HistoryPage() {
                   </td>
                   <td className="px-4 py-3 text-sm text-right text-gray-300">{bet.odds.toFixed(2)}</td>
                   <td className="px-4 py-3 text-sm text-right text-green-400">+{(bet.edge * 100).toFixed(1)}%</td>
-                  <td className="px-4 py-3 text-sm text-right text-gray-300 hidden md:table-cell">{bet.stake}€</td>
+                  <td className="px-4 py-3 text-sm text-right text-gray-300 hidden md:table-cell">{bet.stake}EUR</td>
                   <td className="px-4 py-3 text-center">
-                    <StatusBadge status={bet.status} />
+                    {bet.status === 'pending' ? (
+                      <ResultActions
+                        betId={bet.id}
+                        onSettle={(result) => settleMutation.mutate({ id: bet.id, result })}
+                        isLoading={settleMutation.isPending && settleMutation.variables?.id === bet.id}
+                      />
+                    ) : (
+                      <StatusBadge status={bet.status} />
+                    )}
                   </td>
                   <td className={clsx(
                     'px-4 py-3 text-sm text-right font-medium',
                     bet.pnl > 0 ? 'text-green-400' : bet.pnl < 0 ? 'text-red-400' : 'text-gray-400'
                   )}>
-                    {bet.pnl > 0 ? '+' : ''}{bet.pnl.toFixed(2)}€
+                    {bet.pnl > 0 ? '+' : ''}{bet.pnl.toFixed(2)}EUR
                   </td>
                 </tr>
               ))
@@ -192,6 +210,46 @@ export default function HistoryPage() {
         </table>
         </div>
       </div>
+    </div>
+  )
+}
+
+function ResultActions({
+  betId,
+  onSettle,
+  isLoading,
+}: {
+  betId: string
+  onSettle: (result: 'won' | 'lost' | 'void') => void
+  isLoading: boolean
+}) {
+  if (isLoading) {
+    return <Loader2 className="w-4 h-4 animate-spin text-gray-400 mx-auto" />
+  }
+
+  return (
+    <div className="flex items-center justify-center gap-1">
+      <button
+        onClick={() => onSettle('won')}
+        title="Gagne"
+        className="p-1 text-gray-500 hover:text-green-400 transition-colors"
+      >
+        <CheckCircle className="w-4 h-4" />
+      </button>
+      <button
+        onClick={() => onSettle('lost')}
+        title="Perdu"
+        className="p-1 text-gray-500 hover:text-red-400 transition-colors"
+      >
+        <XCircle className="w-4 h-4" />
+      </button>
+      <button
+        onClick={() => onSettle('void')}
+        title="Annule"
+        className="p-1 text-gray-500 hover:text-gray-300 transition-colors"
+      >
+        <MinusCircle className="w-4 h-4" />
+      </button>
     </div>
   )
 }
