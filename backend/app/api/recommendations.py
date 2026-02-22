@@ -9,8 +9,6 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.services.recommendation_service import get_recommendations_for_date
-from app.strategy.selector import RecommendationFilter
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +70,14 @@ async def get_recommendations(
     effective_date = target_date or date.today()
     dt = datetime.combine(effective_date, datetime.min.time(), tzinfo=timezone.utc)
 
-    # Build filter config from query params
-    filter_config = RecommendationFilter(min_edge=min_edge)
-    if market_type:
-        filter_config.markets = [market_type.value]
-    if league:
-        filter_config.leagues = [league]
-
     try:
+        from app.services.recommendation_service import get_recommendations_for_date
+        from app.strategy.selector import RecommendationFilter as _RF
+        filter_config = _RF(min_edge=min_edge)
+        if market_type:
+            filter_config.markets = [market_type.value]
+        if league:
+            filter_config.leagues = [league]
         raw_recs = await get_recommendations_for_date(dt, db, filter_config)
     except Exception as exc:
         logger.error("Failed to generate recommendations: %s", exc, exc_info=True)
@@ -123,7 +121,8 @@ async def debug_recommendations(
     effective_date = target_date or date.today()
     dt = datetime.combine(effective_date, datetime.min.time(), tzinfo=timezone.utc)
     try:
-        raw_recs = await get_recommendations_for_date(dt, db)
+        from app.services.recommendation_service import get_recommendations_for_date as _get_recs
+        raw_recs = await _get_recs(dt, db)
         return {"status": "ok", "count": len(raw_recs), "sample": raw_recs[:2]}
     except Exception as exc:
         return {"status": "error", "error": str(exc), "traceback": traceback.format_exc()}
