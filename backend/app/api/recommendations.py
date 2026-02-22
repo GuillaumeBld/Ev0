@@ -57,6 +57,7 @@ class RecommendationsResponse(BaseModel):
     count: int
     recommendations: list[Recommendation]
     debug_error: str | None = None
+    debug_info: dict | None = None
 
 
 @router.get("/recommendations")
@@ -73,6 +74,7 @@ async def get_recommendations(
 
     import traceback as _tb
     _debug_error = None
+    _debug_info: dict = {}
     try:
         from app.services.recommendation_service import get_recommendations_for_date
         from app.strategy.selector import RecommendationFilter as _RF
@@ -81,7 +83,7 @@ async def get_recommendations(
             filter_config.markets = [market_type.value]
         if league:
             filter_config.leagues = [league]
-        raw_recs = await get_recommendations_for_date(dt, db, filter_config)
+        raw_recs, _debug_info = await get_recommendations_for_date(dt, db, filter_config, debug=True)
     except Exception as exc:
         logger.error("Failed to generate recommendations: %s", exc, exc_info=True)
         _debug_error = _tb.format_exc()
@@ -113,6 +115,7 @@ async def get_recommendations(
         count=len(recommendations),
         recommendations=recommendations,
         debug_error=_debug_error,
+        debug_info=_debug_info or None,
     )
 
 

@@ -191,7 +191,8 @@ async def get_recommendations_for_date(
     target_date: datetime,
     db: AsyncSession,
     filter_config: RecommendationFilter | None = None,
-) -> list[dict[str, Any]]:
+    debug: bool = False,
+) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict]:
     """
     Get recommendations for a specific date.
 
@@ -199,11 +200,17 @@ async def get_recommendations_for_date(
     2. Fetches player props for each event
     3. Loads player stats from DB
     4. Generates recommendations via the pricing pipeline
+
+    If debug=True, returns (recs, debug_info) tuple.
     """
+    debug_info: dict[str, Any] = {}
+
     try:
         odds_client = OddsAPIClient()
     except ValueError:
         logger.warning("ODDS_API_KEY not configured – returning empty recommendations")
+        if debug:
+            return [], {"error": "ODDS_API_KEY not configured"}
         return []
 
     fixtures: list[dict[str, Any]] = []
@@ -262,6 +269,8 @@ async def get_recommendations_for_date(
             odds_data[event_id] = fixture_odds
 
     if not fixtures:
+        if debug:
+            return [], {"fixtures_count": 0, "odds_data_keys": list(odds_data.keys()), "stage": "no_fixtures_for_date"}
         return []
 
     # 2. Load player stats from DB (latest snapshot per player)
@@ -312,5 +321,20 @@ async def get_recommendations_for_date(
     # 4. Add unique IDs
     for rec in recs:
         rec["id"] = str(uuid.uuid4())
+
+    if debug:
+        # Count total odds entries across all fixtures
+        total_odds = sum(len(v) for v in odds_data.values())
+        debug_info = {
+            "fixtures_count": len(fixtures),
+            "player_stats_count": len(player_stats),
+            "total_odds_entries": total_odds,
+            "recommendations_before_filter": len(recs),
+            "sample_fixture": fixtures[0] if fixtures else None,
+            "sample_players": list(player_stats.keys())[:10],
+            "odds_fixture_ids": list(odds_data.keys())[:5],
+            "sample_odds": odds_data.get(fixtures[0]["fixture_id"], [])[:3] if fixtures else [],
+        }
+        return recs, debug_info
 
     return recs
