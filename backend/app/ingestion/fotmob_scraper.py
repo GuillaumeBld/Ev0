@@ -24,6 +24,9 @@ FOTMOB_SEASON_IDS = {
     "premier_league": 27110,
 }
 
+# Module-level cache for discovered season IDs: (league, season_name) -> TournamentId
+_SEASON_ID_CACHE: dict[tuple[str, str], int] = {}
+
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -97,6 +100,50 @@ async def _get_season_id(client: httpx.AsyncClient, league_id: int) -> int | Non
     return None
 
 
+async def discover_season_id(league: str, season: str) -> int | None:
+    """Discover the FotMob TournamentId for a specific league and season.
+
+    Calls the FotMob ``/api/leagues`` endpoint and reads ``stats.seasonStatLinks``
+    to find the matching season by ``Name`` field (e.g. ``"2024/2025"``).
+
+    Args:
+        league: ``ligue_1`` or ``premier_league``
+        season: Season string like ``"2024-2025"`` — converted to ``"2024/2025"`` for matching
+
+    Returns:
+        TournamentId if found, None otherwise. Results are cached.
+    """
+    cache_key = (league, season)
+    if cache_key in _SEASON_ID_CACHE:
+        return _SEASON_ID_CACHE[cache_key]
+
+    league_id = FOTMOB_LEAGUES.get(league)
+    if not league_id:
+        raise ValueError(f"Unknown league: {league}")
+
+    # Convert "2024-2025" → "2024/2025" to match FotMob's naming
+    season_name = season.replace("-", "/")
+
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        try:
+            resp = await client.get(f"{_API}/leagues", params={"id": league_id}, headers=_HEADERS)
+            resp.raise_for_status()
+            data = json.loads(resp.content.decode("utf-8", errors="replace"))
+            links = data.get("stats", {}).get("seasonStatLinks", [])
+            for link in links:
+                if link.get("Name") == season_name:
+                    tid = link["TournamentId"]
+                    _SEASON_ID_CACHE[cache_key] = tid
+                    print(f"  Discovered season_id={tid} for {league} {season}")
+                    return tid
+            # Not found
+            print(f"  Season '{season_name}' not found in FotMob seasonStatLinks for {league}")
+            print(f"  Available: {[lnk.get('Name') for lnk in links]}")
+        except Exception as e:
+            print(f"  Error discovering FotMob season ID for {league} {season}: {e}")
+    return None
+
+
 async def _fetch_stat_list(
     client: httpx.AsyncClient,
     league_id: int,
@@ -121,11 +168,16 @@ async def _fetch_stat_list(
     return []
 
 
-async def fetch_fotmob_league(league: str) -> tuple[list[dict], list[dict]]:
+async def fetch_fotmob_league(
+    league: str,
+    season_id: int | None = None,
+) -> tuple[list[dict], list[dict]]:
     """Fetch all players and teams from FotMob for a league.
 
     Args:
         league: ligue_1 or premier_league
+        season_id: Optional TournamentId override. If provided, uses this instead
+            of the hardcoded ``FOTMOB_SEASON_IDS`` / ``_get_season_id()`` fallback.
 
     Returns:
         Tuple of (players list, teams list) using the standard schema.
@@ -134,8 +186,9 @@ async def fetch_fotmob_league(league: str) -> tuple[list[dict], list[dict]]:
     if not league_id:
         raise ValueError(f"Unknown league: {league}")
 
-    # Use hardcoded season ID first; fall back to API discovery
-    season_id: int | None = FOTMOB_SEASON_IDS.get(league)
+    # Use explicit season_id if provided, else hardcoded, else API discovery
+    if season_id is None:
+        season_id = FOTMOB_SEASON_IDS.get(league)
 
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         if season_id is None:
@@ -237,7 +290,11 @@ async def fetch_fotmob_league(league: str) -> tuple[list[dict], list[dict]]:
     return players, teams
 
 
-async def fetch_fotmob_fixtures(league: str, season: str = "2025-2026") -> list[dict]:
+async def fetch_fotmob_fixtures(
+    league: str,
+    season: str = "2025-2026",
+    season_year: int | None = None,
+) -> list[dict]:
     """Fetch all fixtures (matches) for a league from FotMob API.
 
     Uses the ``/api/leagues`` endpoint which returns all season matches
@@ -247,6 +304,9 @@ async def fetch_fotmob_fixtures(league: str, season: str = "2025-2026") -> list[
     Args:
         league: ``ligue_1`` or ``premier_league``
         season: Season string for metadata (e.g. ``"2025-2026"``)
+        season_year: Optional starting year to pass as ``?season=<year>`` query
+            param to FotMob. Required for fetching past seasons (e.g. ``2024``
+            for the 2024/2025 season). If ``None``, fetches the current season.
 
     Returns:
         List of fixture dicts compatible with ``upsert_fixture()``:
@@ -262,11 +322,15 @@ async def fetch_fotmob_fixtures(league: str, season: str = "2025-2026") -> list[
     # decompression that httpx doesn't handle natively.
     headers = {**_HEADERS, "Accept-Encoding": "gzip, deflate"}
 
+    params: dict[str, int] = {"id": league_id}
+    if season_year is not None:
+        params["season"] = season_year
+
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         try:
             resp = await client.get(
                 f"{_API}/leagues",
-                params={"id": league_id},
+                params=params,
                 headers=headers,
                 timeout=20.0,
             )

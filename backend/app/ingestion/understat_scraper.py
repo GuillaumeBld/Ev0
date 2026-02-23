@@ -59,11 +59,16 @@ def _parse_player(p: dict) -> dict:
     }
 
 
-async def fetch_understat_league(league: str) -> tuple[list[dict], list[dict]]:
+async def fetch_understat_league(
+    league: str,
+    season: str | None = None,
+) -> tuple[list[dict], list[dict]]:
     """Fetch all players and teams from Understat via the AJAX API.
 
     Args:
         league: ligue_1 or premier_league
+        season: Understat season year as string (e.g. ``"2024"``).
+            If ``None``, uses ``UNDERSTAT_SEASON`` (current season).
 
     Returns:
         Tuple of (players list, teams list)
@@ -72,11 +77,13 @@ async def fetch_understat_league(league: str) -> tuple[list[dict], list[dict]]:
     if not slug:
         raise ValueError(f"Unknown league: {league}")
 
+    season_str = season if season is not None else UNDERSTAT_SEASON
+
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, base_url=_BASE_URL) as client:
         try:
             resp = await client.post(
                 "main/getPlayersStats/",
-                data={"league": slug, "season": UNDERSTAT_SEASON},
+                data={"league": slug, "season": season_str},
                 headers=_HEADERS,
                 cookies={"beget": "begetok"},
             )
