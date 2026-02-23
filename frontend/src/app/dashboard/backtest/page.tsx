@@ -34,7 +34,8 @@ export default function BacktestPage() {
       const periodMap: Record<string, string> = {
         '6 derniers mois': '6m',
         '12 derniers mois': '12m',
-        'Saison 2023-24': 'season_2023_24',
+        'Saison 2025-26': 'season_2025_26',
+        'Saison 2024-25': 'season_2024_25',
       }
       const edgeMap: Record<string, number> = {
         '5%': 0.05,
@@ -95,7 +96,8 @@ export default function BacktestPage() {
             <select ref={periodRef} className="w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white">
               <option>6 derniers mois</option>
               <option>12 derniers mois</option>
-              <option>Saison 2023-24</option>
+              <option>Saison 2025-26</option>
+              <option>Saison 2024-25</option>
             </select>
           </div>
           <div>

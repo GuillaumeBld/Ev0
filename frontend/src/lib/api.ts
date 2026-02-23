@@ -276,7 +276,36 @@ export interface BacktestResults {
 }
 
 export async function runBacktest(config: BacktestConfig): Promise<BacktestResults> {
-  const { data } = await api.post('/api/v1/backtest', config)
+  // Convert period-based config to simulate endpoint params (date ranges)
+  const now = new Date()
+  let min_date: string | undefined
+  let max_date: string | undefined
+
+  if (config.period === '12m') {
+    const start = new Date(now)
+    start.setFullYear(start.getFullYear() - 1)
+    min_date = start.toISOString().slice(0, 10)
+    max_date = now.toISOString().slice(0, 10)
+  } else if (config.period === 'season_2025_26') {
+    min_date = '2025-08-01'
+    max_date = '2026-06-30'
+  } else if (config.period === 'season_2024_25') {
+    min_date = '2024-08-01'
+    max_date = '2025-06-30'
+  } else {
+    // default 6m
+    const start = new Date(now)
+    start.setMonth(start.getMonth() - 6)
+    min_date = start.toISOString().slice(0, 10)
+    max_date = now.toISOString().slice(0, 10)
+  }
+
+  const { data } = await api.post('/api/v1/backtest/simulate', {
+    min_date,
+    max_date,
+    min_edge: config.min_edge,
+    stake_method: config.stake_method,
+  })
   return data
 }
 
