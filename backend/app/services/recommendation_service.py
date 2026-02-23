@@ -6,6 +6,7 @@ actionable betting recommendations.
 
 import logging
 import uuid
+from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
@@ -13,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.odds import MARKET_KEYS, SPORT_KEYS, OddsAPIClient, normalize_selection_name
+from app.ingestion.player_stats import calculate_form_factor
 from app.models.players import Player, PlayerStats
 from app.pricing.assist import calculate_assist_price
 from app.pricing.goalscorer import calculate_edge, calculate_goalscorer_price
@@ -64,7 +66,7 @@ async def generate_recommendations(
     player_stats: dict[str, dict[str, Any]],  # player_name -> stats
     odds_data: dict[str, list[dict[str, Any]]],  # fixture_id -> odds list
     filter_config: RecommendationFilter | None = None,
-    team_strengths: dict[str, float] | None = None,  # team -> xG per match
+    team_strengths: dict[str, dict[str, float]] | None = None,  # team -> strengths
 ) -> list[dict[str, Any]]:
     """
     Generate betting recommendations for upcoming fixtures.
@@ -278,7 +280,7 @@ def _infer_team(
 def _get_opponent_factor(
     opponent: str,
     market_type: str,
-    team_strengths: dict[str, float] | None = None,
+    team_strengths: dict[str, dict[str, float]] | None = None,
 ) -> float:
     """
     Get opponent defensive factor.
@@ -296,8 +298,12 @@ def _get_opponent_factor(
     if not team_strengths or opponent not in team_strengths:
         return 1.0
 
-    opponent_xg = team_strengths[opponent]
-    league_avg = sum(team_strengths.values()) / len(team_strengths) if team_strengths else 1.0
+    opponent_xg = team_strengths[opponent]["xg_per_match"]
+    league_avg = (
+        sum(s["xg_per_match"] for s in team_strengths.values()) / len(team_strengths)
+        if team_strengths
+        else 1.0
+    )
 
     if opponent_xg <= 0 or league_avg <= 0:
         return 1.0
@@ -310,40 +316,153 @@ def _get_opponent_factor(
     return max(0.7, min(1.4, shrunk_factor))
 
 
-async def _compute_team_strengths(db: AsyncSession) -> dict[str, float]:
+async def _compute_team_strengths(db: AsyncSession) -> dict[str, dict[str, float]]:
     """
-    Compute average xG per match for each team from PlayerStats.
+    Compute average xG per match and finishing factor for each team.
 
-    Returns dict of team_name -> xG_per_match (sum of player xG / matches).
-    Used as a proxy for team attacking strength / opponent defensive weakness.
+    Returns dict of team_name -> {"xg_per_match": ..., "finishing": ...}.
+    - xg_per_match: proxy for team attacking strength / opponent defensive weakness.
+    - finishing: team_goals / team_xG, clamped [0.7, 1.3]. >1 = good finishers.
     """
     result = await db.execute(
         select(
             Player.team,
             func.sum(PlayerStats.xg).label("total_xg"),
             func.sum(PlayerStats.matches_played).label("total_matches"),
+            func.sum(PlayerStats.goals).label("total_goals"),
         )
         .join(Player, Player.id == PlayerStats.player_id)
         .where(Player.team.isnot(None))
         .group_by(Player.team)
     )
 
-    strengths: dict[str, float] = {}
+    strengths: dict[str, dict[str, float]] = {}
     for row in result.all():
         team_name = row[0]
         total_xg = row[1] or 0.0
         total_matches = row[2] or 0
+        total_goals = row[3] or 0
         if total_matches > 0 and team_name:
-            # Average xG per match across all players on the team
-            strengths[team_name] = total_xg / total_matches
+            xg_per_match = total_xg / total_matches
+            finishing = max(0.7, min(1.3, total_goals / total_xg)) if total_xg > 0 else 1.0
+            strengths[team_name] = {
+                "xg_per_match": xg_per_match,
+                "finishing": finishing,
+            }
 
     if strengths:
+        avg_xg = sum(s["xg_per_match"] for s in strengths.values()) / len(strengths)
+        avg_fin = sum(s["finishing"] for s in strengths.values()) / len(strengths)
         logger.info(
-            "Team strengths computed: %d teams, avg xG/match=%.3f",
+            "Team strengths computed: %d teams, avg xG/match=%.3f, avg finishing=%.3f",
             len(strengths),
-            sum(strengths.values()) / len(strengths),
+            avg_xg,
+            avg_fin,
         )
     return strengths
+
+
+async def _compute_form_factors(
+    db: AsyncSession,
+) -> dict[int, dict[str, float]]:
+    """
+    Compute form_factor and rolling conversion rate from PlayerStats snapshots.
+
+    Uses temporal snapshots (INSERT-based, not upsert) to approximate recent
+    performance trajectory. Requires >= 2 snapshots per player.
+
+    Returns dict of player_id -> {"form_factor": ..., "rolling_cr": ...}.
+    """
+    # Get last 6 snapshots per player, ordered by date descending.
+    # We use a window function to rank snapshots per player.
+    rank_subq = (
+        select(
+            PlayerStats.player_id,
+            PlayerStats.as_of_utc,
+            PlayerStats.xg,
+            PlayerStats.goals,
+            PlayerStats.matches_played,
+            func.row_number()
+            .over(
+                partition_by=PlayerStats.player_id,
+                order_by=PlayerStats.as_of_utc.desc(),
+            )
+            .label("rn"),
+        )
+        .where(PlayerStats.source == "average")
+        .subquery()
+    )
+
+    result = await db.execute(
+        select(
+            rank_subq.c.player_id,
+            rank_subq.c.as_of_utc,
+            rank_subq.c.xg,
+            rank_subq.c.goals,
+            rank_subq.c.matches_played,
+        )
+        .where(rank_subq.c.rn <= 6)
+        .order_by(rank_subq.c.player_id, rank_subq.c.as_of_utc.desc())
+    )
+
+    # Group snapshots by player
+    player_snapshots: dict[int, list[dict]] = defaultdict(list)
+    for row in result.all():
+        player_snapshots[row[0]].append(
+            {
+                "as_of_utc": row[1],
+                "xg": row[2] or 0.0,
+                "goals": row[3] or 0,
+                "matches_played": row[4] or 0,
+            }
+        )
+
+    factors: dict[int, dict[str, float]] = {}
+
+    for player_id, snapshots in player_snapshots.items():
+        if len(snapshots) < 2:
+            continue
+
+        # Snapshots are most-recent-first. Compute deltas between consecutive pairs.
+        xg_per_period: list[float] = []
+        for i in range(len(snapshots) - 1):
+            newer = snapshots[i]
+            older = snapshots[i + 1]
+            xg_delta = newer["xg"] - older["xg"]
+            matches_delta = newer["matches_played"] - older["matches_played"]
+            if matches_delta > 0:
+                xg_per_period.append(xg_delta / matches_delta)
+
+        # Form factor from per-period xG values (most recent first)
+        form = calculate_form_factor(xg_per_period) if xg_per_period else 1.0
+
+        # Rolling conversion rate from the most recent period (last 2 snapshots)
+        rolling_cr: float | None = None
+        newest = snapshots[0]
+        second = snapshots[1]
+        goals_delta = newest["goals"] - second["goals"]
+        xg_delta = newest["xg"] - second["xg"]
+        matches_delta = newest["matches_played"] - second["matches_played"]
+        if matches_delta >= 3 and xg_delta > 0:
+            raw_cr = goals_delta / xg_delta
+            rolling_cr = max(0.5, min(2.0, raw_cr))
+
+        entry: dict[str, float] = {"form_factor": form}
+        if rolling_cr is not None:
+            entry["rolling_cr"] = rolling_cr
+        factors[player_id] = entry
+
+    if factors:
+        form_values = [v["form_factor"] for v in factors.values()]
+        logger.info(
+            "Form factors computed: %d players, avg=%.3f, min=%.3f, max=%.3f",
+            len(factors),
+            sum(form_values) / len(form_values),
+            min(form_values),
+            max(form_values),
+        )
+
+    return factors
 
 
 async def get_recommendations_for_date(
@@ -493,6 +612,7 @@ async def get_recommendations_for_date(
             )
 
             player_stats[player_name] = {
+                "player_id": stats.player_id,
                 "xg_per_90": xg_per_90,
                 "xa_per_90": xa_per_90,
                 "expected_minutes": expected_minutes,
@@ -508,8 +628,26 @@ async def get_recommendations_for_date(
         if player_stats:
             await cache_player_stats_map(player_stats)
 
-    # Step 5: Compute team strengths for opponent factor
+    # Step 5: Compute team strengths for opponent factor + teammate finishing
     team_strengths = await _compute_team_strengths(db)
+
+    # Compute form factors and rolling conversion rates from snapshots
+    form_factors = await _compute_form_factors(db)
+
+    # Enrich player_stats with teammate_finishing, form_factor, rolling CR
+    for _pname, pstats in player_stats.items():
+        team = pstats.get("team")
+        # Teammate finishing from team strengths
+        if team and team_strengths and team in team_strengths:
+            pstats["teammate_finishing"] = team_strengths[team]["finishing"]
+
+        # Form factor and rolling conversion rate from snapshots
+        pid = pstats.get("player_id")
+        if pid and pid in form_factors:
+            pf = form_factors[pid]
+            pstats["form_factor"] = pf["form_factor"]
+            if "rolling_cr" in pf:
+                pstats["conversion_rate"] = pf["rolling_cr"]
 
     # 3. Generate recommendations
     recs = await generate_recommendations(

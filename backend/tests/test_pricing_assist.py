@@ -57,6 +57,30 @@ class TestAssistPricing:
         assert "explanation" in result
         assert "inputs" in result["explanation"]
 
+    def test_teammate_finishing_affects_pricing(self):
+        """Test that non-neutral teammate finishing changes lambda vs default."""
+        neutral = calculate_assist_price(xa_per_90=0.2, teammate_finishing_factor=1.0)
+        good_finishers = calculate_assist_price(xa_per_90=0.2, teammate_finishing_factor=1.2)
+        poor_finishers = calculate_assist_price(xa_per_90=0.2, teammate_finishing_factor=0.85)
+
+        # Good finishers → higher lambda → higher probability
+        assert good_finishers["lambda_intensity"] > neutral["lambda_intensity"]
+        assert good_finishers["probability"] > neutral["probability"]
+        assert good_finishers["fair_odds"] < neutral["fair_odds"]
+
+        # Poor finishers → lower lambda → lower probability
+        assert poor_finishers["lambda_intensity"] < neutral["lambda_intensity"]
+        assert poor_finishers["probability"] < neutral["probability"]
+        assert poor_finishers["fair_odds"] > neutral["fair_odds"]
+
+    def test_form_factor_affects_pricing(self):
+        """Test that non-neutral form factor changes lambda vs default."""
+        neutral = calculate_assist_price(xa_per_90=0.2, form_factor=1.0)
+        hot_form = calculate_assist_price(xa_per_90=0.2, form_factor=1.15)
+
+        assert hot_form["lambda_intensity"] > neutral["lambda_intensity"]
+        assert hot_form["probability"] > neutral["probability"]
+
 
 class TestCreationScore:
     """Tests for composite creation score calculation."""
