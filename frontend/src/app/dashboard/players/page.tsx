@@ -26,7 +26,7 @@ interface Player {
   team: string | null
   position: string | null
   league: string | null
-  fbref: PlayerStats | null
+  fotmob: PlayerStats | null
   understat: PlayerStats | null
   average: PlayerStats | null
   ev0_xg_per_90: number
@@ -43,7 +43,7 @@ interface SyncStatus {
 }
 
 type SortField = 'name' | 'team' | 'xg_per_90' | 'xa_per_90' | 'minutes'
-type SourceFilter = 'average' | 'fbref' | 'understat'
+type SourceFilter = 'average' | 'fotmob' | 'understat'
 
 export default function PlayersPage() {
   const [players, setPlayers] = useState<Player[]>([])
@@ -68,7 +68,6 @@ export default function PlayersPage() {
       const res = await fetch(`/api/v1/players/teams?${params}`)
       if (res.ok) {
         const data: { name: string; league: string }[] = await res.json()
-        // Only keep single-team entries (no commas = no mid-season transfers)
         setTeams(data.filter(t => !t.name.includes(',')).map(t => t.name))
       }
     } catch { /* ignore */ }
@@ -129,7 +128,6 @@ export default function PlayersPage() {
     setSyncing(true)
     try {
       await fetch('/api/v1/players/sync?strategy=direct', { method: 'POST' })
-      // Poll for updates every 5s, auto-refresh after 60s
       const interval = setInterval(async () => {
         await fetchSyncStatus()
       }, 5000)
@@ -147,7 +145,7 @@ export default function PlayersPage() {
 
   const getStatsForSource = (player: Player, source: SourceFilter): PlayerStats | null => {
     switch (source) {
-      case 'fbref': return player.fbref
+      case 'fotmob': return player.fotmob
       case 'understat': return player.understat
       case 'average': return player.average
     }
@@ -203,9 +201,9 @@ export default function PlayersPage() {
     return sortDir === 'asc' ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />
   }
 
-  const formatDiff = (fbref: number | null, understat: number | null): { diff: number; color: string } | null => {
-    if (fbref === null || understat === null) return null
-    const diff = fbref - understat
+  const formatDiff = (fotmob: number | null, understat: number | null): { diff: number; color: string } | null => {
+    if (fotmob === null || understat === null) return null
+    const diff = fotmob - understat
     const color = Math.abs(diff) < 0.05 ? 'text-gray-400' : diff > 0 ? 'text-green-400' : 'text-red-400'
     return { diff, color }
   }
@@ -234,13 +232,13 @@ export default function PlayersPage() {
           disabled={syncing}
           className={clsx(
             "flex items-center gap-2 px-4 py-2 rounded-lg transition-colors",
-            syncing 
+            syncing
               ? "bg-gray-700 text-gray-400 cursor-not-allowed"
               : "bg-brand-600 hover:bg-brand-700 text-white"
           )}
         >
           <RefreshCw className={clsx("w-4 h-4", syncing && "animate-spin")} />
-          {syncing ? 'Sync en cours...' : 'Sync Understat'}
+          {syncing ? 'Sync en cours...' : 'Sync joueurs'}
         </button>
       </div>
 
@@ -283,8 +281,8 @@ export default function PlayersPage() {
           onChange={(e) => setSourceView(e.target.value as SourceFilter)}
           className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-brand-500"
         >
-          <option value="average">📊 Moyenne (FBref + Understat)</option>
-          <option value="fbref">📈 FBref uniquement</option>
+          <option value="average">📊 Moyenne (FotMob + Understat)</option>
+          <option value="fotmob">⚽ FotMob uniquement</option>
           <option value="understat">📉 Understat uniquement</option>
         </select>
 
@@ -311,7 +309,7 @@ export default function PlayersPage() {
       <div className="flex items-center gap-6 mb-4 text-sm">
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded bg-blue-500" />
-          <span className="text-gray-400">FBref</span>
+          <span className="text-gray-400">FotMob</span>
         </div>
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded bg-purple-500" />
@@ -340,7 +338,7 @@ export default function PlayersPage() {
           <Database className="w-12 h-12 text-gray-600 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-white mb-2">Aucun joueur</h3>
           <p className="text-gray-400 mb-4">
-            Lancez une synchronisation pour importer les joueurs de FBref et Understat.
+            Lancez une synchronisation pour importer les joueurs de FotMob et Understat.
           </p>
           <button
             onClick={triggerSync}
@@ -408,12 +406,12 @@ export default function PlayersPage() {
               {sortedPlayers.map((player) => {
                 const stats = getStatsForSource(player, sourceView)
                 const isExpanded = expandedPlayer === player.id
-                const xgDiff = formatDiff(player.fbref?.xg_per_90 ?? null, player.understat?.xg_per_90 ?? null)
-                const xaDiff = formatDiff(player.fbref?.xa_per_90 ?? null, player.understat?.xa_per_90 ?? null)
+                const xgDiff = formatDiff(player.fotmob?.xg_per_90 ?? null, player.understat?.xg_per_90 ?? null)
+                const xaDiff = formatDiff(player.fotmob?.xa_per_90 ?? null, player.understat?.xa_per_90 ?? null)
 
                 return (
                   <>
-                    <tr 
+                    <tr
                       key={player.id}
                       className={clsx(
                         "border-b border-gray-700/50 hover:bg-gray-700/30 cursor-pointer transition-colors",
@@ -446,7 +444,7 @@ export default function PlayersPage() {
                         {(stats?.xa_per_90 || 0).toFixed(2)}
                       </td>
                       <td className="px-4 py-3 text-center hidden md:table-cell">
-                        {player.fbref && player.understat ? (
+                        {player.fotmob && player.understat ? (
                           <div className="flex items-center justify-center gap-1">
                             {xgDiff && Math.abs(xgDiff.diff) >= 0.05 && (
                               <span className={clsx("text-xs", xgDiff.color)} title="Δ xG/90">
@@ -466,22 +464,22 @@ export default function PlayersPage() {
                       <tr className="bg-gray-900/50">
                         <td colSpan={11} className="px-4 py-4">
                           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            {/* FBref */}
+                            {/* FotMob */}
                             <div className="bg-blue-500/10 rounded-lg p-4 border border-blue-500/30">
                               <div className="flex items-center gap-2 mb-3">
                                 <div className="w-3 h-3 rounded bg-blue-500" />
-                                <span className="text-sm font-medium text-blue-400">FBref</span>
+                                <span className="text-sm font-medium text-blue-400">FotMob</span>
                               </div>
-                              {player.fbref ? (
+                              {player.fotmob ? (
                                 <div className="grid grid-cols-2 gap-2 text-sm">
-                                  <div><span className="text-gray-400">Mins:</span> <span className="text-white">{player.fbref.minutes}</span></div>
-                                  <div><span className="text-gray-400">Buts:</span> <span className="text-white">{player.fbref.goals}</span></div>
-                                  <div><span className="text-gray-400">xG:</span> <span className="text-white">{player.fbref.xg.toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">xG/90:</span> <span className="text-green-400 font-medium">{(player.fbref.xg_per_90 || 0).toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">PD:</span> <span className="text-white">{player.fbref.assists}</span></div>
-                                  <div><span className="text-gray-400">xA:</span> <span className="text-white">{player.fbref.xa.toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">xA/90:</span> <span className="text-blue-400 font-medium">{(player.fbref.xa_per_90 || 0).toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">npxG/90:</span> <span className="text-white">{(player.fbref.npxg_per_90 || 0).toFixed(2)}</span></div>
+                                  <div><span className="text-gray-400">Mins:</span> <span className="text-white">{player.fotmob.minutes}</span></div>
+                                  <div><span className="text-gray-400">Buts:</span> <span className="text-white">{player.fotmob.goals}</span></div>
+                                  <div><span className="text-gray-400">xG:</span> <span className="text-white">{player.fotmob.xg.toFixed(2)}</span></div>
+                                  <div><span className="text-gray-400">xG/90:</span> <span className="text-green-400 font-medium">{(player.fotmob.xg_per_90 || 0).toFixed(2)}</span></div>
+                                  <div><span className="text-gray-400">PD:</span> <span className="text-white">{player.fotmob.assists}</span></div>
+                                  <div><span className="text-gray-400">xA:</span> <span className="text-white">{player.fotmob.xa.toFixed(2)}</span></div>
+                                  <div><span className="text-gray-400">xA/90:</span> <span className="text-blue-400 font-medium">{(player.fotmob.xa_per_90 || 0).toFixed(2)}</span></div>
+                                  <div><span className="text-gray-400">Tirs:</span> <span className="text-white">{player.fotmob.shots}</span></div>
                                 </div>
                               ) : (
                                 <p className="text-gray-500 text-sm">Données non disponibles</p>
@@ -534,10 +532,10 @@ export default function PlayersPage() {
                             </div>
                           </div>
 
-                          {/* Différences */}
-                          {player.fbref && player.understat && (
+                          {/* Différences FotMob vs Understat */}
+                          {player.fotmob && player.understat && (
                             <div className="mt-4 p-3 bg-gray-800/50 rounded-lg">
-                              <span className="text-sm text-gray-400">Écart FBref - Understat: </span>
+                              <span className="text-sm text-gray-400">Écart FotMob - Understat: </span>
                               <span className={clsx("text-sm font-medium", xgDiff?.color || 'text-gray-400')}>
                                 xG/90 {xgDiff && xgDiff.diff > 0 ? '+' : ''}{xgDiff?.diff.toFixed(3) || '0'}
                               </span>
@@ -561,7 +559,7 @@ export default function PlayersPage() {
 
       {/* Stats Summary */}
       <div className="mt-4 text-sm text-gray-500 text-right">
-        Affichage: {sortedPlayers.length} joueurs | Source: {sourceView === 'average' ? 'Moyenne' : sourceView.toUpperCase()}
+        Affichage: {sortedPlayers.length} joueurs | Source: {sourceView === 'average' ? 'Moyenne' : sourceView === 'fotmob' ? 'FotMob' : 'Understat'}
       </div>
     </div>
   )

@@ -7,7 +7,6 @@ import { getSettings, saveSettings } from '@/lib/api'
 
 const DEFAULTS: Record<string, string> = {
   odds_api_key: '',
-  fbref_user_agent: 'Ev0-Bot/1.0',
   min_edge: '5',
   min_confidence: '60',
   min_odds: '1.5',
@@ -94,13 +93,6 @@ export default function SettingsPage() {
               value={form.odds_api_key}
               onChange={(v) => set('odds_api_key', v)}
               helper="https://the-odds-api.com pour obtenir une cle"
-            />
-            <InputField
-              label="FBref User Agent"
-              type="text"
-              value={form.fbref_user_agent}
-              onChange={(v) => set('fbref_user_agent', v)}
-              helper="Identifiant pour les requetes FBref"
             />
           </div>
         </SettingsSection>
