@@ -130,10 +130,10 @@ class FBrefPlayerStatsParser:
             return stats
 
         tbody = table.find("tbody")
-        if not tbody:
+        if not tbody or not hasattr(tbody, "find_all"):
             return stats
 
-        for row in tbody.find_all("tr"):
+        for row in tbody.find_all("tr"):  # type: ignore[union-attr]
             player_stat = self._parse_shooting_row(row)
             if player_stat:
                 stats.append(player_stat)
@@ -198,10 +198,10 @@ class FBrefPlayerStatsParser:
             return stats
 
         tbody = table.find("tbody")
-        if not tbody:
+        if not tbody or not hasattr(tbody, "find_all"):
             return stats
 
-        for row in tbody.find_all("tr"):
+        for row in tbody.find_all("tr"):  # type: ignore[union-attr]
             player_stat = self._parse_passing_row(row)
             if player_stat:
                 stats.append(player_stat)
@@ -257,10 +257,10 @@ class FBrefPlayerStatsParser:
             return stats
 
         tbody = table.find("tbody")
-        if not tbody:
+        if not tbody or not hasattr(tbody, "find_all"):
             return stats
 
-        for row in tbody.find_all("tr"):
+        for row in tbody.find_all("tr"):  # type: ignore[union-attr]
             player_stat = self._parse_gca_row(row)
             if player_stat:
                 stats.append(player_stat)

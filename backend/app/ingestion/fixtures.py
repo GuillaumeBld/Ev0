@@ -97,10 +97,10 @@ class FBrefFixtureParser:
             return fixtures
 
         tbody = table.find("tbody")
-        if not tbody:
+        if not tbody or not hasattr(tbody, "find_all"):
             return fixtures
 
-        for row in tbody.find_all("tr"):
+        for row in tbody.find_all("tr"):  # type: ignore[union-attr]
             fixture = self._parse_row(row)
             if fixture:
                 fixtures.append(fixture)

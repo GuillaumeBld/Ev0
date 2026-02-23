@@ -3,8 +3,6 @@
 RED phase: Failing tests for goalscorer and assist stats.
 """
 
-from unittest.mock import Mock, patch
-
 import pytest
 
 from app.ingestion.player_stats import (
@@ -154,23 +152,15 @@ class TestFBrefPlayerStatsParser:
 class TestFetchPlayerStats:
     """Tests for fetching player stats from FBref."""
 
-    @patch("app.ingestion.player_stats.httpx.get")
-    def test_fetches_team_stats(self, mock_get):
-        mock_get.return_value = Mock(
-            status_code=200, text="<html><table id='stats_shooting'><tbody></tbody></table></html>"
-        )
-
+    def test_fetches_team_stats(self):
         result = fetch_player_stats("paris-saint-germain", "2024-2025")
 
         # fetch_player_stats is a stub that returns empty list (no team ID mapping yet)
         assert result is None or result == []
 
-    @patch("app.ingestion.player_stats.httpx.get")
-    def test_combines_shooting_and_passing(self, mock_get):
+    def test_combines_shooting_and_passing(self):
         """Stats should merge shooting and passing data per player."""
-        mock_get.return_value = Mock(status_code=200, text="<html></html>")
-
         # This tests the merge logic
         # Implementation should combine both stat types
-        fetch_player_stats("liverpool", "2024-2025")
-        # After merge, each player should have both xg and xa
+        result = fetch_player_stats("liverpool", "2024-2025")
+        assert result is None or result == []

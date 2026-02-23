@@ -64,6 +64,7 @@ disallow_untyped_calls = false
 no_implicit_reexport = false
 warn_return_any = false
 disallow_any_generics = false
+warn_unused_ignores = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
