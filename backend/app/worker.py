@@ -21,7 +21,7 @@ from app.cache import close_redis
 from app.config import settings
 from app.db import async_session, engine
 from app.ingestion.fotmob_scraper import fetch_fotmob_fixtures
-from app.ingestion.odds import ingest_odds_for_league
+from app.ingestion.odds import ingest_odds_for_league, normalize_league_key
 from app.ingestion.storage import (
     store_odds_snapshot,
     store_recommendation,
@@ -36,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Defaults (used when no user settings exist)
-DEFAULT_LEAGUES = ["ligue1", "premier_league"]
+DEFAULT_LEAGUES = ["ligue_1", "premier_league"]
 CURRENT_SEASON = "2025-2026"
 
 
@@ -59,12 +59,12 @@ def _get_leagues(user_settings: dict[str, str]) -> list[str]:
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, list) and parsed:
-                return parsed
+                return [normalize_league_key(lg) for lg in parsed]
         except (json.JSONDecodeError, TypeError):
             # Comma-separated fallback
             leagues = [lg.strip() for lg in raw.split(",") if lg.strip()]
             if leagues:
-                return leagues
+                return [normalize_league_key(lg) for lg in leagues]
     return DEFAULT_LEAGUES
 
 
@@ -147,7 +147,15 @@ async def job_sync_player_stats():
 
 
 async def job_snapshot_odds():
-    """Snapshot odds from The Odds API for upcoming matches and store in DB."""
+    """Snapshot odds from The Odds API for upcoming matches and store in DB.
+
+    Flow:
+    1. Fetch odds + raw events from The Odds API
+    2. Load upcoming DB fixtures
+    3. Match events → fixtures by team names (fixture_matcher)
+    4. Persist odds_api_event_id on matched fixtures (cached for next run)
+    5. Store odds snapshots against matched DB fixture.id
+    """
     logger.info("=== Starting odds snapshot ===")
 
     if not settings.odds_api_key:
@@ -158,44 +166,77 @@ async def job_snapshot_odds():
     leagues = _get_leagues(user_settings)
     logger.info("Active leagues for odds: %s", leagues)
 
+    from app.ingestion.fixture_matcher import match_odds_event_to_fixture
+    from app.models.fixtures import Fixture
+
     for league in leagues:
         for market in ["goalscorer", "assist"]:
             try:
-                snapshots = await ingest_odds_for_league(league, market)
-                logger.info("Got %d odds for %s %s", len(snapshots), league, market)
+                snapshots, events = await ingest_odds_for_league(league, market)
+                logger.info(
+                    "Got %d odds from %d events for %s %s",
+                    len(snapshots), len(events), league, market,
+                )
 
-                if not snapshots:
+                if not events:
                     continue
 
                 stored = 0
+                matched_events = 0
+
                 async with async_session() as session:
-                    from app.models.fixtures import Fixture
+                    # Load upcoming fixtures from DB
+                    result = await session.execute(
+                        select(Fixture).where(Fixture.league == league)
+                    )
+                    db_fixtures = list(result.scalars().all())
 
-                    result = await session.execute(select(Fixture))
-                    fixtures_by_ext = {f.external_id: f for f in result.scalars().all()}
-
+                    # Build event_id → snapshots index
+                    snaps_by_event: dict[str, list] = {}
                     for snap in snapshots:
-                        # Match snapshot fixture_id (external) to DB fixture
-                        fixture = fixtures_by_ext.get(snap.fixture_id)
+                        snaps_by_event.setdefault(snap.fixture_id, []).append(snap)
+
+                    for event in events:
+                        event_id = event.get("id", "")
+                        if not event_id:
+                            continue
+
+                        fixture = match_odds_event_to_fixture(event, db_fixtures)
                         if not fixture:
                             continue
 
-                        try:
-                            await store_odds_snapshot(
-                                session,
-                                fixture_id=fixture.id,
-                                player_name=snap.player_name,
-                                market_type=snap.market_type,
-                                bookmaker=snap.bookmaker,
-                                odds=snap.odds,
-                                raw_data=snap.raw_data,
-                            )
-                            stored += 1
-                        except Exception as exc:
-                            logger.debug("Odds upsert skip (likely duplicate): %s", exc)
-                            await session.rollback()
+                        matched_events += 1
 
-                logger.info("Stored %d/%d odds for %s %s", stored, len(snapshots), league, market)
+                        # Cache the Odds API event ID on the fixture
+                        if not fixture.odds_api_event_id:
+                            fixture.odds_api_event_id = event_id
+                            session.add(fixture)
+                            await session.flush()
+
+                        # Store all snapshots for this event
+                        event_snaps = snaps_by_event.get(event_id, [])
+                        for snap in event_snaps:
+                            try:
+                                await store_odds_snapshot(
+                                    session,
+                                    fixture_id=fixture.id,
+                                    player_name=snap.player_name,
+                                    market_type=snap.market_type,
+                                    bookmaker=snap.bookmaker,
+                                    odds=snap.odds,
+                                    raw_data=snap.raw_data,
+                                )
+                                stored += 1
+                            except Exception as exc:
+                                logger.debug("Odds upsert skip (likely duplicate): %s", exc)
+                                await session.rollback()
+
+                    await session.commit()
+
+                logger.info(
+                    "Matched %d/%d events, stored %d/%d odds for %s %s",
+                    matched_events, len(events), stored, len(snapshots), league, market,
+                )
 
             except Exception as exc:
                 logger.error(

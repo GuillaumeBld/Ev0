@@ -27,7 +27,7 @@ class RecommendationFilter:
     markets: list[str] = field(default_factory=lambda: ["goalscorer", "assist"])
 
     # League filters
-    leagues: list[str] = field(default_factory=lambda: ["ligue1", "premier_league"])
+    leagues: list[str] = field(default_factory=lambda: ["ligue_1", "premier_league"])
 
 
 @dataclass

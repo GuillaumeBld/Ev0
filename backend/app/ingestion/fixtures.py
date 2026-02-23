@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 
 # FBref URLs by league
 FBREF_URLS = {
-    "ligue1": "https://fbref.com/en/comps/13/schedule/Ligue-1-Scores-and-Fixtures",
+    "ligue_1": "https://fbref.com/en/comps/13/schedule/Ligue-1-Scores-and-Fixtures",
     "premier_league": "https://fbref.com/en/comps/9/schedule/Premier-League-Scores-and-Fixtures",
 }
 

@@ -131,7 +131,7 @@ class TestFetchLeagueFixtures:
         mock_get.return_value = Mock(status_code=200, text="<html>...</html>")
 
         # Should not raise
-        fetch_league_fixtures("ligue1", "2024-2025")
+        fetch_league_fixtures("ligue_1", "2024-2025")
 
         # Verify correct URL called
         call_url = mock_get.call_args[0][0]
@@ -151,7 +151,7 @@ class TestFetchLeagueFixtures:
         mock_get.return_value = Mock(status_code=404)
 
         with pytest.raises((Exception, RuntimeError)):
-            fetch_league_fixtures("ligue1", "2024-2025")
+            fetch_league_fixtures("ligue_1", "2024-2025")
 
     @patch("app.ingestion.fixtures.httpx.get")
     def test_respects_rate_limit(self, mock_get):
@@ -161,7 +161,7 @@ class TestFetchLeagueFixtures:
         import time
 
         start = time.time()
-        fetch_league_fixtures("ligue1", "2024-2025")
+        fetch_league_fixtures("ligue_1", "2024-2025")
         fetch_league_fixtures("premier_league", "2024-2025")
         elapsed = time.time() - start
 

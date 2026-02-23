@@ -7,7 +7,7 @@ import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -21,9 +21,17 @@ ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 
 # Sport keys mapping
 SPORT_KEYS = {
-    "ligue1": "soccer_france_ligue_one",
+    "ligue_1": "soccer_france_ligue_one",
     "premier_league": "soccer_epl",
 }
+
+# Legacy league key aliases (e.g. user settings may still have "ligue1")
+_LEAGUE_ALIASES = {"ligue1": "ligue_1", "ligue-1": "ligue_1"}
+
+
+def normalize_league_key(key: str) -> str:
+    """Normalize a league key, resolving legacy aliases."""
+    return _LEAGUE_ALIASES.get(key, key)
 
 # Market keys for player props (The Odds API v4 naming)
 MARKET_KEYS = {
@@ -37,9 +45,12 @@ REGIONS = ["eu", "uk", "us"]
 # Supported bookmakers (French + international)
 BOOKMAKERS = [
     "betclic",
+    "betclic_fr",
     "unibet_eu",
+    "unibet_fr",
     "winamax",
     "pmufr",
+    "parionssport",
     "betfair",
     "pinnacle",
 ]
@@ -224,6 +235,8 @@ class OddsAPIClient:
         bookmakers = data.get("bookmakers", [])
         for bm in bookmakers:
             bookmaker_key = bm.get("key", "")
+            if bookmaker_key not in BOOKMAKERS:
+                continue
 
             for market in bm.get("markets", []):
                 for outcome in market.get("outcomes", []):
@@ -247,17 +260,17 @@ async def ingest_odds_for_league(
     league: str,
     market_type: str,
     api_key: str | None = None,
-) -> list[OddsSnapshot]:
+) -> tuple[list[OddsSnapshot], list[dict]]:
     """
     Ingest odds for all upcoming events in a league.
 
     Args:
-        league: "ligue1" or "premier_league"
+        league: "ligue_1" or "premier_league"
         market_type: "goalscorer" or "assist"
         api_key: Optional API key override
 
     Returns:
-        List of OddsSnapshot objects
+        Tuple of (list of OddsSnapshot objects, list of raw event dicts)
     """
     client = OddsAPIClient(api_key)
     sport_key = client.get_sport_key(league)
@@ -271,7 +284,7 @@ async def ingest_odds_for_league(
         raise ValueError(f"Unknown market type: {market_type}")
 
     snapshots = []
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
 
     for event in events:
         event_id = event.get("id")
@@ -298,7 +311,7 @@ async def ingest_odds_for_league(
             logger.warning("Error fetching odds for %s: %s", event_id, e)
             continue
 
-    return snapshots
+    return snapshots, events
 
 
 def find_best_odds(snapshots: list[OddsSnapshot]) -> dict[str, OddsSnapshot]:

@@ -60,7 +60,7 @@ class FixtureCreate(BaseModel):
     time: str
     home_team: str
     away_team: str
-    league: str = "ligue1"
+    league: str = "ligue_1"
     season: str = "2024-25"
 
 

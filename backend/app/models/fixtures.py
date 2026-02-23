@@ -19,6 +19,9 @@ class Fixture(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     external_id: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    odds_api_event_id: Mapped[str | None] = mapped_column(
+        String(100), nullable=True, index=True, unique=True
+    )
 
     # Match info
     league: Mapped[str] = mapped_column(String(50), index=True)  # ligue1, premier_league

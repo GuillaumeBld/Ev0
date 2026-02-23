@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.odds import MARKET_KEYS, SPORT_KEYS, OddsAPIClient, normalize_selection_name
+from app.ingestion.odds import normalize_selection_name
 from app.ingestion.player_stats import calculate_form_factor
 from app.models.players import Player, PlayerStats
 from app.pricing.assist import calculate_assist_price
@@ -473,72 +473,60 @@ async def get_recommendations_for_date(
     """
     Get recommendations for a specific date.
 
+    Reads fixtures and odds from the DB (populated by the worker).
+
     Returns (recommendations, metadata) tuple.
     """
-    try:
-        odds_client = OddsAPIClient()
-    except ValueError:
-        logger.warning("ODDS_API_KEY not configured – returning empty recommendations")
-        return [], {"error": "ODDS_API_KEY not configured"}
+    from datetime import timedelta
+
+    from app.models.fixtures import Fixture
+    from app.models.odds import OddsSnapshot as OddsSnapshotModel
+
+    # 1. Load upcoming fixtures from DB (next 48h from target_date)
+    window_start = target_date
+    window_end = target_date + timedelta(hours=48)
+
+    fixture_result = await db.execute(
+        select(Fixture)
+        .where(Fixture.status == "scheduled")
+        .where(Fixture.kickoff_utc >= window_start)
+        .where(Fixture.kickoff_utc <= window_end)
+        .order_by(Fixture.kickoff_utc)
+    )
+    db_fixtures = list(fixture_result.scalars().all())
 
     fixtures: list[dict[str, Any]] = []
     odds_data: dict[str, list[dict[str, Any]]] = {}
 
-    # 1. Fetch events + player props for each league
-    for league, sport_key in SPORT_KEYS.items():
-        try:
-            events = await odds_client.get_events(sport_key)
-        except Exception as exc:
-            logger.error("Failed to fetch events for %s: %s", league, exc)
-            continue
+    for f in db_fixtures:
+        fixture_id = f.external_id
+        fixtures.append(
+            {
+                "fixture_id": fixture_id,
+                "home_team": f.home_team,
+                "away_team": f.away_team,
+                "kickoff_utc": str(f.kickoff_utc),
+                "league": f.league,
+            }
+        )
 
-        for event in events:
-            event_id = event.get("id")
-            if not event_id:
-                continue
-
-            # Filter to target date (commence_time is ISO-8601)
-            commence = event.get("commence_time", "")
-            if commence:
-                try:
-                    event_dt = datetime.fromisoformat(commence.replace("Z", "+00:00"))
-                    if event_dt.date() != target_date.date():
-                        continue
-                except (ValueError, TypeError):
-                    pass
-
-            fixtures.append(
+        # Load odds from DB for this fixture
+        odds_result = await db.execute(
+            select(OddsSnapshotModel)
+            .where(OddsSnapshotModel.fixture_id == f.id)
+            .order_by(OddsSnapshotModel.snapshot_utc.desc())
+        )
+        fixture_odds: list[dict[str, Any]] = []
+        for o in odds_result.scalars().all():
+            fixture_odds.append(
                 {
-                    "fixture_id": event_id,
-                    "home_team": event.get("home_team", ""),
-                    "away_team": event.get("away_team", ""),
-                    "kickoff_utc": commence,
-                    "league": league,
+                    "player_name": o.player_name,
+                    "market_type": o.market_type,
+                    "odds": o.odds,
+                    "bookmaker": o.bookmaker,
                 }
             )
-
-            # Fetch player props for goalscorer (primary market)
-            fixture_odds: list[dict[str, Any]] = []
-            for market_type, market_key in MARKET_KEYS.items():
-                try:
-                    props = await odds_client.get_player_props(sport_key, event_id, market_key)
-                    for p in props:
-                        fixture_odds.append(
-                            {
-                                "player_name": p["player_name"],
-                                "market_type": market_type,
-                                "odds": p["odds"],
-                                "bookmaker": p["bookmaker"],
-                            }
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to fetch %s props for event %s: %s",
-                        market_type,
-                        event_id,
-                        exc,
-                    )
-            odds_data[event_id] = fixture_odds
+        odds_data[fixture_id] = fixture_odds
 
     if not fixtures:
         return [], {

@@ -150,7 +150,7 @@ class TestOddsAPIClient:
             await client.get_events("soccer_france_ligue_one")
 
     def test_sport_key_mapping(self, client):
-        assert client.get_sport_key("ligue1") == "soccer_france_ligue_one"
+        assert client.get_sport_key("ligue_1") == "soccer_france_ligue_one"
         assert client.get_sport_key("premier_league") == "soccer_epl"
 
 
@@ -159,7 +159,7 @@ class TestOddsIngestion:
 
     @patch("app.ingestion.odds.OddsAPIClient")
     async def test_ingests_goalscorer_odds(self, mock_client_class):
-        """Full workflow: fetch events -> fetch odds -> store."""
+        """Full workflow: fetch events -> fetch odds -> return snapshots + events."""
         from app.ingestion.odds import ingest_odds_for_league
 
         mock_client = AsyncMock()
@@ -171,6 +171,8 @@ class TestOddsIngestion:
         ]
         mock_client_class.return_value = mock_client
 
-        snapshots = await ingest_odds_for_league("ligue1", "goalscorer")
+        snapshots, events = await ingest_odds_for_league("ligue_1", "goalscorer")
 
         assert len(snapshots) > 0
+        assert len(events) == 1
+        assert events[0]["id"] == "match1"

@@ -69,7 +69,7 @@ async def get_recommendations(
     db: AsyncSession = Depends(get_db),
     target_date: date | None = Query(None, description="Date for recommendations (default: today)"),
     market_type: MarketType | None = Query(None, description="Filter by market type"),
-    league: str | None = Query(None, description="Filter by league (ligue1, premier_league)"),
+    league: str | None = Query(None, description="Filter by league (ligue_1, premier_league)"),
     min_edge: float = Query(0.05, description="Minimum edge threshold"),
 ) -> RecommendationsResponse:
     """Get betting recommendations for a given date."""
