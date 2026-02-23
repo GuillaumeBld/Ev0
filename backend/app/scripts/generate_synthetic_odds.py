@@ -111,6 +111,7 @@ async def _load_player_stats_by_team(
         .where(PlayerStats.league == league)
         .where(PlayerStats.season == season)
         .where(PlayerStats.minutes_played >= 90)
+        .where(PlayerStats.source == "average")
     )
 
     by_team: dict[str, list[dict[str, Any]]] = {}
