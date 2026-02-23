@@ -20,7 +20,7 @@ from sqlalchemy import select
 from app.cache import close_redis
 from app.config import settings
 from app.db import async_session, engine
-from app.ingestion.fixtures import fetch_league_fixtures
+from app.ingestion.fotmob_scraper import fetch_fotmob_fixtures
 from app.ingestion.odds import ingest_odds_for_league
 from app.ingestion.storage import (
     store_odds_snapshot,
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 # Defaults (used when no user settings exist)
 DEFAULT_LEAGUES = ["ligue1", "premier_league"]
-CURRENT_SEASON = "2024-2025"
+CURRENT_SEASON = "2025-2026"
 
 
 async def _load_user_settings() -> dict[str, str]:
@@ -72,7 +72,7 @@ def _get_leagues(user_settings: dict[str, str]) -> list[str]:
 
 
 async def job_sync_fixtures():
-    """Sync fixtures from FBref for all leagues and store in DB."""
+    """Sync fixtures from FotMob for all leagues and store in DB."""
     logger.info("=== Starting fixtures sync ===")
 
     user_settings = await _load_user_settings()
@@ -81,8 +81,7 @@ async def job_sync_fixtures():
 
     for league in leagues:
         try:
-            # fetch_league_fixtures is synchronous (HTTP + BS4)
-            fixtures = await asyncio.to_thread(fetch_league_fixtures, league, CURRENT_SEASON)
+            fixtures = await fetch_fotmob_fixtures(league, CURRENT_SEASON)
             logger.info("Fetched %d fixtures for %s", len(fixtures), league)
 
             stored = 0
@@ -322,7 +321,7 @@ def create_scheduler() -> AsyncIOScheduler:
         job_sync_fixtures,
         CronTrigger(hour=6, minute=0),
         id="sync_fixtures",
-        name="Sync fixtures from FBref",
+        name="Sync fixtures from FotMob",
         replace_existing=True,
     )
 

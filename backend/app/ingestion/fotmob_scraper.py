@@ -237,6 +237,101 @@ async def fetch_fotmob_league(league: str) -> tuple[list[dict], list[dict]]:
     return players, teams
 
 
+async def fetch_fotmob_fixtures(league: str, season: str = "2025-2026") -> list[dict]:
+    """Fetch all fixtures (matches) for a league from FotMob API.
+
+    Uses the ``/api/leagues`` endpoint which returns all season matches
+    including scheduled, live, and finished. Requires ``gzip`` encoding
+    (not brotli) to avoid Turnstile issues.
+
+    Args:
+        league: ``ligue_1`` or ``premier_league``
+        season: Season string for metadata (e.g. ``"2025-2026"``)
+
+    Returns:
+        List of fixture dicts compatible with ``upsert_fixture()``:
+        ``fixture_id``, ``league``, ``season``, ``date``, ``time``,
+        ``home_team``, ``away_team``, ``home_score``, ``away_score``,
+        ``matchweek``.
+    """
+    league_id = FOTMOB_LEAGUES.get(league)
+    if not league_id:
+        raise ValueError(f"Unknown league: {league}")
+
+    # Use gzip only — brotli responses from www.fotmob.com need extra
+    # decompression that httpx doesn't handle natively.
+    headers = {**_HEADERS, "Accept-Encoding": "gzip, deflate"}
+
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        try:
+            resp = await client.get(
+                f"{_API}/leagues",
+                params={"id": league_id},
+                headers=headers,
+                timeout=20.0,
+            )
+            resp.raise_for_status()
+            data = json.loads(resp.content.decode("utf-8", errors="replace"))
+        except Exception as e:
+            print(f"  Error fetching FotMob fixtures for {league}: {e}")
+            return []
+
+    all_matches = data.get("fixtures", {}).get("allMatches", [])
+    if not all_matches:
+        print(f"  No matches found in FotMob response for {league}")
+        return []
+
+    fixtures: list[dict] = []
+    for m in all_matches:
+        status = m.get("status", {})
+        utc_time = status.get("utcTime", "")
+
+        # Parse UTC time → date + time
+        if not utc_time:
+            continue
+        # utcTime format: "2025-08-15T19:00:00Z" or "2025-08-15T19:00:00.000Z"
+        date_str = utc_time[:10]  # YYYY-MM-DD
+        time_str = utc_time[11:16]  # HH:MM
+
+        home = m.get("home", {})
+        away = m.get("away", {})
+
+        # Parse score from scoreStr (e.g. "4 - 2")
+        home_score = None
+        away_score = None
+        score_str = status.get("scoreStr", "")
+        if score_str and status.get("finished"):
+            parts = score_str.split(" - ")
+            if len(parts) == 2:
+                try:
+                    home_score = int(parts[0].strip())
+                    away_score = int(parts[1].strip())
+                except ValueError:
+                    pass
+
+        fixture_id = f"fotmob_{m.get('id', '')}"
+
+        fixtures.append(
+            {
+                "fixture_id": fixture_id,
+                "league": league,
+                "season": season,
+                "date": date_str,
+                "time": time_str,
+                "home_team": home.get("name", ""),
+                "away_team": away.get("name", ""),
+                "home_score": home_score,
+                "away_score": away_score,
+                "matchweek": int(m.get("round", 0) or 0) or None,
+            }
+        )
+
+    scheduled = sum(1 for f in fixtures if f["home_score"] is None)
+    finished = sum(1 for f in fixtures if f["home_score"] is not None)
+    print(f"  FotMob fixtures for {league}: {len(fixtures)} total ({finished} finished, {scheduled} upcoming)")
+    return fixtures
+
+
 # Quick test
 if __name__ == "__main__":
     import asyncio
@@ -251,5 +346,14 @@ if __name__ == "__main__":
         print(f"\nPremier League: {len(players)} players, {len(teams)} teams")
         if players:
             print(f"Sample: {players[0]}")
+
+        print("\n--- Fixtures ---")
+        for league in ["premier_league", "ligue_1"]:
+            fixtures = await fetch_fotmob_fixtures(league)
+            upcoming = [f for f in fixtures if f["home_score"] is None]
+            if upcoming:
+                print(f"\nNext 3 {league} fixtures:")
+                for f in upcoming[:3]:
+                    print(f"  {f['date']} {f['time']} | {f['home_team']} vs {f['away_team']} (MW {f['matchweek']})")
 
     asyncio.run(test())

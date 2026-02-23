@@ -23,6 +23,7 @@ async def upsert_fixture(session: AsyncSession, data: dict[str, Any]) -> Fixture
         external_id=data["fixture_id"],
         league=data["league"],
         season=data["season"],
+        matchweek=data.get("matchweek"),
         home_team=data["home_team"],
         away_team=data["away_team"],
         kickoff_utc=datetime.fromisoformat(f"{data['date']}T{data.get('time', '00:00')}:00+00:00"),
@@ -31,13 +32,14 @@ async def upsert_fixture(session: AsyncSession, data: dict[str, Any]) -> Fixture
         status="finished" if data.get("home_score") is not None else "scheduled",
     )
 
-    # On conflict, update scores and status
+    # On conflict, update scores, status, and matchweek
     stmt = stmt.on_conflict_do_update(
         index_elements=["external_id"],
         set_={
             "home_score": stmt.excluded.home_score,
             "away_score": stmt.excluded.away_score,
             "status": stmt.excluded.status,
+            "matchweek": stmt.excluded.matchweek,
             "updated_at": datetime.now(UTC),
         },
     )
