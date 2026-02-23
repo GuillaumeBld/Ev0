@@ -212,9 +212,41 @@ async def upsert_player(session: AsyncSession, league: str, data: dict) -> Playe
 
 
 async def store_stats(session: AsyncSession, player_id: int, league: str, source: str, data: dict):
-    """Store player stats for a specific source."""
+    """Store player stats for a specific source.
+
+    For source="average", always INSERTs a new snapshot row so that temporal
+    deltas can be computed for form factor and rolling conversion rate.
+    For other sources (fbref, understat, fotmob), upserts the single row.
+    """
     now = datetime.now(UTC)
 
+    # "average" snapshots accumulate over time (INSERT only)
+    if source == "average":
+        stats = PlayerStats(
+            player_id=player_id,
+            league=league,
+            season=SEASON,
+            source=source,
+            as_of_utc=now,
+            minutes_played=data.get("minutes", 0),
+            matches_played=data.get("games", 0),
+            goals=data.get("goals", 0),
+            xg=data.get("xg", 0.0),
+            npxg=data.get("npxg", 0.0),
+            assists=data.get("assists", 0),
+            xa=data.get("xa", 0.0),
+            shots=data.get("shots", 0),
+            shots_on_target=data.get("shots_on_target", 0),
+            key_passes=data.get("key_passes", 0),
+            xg_per_90=data.get("xg_per_90"),
+            xa_per_90=data.get("xa_per_90"),
+            npxg_per_90=data.get("npxg_per_90"),
+        )
+        session.add(stats)
+        await session.flush()
+        return
+
+    # Per-source stats: upsert (one row per player/league/season/source)
     stmt = select(PlayerStats).where(
         PlayerStats.player_id == player_id,
         PlayerStats.league == league,
@@ -233,6 +265,7 @@ async def store_stats(session: AsyncSession, player_id: int, league: str, source
         existing.assists = data.get("assists", 0)
         existing.xa = data.get("xa", 0.0)
         existing.shots = data.get("shots", 0)
+        existing.shots_on_target = data.get("shots_on_target", 0)
         existing.key_passes = data.get("key_passes", 0)
         existing.xg_per_90 = data.get("xg_per_90")
         existing.xa_per_90 = data.get("xa_per_90")
@@ -253,6 +286,7 @@ async def store_stats(session: AsyncSession, player_id: int, league: str, source
             assists=data.get("assists", 0),
             xa=data.get("xa", 0.0),
             shots=data.get("shots", 0),
+            shots_on_target=data.get("shots_on_target", 0),
             key_passes=data.get("key_passes", 0),
             xg_per_90=data.get("xg_per_90"),
             xa_per_90=data.get("xa_per_90"),

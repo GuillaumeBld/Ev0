@@ -45,7 +45,30 @@ _STATS = {
     "expected_goals": "xg",
     "expected_assists": "xa",
     "mins_played": "minutes",
+    "total_scoring_att": "shots",
+    "ontarget_scoring_att": "shots_on_target",
+    "big_chance_created": "key_passes",
 }
+
+
+# FotMob position ID → canonical position mapping
+# 11 = GK, 30s = DF, 50s-60s-70s = MF, 80s+ = FW/wing, 100s+ = ST
+_POSITION_MAP: dict[int, str] = {}
+_POSITION_MAP[11] = "GK"
+for _pid in range(30, 40):
+    _POSITION_MAP[_pid] = "DF"
+for _pid in range(50, 80):
+    _POSITION_MAP[_pid] = "MF"
+for _pid in range(80, 120):
+    _POSITION_MAP[_pid] = "FW"
+
+def _fotmob_position(position_ids: list[int]) -> str:
+    """Map FotMob position IDs to canonical FW/MF/DF/GK."""
+    if not position_ids:
+        return ""
+    # Use the first (primary) position
+    primary = position_ids[0]
+    return _POSITION_MAP.get(primary, "")
 
 
 def calculate_per_90(stat: float, minutes: int) -> float:
@@ -153,11 +176,19 @@ async def fetch_fotmob_league(league: str) -> tuple[list[dict], list[dict]]:
                     "xa": 0.0,
                     "npxg": 0.0,
                     "shots": 0,
+                    "shots_on_target": 0,
                     "key_passes": 0,
                 }
 
             p = player_map[pid]
             val = r.get("StatValue", 0) or 0
+            minutes_r = int(r.get("MinutesPlayed", 0) or 0)
+
+            # Extract position from any stat entry that has it
+            if not p["position"]:
+                pos_ids = r.get("Positions", [])
+                if pos_ids:
+                    p["position"] = _fotmob_position(pos_ids)
 
             if field == "goals":
                 p["goals"] = int(val)
@@ -171,6 +202,16 @@ async def fetch_fotmob_league(league: str) -> tuple[list[dict], list[dict]]:
             elif field == "minutes":
                 p["minutes"] = int(val)
                 p["games"] = int(r.get("MatchesPlayed", 0) or 0)
+            elif field == "shots":
+                # StatValue is per-90 rate; convert to total
+                total = round(float(val) * minutes_r / 90) if minutes_r > 0 else 0
+                p["shots"] = int(total)
+            elif field == "shots_on_target":
+                total = round(float(val) * minutes_r / 90) if minutes_r > 0 else 0
+                p["shots_on_target"] = int(total)
+            elif field == "key_passes":
+                # big_chance_created: StatValue is total count
+                p["key_passes"] = int(val)
 
     # Compute per-90 stats
     players: list[dict] = []
