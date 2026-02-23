@@ -2,7 +2,7 @@
 
 import logging
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -236,4 +236,170 @@ async def run_backtest(
         pnlCurve=pnl_curve,
         calibration=calibration,
         edgeDistribution=edge_dist,
+    )
+
+
+# ── Simulated Backtest ──────────────────────────────────────────
+
+
+class SimulateConfig(BaseModel):
+    league: str | None = None
+    min_date: date | None = None
+    max_date: date | None = None
+    min_edge: float = 0.05
+    stake_method: str = "flat_10"  # flat_10, kelly_25, kelly_10
+    walk_forward: bool = False
+
+
+class SimulateResponse(BacktestResponse):
+    sampleSize: int = 0
+    fixturesWithEvents: int = 0
+    dateRange: str | None = None
+
+
+@router.post("/backtest/simulate", response_model=SimulateResponse)
+async def run_simulated_backtest(
+    config: SimulateConfig,
+    db: AsyncSession = Depends(get_db),
+):
+    """Run backtest by simulating pricing on historical finished fixtures.
+
+    Unlike ``POST /backtest`` which uses settled Recommendation records,
+    this endpoint re-runs the pricing engine on past data and resolves
+    outcomes from match events.
+    """
+    from app.backtest.engine import BacktestConfig, BacktestEngine
+    from app.backtest.simulator import simulate_historical
+
+    # Generate synthetic backtest records
+    records = await simulate_historical(
+        db,
+        league=config.league,
+        min_date=config.min_date,
+        max_date=config.max_date,
+    )
+
+    if not records:
+        return SimulateResponse(
+            roi=0, brierScore=0, winRate=0,
+            wins=0, losses=0, totalBets=0,
+            pnlCurve=[], calibration=[], edgeDistribution=[],
+            sampleSize=0, fixturesWithEvents=0,
+        )
+
+    # Configure backtest engine
+    if config.stake_method == "kelly_25":
+        stake_method = "kelly"
+        kelly_fraction = 0.25
+        flat_stake = 10.0
+    elif config.stake_method == "kelly_10":
+        stake_method = "kelly"
+        kelly_fraction = 0.10
+        flat_stake = 10.0
+    else:
+        stake_method = "flat"
+        kelly_fraction = 0.25
+        flat_stake = 10.0
+
+    bt_config = BacktestConfig(
+        min_edge=config.min_edge,
+        stake_method=stake_method,
+        kelly_fraction=kelly_fraction,
+        flat_stake=flat_stake,
+    )
+    engine = BacktestEngine(bt_config)
+
+    # Run backtest
+    if config.walk_forward:
+        results = engine.run_walk_forward(records)
+        # Merge all walk-forward results
+        if results:
+            all_bets = []
+            for r in results:
+                all_bets.extend(r.bets)
+            # Re-run on merged bets for aggregate metrics
+            result = engine.run(records)
+        else:
+            return SimulateResponse(
+                roi=0, brierScore=0, winRate=0,
+                wins=0, losses=0, totalBets=0,
+                pnlCurve=[], calibration=[], edgeDistribution=[],
+                sampleSize=len(records), fixturesWithEvents=0,
+            )
+    else:
+        result = engine.run(records)
+
+    # Build P&L curve from bet log
+    pnl_curve = []
+    cum_pnl = 0.0
+    monthly_pnl: dict[str, float] = defaultdict(float)
+    for bet in result.bets:
+        bet_date = bet.get("date")
+        month_key = str(bet_date)[:7] if bet_date else "unknown"
+        monthly_pnl[month_key] += bet["pnl"]
+
+    for month in sorted(monthly_pnl.keys()):
+        cum_pnl += monthly_pnl[month]
+        pnl_curve.append(PnlPoint(date=month, cumPnl=round(cum_pnl, 2)))
+
+    # Build calibration
+    calibration = [
+        CalibrationPoint(
+            predicted=round(b["predicted_mean"], 3),
+            actual=round(b["actual_rate"], 3),
+            count=b["count"],
+        )
+        for b in result.calibration
+    ]
+
+    # Build edge distribution
+    edge_buckets: dict[str, dict] = {
+        "5-8%": {"count": 0, "pnl": 0.0, "staked": 0.0},
+        "8-12%": {"count": 0, "pnl": 0.0, "staked": 0.0},
+        "12-15%": {"count": 0, "pnl": 0.0, "staked": 0.0},
+        "15%+": {"count": 0, "pnl": 0.0, "staked": 0.0},
+    }
+    for bet in result.bets:
+        edge_pct = bet.get("edge", 0) * 100
+        if edge_pct >= 15:
+            bk = "15%+"
+        elif edge_pct >= 12:
+            bk = "12-15%"
+        elif edge_pct >= 8:
+            bk = "8-12%"
+        else:
+            bk = "5-8%"
+        edge_buckets[bk]["count"] += 1
+        edge_buckets[bk]["pnl"] += bet["pnl"]
+        edge_buckets[bk]["staked"] += bet["stake"]
+
+    edge_dist = [
+        EdgeBucket(
+            bucket=name,
+            count=int(b["count"]),
+            roi=round((b["pnl"] / b["staked"] * 100) if b["staked"] > 0 else 0, 1),
+        )
+        for name, b in edge_buckets.items()
+    ]
+
+    # Metadata
+    unique_fixtures = {r["fixture_id"] for r in records}
+    dates = [r["date"] for r in records if r.get("date")]
+    date_range = None
+    if dates:
+        date_range = f"{min(dates)} to {max(dates)}"
+
+    return SimulateResponse(
+        roi=round(result.roi, 4),
+        brierScore=round(result.metrics.get("brier_score", 0), 4),
+        winRate=round(result.win_rate, 4),
+        wins=result.wins,
+        losses=result.losses,
+        totalBets=result.total_bets,
+        pnlCurve=pnl_curve,
+        calibration=calibration,
+        edgeDistribution=edge_dist,
+        sampleSize=len(records),
+        fixturesWithEvents=len(unique_fixtures),
+        dateRange=date_range,
     )

@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Fixture, OddsSnapshot, Player, PlayerStats, Recommendation
+from app.models import Fixture, MatchEvent, OddsSnapshot, Player, PlayerStats, Recommendation
 
 
 async def upsert_fixture(session: AsyncSession, data: dict[str, Any]) -> Fixture:
@@ -199,6 +199,57 @@ async def store_recommendation(
     await session.refresh(rec)
 
     return rec
+
+
+async def store_match_events(
+    session: AsyncSession,
+    fixture_id: int,
+    events: list[dict[str, Any]],
+) -> int:
+    """Store match events for a fixture, skipping duplicates.
+
+    Args:
+        session: DB session
+        fixture_id: DB fixture ID
+        events: List of event dicts with player_name, event_type, minute
+
+    Returns:
+        Number of events stored
+    """
+    stored = 0
+    for ev in events:
+        player_name = ev.get("player_name", "")
+        event_type = ev.get("event_type", "")
+        minute = ev.get("minute")
+
+        if not player_name or not event_type:
+            continue
+
+        # Check for existing event (avoid unique constraint violation)
+        existing = await session.execute(
+            select(MatchEvent).where(
+                MatchEvent.fixture_id == fixture_id,
+                MatchEvent.player_name == player_name,
+                MatchEvent.event_type == event_type,
+                MatchEvent.minute == minute,
+            )
+        )
+        if existing.scalar_one_or_none():
+            continue
+
+        match_event = MatchEvent(
+            fixture_id=fixture_id,
+            player_name=player_name,
+            event_type=event_type,
+            minute=minute,
+        )
+        session.add(match_event)
+        stored += 1
+
+    if stored > 0:
+        await session.commit()
+
+    return stored
 
 
 async def get_upcoming_fixtures(

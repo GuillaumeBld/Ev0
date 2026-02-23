@@ -3,6 +3,7 @@
 Runs periodic jobs via APScheduler:
 - Fixtures sync (daily at 06:00 UTC)
 - Player stats update (daily at 07:00 UTC)
+- Match events sync (daily at 08:00 UTC)
 - Odds snapshots (hourly for upcoming matches)
 - Recommendation generation (every 2 hours)
 """
@@ -23,6 +24,7 @@ from app.db import async_session, engine
 from app.ingestion.fotmob_scraper import fetch_fotmob_fixtures
 from app.ingestion.odds import ingest_odds_for_league, normalize_league_key
 from app.ingestion.storage import (
+    store_match_events,
     store_odds_snapshot,
     store_recommendation,
     upsert_fixture,
@@ -141,6 +143,84 @@ async def job_sync_player_stats():
 
     except Exception as exc:
         logger.error("Error syncing player stats: %s", exc, exc_info=True)
+
+
+# ── Job 2b: Match Events Sync ─────────────────────────────────────
+
+
+async def job_sync_match_events():
+    """Sync match events (goals, assists) for finished fixtures from FotMob.
+
+    Fetches individual goal/assist events for finished fixtures that
+    don't yet have match events stored. This provides ground truth
+    data for backtesting.
+    """
+    logger.info("=== Starting match events sync ===")
+
+    from app.ingestion.fotmob_scraper import fetch_match_events
+    from app.models.fixtures import Fixture
+    from app.models.match_events import MatchEvent
+
+    try:
+        async with async_session() as session:
+            # Find finished fixtures that have no match events yet
+            fixtures_with_events = (
+                select(MatchEvent.fixture_id).distinct().subquery()
+            )
+            result = await session.execute(
+                select(Fixture)
+                .where(Fixture.status == "finished")
+                .where(Fixture.external_id.like("fotmob_%"))
+                .where(Fixture.id.notin_(select(fixtures_with_events.c.fixture_id)))
+                .order_by(Fixture.kickoff_utc.desc())
+                .limit(50)  # Process at most 50 per run to avoid rate limits
+            )
+            fixtures = list(result.scalars().all())
+
+            if not fixtures:
+                logger.info("No finished fixtures missing match events")
+                logger.info("=== Match events sync complete ===")
+                return
+
+            logger.info("Found %d finished fixtures without match events", len(fixtures))
+
+            synced = 0
+            for fixture in fixtures:
+                # Extract FotMob match ID from external_id
+                match_id_str = fixture.external_id.removeprefix("fotmob_")
+                try:
+                    match_id = int(match_id_str)
+                except (ValueError, TypeError):
+                    logger.debug("Skipping non-numeric FotMob ID: %s", fixture.external_id)
+                    continue
+
+                try:
+                    events = await fetch_match_events(match_id)
+                    if events:
+                        stored = await store_match_events(session, fixture.id, events)
+                        if stored > 0:
+                            synced += 1
+                            logger.debug(
+                                "Stored %d events for %s vs %s",
+                                stored, fixture.home_team, fixture.away_team,
+                            )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to fetch events for fixture %s: %s",
+                        fixture.external_id, exc,
+                    )
+
+                # Rate-limit: 1 req/sec
+                await asyncio.sleep(1.0)
+
+            logger.info(
+                "Synced match events for %d/%d fixtures", synced, len(fixtures)
+            )
+
+    except Exception as exc:
+        logger.error("Error syncing match events: %s", exc, exc_info=True)
+
+    logger.info("=== Match events sync complete ===")
 
 
 # ── Job 3: Odds Snapshot ─────────────────────────────────────────
@@ -375,6 +455,15 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # Match events: Daily at 08:00 UTC (after fixtures sync)
+    scheduler.add_job(
+        job_sync_match_events,
+        CronTrigger(hour=8, minute=0),
+        id="sync_match_events",
+        name="Sync match events from FotMob",
+        replace_existing=True,
+    )
+
     # Odds: Every hour
     scheduler.add_job(
         job_snapshot_odds,
@@ -413,6 +502,7 @@ async def main():
     # Run initial sync on startup
     logger.info("Running initial sync...")
     await job_sync_fixtures()
+    await job_sync_match_events()
     await job_snapshot_odds()
 
     # Keep running
