@@ -20,7 +20,6 @@ from app.models.odds import OddsSnapshot
 from app.models.players import Player, PlayerStats
 from app.pricing.assist import calculate_assist_price
 from app.pricing.goalscorer import calculate_edge, calculate_goalscorer_price
-from app.pricing.team_xg import compute_team_xg_scale
 from app.services.recommendation_service import (
     DEFAULT_POSITION_FALLBACK,
     POSITION_DEFAULTS,
@@ -90,25 +89,6 @@ async def simulate_historical(
         if not fixture_events or not fixture_odds:
             continue
 
-        # Build best goalscorer odds per normalized player name for this fixture
-        _best_goalscorer: dict[str, float] = {}
-        for _o in fixture_odds:
-            if _o.get("market_type") == "goalscorer":
-                _norm = normalize_selection_name(_o["player_name"])
-                _odds_val = _o.get("odds", 0.0)
-                if _odds_val > 1.05 and _odds_val > _best_goalscorer.get(_norm, 0.0):
-                    _best_goalscorer[_norm] = _odds_val
-
-        # Compute implied-odds team xG scale factors
-        home_players = [
-            (n, s) for n, s in player_stats_cache.items() if s.get("team") == fixture.home_team
-        ]
-        away_players = [
-            (n, s) for n, s in player_stats_cache.items() if s.get("team") == fixture.away_team
-        ]
-        home_xg_scale, _ = compute_team_xg_scale(home_players, _best_goalscorer)
-        away_xg_scale, _ = compute_team_xg_scale(away_players, _best_goalscorer)
-
         for odds_entry in fixture_odds:
             player_name = odds_entry["player_name"]
             market_type = odds_entry["market_type"]
@@ -135,14 +115,10 @@ async def simulate_historical(
             )
             opponent_factor = _get_opponent_factor(opponent, team_strengths)
 
-            # Apply implied-odds team xG scale
-            xg_scale = home_xg_scale if stats.get("team") == fixture.home_team else away_xg_scale
-            scaled_xg_per_90 = stats.get("xg_per_90", 0.10) * xg_scale
-
             # Run pricing
             if market_type == "goalscorer":
                 pricing = calculate_goalscorer_price(
-                    xg_per_90=scaled_xg_per_90,
+                    xg_per_90=stats.get("xg_per_90", 0.10),
                     expected_minutes=stats.get("expected_minutes", 75),
                     conversion_rate=stats.get("conversion_rate", 1.0),
                     opponent_xga_factor=opponent_factor,
