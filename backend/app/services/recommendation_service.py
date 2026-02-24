@@ -18,6 +18,7 @@ from app.ingestion.player_stats import calculate_form_factor
 from app.models.players import Player, PlayerStats
 from app.pricing.assist import calculate_assist_price
 from app.pricing.goalscorer import calculate_edge, calculate_goalscorer_price
+from app.pricing.team_xg import compute_team_xg_scale
 from app.strategy.selector import RecommendationFilter, select_bets
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,20 @@ async def generate_recommendations(
         # Get odds for this fixture
         fixture_odds = odds_data.get(fixture_id, [])
 
+        # Build best goalscorer odds per normalized name (for implied xG)
+        _best_goalscorer: dict[str, float] = {}
+        for _o in fixture_odds:
+            if _o.get("market_type") == "goalscorer":
+                _norm = normalize_selection_name(_o["player_name"])
+                _v = _o.get("odds", 0.0)
+                if _v > 1.05 and _v > _best_goalscorer.get(_norm, 0.0):
+                    _best_goalscorer[_norm] = _v
+
+        home_players = [(n, s) for n, s in player_stats.items() if s.get("team") == home_team]
+        away_players = [(n, s) for n, s in player_stats.items() if s.get("team") == away_team]
+        home_xg_scale, home_xg_source = compute_team_xg_scale(home_players, _best_goalscorer)
+        away_xg_scale, away_xg_source = compute_team_xg_scale(away_players, _best_goalscorer)
+
         for odds_entry in fixture_odds:
             player_name = odds_entry.get("player_name")
             market_type = odds_entry.get("market_type", "goalscorer")
@@ -140,10 +155,14 @@ async def generate_recommendations(
             opponent = away_team if team == home_team else home_team
             opponent_factor = _get_opponent_factor(opponent, market_type, team_strengths)
 
+            # Apply team xG scale (implied if ≥3 players have odds, else Dixon=1.0)
+            xg_scale = home_xg_scale if team == home_team else away_xg_scale
+            xg_source = home_xg_source if team == home_team else away_xg_source
+
             # Calculate fair price
             if market_type == "goalscorer":
                 pricing = calculate_goalscorer_price(
-                    xg_per_90=stats.get("xg_per_90", 0.10),
+                    xg_per_90=stats.get("xg_per_90", 0.10) * xg_scale,
                     expected_minutes=stats.get("expected_minutes", 75),
                     conversion_rate=stats.get("conversion_rate", 1.0),
                     opponent_xga_factor=opponent_factor,
@@ -206,6 +225,7 @@ async def generate_recommendations(
                 "edge": edge,
                 "classification": classification,
                 "confidence": confidence,
+                "xg_source": xg_source,
                 "explanation": pricing["explanation"],
             }
 

@@ -33,6 +33,7 @@ export function Dashboard({ user }: DashboardProps) {
         market: rec.market_type,
         fairOdds: rec.fair_odds,
         bestOdds: rec.best_odds,
+        xgSource: rec.xg_source,
         bookmaker: rec.best_bookmaker,
         edge: rec.edge,
         confidence: rec.confidence,
