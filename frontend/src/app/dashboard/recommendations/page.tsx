@@ -38,6 +38,7 @@ interface ApiRecommendation {
   edge: number
   classification: string
   confidence: number
+  xg_source: string
   explanation: Record<string, any>
 }
 
