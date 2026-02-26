@@ -82,10 +82,16 @@ async def list_fixtures(
     limit: int = Query(50, le=200),
 ):
     """List fixtures with optional filters."""
+    # Default sort: upcoming first (asc), finished last (desc)
+    order_col = (
+        Fixture.kickoff_utc.asc()
+        if (status in ("scheduled", "upcoming") or (not status))
+        else Fixture.kickoff_utc.desc()
+    )
     stmt = (
         select(Fixture)
         .options(selectinload(Fixture.odds_snapshots))
-        .order_by(Fixture.kickoff_utc.desc())
+        .order_by(order_col)
         .limit(limit)
     )
 

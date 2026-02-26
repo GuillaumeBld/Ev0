@@ -228,7 +228,7 @@ export default function CalculatorPage() {
   // Load upcoming fixtures
   useEffect(() => {
     setLoadingFixtures(true)
-    getFixtures({ status: 'scheduled' })
+    getFixtures({ status: 'scheduled', limit: 200 })
       .then((res) => setFixtures(res.fixtures))
       .catch(() => setFixtures([]))
       .finally(() => setLoadingFixtures(false))

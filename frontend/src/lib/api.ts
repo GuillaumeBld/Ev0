@@ -197,6 +197,7 @@ export async function getFixtures(params?: {
   status?: string
   from_date?: string
   to_date?: string
+  limit?: number
 }): Promise<FixturesResponse> {
   const { data } = await api.get('/api/v1/fixtures', { params })
   return data
