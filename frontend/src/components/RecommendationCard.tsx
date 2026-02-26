@@ -18,7 +18,6 @@ interface Recommendation {
   edge: number
   confidence: number
   kickoff: string
-  xgSource?: string
   explanation?: Record<string, any>
 }
 
@@ -78,14 +77,6 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
                   : 'bg-blue-500/20 text-blue-400'
               )}>
                 {rec.market === 'goalscorer' ? 'Buteur' : 'Passeur'}
-              </span>
-              <span className={clsx(
-                'px-2 py-0.5 rounded text-xs font-medium',
-                rec.xgSource === 'implied'
-                  ? 'bg-purple-500/20 text-purple-400'
-                  : 'bg-gray-700 text-gray-500'
-              )}>
-                {rec.xgSource === 'implied' ? 'xG Implied' : 'xG Dixon'}
               </span>
               <span className="text-xs text-gray-500">{timeStr}</span>
             </div>

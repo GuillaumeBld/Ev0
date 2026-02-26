@@ -52,7 +52,6 @@ class Recommendation(BaseModel):
     edge: float
     classification: Classification
     confidence: float
-    xg_source: str = "dixon"  # "dixon" | "implied"
     explanation: dict
 
 
@@ -108,7 +107,6 @@ async def get_recommendations(
                 edge=rec.get("edge", 0.0),
                 classification=rec.get("classification", "NO_VALUE"),
                 confidence=rec.get("confidence", 0.5),
-                xg_source=rec.get("xg_source", "dixon"),
                 explanation=rec.get("explanation", {}),
             )
         )
