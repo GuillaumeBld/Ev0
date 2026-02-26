@@ -326,6 +326,112 @@ async def job_snapshot_odds():
     logger.info("=== Odds snapshot complete ===")
 
 
+# ── Job 3b: Direct Odds Snapshot (French bookmakers) ─────────────
+
+
+async def job_snapshot_direct_odds():
+    """Snapshot odds from Betclic, Unibet, and ParionsSport via direct scrapers.
+
+    Flow:
+    1. Launch Playwright/Chromium (headless)
+    2. Run BetclicScraper + UnibetScraper + ParionsSportScraper for all leagues
+    3. Match each MatchOdds → DB fixture by team name + date window
+    4. Persist selections via store_odds_snapshot()
+    """
+    logger.info("=== Starting direct odds snapshot ===")
+
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        logger.warning("Playwright not installed — skipping direct odds snapshot")
+        logger.warning("Install with: pip install playwright && playwright install chromium")
+        return
+
+    from app.ingestion.direct_scrapers import scrape_all_direct
+    from app.ingestion.fixture_matcher import match_odds_event_to_fixture
+    from app.models.fixtures import Fixture
+
+    user_settings = await _load_user_settings()
+    leagues = _get_leagues(user_settings)
+    logger.info("Direct scrapers: leagues = %s", leagues)
+
+    # ── Scrape ──
+    all_match_odds = []
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            try:
+                all_match_odds = await scrape_all_direct(leagues, browser)
+            finally:
+                await browser.close()
+    except Exception as exc:
+        logger.error("Direct scrape failed: %s", exc, exc_info=True)
+        return
+
+    if not all_match_odds:
+        logger.warning("Direct scrapers returned 0 match-odds objects")
+        logger.info("=== Direct odds snapshot complete (nothing stored) ===")
+        return
+
+    logger.info("Direct scrapers: collected %d match-odds objects", len(all_match_odds))
+
+    # ── Match → fixtures + store ──
+    stored = 0
+    matched = 0
+
+    async with async_session() as session:
+        result = await session.execute(select(Fixture).where(Fixture.league.in_(leagues)))
+        db_fixtures = list(result.scalars().all())
+
+        for mo in all_match_odds:
+            # Adapt MatchOdds to the dict shape that fixture_matcher expects
+            event_dict = {
+                "id": "",
+                "home_team": mo.home_team,
+                "away_team": mo.away_team,
+                "commence_time": mo.kickoff_utc.isoformat() if mo.kickoff_utc else "",
+            }
+            league_fixtures = [f for f in db_fixtures if f.league == mo.league]
+            fixture = match_odds_event_to_fixture(event_dict, league_fixtures)
+
+            if not fixture:
+                logger.debug(
+                    "No fixture match for %s vs %s (%s)", mo.home_team, mo.away_team, mo.league
+                )
+                continue
+
+            matched += 1
+
+            for sel in mo.selections:
+                try:
+                    await store_odds_snapshot(
+                        session,
+                        fixture_id=fixture.id,
+                        player_name=sel.player_name,
+                        market_type=sel.market_type,
+                        bookmaker=sel.bookmaker,
+                        odds=sel.odds,
+                        raw_data=sel.raw_data,
+                    )
+                    stored += 1
+                except Exception as exc:
+                    logger.debug("Direct odds upsert skip (likely duplicate): %s", exc)
+                    await session.rollback()
+
+        await session.commit()
+
+    logger.info(
+        "Direct odds: matched %d/%d fixtures, stored %d selections",
+        matched,
+        len(all_match_odds),
+        stored,
+    )
+    logger.info("=== Direct odds snapshot complete ===")
+
+
 # ── Job 4: Recommendation Generation ─────────────────────────────
 
 
@@ -473,6 +579,15 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # Direct odds (Betclic, Unibet, ParionsSport): Every 3 hours
+    scheduler.add_job(
+        job_snapshot_direct_odds,
+        IntervalTrigger(hours=3),
+        id="snapshot_direct_odds",
+        name="Snapshot direct odds (Betclic, Unibet, ParionsSport)",
+        replace_existing=True,
+    )
+
     # Recommendations: Every 2 hours
     scheduler.add_job(
         job_generate_recommendations,
@@ -504,6 +619,7 @@ async def main():
     await job_sync_fixtures()
     await job_sync_match_events()
     await job_snapshot_odds()
+    await job_snapshot_direct_odds()
 
     # Keep running
     try:

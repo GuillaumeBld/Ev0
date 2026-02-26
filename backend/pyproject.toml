@@ -25,6 +25,7 @@ dependencies = [
     "redis>=5.0.0",
     "slowapi>=0.1.9",
     "greenlet>=3.3.2",
+    "playwright>=1.40.0",
 ]
 
 [project.optional-dependencies]

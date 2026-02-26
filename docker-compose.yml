@@ -41,9 +41,9 @@ services:
   worker:
     build:
       context: ./backend
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.worker
       args:
-        CACHE_BUST: "2026-02-22-v16"
+        CACHE_BUST: "2026-02-26-v1"
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in env}
