@@ -164,11 +164,12 @@ class BetclicScraper:
     BOOKMAKER = "betclic"
 
     # URL patterns whose JSON responses we want to capture
+    # Capture JSON from betclic.fr or begmedia CDN
     _CAPTURE_RE = re.compile(
-        r"(cdn\.betclic\.fr|offer\.cdn\.betclic|betclic\.fr/api|begmedia\.com/api)",
+        r"(betclic\.fr|begmedia\.com|cdn\.betclic|offer\.cdn)",
         re.IGNORECASE,
     )
-    PAGE_TIMEOUT_MS = 45_000
+    PAGE_TIMEOUT_MS = 35_000
 
     def __init__(self) -> None:
         self._captured: list[dict[str, Any]] = []
@@ -189,14 +190,15 @@ class BetclicScraper:
                     return
                 body = await response.json()
                 self._captured.append({"url": response.url, "body": body})
-                logger.debug("Betclic captured %s", response.url)
+                logger.info("Betclic captured: %s", response.url)
             except Exception:
                 pass
 
         page.on("response", _on_response)
         try:
-            await page.goto(url, wait_until="networkidle", timeout=self.PAGE_TIMEOUT_MS)
-            await page.wait_for_timeout(4_000)
+            # Use domcontentloaded to avoid waiting for infinite background XHRs
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.PAGE_TIMEOUT_MS)
+            await page.wait_for_timeout(8_000)  # let lazy API calls fire
         except Exception as exc:
             logger.warning("BetclicScraper page load error (%s): %s", league, exc)
 
@@ -353,11 +355,7 @@ class UnibetScraper:
 
     BOOKMAKER = "unibet"
 
-    _CAPTURE_RE = re.compile(
-        r"(kambigroup\.com|unibet\.fr/api|api\.unibet|offering-api)",
-        re.IGNORECASE,
-    )
-    PAGE_TIMEOUT_MS = 45_000
+    PAGE_TIMEOUT_MS = 35_000
 
     def __init__(self) -> None:
         self._captured: list[dict[str, Any]] = []
@@ -372,20 +370,20 @@ class UnibetScraper:
 
         async def _on_response(response: Any) -> None:
             try:
-                if "json" not in response.headers.get("content-type", ""):
-                    return
-                if not self._CAPTURE_RE.search(response.url):
+                ct = response.headers.get("content-type", "")
+                if "json" not in ct:
                     return
                 body = await response.json()
+                # Log all captured URLs at INFO so we can identify the real API
+                logger.info("Unibet captured JSON: %s", response.url)
                 self._captured.append({"url": response.url, "body": body})
-                logger.debug("Unibet captured %s", response.url)
             except Exception:
                 pass
 
         page.on("response", _on_response)
         try:
-            await page.goto(url, wait_until="networkidle", timeout=self.PAGE_TIMEOUT_MS)
-            await page.wait_for_timeout(4_000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.PAGE_TIMEOUT_MS)
+            await page.wait_for_timeout(8_000)
         except Exception as exc:
             logger.warning("UnibetScraper page load error (%s): %s", league, exc)
 
@@ -765,15 +763,7 @@ async def scrape_all_direct(
     unibet = UnibetScraper()
     parions = ParionsSportScraper()
 
-    # ── ParionsSport: HTTP first, no Playwright page needed ──
-    for league in leagues:
-        try:
-            matches = await parions.scrape_league(league)
-            all_matches.extend(matches)
-        except Exception as exc:
-            logger.error("ParionsSport failed for %s: %s", league, exc, exc_info=True)
-
-    # ── Betclic + Unibet: single browser context, sequential to avoid bot detection ──
+    # Single browser context shared across all scrapers (sequential = less bot detection)
     context = await browser.new_context(
         user_agent=_BROWSER_UA,
         locale="fr-FR",
@@ -789,6 +779,14 @@ async def scrape_all_direct(
         )
 
         for league in leagues:
+            # ParionsSport: HTTP first, Playwright fallback (page now available)
+            try:
+                matches = await parions.scrape_league(league, page)
+                all_matches.extend(matches)
+                await asyncio.sleep(2)
+            except Exception as exc:
+                logger.error("ParionsSport failed for %s: %s", league, exc, exc_info=True)
+
             try:
                 matches = await betclic.scrape_league(league, page)
                 all_matches.extend(matches)
