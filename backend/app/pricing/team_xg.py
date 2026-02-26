@@ -316,8 +316,20 @@ def allocate_player(
 # ── DB helpers ────────────────────────────────────────────────────
 
 async def _load_team_players(db: AsyncSession, team: str) -> list[dict[str, Any]]:
-    """Load latest player stats (source=average) for a team."""
+    """Load latest player stats (source=average) for a team.
+
+    Tries the exact name first, then falls back to known aliases so that
+    fixtures with official names (e.g. "AFC Bournemouth") still match player
+    rows stored under the FotMob short name (e.g. "Bournemouth").
+    """
+    from app.ingestion.storage import TEAM_NAME_MAP
     from app.models.players import Player, PlayerStats
+
+    # Build candidate team names: canonical + any short-name aliases that map to it
+    candidates = {team}
+    for short, canonical in TEAM_NAME_MAP.items():
+        if canonical == team:
+            candidates.add(short)
 
     latest_subq = (
         select(PlayerStats.player_id, func.max(PlayerStats.as_of_utc).label("max_date"))
@@ -334,7 +346,7 @@ async def _load_team_players(db: AsyncSession, team: str) -> list[dict[str, Any]
             (PlayerStats.player_id == latest_subq.c.player_id)
             & (PlayerStats.as_of_utc == latest_subq.c.max_date),
         )
-        .where(Player.team == team)
+        .where(Player.team.in_(candidates))
     )
 
     players = []

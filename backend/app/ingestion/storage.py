@@ -6,6 +6,29 @@ Handles storing fixtures, player stats, and odds snapshots.
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+# Maps FotMob/Understat short names → official names used in the fixtures table.
+# Must be kept in sync with the fixtures ingestion source (FotMob /api/leagues).
+TEAM_NAME_MAP: dict[str, str] = {
+    # Premier League
+    "Bournemouth": "AFC Bournemouth",
+    "Brighton": "Brighton & Hove Albion",
+    "Brighton and Hove Albion": "Brighton & Hove Albion",
+    "Tottenham": "Tottenham Hotspur",
+    "West Ham": "West Ham United",
+    "Nott'm Forest": "Nottingham Forest",
+    "Newcastle": "Newcastle United",
+    # Ligue 1
+    "Paris Saint Germain": "Paris Saint-Germain",
+    "PSG": "Paris Saint-Germain",
+}
+
+
+def normalize_team_name(team: str | None) -> str | None:
+    """Return the canonical team name, or the input unchanged if not in the map."""
+    if not team:
+        return team
+    return TEAM_NAME_MAP.get(team, team)
+
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,7 +81,7 @@ async def upsert_player(session: AsyncSession, data: dict[str, Any]) -> Player:
         external_id=data.get("player_id", data["player_name"]),
         name=data["player_name"],
         normalized_name=data.get("normalized_name", data["player_name"].lower()),
-        team=data.get("team"),
+        team=normalize_team_name(data.get("team")),
         position=data.get("position"),
     )
 
