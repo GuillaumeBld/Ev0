@@ -72,6 +72,50 @@ export interface PriceResponse {
   explanation: Record<string, any>
 }
 
+// ── Match pricing (Top-Down) ────────────────────────────────────
+
+export interface MatchPriceRequest {
+  fixture_id: number
+  home_xg_override?: number | null
+  away_xg_override?: number | null
+  home_pen_taker_override?: number | null
+  away_pen_taker_override?: number | null
+}
+
+export interface PlayerAllocationOut {
+  player_id: number
+  player_name: string
+  team: string
+  position: string | null
+  expected_minutes: number
+  is_pen_taker: boolean
+  npxg_share: number
+  xa_share: number
+  lambda_open_play: number
+  lambda_penalty: number
+  lambda_total: number
+  prob_goal: number
+  fair_odds_goal: number
+  lambda_assist: number
+  prob_assist: number
+  fair_odds_assist: number
+}
+
+export interface MatchPriceResponse {
+  fixture_id: number
+  home_team: string
+  away_team: string
+  home_match_xg: number
+  away_match_xg: number
+  home_players: PlayerAllocationOut[]
+  away_players: PlayerAllocationOut[]
+}
+
+export async function priceMatch(request: MatchPriceRequest): Promise<MatchPriceResponse> {
+  const { data } = await api.post('/api/v1/price/match', request)
+  return data
+}
+
 // API functions
 export async function getRecommendations(params?: {
   date?: string

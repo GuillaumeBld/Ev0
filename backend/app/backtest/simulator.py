@@ -6,6 +6,7 @@ real outcomes.
 """
 
 import logging
+import math
 from datetime import date, datetime
 from typing import Any
 
@@ -18,8 +19,15 @@ from app.models.fixtures import Fixture
 from app.models.match_events import MatchEvent
 from app.models.odds import OddsSnapshot
 from app.models.players import Player, PlayerStats
-from app.pricing.assist import calculate_assist_price
-from app.pricing.goalscorer import calculate_edge, calculate_goalscorer_price
+from app.pricing.goalscorer import calculate_edge
+from app.pricing.team_xg import (
+    PENS_PER_MATCH,
+    POSITION_NPXG_PRIORS,
+    POSITION_XA_PRIORS,
+    SHRINKAGE_N,
+    compute_team_stats,
+    estimate_team_match_xg,
+)
 from app.services.recommendation_service import (
     DEFAULT_POSITION_FALLBACK,
     POSITION_DEFAULTS,
@@ -76,10 +84,26 @@ async def simulate_historical(
     # 4. Build player stats index (latest stats before each fixture)
     player_stats_cache = await _load_player_stats_index(db)
 
-    # 5. Compute team strengths
-    team_strengths = await _compute_team_strengths(db)
+    # 5. Compute Top-Down team stats
+    ev0_team_stats = await compute_team_stats(db)
+    all_ts = list(ev0_team_stats.values())
+    league_avg_xg = (
+        sum(ts.attack_xg_per_match for ts in all_ts) / len(all_ts) if all_ts else 1.2
+    )
+    xga_vals = [ts.defense_xga_per_match for ts in all_ts if ts.defense_xga_per_match > 0]
+    league_avg_xga = sum(xga_vals) / len(xga_vals) if xga_vals else league_avg_xg
 
-    # 6. Run pricing for each fixture × player
+    # Pre-compute team npxg/xa totals from player_stats_cache
+    from collections import defaultdict
+    team_npxg_totals: dict[str, float] = defaultdict(float)
+    team_xa_totals: dict[str, float] = defaultdict(float)
+    for _pname, pstats in player_stats_cache.items():
+        team = pstats.get("team")
+        if team:
+            team_npxg_totals[team] += pstats.get("npxg_total", 0.0) or 0.0
+            team_xa_totals[team] += pstats.get("xa_total", 0.0) or 0.0
+
+    # 6. Run pricing for each fixture × player (Top-Down)
     records: list[dict[str, Any]] = []
 
     for fixture in fixtures:
@@ -88,6 +112,24 @@ async def simulate_historical(
 
         if not fixture_events or not fixture_odds:
             continue
+
+        # Match xG for this fixture
+        home_ts = ev0_team_stats.get(fixture.home_team)
+        away_ts = ev0_team_stats.get(fixture.away_team)
+        home_match_xg = estimate_team_match_xg(
+            attack_xg=home_ts.attack_xg_per_match if home_ts else league_avg_xg,
+            opponent_xga=away_ts.defense_xga_per_match if away_ts else league_avg_xga,
+            league_avg_xg=league_avg_xg,
+            league_avg_xga=league_avg_xga,
+            is_home=True,
+        )
+        away_match_xg = estimate_team_match_xg(
+            attack_xg=away_ts.attack_xg_per_match if away_ts else league_avg_xg,
+            opponent_xga=home_ts.defense_xga_per_match if home_ts else league_avg_xga,
+            league_avg_xg=league_avg_xg,
+            league_avg_xga=league_avg_xga,
+            is_home=False,
+        )
 
         for odds_entry in fixture_odds:
             player_name = odds_entry["player_name"]
@@ -98,7 +140,6 @@ async def simulate_historical(
             if market_odds <= 1:
                 continue
 
-            # Find player stats
             stats = _find_player_stats(player_name, player_stats_cache)
             if not stats:
                 continue
@@ -107,43 +148,39 @@ async def simulate_historical(
             if position == "GK":
                 continue
 
-            # Opponent factor
-            opponent = (
-                fixture.away_team
-                if stats.get("team") == fixture.home_team
-                else fixture.home_team
-            )
-            opponent_factor = _get_opponent_factor(opponent, team_strengths)
+            team = stats.get("team", fixture.home_team)
+            team_match_xg = home_match_xg if team == fixture.home_team else away_match_xg
 
-            # Run pricing
+            # Top-Down player share with Bayesian shrinkage
+            matches = stats.get("matches_played", 0) or 0
+            shrink = min(matches / SHRINKAGE_N, 1.0)
+            team_npxg = team_npxg_totals.get(team, 0.0) or 1e-9
+            team_xa = team_xa_totals.get(team, 0.0) or 1e-9
+            npxg_prior = POSITION_NPXG_PRIORS.get(position or "MF", 0.08)
+            xa_prior = POSITION_XA_PRIORS.get(position or "MF", 0.10)
+            npxg_actual = (stats.get("npxg_total", 0.0) or 0.0) / team_npxg
+            xa_actual = (stats.get("xa_total", 0.0) or 0.0) / team_xa
+            npxg_share = shrink * npxg_actual + (1 - shrink) * npxg_prior
+            xa_share = shrink * xa_actual + (1 - shrink) * xa_prior
+
+            expected_minutes = stats.get("expected_minutes", 75.0)
+            mins_ratio = expected_minutes / 90.0
+
             if market_type == "goalscorer":
-                pricing = calculate_goalscorer_price(
-                    xg_per_90=stats.get("xg_per_90", 0.10),
-                    expected_minutes=stats.get("expected_minutes", 75),
-                    conversion_rate=stats.get("conversion_rate", 1.0),
-                    opponent_xga_factor=opponent_factor,
-                    form_factor=stats.get("form_factor", 1.0),
-                )
+                lambda_val = max(0.001, team_match_xg * (1 - PENS_PER_MATCH) * npxg_share * mins_ratio)
             elif market_type == "assist":
-                pricing = calculate_assist_price(
-                    xa_per_90=stats.get("xa_per_90", 0.08),
-                    expected_minutes=stats.get("expected_minutes", 75),
-                    creation_score=stats.get("creation_score", 1.0),
-                    teammate_finishing_factor=stats.get("teammate_finishing", 1.0),
-                    opponent_defense_factor=opponent_factor,
-                    form_factor=stats.get("form_factor", 1.0),
-                )
+                lambda_val = max(0.001, team_match_xg * xa_share * mins_ratio)
             else:
                 continue
 
-            fair_odds = pricing["fair_odds"]
+            probability = 1 - math.exp(-lambda_val)
+            fair_odds = round(1 / probability, 2) if probability > 0 else 9999.0
             edge = calculate_edge(fair_odds, market_odds)
 
             # Resolve outcome
             outcome = resolve_outcome(player_name, market_type, fixture_events)
 
             # Confidence based on data quality
-            matches = stats.get("matches_played", 0) or 0
             pos_defaults = (
                 POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK)
                 if position
@@ -169,13 +206,12 @@ async def simulate_historical(
                     "fixture_id": fixture.external_id,
                     "player": player_name,
                     "market": market_type,
-                    "fair_prob": pricing["probability"],
+                    "fair_prob": round(probability, 4),
                     "fair_odds": fair_odds,
                     "market_odds": market_odds,
                     "edge": edge,
                     "confidence": confidence,
                     "outcome": outcome,
-                    # Extra metadata (not required by BacktestEngine but useful)
                     "bookmaker": bookmaker,
                     "home_team": fixture.home_team,
                     "away_team": fixture.away_team,
@@ -337,6 +373,8 @@ async def _load_player_stats_index(
         stats_index[player_name] = {
             "xg_per_90": xg_per_90,
             "xa_per_90": xa_per_90,
+            "npxg_total": ps.npxg or 0.0,
+            "xa_total": ps.xa or 0.0,
             "expected_minutes": expected_minutes,
             "conversion_rate": conversion_rate,
             "team": team,

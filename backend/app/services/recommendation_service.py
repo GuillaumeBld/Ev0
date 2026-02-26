@@ -5,6 +5,7 @@ actionable betting recommendations.
 """
 
 import logging
+import math
 import uuid
 from collections import defaultdict
 from datetime import datetime
@@ -16,9 +17,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ingestion.odds import normalize_selection_name
 from app.ingestion.player_stats import calculate_form_factor
 from app.models.players import Player, PlayerStats
-from app.pricing.assist import calculate_assist_price
-from app.pricing.goalscorer import calculate_edge, calculate_goalscorer_price
-from app.pricing.team_xg import compute_team_xg_scale
+from app.pricing.goalscorer import calculate_edge
+from app.pricing.team_xg import (
+    PENS_PER_MATCH,
+    PEN_CONVERSION,
+    compute_player_shares,
+    compute_team_stats,
+    detect_penalty_taker,
+    estimate_team_match_xg,
+)
 from app.strategy.selector import RecommendationFilter, select_bets
 
 logger = logging.getLogger(__name__)
@@ -68,32 +75,35 @@ async def generate_recommendations(
     odds_data: dict[str, list[dict[str, Any]]],  # fixture_id -> odds list
     filter_config: RecommendationFilter | None = None,
     team_strengths: dict[str, dict[str, float]] | None = None,  # team -> strengths
+    team_ev0_stats: dict[str, Any] | None = None,  # Top-Down data
 ) -> list[dict[str, Any]]:
-    """
-    Generate betting recommendations for upcoming fixtures.
-
-    Pipeline:
-    1. For each fixture, get relevant players
-    2. For each player, calculate fair price
-    3. Compare to market odds, calculate edge
-    4. Apply strategy filters and selection
-
-    Args:
-        fixtures: List of upcoming fixtures
-        player_stats: Player stats keyed by normalized name
-        odds_data: Market odds keyed by fixture_id
-        filter_config: Optional filter configuration
-
-    Returns:
-        List of recommendation dicts
-    """
+    """Generate betting recommendations for upcoming fixtures (Top-Down pipeline)."""
     all_recommendations = []
     _matched = 0
     _unmatched = 0
     _skipped_position = 0
     _unmatched_names: list[str] = []
 
-    # Build normalized index for better matching (Step 6)
+    # Pre-compute team npxg/xa totals for share computation
+    team_npxg_totals: dict[str, float] = defaultdict(float)
+    team_xa_totals: dict[str, float] = defaultdict(float)
+    for _pname, pstats in player_stats.items():
+        team = pstats.get("team")
+        if team:
+            team_npxg_totals[team] += pstats.get("npxg_total", 0.0) or 0.0
+            team_xa_totals[team] += pstats.get("xa_total", 0.0) or 0.0
+
+    # League averages from team_ev0_stats (computed from DB) or team_strengths fallback
+    if team_ev0_stats:
+        league_avg_xg = team_ev0_stats.get("league_avg_xg", 1.2)
+        league_avg_xga = team_ev0_stats.get("league_avg_xga", 1.2)
+        team_full_stats = team_ev0_stats.get("teams", {})
+    else:
+        league_avg_xg = 1.2
+        league_avg_xga = 1.2
+        team_full_stats = {}
+
+    # Build normalized index for player matching
     normalized_index: dict[str, dict] = {}
     for name, s in player_stats.items():
         norm_key = normalize_selection_name(name)
@@ -106,22 +116,25 @@ async def generate_recommendations(
         kickoff = fixture.get("kickoff_utc")
         league = fixture.get("league")
 
-        # Get odds for this fixture
+        # Top-Down: estimate match xG for each team
+        home_ts = team_full_stats.get(home_team, {})
+        away_ts = team_full_stats.get(away_team, {})
+        home_match_xg = estimate_team_match_xg(
+            attack_xg=home_ts.get("attack_xg_per_match", league_avg_xg),
+            opponent_xga=away_ts.get("defense_xga_per_match", league_avg_xga),
+            league_avg_xg=league_avg_xg,
+            league_avg_xga=league_avg_xga,
+            is_home=True,
+        )
+        away_match_xg = estimate_team_match_xg(
+            attack_xg=away_ts.get("attack_xg_per_match", league_avg_xg),
+            opponent_xga=home_ts.get("defense_xga_per_match", league_avg_xga),
+            league_avg_xg=league_avg_xg,
+            league_avg_xga=league_avg_xga,
+            is_home=False,
+        )
+
         fixture_odds = odds_data.get(fixture_id, [])
-
-        # Build best goalscorer odds per normalized name (for implied xG)
-        _best_goalscorer: dict[str, float] = {}
-        for _o in fixture_odds:
-            if _o.get("market_type") == "goalscorer":
-                _norm = normalize_selection_name(_o["player_name"])
-                _v = _o.get("odds", 0.0)
-                if _v > 1.05 and _v > _best_goalscorer.get(_norm, 0.0):
-                    _best_goalscorer[_norm] = _v
-
-        home_players = [(n, s) for n, s in player_stats.items() if s.get("team") == home_team]
-        away_players = [(n, s) for n, s in player_stats.items() if s.get("team") == away_team]
-        home_xg_scale, home_xg_source = compute_team_xg_scale(home_players, _best_goalscorer)
-        away_xg_scale, away_xg_source = compute_team_xg_scale(away_players, _best_goalscorer)
 
         for odds_entry in fixture_odds:
             player_name = odds_entry.get("player_name")
@@ -132,7 +145,6 @@ async def generate_recommendations(
             if not player_name or market_odds <= 1:
                 continue
 
-            # Find player stats (Step 1 & 6: skip unmatched players entirely)
             stats = _find_player_stats(player_name, player_stats, normalized_index)
             if not stats:
                 _unmatched += 1
@@ -140,46 +152,43 @@ async def generate_recommendations(
                     _unmatched_names.append(player_name)
                 continue
 
-            # Step 1: Skip GKs — they essentially never score/assist
             position = stats.get("position")
             if position == "GK":
                 _skipped_position += 1
                 continue
 
             _matched += 1
-
-            # Determine team
             team = stats.get("team") or _infer_team(player_name, home_team, away_team)
 
-            # Calculate opponent factor (Step 5: use team strengths)
-            opponent = away_team if team == home_team else home_team
-            opponent_factor = _get_opponent_factor(opponent, market_type, team_strengths)
+            # Top-Down lambda computation
+            team_match_xg = home_match_xg if team == home_team else away_match_xg
+            expected_minutes = stats.get("expected_minutes", 75.0)
+            mins_ratio = expected_minutes / 90.0
 
-            # Apply team xG scale (implied if ≥3 players have odds, else Dixon=1.0)
-            xg_scale = home_xg_scale if team == home_team else away_xg_scale
-            xg_source = home_xg_source if team == home_team else away_xg_source
+            # Player share (npxg_total / team_total_npxg with Bayesian shrinkage)
+            from app.pricing.team_xg import POSITION_NPXG_PRIORS, POSITION_XA_PRIORS, SHRINKAGE_N
+            matches = stats.get("matches_played", 0) or 0
+            shrink = min(matches / SHRINKAGE_N, 1.0)
 
-            # Calculate fair price
+            team_npxg = team_npxg_totals.get(team, 0.0) or 1e-9
+            team_xa = team_xa_totals.get(team, 0.0) or 1e-9
+            npxg_prior = POSITION_NPXG_PRIORS.get(position or "MF", 0.08)
+            xa_prior = POSITION_XA_PRIORS.get(position or "MF", 0.10)
+            npxg_actual = (stats.get("npxg_total", 0.0) or 0.0) / team_npxg
+            xa_actual = (stats.get("xa_total", 0.0) or 0.0) / team_xa
+            npxg_share = shrink * npxg_actual + (1 - shrink) * npxg_prior
+            xa_share = shrink * xa_actual + (1 - shrink) * xa_prior
+
             if market_type == "goalscorer":
-                pricing = calculate_goalscorer_price(
-                    xg_per_90=stats.get("xg_per_90", 0.10) * xg_scale,
-                    expected_minutes=stats.get("expected_minutes", 75),
-                    conversion_rate=stats.get("conversion_rate", 1.0),
-                    opponent_xga_factor=opponent_factor,
-                    form_factor=stats.get("form_factor", 1.0),
-                )
+                lambda_val = max(0.001, team_match_xg * (1 - PENS_PER_MATCH) * npxg_share * mins_ratio)
             else:  # assist
-                pricing = calculate_assist_price(
-                    xa_per_90=stats.get("xa_per_90", 0.08),
-                    expected_minutes=stats.get("expected_minutes", 75),
-                    creation_score=stats.get("creation_score", 1.0),
-                    teammate_finishing_factor=stats.get("teammate_finishing", 1.0),
-                    opponent_defense_factor=opponent_factor,
-                    form_factor=stats.get("form_factor", 1.0),
-                )
+                lambda_val = max(0.001, team_match_xg * xa_share * mins_ratio)
+
+            probability = 1 - math.exp(-lambda_val)
+            fair_odds = 1 / probability if probability > 0 else 9999.0
+            fair_odds = round(fair_odds, 2)
 
             # Calculate edge
-            fair_odds = pricing["fair_odds"]
             edge = calculate_edge(fair_odds, market_odds)
 
             # Step 4: Confidence based on data quality, not edge magnitude
@@ -217,16 +226,21 @@ async def generate_recommendations(
                 "player_name": player_name,
                 "team": team,
                 "market_type": market_type,
-                "fair_probability": pricing["probability"],
+                "fair_probability": round(probability, 4),
                 "fair_odds": fair_odds,
-                "lambda_intensity": pricing["lambda_intensity"],
+                "lambda_intensity": round(lambda_val, 4),
                 "market_odds": market_odds,
                 "best_bookmaker": bookmaker,
                 "edge": edge,
                 "classification": classification,
                 "confidence": confidence,
-                "xg_source": xg_source,
-                "explanation": pricing["explanation"],
+                "explanation": {
+                    "model": "top_down",
+                    "team_match_xg": round(team_match_xg, 3),
+                    "share": round(npxg_share if market_type == "goalscorer" else xa_share, 4),
+                    "expected_minutes": expected_minutes,
+                    "lambda": round(lambda_val, 4),
+                },
             }
 
             all_recommendations.append(recommendation)
@@ -623,6 +637,8 @@ async def get_recommendations_for_date(
                 "player_id": stats.player_id,
                 "xg_per_90": xg_per_90,
                 "xa_per_90": xa_per_90,
+                "npxg_total": stats.npxg or 0.0,
+                "xa_total": stats.xa or 0.0,
                 "expected_minutes": expected_minutes,
                 "conversion_rate": conversion_rate,
                 "team": team,
@@ -636,20 +652,36 @@ async def get_recommendations_for_date(
         if player_stats:
             await cache_player_stats_map(player_stats)
 
-    # Step 5: Compute team strengths for opponent factor + teammate finishing
+    # Step 5: Compute Top-Down team stats
+    from app.pricing.team_xg import compute_team_stats
+    ev0_team_stats = await compute_team_stats(db)
+
+    all_ts = list(ev0_team_stats.values())
+    league_avg_xg = (
+        sum(ts.attack_xg_per_match for ts in all_ts) / len(all_ts) if all_ts else 1.2
+    )
+    xga_vals = [ts.defense_xga_per_match for ts in all_ts if ts.defense_xga_per_match > 0]
+    league_avg_xga = sum(xga_vals) / len(xga_vals) if xga_vals else league_avg_xg
+
+    team_ev0_stats: dict[str, Any] = {
+        "league_avg_xg": league_avg_xg,
+        "league_avg_xga": league_avg_xga,
+        "teams": {
+            name: {
+                "attack_xg_per_match": ts.attack_xg_per_match,
+                "defense_xga_per_match": ts.defense_xga_per_match,
+            }
+            for name, ts in ev0_team_stats.items()
+        },
+    }
+
+    # Legacy team_strengths (still used for confidence scoring)
     team_strengths = await _compute_team_strengths(db)
 
-    # Compute form factors and rolling conversion rates from snapshots
+    # Form factors and rolling conversion rates
     form_factors = await _compute_form_factors(db)
 
-    # Enrich player_stats with teammate_finishing, form_factor, rolling CR
     for _pname, pstats in player_stats.items():
-        team = pstats.get("team")
-        # Teammate finishing from team strengths
-        if team and team_strengths and team in team_strengths:
-            pstats["teammate_finishing"] = team_strengths[team]["finishing"]
-
-        # Form factor and rolling conversion rate from snapshots
         pid = pstats.get("player_id")
         if pid and pid in form_factors:
             pf = form_factors[pid]
@@ -664,6 +696,7 @@ async def get_recommendations_for_date(
         odds_data,
         filter_config,
         team_strengths,
+        team_ev0_stats,
     )
 
     # 4. Add unique IDs

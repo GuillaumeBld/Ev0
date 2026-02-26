@@ -1,373 +1,390 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { Calculator, AlertCircle, Check } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { Calculator, RefreshCw, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
+import { getFixtures, priceMatch, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
 
-interface PricingResult {
-  lambda: number
-  probability: number
-  fairOdds: number
-  edge: number | null
-  classification: 'VALUE' | 'NO_VALUE' | 'AVOID' | null
+// ── Helpers ────────────────────────────────────────────────────────
+
+function fmtOdds(o: number): string {
+  return o >= 100 ? '—' : o.toFixed(2)
 }
 
-export default function CalculatorPage() {
-  const [marketType, setMarketType] = useState<'goalscorer' | 'assist'>('goalscorer')
-  
-  // Goalscorer inputs
-  const [xgPer90, setXgPer90] = useState(0.5)
-  const [expectedMinutes, setExpectedMinutes] = useState(75)
-  const [conversionRate, setConversionRate] = useState(1.0)
-  const [opponentFactor, setOpponentFactor] = useState(1.0)
-  const [formFactor, setFormFactor] = useState(1.0)
-  
-  // Assist inputs
-  const [xaPer90, setXaPer90] = useState(0.2)
-  const [creationScore, setCreationScore] = useState(1.0)
-  const [teammateFinishing, setTeammateFinishing] = useState(1.0)
-  
-  // Market odds for comparison
-  const [marketOdds, setMarketOdds] = useState<number | null>(null)
-  
-  // Results
-  const [result, setResult] = useState<PricingResult | null>(null)
+function fmtPct(p: number): string {
+  return `${(p * 100).toFixed(1)}%`
+}
 
-  // Calculate on input change
+function fmtMins(m: number): string {
+  return `${Math.round(m)}'`
+}
+
+const POS_COLOR: Record<string, string> = {
+  FW: 'text-orange-400',
+  MF: 'text-blue-400',
+  DF: 'text-gray-400',
+}
+
+// ── Team table ─────────────────────────────────────────────────────
+
+interface TeamTableProps {
+  teamName: string
+  matchXg: number
+  players: PlayerAllocationOut[]
+  xgOverride: string
+  onXgOverride: (v: string) => void
+  penTakerOverride: number | null
+  onPenTakerClick: (playerId: number) => void
+  isHome: boolean
+}
+
+function TeamTable({
+  teamName,
+  matchXg,
+  players,
+  xgOverride,
+  onXgOverride,
+  penTakerOverride,
+  onPenTakerClick,
+  isHome,
+}: TeamTableProps) {
+  return (
+    <div className="bg-gray-800 rounded-xl overflow-hidden">
+      {/* Header */}
+      <div className={clsx(
+        'px-4 py-3 flex items-center justify-between',
+        isHome ? 'bg-orange-500/10 border-b border-orange-500/20' : 'bg-blue-500/10 border-b border-blue-500/20',
+      )}>
+        <div>
+          <span className="font-semibold text-white text-sm">{teamName}</span>
+          <span className={clsx(
+            'ml-2 text-xs font-medium px-2 py-0.5 rounded',
+            isHome ? 'bg-orange-500/20 text-orange-300' : 'bg-blue-500/20 text-blue-300',
+          )}>
+            {isHome ? 'DOM.' : 'EXT.'}
+          </span>
+        </div>
+        {/* xG display + override */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-400">Match xG</span>
+          <span className={clsx(
+            'text-sm font-bold',
+            isHome ? 'text-orange-300' : 'text-blue-300',
+          )}>
+            {matchXg.toFixed(2)}
+          </span>
+          <input
+            type="number"
+            step="0.1"
+            min="0"
+            max="5"
+            placeholder="override"
+            value={xgOverride}
+            onChange={(e) => onXgOverride(e.target.value)}
+            className="w-20 text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white placeholder-gray-500 focus:outline-none focus:border-orange-500"
+          />
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-gray-700 text-gray-400">
+              <th className="text-left px-3 py-2 font-medium">Joueur</th>
+              <th className="px-2 py-2 font-medium">Pos</th>
+              <th className="px-2 py-2 font-medium">Min</th>
+              <th className="px-3 py-2 font-medium text-orange-300 border-l border-gray-700">P(but)</th>
+              <th className="px-3 py-2 font-medium text-orange-300">Cote But</th>
+              <th className="px-3 py-2 font-medium text-blue-300 border-l border-gray-700">P(passe)</th>
+              <th className="px-3 py-2 font-medium text-blue-300">Cote Pass</th>
+            </tr>
+          </thead>
+          <tbody>
+            {players.map((p) => {
+              const isPenTaker = penTakerOverride
+                ? p.player_id === penTakerOverride
+                : p.is_pen_taker
+              return (
+                <tr
+                  key={p.player_id}
+                  onClick={() => onPenTakerClick(p.player_id)}
+                  className={clsx(
+                    'border-b border-gray-700/50 cursor-pointer transition-colors',
+                    isPenTaker
+                      ? 'bg-amber-500/10 hover:bg-amber-500/15'
+                      : 'hover:bg-gray-700/40',
+                  )}
+                  title="Cliquer pour désigner comme tireur de penalty"
+                >
+                  {/* Player name + pen taker indicator */}
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-1.5">
+                      {isPenTaker && (
+                        <span
+                          title="Tireur de penalty"
+                          className="text-amber-400 text-[10px] leading-none font-bold"
+                        >
+                          ⬡P
+                        </span>
+                      )}
+                      <span className={clsx(
+                        'font-medium',
+                        isPenTaker ? 'text-amber-200' : 'text-white',
+                      )}>
+                        {p.player_name}
+                      </span>
+                    </div>
+                  </td>
+
+                  {/* Position */}
+                  <td className="px-2 py-2 text-center">
+                    <span className={clsx(
+                      'font-medium',
+                      POS_COLOR[p.position ?? ''] ?? 'text-gray-400',
+                    )}>
+                      {p.position ?? '—'}
+                    </span>
+                  </td>
+
+                  {/* Minutes */}
+                  <td className="px-2 py-2 text-center text-gray-400">
+                    {fmtMins(p.expected_minutes)}
+                  </td>
+
+                  {/* P(but) */}
+                  <td className="px-3 py-2 text-center border-l border-gray-700/50">
+                    <span className={clsx(
+                      'font-medium',
+                      p.prob_goal >= 0.40 ? 'text-green-400' :
+                      p.prob_goal >= 0.20 ? 'text-orange-300' :
+                      'text-gray-300',
+                    )}>
+                      {fmtPct(p.prob_goal)}
+                    </span>
+                  </td>
+
+                  {/* Cote But Ev0 */}
+                  <td className="px-3 py-2 text-center">
+                    <span className={clsx(
+                      'font-bold',
+                      isPenTaker ? 'text-amber-300' : 'text-white',
+                    )}>
+                      {fmtOdds(p.fair_odds_goal)}
+                    </span>
+                  </td>
+
+                  {/* P(passe) */}
+                  <td className="px-3 py-2 text-center border-l border-gray-700/50">
+                    <span className={clsx(
+                      'font-medium',
+                      p.prob_assist >= 0.25 ? 'text-blue-300' :
+                      p.prob_assist >= 0.12 ? 'text-blue-400' :
+                      'text-gray-400',
+                    )}>
+                      {fmtPct(p.prob_assist)}
+                    </span>
+                  </td>
+
+                  {/* Cote Pass Ev0 */}
+                  <td className="px-3 py-2 text-center">
+                    <span className="font-bold text-gray-200">
+                      {fmtOdds(p.fair_odds_assist)}
+                    </span>
+                  </td>
+                </tr>
+              )
+            })}
+            {players.length === 0 && (
+              <tr>
+                <td colSpan={7} className="px-4 py-6 text-center text-gray-500 italic">
+                  Aucun joueur trouvé pour cette équipe
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ── Main page ─────────────────────────────────────────────────────
+
+export default function CalculatorPage() {
+  const [fixtures, setFixtures] = useState<FixtureOut[]>([])
+  const [selectedFixtureId, setSelectedFixtureId] = useState<number | null>(null)
+  const [pricing, setPricing] = useState<MatchPriceResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [loadingFixtures, setLoadingFixtures] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  // Overrides
+  const [homeXgOverride, setHomeXgOverride] = useState('')
+  const [awayXgOverride, setAwayXgOverride] = useState('')
+  const [homePenTaker, setHomePenTaker] = useState<number | null>(null)
+  const [awayPenTaker, setAwayPenTaker] = useState<number | null>(null)
+
+  // Load upcoming fixtures
   useEffect(() => {
-    let lambda: number
-    
-    if (marketType === 'goalscorer') {
-      lambda = (xgPer90 * (expectedMinutes / 90)) * conversionRate * opponentFactor * formFactor
-    } else {
-      lambda = (xaPer90 * (expectedMinutes / 90)) * creationScore * teammateFinishing * opponentFactor * formFactor
+    setLoadingFixtures(true)
+    getFixtures({ status: 'scheduled' })
+      .then((res) => setFixtures(res.fixtures))
+      .catch(() => setFixtures([]))
+      .finally(() => setLoadingFixtures(false))
+  }, [])
+
+  const fetchPricing = useCallback(async (fixtureId: number) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await priceMatch({
+        fixture_id: fixtureId,
+        home_xg_override: homeXgOverride ? Number(homeXgOverride) : null,
+        away_xg_override: awayXgOverride ? Number(awayXgOverride) : null,
+        home_pen_taker_override: homePenTaker,
+        away_pen_taker_override: awayPenTaker,
+      })
+      setPricing(result)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? 'Erreur lors du chargement du pricing')
+    } finally {
+      setLoading(false)
     }
-    
-    lambda = Math.max(0.001, Math.min(lambda, 3.0))
-    const probability = 1 - Math.exp(-lambda)
-    const fairOdds = 1 / probability
-    
-    let edge: number | null = null
-    let classification: PricingResult['classification'] = null
-    
-    if (marketOdds && marketOdds > 1) {
-      edge = (marketOdds / fairOdds) - 1
-      if (edge >= 0.10) classification = 'VALUE'
-      else if (edge >= 0.05) classification = 'VALUE'
-      else if (edge >= 0) classification = 'NO_VALUE'
-      else classification = 'AVOID'
+  }, [homeXgOverride, awayXgOverride, homePenTaker, awayPenTaker])
+
+  // Auto-fetch when fixture selected or overrides change
+  useEffect(() => {
+    if (selectedFixtureId !== null) {
+      fetchPricing(selectedFixtureId)
     }
-    
-    setResult({
-      lambda: Number(lambda.toFixed(4)),
-      probability: Number(probability.toFixed(4)),
-      fairOdds: Number(fairOdds.toFixed(2)),
-      edge,
-      classification,
-    })
-  }, [marketType, xgPer90, expectedMinutes, conversionRate, opponentFactor, formFactor, xaPer90, creationScore, teammateFinishing, marketOdds])
+  }, [selectedFixtureId, homeXgOverride, awayXgOverride, homePenTaker, awayPenTaker, fetchPricing])
+
+  function handleFixtureSelect(e: React.ChangeEvent<HTMLSelectElement>) {
+    const id = Number(e.target.value)
+    setSelectedFixtureId(id || null)
+    setPricing(null)
+    setHomeXgOverride('')
+    setAwayXgOverride('')
+    setHomePenTaker(null)
+    setAwayPenTaker(null)
+  }
+
+  function handleHomePenClick(playerId: number) {
+    setHomePenTaker(prev => prev === playerId ? null : playerId)
+  }
+
+  function handleAwayPenClick(playerId: number) {
+    setAwayPenTaker(prev => prev === playerId ? null : playerId)
+  }
+
+  const selectedFixture = fixtures.find(f => f.id === selectedFixtureId)
 
   return (
-    <div className="p-4 md:p-8 max-w-4xl">
-      <div className="mb-8">
+    <div className="p-4 md:p-6 max-w-7xl">
+      {/* Header */}
+      <div className="mb-6">
         <h1 className="text-2xl font-bold text-white flex items-center gap-2">
           <Calculator className="w-6 h-6" />
-          Calculateur de Pricing
+          Calculateur Ev0
         </h1>
-        <p className="text-gray-400 mt-1">
-          Calcule la probabilité et cote fair value via le modèle Poisson
+        <p className="text-gray-400 mt-1 text-sm">
+          Modèle Top-Down — Team xG → allocation joueurs → Poisson
         </p>
       </div>
 
-      {/* Market Type Toggle */}
-      <div className="flex gap-2 mb-6">
-        <button
-          onClick={() => setMarketType('goalscorer')}
-          className={clsx(
-            'flex-1 py-3 rounded-lg font-medium transition-colors',
-            marketType === 'goalscorer'
-              ? 'bg-orange-500 text-white'
-              : 'bg-gray-800 text-gray-400 hover:text-white'
-          )}
-        >
-          🎯 Buteur
-        </button>
-        <button
-          onClick={() => setMarketType('assist')}
-          className={clsx(
-            'flex-1 py-3 rounded-lg font-medium transition-colors',
-            marketType === 'assist'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-800 text-gray-400 hover:text-white'
-          )}
-        >
-          🅰️ Passeur
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Inputs */}
-        <div className="bg-gray-800 rounded-xl p-6">
-          <h2 className="text-lg font-semibold text-white mb-4">Paramètres</h2>
-          
-          <div className="space-y-4">
-            {marketType === 'goalscorer' ? (
-              <>
-                <SliderInput
-                  label="xG/90"
-                  value={xgPer90}
-                  onChange={setXgPer90}
-                  min={0}
-                  max={1.5}
-                  step={0.01}
-                  helper="Expected Goals par 90 minutes"
-                />
-                <SliderInput
-                  label="Minutes attendues"
-                  value={expectedMinutes}
-                  onChange={setExpectedMinutes}
-                  min={0}
-                  max={90}
-                  step={5}
-                  helper="Minutes que le joueur va jouer"
-                />
-                <SliderInput
-                  label="Conversion rate"
-                  value={conversionRate}
-                  onChange={setConversionRate}
-                  min={0.5}
-                  max={1.5}
-                  step={0.05}
-                  helper="Buts réels / xG (1.0 = moyenne)"
-                />
-              </>
-            ) : (
-              <>
-                <SliderInput
-                  label="xA/90"
-                  value={xaPer90}
-                  onChange={setXaPer90}
-                  min={0}
-                  max={0.8}
-                  step={0.01}
-                  helper="Expected Assists par 90 minutes"
-                />
-                <SliderInput
-                  label="Minutes attendues"
-                  value={expectedMinutes}
-                  onChange={setExpectedMinutes}
-                  min={0}
-                  max={90}
-                  step={5}
-                  helper="Minutes que le joueur va jouer"
-                />
-                <SliderInput
-                  label="Score de création"
-                  value={creationScore}
-                  onChange={setCreationScore}
-                  min={0.5}
-                  max={2.0}
-                  step={0.1}
-                  helper="Qualité créative vs moyenne ligue"
-                />
-                <SliderInput
-                  label="Finishing coéquipiers"
-                  value={teammateFinishing}
-                  onChange={setTeammateFinishing}
-                  min={0.7}
-                  max={1.3}
-                  step={0.05}
-                  helper="Qualité de finition de équipe"
-                />
-              </>
-            )}
-
-            {/* Common factors */}
-            <div className="border-t border-gray-700 pt-4">
-              <SliderInput
-                label="Facteur adversaire"
-                value={opponentFactor}
-                onChange={setOpponentFactor}
-                min={0.7}
-                max={1.4}
-                step={0.05}
-                helper="Plus de 1 = défense faible"
-              />
-              <SliderInput
-                label="Facteur forme"
-                value={formFactor}
-                onChange={setFormFactor}
-                min={0.7}
-                max={1.3}
-                step={0.05}
-                helper="Forme récente du joueur"
-              />
-            </div>
-
-            {/* Market Odds */}
-            <div className="border-t border-gray-700 pt-4">
-              <label className="block text-sm text-gray-400 mb-2">
-                Cote bookmaker (optionnel)
-              </label>
-              <input
-                type="number"
-                step="0.05"
-                placeholder="Ex: 2.50"
-                value={marketOdds || ''}
-                onChange={(e) => setMarketOdds(e.target.value ? Number(e.target.value) : null)}
-                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white text-lg"
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                Entre la cote du bookmaker pour calculer edge
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Results */}
-        <div className="space-y-4">
-          {/* Main Result Card */}
-          <div className="bg-gray-800 rounded-xl p-6">
-            <h2 className="text-lg font-semibold text-white mb-4">Résultat</h2>
-            
-            {result && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <ResultBox
-                    label="Lambda (λ)"
-                    value={result.lambda.toString()}
-                    helper="Intensité Poisson"
-                  />
-                  <ResultBox
-                    label="Probabilité"
-                    value={`${(result.probability * 100).toFixed(1)}%`}
-                    helper="P(événement >= 1)"
-                  />
-                </div>
-
-                <div className="bg-gray-700/50 rounded-xl p-4 text-center">
-                  <p className="text-sm text-gray-400 mb-1">Cote Fair Value</p>
-                  <p className="text-4xl font-bold text-white">
-                    {result.fairOdds.toFixed(2)}
-                  </p>
-                </div>
-
-                {/* Edge comparison */}
-                {result.edge !== null && (
-                  <div className={clsx(
-                    'rounded-xl p-4',
-                    result.classification === 'VALUE' ? 'bg-green-500/10 border border-green-500/30' :
-                    result.classification === 'AVOID' ? 'bg-red-500/10 border border-red-500/30' :
-                    'bg-gray-700/50'
-                  )}>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm text-gray-400">Edge vs marché</p>
-                        <p className={clsx(
-                          'text-2xl font-bold',
-                          result.edge >= 0.10 ? 'text-green-400' :
-                          result.edge >= 0.05 ? 'text-green-400' :
-                          result.edge >= 0 ? 'text-gray-400' :
-                          'text-red-400'
-                        )}>
-                          {result.edge >= 0 ? '+' : ''}{(result.edge * 100).toFixed(1)}%
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <span className={clsx(
-                          'px-3 py-1.5 rounded-lg font-medium',
-                          result.classification === 'VALUE' ? 'bg-green-500 text-white' :
-                          result.classification === 'AVOID' ? 'bg-red-500 text-white' :
-                          'bg-gray-600 text-gray-300'
-                        )}>
-                          {result.classification === 'VALUE' && <Check className="w-4 h-4 inline mr-1" />}
-                          {result.classification === 'AVOID' && <AlertCircle className="w-4 h-4 inline mr-1" />}
-                          {result.classification}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Formula Explanation */}
-          <div className="bg-gray-800 rounded-xl p-6">
-            <h3 className="text-sm font-medium text-gray-400 mb-3">Formule utilisée</h3>
-            <div className="bg-gray-900 rounded-lg p-4 font-mono text-sm text-gray-300">
-              {marketType === 'goalscorer' ? (
-                <>
-                  <p>λ = xG/90 × (mins/90) × conversion × opponent × form</p>
-                  <p className="text-gray-500 mt-2">P(but) = 1 - e^(-λ)</p>
-                </>
-              ) : (
-                <>
-                  <p>λ = xA/90 × (mins/90) × creation × teammate × opponent × form</p>
-                  <p className="text-gray-500 mt-2">P(assist) = 1 - e^(-λ)</p>
-                </>
-              )}
-              <p className="text-gray-500 mt-2">Fair Odds = 1 / P</p>
-              <p className="text-gray-500">Edge = (Market Odds / Fair Odds) - 1</p>
-            </div>
-          </div>
+      {/* Match selector */}
+      <div className="mb-6">
+        <label className="block text-sm text-gray-400 mb-2">Sélectionner un match</label>
+        <div className="relative">
+          <select
+            value={selectedFixtureId ?? ''}
+            onChange={handleFixtureSelect}
+            disabled={loadingFixtures}
+            className="w-full max-w-xl bg-gray-800 border border-gray-600 rounded-lg px-4 py-3 text-white appearance-none cursor-pointer focus:outline-none focus:border-orange-500 disabled:opacity-50"
+          >
+            <option value="">
+              {loadingFixtures ? 'Chargement…' : '— Choisir un match —'}
+            </option>
+            {fixtures.map(f => (
+              <option key={f.id} value={f.id}>
+                {f.home_team} vs {f.away_team}
+                {' · '}
+                {new Date(f.kickoff_utc).toLocaleDateString('fr-FR', {
+                  day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+                })}
+                {' · '}{f.league.replace('_', ' ').toUpperCase()}
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
         </div>
       </div>
-    </div>
-  )
-}
 
-function SliderInput({
-  label,
-  value,
-  onChange,
-  min,
-  max,
-  step,
-  helper,
-}: {
-  label: string
-  value: number
-  onChange: (v: number) => void
-  min: number
-  max: number
-  step: number
-  helper?: string
-}) {
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <label className="text-sm text-gray-400">{label}</label>
-        <span className="text-sm font-medium text-white">{value}</span>
-      </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
-      />
-      {helper && <p className="text-xs text-gray-500 mt-1">{helper}</p>}
-    </div>
-  )
-}
+      {/* Loading state */}
+      {loading && (
+        <div className="flex items-center gap-2 text-gray-400 mb-6">
+          <RefreshCw className="w-4 h-4 animate-spin" />
+          <span className="text-sm">Calcul en cours…</span>
+        </div>
+      )}
 
-function ResultBox({
-  label,
-  value,
-  helper,
-}: {
-  label: string
-  value: string
-  helper?: string
-}) {
-  return (
-    <div className="bg-gray-700/50 rounded-lg p-3">
-      <p className="text-xs text-gray-400">{label}</p>
-      <p className="text-xl font-bold text-white">{value}</p>
-      {helper && <p className="text-xs text-gray-500">{helper}</p>}
+      {/* Error */}
+      {error && (
+        <div className="mb-6 bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-red-400 text-sm">
+          {error}
+        </div>
+      )}
+
+      {/* Legend */}
+      {pricing && !loading && (
+        <div className="mb-4 flex items-center gap-4 text-xs text-gray-500">
+          <span className="flex items-center gap-1">
+            <span className="text-amber-400 font-bold">⬡P</span>
+            Tireur de penalty (auto-détecté · cliquer pour changer)
+          </span>
+          <span className="w-px h-3 bg-gray-700" />
+          <span className="flex items-center gap-1">
+            <span className="text-orange-300">FW</span> ·
+            <span className="text-blue-400">MF</span> ·
+            <span className="text-gray-400">DF</span>
+          </span>
+        </div>
+      )}
+
+      {/* Tables */}
+      {pricing && !loading && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <TeamTable
+            teamName={pricing.home_team}
+            matchXg={pricing.home_match_xg}
+            players={pricing.home_players}
+            xgOverride={homeXgOverride}
+            onXgOverride={setHomeXgOverride}
+            penTakerOverride={homePenTaker}
+            onPenTakerClick={handleHomePenClick}
+            isHome={true}
+          />
+          <TeamTable
+            teamName={pricing.away_team}
+            matchXg={pricing.away_match_xg}
+            players={pricing.away_players}
+            xgOverride={awayXgOverride}
+            onXgOverride={setAwayXgOverride}
+            penTakerOverride={awayPenTaker}
+            onPenTakerClick={handleAwayPenClick}
+            isHome={false}
+          />
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!selectedFixtureId && !loading && (
+        <div className="text-center py-20 text-gray-600">
+          <Calculator className="w-12 h-12 mx-auto mb-3 opacity-30" />
+          <p className="text-sm">Sélectionne un match pour calculer les cotes Ev0</p>
+        </div>
+      )}
     </div>
   )
 }
