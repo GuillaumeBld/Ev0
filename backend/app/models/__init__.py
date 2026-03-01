@@ -1,5 +1,6 @@
 """SQLAlchemy models."""
 
+from app.models.autopilot import AutopilotDecision
 from app.models.bankroll import BankrollEntry
 from app.models.base import Base
 from app.models.fixtures import Fixture
@@ -10,6 +11,7 @@ from app.models.recommendations import Recommendation
 from app.models.settings import UserSettings
 
 __all__ = [
+    "AutopilotDecision",
     "Base",
     "BankrollEntry",
     "DataSource",

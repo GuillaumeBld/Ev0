@@ -15,6 +15,7 @@ import {
   Users,
   Calendar,
   Calculator,
+  Brain,
   X
 } from 'lucide-react'
 import { clsx } from 'clsx'
@@ -33,6 +34,7 @@ const navigation = [
   { name: 'Matchs', href: '/dashboard/matches', icon: Calendar },
   { name: 'Backtest', href: '/dashboard/backtest', icon: TrendingUp },
   { name: 'Historique', href: '/dashboard/history', icon: History },
+  { name: 'Autopilot', href: '/dashboard/autopilot', icon: Brain },
   { name: 'Santé', href: '/dashboard/health', icon: Activity },
   { name: 'Paramètres', href: '/dashboard/settings', icon: Settings },
 ]

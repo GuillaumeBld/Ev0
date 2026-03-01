@@ -428,3 +428,88 @@ export async function saveSettings(settings: Record<string, string>): Promise<Re
   const { data } = await api.put('/api/v1/settings', { settings })
   return data
 }
+
+// ── Autopilot ────────────────────────────────────────────────────
+
+export interface AutopilotMetrics {
+  total_bets: number
+  wins: number
+  losses: number
+  win_rate: number
+  roi: number
+  sharpe: number
+}
+
+export interface AutopilotStatus {
+  enabled: boolean
+  trained: boolean
+  trained_at: string | null
+  training_records: number
+  steps_trained: number
+  mode: 'paper' | 'live'
+  metrics: AutopilotMetrics
+}
+
+export interface TrainingResult {
+  records_used: number
+  cumulative_pnl: number
+  sharpe: number
+  vs_kelly_roi: number
+  final_epsilon: number
+  duration_s: number
+  fine_tune: { decisions_used: number; td_error_mean: number } | null
+}
+
+export interface AutopilotDecisionOut {
+  recommendation_id: number | null
+  player_name: string
+  fixture_name: string
+  market_type: string
+  best_odds: number
+  edge: number
+  confidence: number
+  action: 'skip' | 'half_kelly' | 'kelly' | 'aggressive'
+  kelly_fraction: number
+  stake: number
+  rationale: {
+    q_values: Record<string, number>
+    top_feature: string
+    features: number[]
+  }
+}
+
+export interface AutopilotPerformance {
+  metrics: Record<string, number>
+  pnl_curve: { date: string; pnl: number; cumulative: number }[]
+  action_distribution: Record<string, number>
+  feature_importance: Record<string, number>
+}
+
+export async function getAutopilotStatus(): Promise<AutopilotStatus> {
+  const { data } = await api.get('/api/v1/autopilot/status')
+  return data
+}
+
+export async function toggleAutopilot(enabled: boolean, mode?: string): Promise<AutopilotStatus> {
+  const { data } = await api.post('/api/v1/autopilot/toggle', { enabled, mode: mode ?? 'paper' })
+  return data
+}
+
+export async function trainAutopilot(params?: {
+  min_date?: string
+  max_date?: string
+  epochs?: number
+}): Promise<TrainingResult> {
+  const { data } = await api.post('/api/v1/autopilot/train', params ?? {})
+  return data
+}
+
+export async function getAutopilotToday(): Promise<AutopilotDecisionOut[]> {
+  const { data } = await api.get('/api/v1/autopilot/today')
+  return data
+}
+
+export async function getAutopilotPerformance(): Promise<AutopilotPerformance> {
+  const { data } = await api.get('/api/v1/autopilot/performance')
+  return data
+}

@@ -536,6 +536,230 @@ async def async_session_scoped_call(func, dt, filter_config):
         return await func(dt, session, filter_config)
 
 
+# ── Job 5: Autopilot Run ──────────────────────────────────────────
+
+
+async def job_autopilot_run():
+    """Every 2h: run the RL agent on today's pending VALUE recommendations.
+
+    Creates AutopilotDecision records in paper mode and auto-approves them.
+    Only runs when autopilot_enabled=true in user settings.
+    """
+    logger.info("=== Starting autopilot run ===")
+
+    try:
+        user_settings = await _load_user_settings()
+        if user_settings.get("autopilot_enabled") != "true":
+            logger.info("Autopilot disabled — skipping run")
+            return
+
+        from app.autopilot.agent import ACTIONS, LinearQAgent
+        from app.autopilot.features import extract_features
+        from app.autopilot.trainer import WEIGHTS_PATH, _compute_stake
+
+        if not WEIGHTS_PATH.exists():
+            logger.warning("Autopilot weights not found — skipping run (train first)")
+            return
+
+        agent = LinearQAgent.load(WEIGHTS_PATH)
+        mode = user_settings.get("autopilot_mode", "paper")
+
+        from datetime import date, timedelta
+
+        from app.models.autopilot import AutopilotDecision
+        from app.models.fixtures import Fixture
+        from app.models.recommendations import Recommendation
+
+        today_start = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=UTC)
+        tomorrow_start = today_start + timedelta(days=1)
+
+        async with async_session() as session:
+            stmt = (
+                select(Recommendation)
+                .where(
+                    Recommendation.classification == "VALUE",
+                    Recommendation.status == "pending",
+                    Recommendation.generated_utc >= today_start,
+                    Recommendation.generated_utc < tomorrow_start,
+                )
+                .order_by(Recommendation.edge.desc())
+            )
+            result = await session.execute(stmt)
+            recs = list(result.scalars().all())
+
+            if not recs:
+                logger.info("Autopilot: no pending VALUE recommendations today")
+                return
+
+            # Load fixtures for names
+            fixture_ids = list({r.fixture_id for r in recs})
+            fx_result = await session.execute(
+                select(Fixture).where(Fixture.id.in_(fixture_ids))
+            )
+            fixture_map = {fx.id: fx for fx in fx_result.scalars().all()}
+
+            # Get current bankroll balance
+            from app.models.bankroll import BankrollEntry
+            bal_result = await session.execute(
+                select(BankrollEntry).order_by(BankrollEntry.transacted_utc.desc()).limit(1)
+            )
+            latest_entry = bal_result.scalar_one_or_none()
+            bankroll = latest_entry.balance_after if latest_entry else 1000.0
+
+            decisions_made = 0
+            for rec in recs:
+                rec_dict = {
+                    "edge": rec.edge,
+                    "confidence": rec.confidence,
+                    "best_odds": rec.best_odds,
+                    "fair_odds": rec.fair_odds,
+                    "fair_probability": rec.fair_probability,
+                    "lambda_intensity": rec.lambda_intensity,
+                    "market_type": rec.market_type,
+                    "explanation": rec.explanation or {},
+                }
+
+                import json as _json
+                features = extract_features(rec_dict)
+                action_idx = agent.act(features, explore=False)
+                fraction = ACTIONS[action_idx]
+                stake = _compute_stake(action_idx, rec_dict, bankroll)
+
+                fx = fixture_map.get(rec.fixture_id)
+                fixture_name = f"{fx.home_team} vs {fx.away_team}" if fx else str(rec.fixture_id)
+                league = fx.league if fx else ""
+
+                decision = AutopilotDecision(
+                    recommendation_id=rec.id,
+                    features_json=_json.dumps(features.tolist()),
+                    action_idx=action_idx,
+                    kelly_fraction=fraction,
+                    stake=stake,
+                    best_odds=rec.best_odds,
+                    mode=mode,
+                    player_name=rec.player_name,
+                    fixture_name=fixture_name,
+                    market_type=rec.market_type,
+                    league=league,
+                    created_utc=datetime.now(UTC),
+                )
+                session.add(decision)
+
+                # Auto-approve recommendation if agent decided to bet
+                if action_idx > 0 and stake > 0:
+                    rec.status = "approved"
+                    rec.decided_utc = datetime.now(UTC)
+                    decisions_made += 1
+
+            await session.commit()
+            logger.info(
+                "Autopilot run: evaluated %d recs, approved %d bets (mode=%s)",
+                len(recs), decisions_made, mode,
+            )
+
+    except Exception as exc:
+        logger.error("Error in autopilot run: %s", exc, exc_info=True)
+
+    logger.info("=== Autopilot run complete ===")
+
+
+# ── Job 6: Autopilot Settle ───────────────────────────────────────
+
+
+async def job_autopilot_settle():
+    """Daily at 09:00 UTC: settle paper trades from match events.
+
+    Finds AutopilotDecisions where result is NULL and linked fixture is finished.
+    Checks MatchEvent table for goals/assists. Updates result + pnl + reward.
+    Triggers fine_tune_from_db() when >= 10 new decisions are settled.
+    """
+    logger.info("=== Starting autopilot settle ===")
+
+    try:
+        from app.autopilot.trainer import fine_tune_from_db
+        from app.models.autopilot import AutopilotDecision
+        from app.models.fixtures import Fixture
+        from app.models.match_events import MatchEvent
+        from app.models.recommendations import Recommendation
+
+        async with async_session() as session:
+            # Find unsettled decisions linked to a recommendation
+            stmt = (
+                select(AutopilotDecision, Recommendation, Fixture)
+                .join(
+                    Recommendation,
+                    AutopilotDecision.recommendation_id == Recommendation.id,
+                    isouter=True,
+                )
+                .join(Fixture, Recommendation.fixture_id == Fixture.id, isouter=True)
+                .where(
+                    AutopilotDecision.result.is_(None),
+                    AutopilotDecision.recommendation_id.isnot(None),
+                    Fixture.status == "finished",
+                )
+            )
+            result = await session.execute(stmt)
+            rows = result.all()
+
+            if not rows:
+                logger.info("Autopilot settle: no unsettled decisions with finished fixtures")
+                return
+
+            logger.info("Autopilot settle: %d decisions to settle", len(rows))
+
+            settled_count = 0
+            for decision, rec, fixture in rows:
+                if not rec or not fixture:
+                    continue
+
+                # Check match events for outcome
+                ev_result = await session.execute(
+                    select(MatchEvent).where(
+                        MatchEvent.fixture_id == fixture.id,
+                        MatchEvent.player_name == rec.player_name,
+                        MatchEvent.event_type == rec.market_type,
+                    )
+                )
+                events = ev_result.scalars().all()
+                won = len(events) > 0
+
+                result_str = "won" if won else "lost"
+                stake = decision.stake or 10.0
+                pnl = round(
+                    stake * (decision.best_odds - 1) if won else -stake, 2
+                )
+
+                # Approx bankroll at decision time for reward scaling
+                reward = pnl / max(1000.0, 1.0)
+
+                decision.result = result_str
+                decision.pnl = pnl
+                decision.reward = reward
+                decision.settled_at = datetime.now(UTC)
+
+                # Also update linked recommendation
+                if rec.result is None:
+                    rec.result = result_str
+                    rec.pnl = pnl
+                    rec.settled_utc = datetime.now(UTC)
+
+                settled_count += 1
+
+            await session.commit()
+            logger.info("Autopilot settle: settled %d decisions", settled_count)
+
+            # Fine-tune if enough new data
+            if settled_count >= 10:
+                logger.info("Triggering fine_tune_from_db (settled=%d)", settled_count)
+                ft_result = await fine_tune_from_db(session)
+                logger.info("Fine-tune complete: %s", ft_result)
+
+    except Exception as exc:
+        logger.error("Error in autopilot settle: %s", exc, exc_info=True)
+
+    logger.info("=== Autopilot settle complete ===")
+
+
 # ── Scheduler Setup ───────────────────────────────────────────────
 
 
@@ -594,6 +818,24 @@ def create_scheduler() -> AsyncIOScheduler:
         IntervalTrigger(hours=2),
         id="generate_recommendations",
         name="Generate betting recommendations",
+        replace_existing=True,
+    )
+
+    # Autopilot run: Every 2 hours (after recommendations)
+    scheduler.add_job(
+        job_autopilot_run,
+        IntervalTrigger(hours=2),
+        id="autopilot_run",
+        name="Autopilot: evaluate today's VALUE recs",
+        replace_existing=True,
+    )
+
+    # Autopilot settle: Daily at 09:00 UTC
+    scheduler.add_job(
+        job_autopilot_settle,
+        CronTrigger(hour=9, minute=0),
+        id="autopilot_settle",
+        name="Autopilot: settle paper trades from match events",
         replace_existing=True,
     )
 

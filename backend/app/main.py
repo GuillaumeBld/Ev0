@@ -8,7 +8,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from app.api import backtest, bankroll, fixtures, health, history, players, pricing, recommendations
+from app.api import (
+    autopilot,
+    backtest,
+    bankroll,
+    fixtures,
+    health,
+    history,
+    players,
+    pricing,
+    recommendations,
+)
 from app.api import settings as settings_api
 from app.cache import close_redis
 from app.config import settings
@@ -57,3 +67,4 @@ app.include_router(history.router, prefix="/api/v1", tags=["history"])
 app.include_router(backtest.router, prefix="/api/v1", tags=["backtest"])
 app.include_router(bankroll.router, prefix="/api/v1", tags=["bankroll"])
 app.include_router(settings_api.router, prefix="/api/v1", tags=["settings"])
+app.include_router(autopilot.router, prefix="/api/v1", tags=["autopilot"])
