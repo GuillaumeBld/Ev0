@@ -164,7 +164,7 @@ export default function AutopilotPage() {
             </p>
           </div>
           <div>
-            <p className="text-gray-400">Étapes d'entraînement</p>
+            <p className="text-gray-400">Étapes d&apos;entraînement</p>
             <p className="text-white mt-0.5">{status?.steps_trained?.toLocaleString() ?? '—'}</p>
           </div>
         </div>
@@ -208,13 +208,13 @@ export default function AutopilotPage() {
         <h2 className="text-lg font-semibold text-white mb-4">Décisions du jour</h2>
 
         {!status?.trained ? (
-          <p className="text-gray-500 text-sm">Entraînez l'agent pour voir ses décisions.</p>
+          <p className="text-gray-500 text-sm">Entraînez l&apos;agent pour voir ses décisions.</p>
         ) : todayLoading ? (
           <div className="space-y-2">
             {[1, 2].map(i => <div key={i} className="h-10 bg-gray-700 rounded animate-pulse" />)}
           </div>
         ) : !todayDecisions || todayDecisions.length === 0 ? (
-          <p className="text-gray-500 text-sm">Aucune recommandation VALUE en attente aujourd'hui.</p>
+          <p className="text-gray-500 text-sm">Aucune recommandation VALUE en attente aujourd&apos;hui.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
