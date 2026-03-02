@@ -330,24 +330,16 @@ async def job_snapshot_odds():
 
 
 async def job_snapshot_direct_odds():
-    """Snapshot odds from Betclic, Unibet, and ParionsSport via direct scrapers.
+    """Snapshot odds from Kambi (Unibet) HTTP API + Playwright scrapers.
 
     Flow:
-    1. Launch Playwright/Chromium (headless)
-    2. Run BetclicScraper + UnibetScraper + ParionsSportScraper for all leagues
+    1. Kambi HTTP API (Unibet) — no browser needed, always runs first
+    2. Playwright scrapers (Betclic, Unibet page, ParionsSport) — best-effort
     3. Match each MatchOdds → DB fixture by team name + date window
     4. Persist selections via store_odds_snapshot()
     """
     logger.info("=== Starting direct odds snapshot ===")
 
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError:
-        logger.warning("Playwright not installed — skipping direct odds snapshot")
-        logger.warning("Install with: pip install playwright && playwright install chromium")
-        return
-
-    from app.ingestion.direct_scrapers import scrape_all_direct
     from app.ingestion.fixture_matcher import match_odds_event_to_fixture
     from app.models.fixtures import Fixture
 
@@ -355,28 +347,46 @@ async def job_snapshot_direct_odds():
     leagues = _get_leagues(user_settings)
     logger.info("Direct scrapers: leagues = %s", leagues)
 
-    # ── Scrape ──
     all_match_odds = []
+
+    # ── 1. Kambi HTTP scraper (Unibet — pure HTTP, no Playwright needed) ──
     try:
+        from app.ingestion.kambi_scraper import scrape_all_kambi
+
+        kambi_results = await scrape_all_kambi(leagues)
+        all_match_odds.extend(kambi_results)
+        logger.info("Kambi scraper: %d match-odds objects", len(kambi_results))
+    except Exception as exc:
+        logger.error("Kambi scrape failed: %s", exc, exc_info=True)
+
+    # ── 2. Playwright scrapers (Betclic, Unibet page, ParionsSport) ──
+    try:
+        from playwright.async_api import async_playwright
+
+        from app.ingestion.direct_scrapers import scrape_all_direct
+
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(
                 headless=True,
                 args=["--no-sandbox", "--disable-dev-shm-usage"],
             )
             try:
-                all_match_odds = await scrape_all_direct(leagues, browser)
+                pw_results = await scrape_all_direct(leagues, browser)
+                all_match_odds.extend(pw_results)
+                logger.info("Playwright scrapers: %d match-odds objects", len(pw_results))
             finally:
                 await browser.close()
+    except ImportError:
+        logger.warning("Playwright not installed — skipping Playwright scrapers")
     except Exception as exc:
-        logger.error("Direct scrape failed: %s", exc, exc_info=True)
-        return
+        logger.error("Playwright scrape failed: %s", exc, exc_info=True)
 
     if not all_match_odds:
-        logger.warning("Direct scrapers returned 0 match-odds objects")
+        logger.warning("All scrapers returned 0 match-odds objects")
         logger.info("=== Direct odds snapshot complete (nothing stored) ===")
         return
 
-    logger.info("Direct scrapers: collected %d match-odds objects", len(all_match_odds))
+    logger.info("Direct scrapers total: %d match-odds objects", len(all_match_odds))
 
     # ── Match → fixtures + store ──
     stored = 0
@@ -447,8 +457,10 @@ async def job_generate_recommendations():
     logger.info("=== Starting recommendation generation ===")
 
     if not settings.odds_api_key:
-        logger.warning("ODDS_API_KEY not configured, skipping recommendation generation")
-        return
+        logger.warning(
+            "ODDS_API_KEY not configured — The Odds API snapshots are skipped. "
+            "Recommendations will use direct/Kambi odds from the DB."
+        )
 
     try:
         from app.services.recommendation_service import get_recommendations_for_date
@@ -803,12 +815,12 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Direct odds (Betclic, Unibet, ParionsSport): Every 3 hours
+    # Direct odds (Kambi/Unibet HTTP + Playwright scrapers): Every 3 hours
     scheduler.add_job(
         job_snapshot_direct_odds,
         IntervalTrigger(hours=3),
         id="snapshot_direct_odds",
-        name="Snapshot direct odds (Betclic, Unibet, ParionsSport)",
+        name="Snapshot direct odds (Kambi, Betclic, ParionsSport)",
         replace_existing=True,
     )
 
