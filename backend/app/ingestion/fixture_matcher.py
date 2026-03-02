@@ -54,8 +54,18 @@ TEAM_ALIASES: dict[str, str] = {
     "leicester city": "leicester",
     "brighton and hove albion": "brighton",
     "brighton hove albion": "brighton",
+    "brighton & hove albion": "brighton",
+    "afc bournemouth": "bournemouth",
     "crystal palace": "crystal-palace",
     "ipswich town": "ipswich",
+    "sheffield united": "sheffield-utd",
+    "sunderland afc": "sunderland",
+    "burnley fc": "burnley",
+    "leeds united": "leeds",
+    "norwich city": "norwich",
+    "swansea city": "swansea",
+    "stoke city": "stoke",
+    "hull city": "hull",
 }
 
 
