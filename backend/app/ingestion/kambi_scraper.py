@@ -124,16 +124,17 @@ class KambiScraper:
         for offer in offers:
             label = offer.get("criterion", {}).get("label", "")
 
-            if label == "To Score":
-                # One offer per player; player name is in outcomes[0].participant
+            # "To Score" (EN) / "Marque" (FR) — anytime goalscorer, one offer per player
+            if label in ("To Score", "Marque"):
                 outcomes = offer.get("outcomes", [])
                 if not outcomes:
                     continue
                 out = outcomes[0]
                 if out.get("status") not in ("OPEN", None):
                     continue
-                player_name = out.get("participant") or out.get("label", "")
-                if not player_name or player_name.lower() in ("yes", "no"):
+                # participant holds the player name; label may be "Yes"/"Oui"
+                player_name = out.get("participant") or ""
+                if not player_name or player_name.lower() in ("yes", "no", "oui", "non"):
                     continue
                 odds = _to_decimal(out.get("odds"))
                 if not odds or odds <= 1.0:
@@ -148,13 +149,16 @@ class KambiScraper:
                     )
                 )
 
-            elif label == "First Goal Scorer":
-                # One offer with multiple named outcomes
+            # "First Goal Scorer" (EN) / "Premier buteur" (FR) — one offer, multiple outcomes
+            elif label in ("First Goal Scorer", "Premier buteur"):
                 for out in offer.get("outcomes", []):
                     if out.get("status") not in ("OPEN", None):
                         continue
-                    player_name = out.get("label", "")
-                    if not player_name or player_name.lower() in ("no goal", "none"):
+                    # participant or label holds the player name
+                    player_name = out.get("participant") or out.get("label", "")
+                    if not player_name or player_name.lower() in (
+                        "no goal", "none", "aucun but", "no scorer",
+                    ):
                         continue
                     odds = _to_decimal(out.get("odds"))
                     if not odds or odds <= 1.0:
@@ -172,11 +176,10 @@ class KambiScraper:
                         )
                     )
 
-        # Deduplicate: keep the highest odds per player (To Score preferred over First Scorer)
+        # Deduplicate: keep anytime goalscorer ("To Score") over first scorer per player
         seen: dict[str, SelectionOdds] = {}
         for sel in selections:
             key = sel.player_name.lower()
-            # Prefer "To Score" (anytime) over "First Goal Scorer"
             existing = seen.get(key)
             if existing is None or (
                 sel.raw_data.get("kambi_market") == "To Score"
