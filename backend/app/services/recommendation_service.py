@@ -27,7 +27,7 @@ from app.strategy.selector import RecommendationFilter, select_bets
 
 logger = logging.getLogger(__name__)
 
-CALIBRATION_SCALE = 0.62  # Post-hoc correction: model overestimates by ~1.6x
+CALIBRATION_SCALE = 1.0  # Top-down model; old 0.62 was calibrated for bottom-up xg_per_90
 
 # Position-based xG/xA defaults for players with stats in DB but missing per-90 values
 POSITION_DEFAULTS: dict[str, dict[str, float]] = {
