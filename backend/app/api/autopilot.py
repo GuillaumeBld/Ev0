@@ -16,9 +16,11 @@ from app.autopilot.performance import compute_metrics
 from app.autopilot.trainer import (
     WEIGHTS_PATH,
     _compute_stake,
+    _load_agent,
     fine_tune_from_db,
     get_training_status,
     run_backtest_training,
+    weights_exist,
 )
 from app.db import get_db
 from app.models.autopilot import AutopilotDecision
@@ -179,13 +181,13 @@ async def toggle_autopilot(body: ToggleRequest, db: AsyncSession = Depends(get_d
 @router.get("/autopilot/today", response_model=list[AutopilotDecisionOut])
 async def get_autopilot_today(db: AsyncSession = Depends(get_db)):
     """Run the agent (greedy) on today's pending VALUE recommendations."""
-    if not WEIGHTS_PATH.exists():
+    if not weights_exist():
         raise HTTPException(
             status_code=424,
             detail="Agent not trained yet. POST /api/v1/autopilot/train first.",
         )
 
-    agent = LinearQAgent.load(WEIGHTS_PATH)
+    agent = _load_agent()
 
     # Load today's VALUE recommendations from DB
     from datetime import date, timedelta
@@ -282,10 +284,11 @@ async def get_autopilot_performance(db: AsyncSession = Depends(get_db)):
     metrics = compute_metrics(decisions)
 
     feature_importance: dict = {}
-    if WEIGHTS_PATH.exists():
+    if weights_exist():
         try:
-            agent = LinearQAgent.load(WEIGHTS_PATH)
-            feature_importance = agent.feature_importance()
+            agent = _load_agent()
+            if agent:
+                feature_importance = agent.feature_importance()
         except Exception:
             pass
 
