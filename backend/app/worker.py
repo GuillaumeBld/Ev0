@@ -149,7 +149,11 @@ async def job_sync_player_stats():
 
 
 async def job_sync_match_events():
-    """Sync match events (goals, assists) for finished fixtures from FotMob.
+    """Sync match events (goals, assists) for finished fixtures.
+
+    Primary source: FotMob /api/matchDetails.
+    Fallback source: ESPN public API (site.api.espn.com) — used when FotMob
+    returns 403 or any other error.
 
     Fetches individual goal/assist events for finished fixtures that
     don't yet have match events stored. This provides ground truth
@@ -157,6 +161,7 @@ async def job_sync_match_events():
     """
     logger.info("=== Starting match events sync ===")
 
+    from app.ingestion.espn_client import ESPNClient
     from app.ingestion.fotmob_scraper import fetch_match_events
     from app.models.fixtures import Fixture
     from app.models.match_events import MatchEvent
@@ -184,37 +189,90 @@ async def job_sync_match_events():
 
             logger.info("Found %d finished fixtures without match events", len(fixtures))
 
+            import httpx
+
             synced = 0
-            for fixture in fixtures:
-                # Extract FotMob match ID from external_id
-                match_id_str = fixture.external_id.removeprefix("fotmob_")
-                try:
-                    match_id = int(match_id_str)
-                except (ValueError, TypeError):
-                    logger.debug("Skipping non-numeric FotMob ID: %s", fixture.external_id)
-                    continue
+            fotmob_ok = 0
+            espn_ok = 0
+            espn_client = None  # lazily initialised below
 
-                try:
-                    events = await fetch_match_events(match_id)
-                    if events:
-                        stored = await store_match_events(session, fixture.id, events)
-                        if stored > 0:
-                            synced += 1
-                            logger.debug(
-                                "Stored %d events for %s vs %s",
-                                stored, fixture.home_team, fixture.away_team,
+            async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as http:
+                espn_client = ESPNClient(http)
+
+                for fixture in fixtures:
+                    # Extract FotMob match ID from external_id
+                    match_id_str = fixture.external_id.removeprefix("fotmob_")
+                    try:
+                        match_id = int(match_id_str)
+                    except (ValueError, TypeError):
+                        logger.debug("Skipping non-numeric FotMob ID: %s", fixture.external_id)
+                        continue
+
+                    events: list[dict] = []
+                    source = "none"
+
+                    # ── Primary: FotMob ──
+                    try:
+                        events = await fetch_match_events(match_id)
+                        if events:
+                            source = "fotmob"
+                            fotmob_ok += 1
+                    except Exception as exc:
+                        logger.debug(
+                            "FotMob failed for fixture %s: %s — trying ESPN fallback",
+                            fixture.external_id, exc,
+                        )
+
+                    # ── Fallback: ESPN ──
+                    if not events:
+                        try:
+                            kickoff_date = fixture.kickoff_utc.strftime("%Y-%m-%d")
+                            events = await espn_client.get_match_events(
+                                fixture.league,
+                                fixture.home_team,
+                                fixture.away_team,
+                                kickoff_date,
                             )
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to fetch events for fixture %s: %s",
-                        fixture.external_id, exc,
-                    )
+                            if events:
+                                source = "espn"
+                                espn_ok += 1
+                            else:
+                                logger.debug(
+                                    "ESPN returned 0 events for %s vs %s on %s",
+                                    fixture.home_team, fixture.away_team, kickoff_date,
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                "ESPN fallback failed for fixture %s: %s",
+                                fixture.external_id, exc,
+                            )
 
-                # Rate-limit: 1 req/sec
-                await asyncio.sleep(1.0)
+                    if events:
+                        try:
+                            stored = await store_match_events(session, fixture.id, events)
+                            if stored > 0:
+                                synced += 1
+                                logger.info(
+                                    "Stored %d events for %s vs %s (source=%s)",
+                                    stored, fixture.home_team, fixture.away_team, source,
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                "Failed to store events for fixture %s: %s",
+                                fixture.external_id, exc,
+                            )
+                    else:
+                        logger.debug(
+                            "No events from any source for %s vs %s (%s)",
+                            fixture.home_team, fixture.away_team, fixture.external_id,
+                        )
+
+                    # Rate-limit: 1 req/sec
+                    await asyncio.sleep(1.0)
 
             logger.info(
-                "Synced match events for %d/%d fixtures", synced, len(fixtures)
+                "Synced match events for %d/%d fixtures (fotmob=%d, espn=%d)",
+                synced, len(fixtures), fotmob_ok, espn_ok,
             )
 
     except Exception as exc:
