@@ -21,6 +21,7 @@ from app.db import async_session
 from app.ingestion.fotmob_scraper import (
     discover_season_id,
     fetch_fotmob_fixtures,
+    fetch_fotmob_league,
     fetch_match_events,
 )
 from app.ingestion.storage import (
@@ -34,6 +35,8 @@ from app.models.fixtures import Fixture
 from app.models.match_events import MatchEvent
 
 LEAGUES = ["ligue_1", "premier_league"]
+# Leagues where Understat has no data — use FotMob stats instead
+_FOTMOB_ONLY_LEAGUES = {"champions_league"}
 
 # Map season string to Understat season year and FotMob season_year
 # "2024-2025" → understat "2024", fotmob season_year 2024
@@ -146,17 +149,25 @@ async def backfill_events(leagues: list[str], season: str, limit: int | None = N
 
 
 async def backfill_stats(leagues: list[str], season: str) -> int:
-    """Fetch player stats from Understat for the backfill season."""
+    """Fetch player stats from Understat (domestic leagues) or FotMob (UCL)."""
     total = 0
     year = _season_start_year(season)
     # Use season end date as the as_of_utc for stats
     season_end = datetime(year + 1, 6, 30, tzinfo=UTC)
 
     for league in leagues:
-        print(f"\n[stats] {league} {season} (Understat season={year})")
-        players, _teams = await fetch_understat_league(league, season=str(year))
-
-        print(f"  Got {len(players)} players from Understat")
+        if league in _FOTMOB_ONLY_LEAGUES:
+            print(f"\n[stats] {league} {season} (FotMob — Understat not available)")
+            players, _teams = await fetch_fotmob_league(league)
+            source = "fotmob"
+            id_key = "fotmob_id"
+            print(f"  Got {len(players)} players from FotMob")
+        else:
+            print(f"\n[stats] {league} {season} (Understat season={year})")
+            players, _teams = await fetch_understat_league(league, season=str(year))
+            source = "understat"
+            id_key = "understat_id"
+            print(f"  Got {len(players)} players from Understat")
 
         async with async_session() as session:
             for p in players:
@@ -164,8 +175,9 @@ async def backfill_stats(leagues: list[str], season: str) -> int:
                     continue
 
                 # Upsert player
+                raw_id = p.get(id_key, p["name"])
                 player_data = {
-                    "player_id": f"understat_{p.get('understat_id', p['name'])}",
+                    "player_id": f"{source}_{raw_id}",
                     "player_name": p["name"],
                     "normalized_name": p["name"].lower(),
                     "team": p.get("team"),
@@ -197,7 +209,7 @@ async def backfill_stats(leagues: list[str], season: str) -> int:
                 )
                 # Override as_of_utc to season end for historical data
                 ps.as_of_utc = season_end
-                ps.source = "understat"
+                ps.source = source
                 await session.commit()
 
                 total += 1
@@ -232,9 +244,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Historical backfill for backtesting")
     parser.add_argument(
         "--league",
-        choices=["ligue_1", "premier_league"],
+        choices=["ligue_1", "premier_league", "champions_league"],
         default=None,
-        help="League to backfill (default: both)",
+        help="League to backfill (default: ligue_1 + premier_league)",
     )
     parser.add_argument(
         "--step",
