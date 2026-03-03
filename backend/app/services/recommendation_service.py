@@ -83,15 +83,6 @@ async def generate_recommendations(
     _skipped_position = 0
     _unmatched_names: list[str] = []
 
-    # Pre-compute team npxg/xa totals for share computation
-    team_npxg_totals: dict[str, float] = defaultdict(float)
-    team_xa_totals: dict[str, float] = defaultdict(float)
-    for _pname, pstats in player_stats.items():
-        team = pstats.get("team")
-        if team:
-            team_npxg_totals[team] += pstats.get("npxg_total", 0.0) or 0.0
-            team_xa_totals[team] += pstats.get("xa_total", 0.0) or 0.0
-
     # League averages from team_ev0_stats (computed from DB) or team_strengths fallback
     if team_ev0_stats:
         league_avg_xg = team_ev0_stats.get("league_avg_xg", 1.2)
@@ -171,30 +162,20 @@ async def generate_recommendations(
                 _unmatched += 1
                 continue
 
-            # Top-Down lambda computation
+            # Lambda: player's historical xG rate adjusted for fixture difficulty
             team_match_xg = home_match_xg if team == home_team else away_match_xg
             expected_minutes = stats.get("expected_minutes", 75.0)
             mins_ratio = expected_minutes / 90.0
 
-            # Player share (npxg_total / team_total_npxg with Bayesian shrinkage)
-            # Unknown position → conservative DF prior to avoid inflating defender lambda
-            from app.pricing.team_xg import POSITION_NPXG_PRIORS, POSITION_XA_PRIORS, SHRINKAGE_N
-            matches = stats.get("matches_played", 0) or 0
-            shrink = min(matches / SHRINKAGE_N, 1.0)
-
-            team_npxg = team_npxg_totals.get(team, 0.0) or 1e-9
-            team_xa = team_xa_totals.get(team, 0.0) or 1e-9
-            npxg_prior = POSITION_NPXG_PRIORS.get(position or "DF", 0.02)
-            xa_prior = POSITION_XA_PRIORS.get(position or "DF", 0.03)
-            npxg_actual = npxg_total / team_npxg
-            xa_actual = xa_total / team_xa
-            npxg_share = shrink * npxg_actual + (1 - shrink) * npxg_prior
-            xa_share = shrink * xa_actual + (1 - shrink) * xa_prior
+            # Fixture strength: ratio of this match's expected xG to team's season average.
+            # Caps the adjustment at [0.6, 1.5] to avoid extreme under/over-estimation.
+            team_season_xg = team_full_stats.get(team, {}).get("attack_xg_per_match", league_avg_xg)
+            fixture_strength = max(0.6, min(1.5, team_match_xg / max(team_season_xg, 0.3)))
 
             if market_type == "goalscorer":
-                lambda_val = max(0.001, team_match_xg * (1 - PENS_PER_MATCH) * npxg_share * mins_ratio)
+                lambda_val = max(0.001, _xg_per_90 * mins_ratio * fixture_strength)
             else:  # assist
-                lambda_val = max(0.001, team_match_xg * xa_share * mins_ratio)
+                lambda_val = max(0.001, _xa_per_90 * mins_ratio * fixture_strength)
 
             probability = 1 - math.exp(-lambda_val)
             probability = probability * CALIBRATION_SCALE
@@ -248,9 +229,9 @@ async def generate_recommendations(
                 "classification": classification,
                 "confidence": confidence,
                 "explanation": {
-                    "model": "top_down",
+                    "model": "bottom_up_fixture_adj",
                     "team_match_xg": round(team_match_xg, 3),
-                    "share": round(npxg_share if market_type == "goalscorer" else xa_share, 4),
+                    "fixture_strength": round(fixture_strength, 3),
                     "expected_minutes": expected_minutes,
                     "lambda": round(lambda_val, 4),
                 },
