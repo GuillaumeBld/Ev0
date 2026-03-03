@@ -292,6 +292,16 @@ async def fetch_fotmob_league(
     return players, teams
 
 
+def _parse_round(value: object) -> int | None:
+    """Parse a FotMob round value to int, ignoring non-numeric strings like 'playoff'."""
+    if value is None:
+        return None
+    try:
+        return int(value) or None
+    except (ValueError, TypeError):
+        return None
+
+
 async def fetch_fotmob_fixtures(
     league: str,
     season: str = "2025-2026",
@@ -388,7 +398,7 @@ async def fetch_fotmob_fixtures(
                 "away_team": away.get("name", ""),
                 "home_score": home_score,
                 "away_score": away_score,
-                "matchweek": int(m.get("round", 0) or 0) or None,
+                "matchweek": _parse_round(m.get("round")),
             }
         )
 
