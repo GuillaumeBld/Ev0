@@ -670,15 +670,15 @@ async def job_autopilot_run():
             logger.info("Autopilot disabled — skipping run")
             return
 
-        from app.autopilot.agent import ACTIONS, LinearQAgent
+        from app.autopilot.agent import ACTIONS
         from app.autopilot.features import extract_features
-        from app.autopilot.trainer import WEIGHTS_PATH, _compute_stake
+        from app.autopilot.trainer import _compute_stake, _load_agent, weights_exist
 
-        if not WEIGHTS_PATH.exists():
+        if not weights_exist():
             logger.warning("Autopilot weights not found — skipping run (train first)")
             return
 
-        agent = LinearQAgent.load(WEIGHTS_PATH)
+        agent = _load_agent()
         mode = user_settings.get("autopilot_mode", "paper")
 
         from app.models.autopilot import AutopilotDecision

@@ -6,6 +6,7 @@ fine_tune_from_db(): one update pass on real settled AutopilotDecisions
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import time
@@ -23,7 +24,85 @@ from app.models.autopilot import AutopilotDecision
 
 logger = logging.getLogger(__name__)
 
+# File path kept for local dev / fallback; Redis is the primary store in prod.
 WEIGHTS_PATH = Path(__file__).parent / "weights" / "agent.npz"
+_REDIS_KEY = "autopilot:agent_weights"
+
+
+def _save_agent(agent: LinearQAgent) -> None:
+    """Persist weights to Redis (primary) and local file (fallback)."""
+    buf = io.BytesIO()
+    np.savez(
+        buf,
+        W=agent.W,
+        meta=np.array(
+            [agent.alpha, agent.gamma, agent.epsilon, agent.epsilon_min, agent.epsilon_decay],
+            dtype=np.float64,
+        ),
+        steps=np.array([agent.steps_trained], dtype=np.int64),
+    )
+    weights_bytes = buf.getvalue()
+
+    # Primary: Redis (shared across all containers)
+    try:
+        import redis as _redis
+
+        from app.config import settings
+        r = _redis.from_url(settings.redis_url, decode_responses=False)
+        r.set(_REDIS_KEY, weights_bytes)
+        logger.debug("Agent weights saved to Redis (%d bytes)", len(weights_bytes))
+    except Exception as exc:
+        logger.warning("Redis save failed, falling back to file: %s", exc)
+        # Fallback: local file
+        WEIGHTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        WEIGHTS_PATH.write_bytes(weights_bytes)
+
+
+def _load_agent() -> LinearQAgent | None:
+    """Load weights from Redis (primary) or local file (fallback)."""
+    # Primary: Redis
+    try:
+        import redis as _redis
+
+        from app.config import settings
+        r = _redis.from_url(settings.redis_url, decode_responses=False)
+        weights_bytes = r.get(_REDIS_KEY)
+        if weights_bytes:
+            data = np.load(io.BytesIO(weights_bytes))
+            meta = data["meta"]
+            agent = LinearQAgent(
+                alpha=float(meta[0]),
+                gamma=float(meta[1]),
+                epsilon=float(meta[2]),
+                epsilon_min=float(meta[3]),
+                epsilon_decay=float(meta[4]),
+            )
+            agent.W = data["W"]
+            agent.steps_trained = int(data["steps"][0])
+            logger.debug("Agent loaded from Redis (steps=%d)", agent.steps_trained)
+            return agent
+    except Exception as exc:
+        logger.warning("Redis load failed, trying file: %s", exc)
+
+    # Fallback: local file
+    if WEIGHTS_PATH.exists():
+        return LinearQAgent.load(WEIGHTS_PATH)
+
+    return None
+
+
+def weights_exist() -> bool:
+    """Return True if trained weights are available (Redis or file)."""
+    try:
+        import redis as _redis
+
+        from app.config import settings
+        r = _redis.from_url(settings.redis_url, decode_responses=False)
+        if r.exists(_REDIS_KEY):
+            return True
+    except Exception:
+        pass
+    return WEIGHTS_PATH.exists()
 
 # Bankroll used for reward scaling during backtest training (paper bankroll)
 _TRAINING_BANKROLL = 1000.0
@@ -32,9 +111,7 @@ _BASE_KELLY = 0.25
 
 
 def _load_or_create_agent() -> LinearQAgent:
-    if WEIGHTS_PATH.exists():
-        return LinearQAgent.load(WEIGHTS_PATH)
-    return LinearQAgent()
+    return _load_agent() or LinearQAgent()
 
 
 def _compute_stake(action_idx: int, rec: dict, bankroll: float = _TRAINING_BANKROLL) -> float:
@@ -161,7 +238,7 @@ async def run_backtest_training(
                 kelly_pnl += ks * (market_odds_k - 1) if outcome_k == 1 else -ks
                 kelly_staked += ks
 
-    agent.save(WEIGHTS_PATH)
+    _save_agent(agent)
 
     sharpe = compute_sharpe(daily_pnls)
     kelly_roi = kelly_pnl / max(kelly_staked, 1.0)
@@ -218,7 +295,7 @@ async def fine_tune_from_db(db: AsyncSession) -> dict:
             logger.exception("Error fine-tuning on decision %d", decision.id)
             continue
 
-    agent.save(WEIGHTS_PATH)
+    _save_agent(agent)
 
     # Mark as trained
     ids = [d.id for d in decisions]
@@ -239,8 +316,8 @@ async def fine_tune_from_db(db: AsyncSession) -> dict:
 
 
 def get_training_status() -> dict:
-    """Return metadata about the saved weights file."""
-    if not WEIGHTS_PATH.exists():
+    """Return metadata about saved weights (Redis or file)."""
+    if not weights_exist():
         return {
             "trained": False,
             "trained_at": None,
@@ -248,18 +325,23 @@ def get_training_status() -> dict:
             "steps_trained": 0,
         }
 
-    stat = WEIGHTS_PATH.stat()
-    trained_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
+    # Try to get mtime from file fallback; Redis has no native mtime
+    trained_at = None
+    size_bytes = 0
+    if WEIGHTS_PATH.exists():
+        stat = WEIGHTS_PATH.stat()
+        trained_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
+        size_bytes = stat.st_size
 
     try:
-        agent = LinearQAgent.load(WEIGHTS_PATH)
-        steps = agent.steps_trained
+        agent = _load_agent()
+        steps = agent.steps_trained if agent else 0
     except Exception:
         steps = 0
 
     return {
         "trained": True,
         "trained_at": trained_at,
-        "size_bytes": stat.st_size,
+        "size_bytes": size_bytes,
         "steps_trained": steps,
     }
