@@ -97,46 +97,35 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
-      - uses: actions/checkout@v4
-
-      # Copy backend/app/ to VPS via SCP
-      - name: Copy backend/app to VPS
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: root
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "backend/app/"
-          target: "/tmp/ev0-deploy/"
-          strip_components: 1
-
-      # SSH into VPS: docker cp files into containers, then restart
-      - name: Deploy into containers via SSH
+      # SSH into VPS: git pull latest main, docker cp into containers, restart
+      - name: Deploy via SSH (git pull + docker cp)
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 5m
           script: |
             set -e
 
-            DEPLOY_SRC="/tmp/ev0-deploy/app"
+            REPO_DIR="/opt/ev0-repo"
             BACKEND_CONTAINER="ev0-compose-z5hvqt-backend-1"
             WORKER_CONTAINER="ev0-compose-z5hvqt-worker-1"
 
+            # Ensure repo is cloned; pull latest
+            if [ ! -d "$REPO_DIR/.git" ]; then
+              git clone https://github.com/GuillaumeBld/Ev0.git "$REPO_DIR"
+            else
+              git -C "$REPO_DIR" pull --ff-only origin main
+            fi
+
             echo "==> Copying app/ into backend container"
-            docker cp "$DEPLOY_SRC/." "$BACKEND_CONTAINER:/app/app/"
+            docker cp "$REPO_DIR/backend/app/." "$BACKEND_CONTAINER:/app/app/"
 
             echo "==> Copying app/ into worker container"
-            docker cp "$DEPLOY_SRC/." "$WORKER_CONTAINER:/app/app/"
+            docker cp "$REPO_DIR/backend/app/." "$WORKER_CONTAINER:/app/app/"
 
-            echo "==> Restarting backend container"
-            docker restart "$BACKEND_CONTAINER"
-
-            echo "==> Restarting worker container"
-            docker restart "$WORKER_CONTAINER"
-
-            echo "==> Cleaning up temp files"
-            rm -rf /tmp/ev0-deploy
+            echo "==> Restarting containers"
+            docker restart "$BACKEND_CONTAINER" "$WORKER_CONTAINER"
 
             echo "==> Deploy complete"
