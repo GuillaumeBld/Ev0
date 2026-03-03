@@ -6,6 +6,12 @@ Handles storing fixtures, player stats, and odds snapshots.
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import Fixture, MatchEvent, OddsSnapshot, Player, PlayerStats, Recommendation
+
 # Maps FotMob/Understat short names → official names used in the fixtures table.
 # Must be kept in sync with the fixtures ingestion source (FotMob /api/leagues).
 TEAM_NAME_MAP: dict[str, str] = {
@@ -28,12 +34,6 @@ def normalize_team_name(team: str | None) -> str | None:
     if not team:
         return team
     return TEAM_NAME_MAP.get(team, team)
-
-from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.models import Fixture, MatchEvent, OddsSnapshot, Player, PlayerStats, Recommendation
 
 
 async def upsert_fixture(session: AsyncSession, data: dict[str, Any]) -> Fixture:

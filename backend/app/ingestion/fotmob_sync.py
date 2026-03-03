@@ -3,10 +3,9 @@
 Provides an alternative source for player stats and fixtures.
 """
 
-import soccerdata as sd
-import pandas as pd
 from typing import Any
-from datetime import datetime, timezone
+
+import soccerdata as sd
 
 # League mapping for soccerdata
 LEAGUE_MAPPING = {
@@ -19,7 +18,7 @@ LEAGUE_MAPPING = {
 
 class FotMobClient:
     """Client for fetching data from FotMob via soccerdata."""
-    
+
     def __init__(self, seasons: str | list[str] = "2024"):
         self.seasons = seasons
 
@@ -29,34 +28,34 @@ class FotMobClient:
 
     def get_player_stats(self, league_slug: str) -> list[dict[str, Any]]:
         """Fetch player season stats from FotMob.
-        
+
         Note: soccerdata's FotMob scraper might require aggregating match stats
         if season stats aren't directly available. This is a simplified implementation
         assuming we can get reasonable stats or we fallback to match aggregation.
-        
+
         For now, since FotMob doesn't always provide easy 'season stats' table via API/Scraper
         like FBref, we might look at what's available.
-        
-        If read_player_season_stats is not available, we return empty list or 
+
+        If read_player_season_stats is not available, we return empty list or
         implement match aggregation (which is slow).
         """
         sd_league = self._get_sd_league(league_slug)
         try:
-            fotmob = sd.FotMob(leagues=[sd_league], seasons=self.seasons)
-            
+            sd.FotMob(leagues=[sd_league], seasons=self.seasons)
+
             # FotMob in soccerdata typically provides:
             # - read_schedule
             # - read_match_details (lineups, events, stats)
             # It does NOT standardly provide a simple "read_player_season_stats" like FBref.
             # So we might need to change strategy if the user wants efficient season stats.
-            
+
             # However, for the purpose of this connector, let's expose what we can.
             # If the user wants LINEUPS (as per roadmap), that's read_match_details.
-            
+
             # Attempting to read stats if available (placeholder for now)
             # Real implementation would likely iterate matches or use a different endpoint if added.
             print(f"FotMob client initialized for {sd_league}")
-            return [] 
+            return []
 
         except Exception as e:
             print(f"Error initializing FotMob for {league_slug}: {e}")
@@ -68,10 +67,10 @@ class FotMobClient:
         try:
             fotmob = sd.FotMob(leagues=[sd_league], seasons=self.seasons)
             schedule = fotmob.read_schedule()
-            
+
             fixtures = []
             if schedule is not None and not schedule.empty:
-                for idx, row in schedule.iterrows():
+                for _idx, row in schedule.iterrows():
                     # soccerdata index is usually (league, season, game_id)
                     fixtures.append({
                         "date": str(row.get('date')),

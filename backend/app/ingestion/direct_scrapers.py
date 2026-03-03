@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import re
 import sys
@@ -291,12 +292,10 @@ class BetclicScraper:
                 for odds_key, pname in [("homeOdds", "home_win"), ("drawOdds", "draw"), ("awayOdds", "away_win")]:
                     val = market.get(odds_key)
                     if val:
-                        try:
+                        with contextlib.suppress(ValueError, TypeError):
                             mo.selections.append(
                                 SelectionOdds("1x2", pname, float(val), self.BOOKMAKER, {"label": label})
                             )
-                        except (ValueError, TypeError):
-                            pass
             else:
                 outcomes = market.get("selections") or market.get("outcomes") or market.get("choices") or []
                 for sel in outcomes:
@@ -312,14 +311,12 @@ class BetclicScraper:
                             name = "home_win"
                         elif "away" in nl or str(away_team).lower() in nl:
                             name = "away_win"
-                        elif "draw" in nl or "nul" in nl or "x" == nl:
+                        elif "draw" in nl or "nul" in nl or nl == "x":
                             name = "draw"
-                    try:
+                    with contextlib.suppress(ValueError, TypeError):
                         mo.selections.append(
                             SelectionOdds(market_type, name, float(odds_raw), self.BOOKMAKER, {"label": label})
                         )
-                    except (ValueError, TypeError):
-                        pass
 
         # Fallback: look for 1X2 directly on event-level keys
         if not any(s.market_type == "1x2" for s in mo.selections):
