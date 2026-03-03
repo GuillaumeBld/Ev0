@@ -417,7 +417,17 @@ async def job_snapshot_direct_odds():
     except Exception as exc:
         logger.error("Kambi scrape failed: %s", exc, exc_info=True)
 
-    # ── 2. Playwright scrapers (Betclic, Unibet page, ParionsSport) ──
+    # ── 2. Betclic HTTP scraper (SSR HTML — no Playwright needed) ──
+    try:
+        from app.ingestion.betclic_scraper import scrape_all_betclic
+
+        betclic_results = await scrape_all_betclic(leagues)
+        all_match_odds.extend(betclic_results)
+        logger.info("Betclic scraper: %d match-odds objects", len(betclic_results))
+    except Exception as exc:
+        logger.error("Betclic scrape failed: %s", exc, exc_info=True)
+
+    # ── 3. Playwright scrapers (Unibet page, ParionsSport) ──
     try:
         from playwright.async_api import async_playwright
 
