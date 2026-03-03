@@ -38,7 +38,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Defaults (used when no user settings exist)
-DEFAULT_LEAGUES = ["ligue_1", "premier_league"]
+DEFAULT_LEAGUES = ["ligue_1", "premier_league", "champions_league"]
 CURRENT_SEASON = "2025-2026"
 
 
@@ -514,7 +514,7 @@ async def job_refresh_player_stats():
         from app.scripts.backfill import backfill_stats
 
         current_season = "2025-2026"
-        n = await backfill_stats(leagues=["ligue_1", "premier_league"], season=current_season)
+        n = await backfill_stats(leagues=["ligue_1", "premier_league", "champions_league"], season=current_season)
         logger.info("Stats refreshed: %d player records updated (%s)", n, current_season)
     except Exception as exc:
         logger.error("Error refreshing player stats: %s", exc, exc_info=True)
@@ -632,6 +632,23 @@ async def job_generate_recommendations():
                         )
                         existing_keys.add((fixture_id, player_name, market_type))
                         stored += 1
+
+                        # Notify on new VALUE bets
+                        if rec.get("classification") == "VALUE":
+                            from app.notifications import send_telegram_alert
+                            player = rec.get("player_name", "?")
+                            fixture_name = rec.get("fixture_name", fixture_ext_id)
+                            odds = rec.get("market_odds", "?")
+                            edge = rec.get("edge", 0)
+                            book = rec.get("best_bookmaker", "?")
+                            msg = (
+                                f"🎯 <b>VALUE BET</b>\n"
+                                f"{player} — {rec.get('market_type', 'goalscorer')}\n"
+                                f"📋 {fixture_name}\n"
+                                f"📈 Odds: {odds} ({book}) | Edge: +{edge:.1%}\n"
+                                f"🤖 Ev0 Autopilot"
+                            )
+                            await send_telegram_alert(msg)
                     except Exception as exc:
                         logger.warning("Failed to store recommendation: %s", exc)
                         await session.rollback()

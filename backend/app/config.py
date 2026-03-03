@@ -17,6 +17,7 @@ class Settings(BaseSettings):  # type: ignore[misc]
 
     # API Keys (optional)
     odds_api_key: str | None = None
+    telegram_bot_token: str = ""
 
     # Data Ingestion APIs
     firecrawl_api_key: str | None = None  # Firecrawl for web scraping

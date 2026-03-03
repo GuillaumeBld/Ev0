@@ -39,11 +39,13 @@ KAMBI_CLIENT = "ub"  # Unibet global
 LEAGUE_PATHS: dict[str, str] = {
     "ligue_1": "football/france/ligue_1",
     "premier_league": "football/england/premier_league",
+    "champions_league": "football/champions_league",
 }
 
 LEAGUE_PARAMS: dict[str, dict[str, str]] = {
     "ligue_1": {"lang": "fr_FR", "market": "FR"},
     "premier_league": {"lang": "en_GB", "market": "GB"},
+    "champions_league": {"lang": "en_GB", "market": "GB"},
 }
 
 _HEADERS = {
@@ -281,7 +283,7 @@ async def scrape_all_kambi(leagues: list[str]) -> list[MatchOdds]:
 
 async def _cli_main(args: argparse.Namespace) -> None:
 
-    leagues = [args.league] if args.league else ["ligue_1", "premier_league"]
+    leagues = [args.league] if args.league else ["ligue_1", "premier_league", "champions_league"]
     all_matches = await scrape_all_kambi(leagues)
 
     total_sel = sum(len(m.selections) for m in all_matches)
@@ -307,6 +309,6 @@ async def _cli_main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(description="Scrape Kambi (Unibet) goalscorer odds")
-    parser.add_argument("--league", choices=["ligue_1", "premier_league"], default=None)
+    parser.add_argument("--league", choices=["ligue_1", "premier_league", "champions_league"], default=None)
     parser.add_argument("--dry-run", action="store_true", help="Print without storing to DB")
     asyncio.run(_cli_main(parser.parse_args()))
