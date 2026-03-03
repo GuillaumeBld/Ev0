@@ -4,8 +4,9 @@ ESPN provides free access to match data via their public site API.
 This is used as a fallback when FotMob returns 403 on match details.
 
 Leagues supported:
-- Ligue 1:       fra.1
-- Premier League: eng.1
+- Ligue 1:            fra.1
+- Premier League:     eng.1
+- Champions League:   uefa.champions
 """
 
 import asyncio
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 ESPN_LEAGUE_SLUGS = {
     "ligue_1": "fra.1",
     "premier_league": "eng.1",
+    "champions_league": "uefa.champions",
 }
 
 _HEADERS = {
