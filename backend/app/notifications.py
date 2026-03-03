@@ -7,7 +7,8 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-TELEGRAM_CHAT_ID = "-5239915762"
+# Use personal ID for now; change to group ID (-5239915762) after adding @Ev0972_bot to the group
+TELEGRAM_CHAT_ID = "8589235488"
 
 
 async def send_telegram_alert(message: str) -> bool:
