@@ -20,10 +20,7 @@ from app.models.players import Player, PlayerStats
 from app.pricing.goalscorer import calculate_edge
 from app.pricing.team_xg import (
     PENS_PER_MATCH,
-    PEN_CONVERSION,
-    compute_player_shares,
     compute_team_stats,
-    detect_penalty_taker,
     estimate_team_match_xg,
 )
 from app.strategy.selector import RecommendationFilter, select_bets
@@ -160,22 +157,35 @@ async def generate_recommendations(
             _matched += 1
             team = stats.get("team") or _infer_team(player_name, home_team, away_team)
 
+            # Skip players with no real scoring data to avoid false VALUE signals
+            npxg_total = stats.get("npxg_total", 0.0) or 0.0
+            xa_total = stats.get("xa_total", 0.0) or 0.0
+            _xg_per_90 = stats.get("xg_per_90") or 0.0
+            _xa_per_90 = stats.get("xa_per_90") or 0.0
+            if market_type == "goalscorer" and npxg_total <= 0.01 and _xg_per_90 <= 0.005:
+                _unmatched += 1
+                continue
+            if market_type == "assist" and xa_total <= 0.01 and _xa_per_90 <= 0.005:
+                _unmatched += 1
+                continue
+
             # Top-Down lambda computation
             team_match_xg = home_match_xg if team == home_team else away_match_xg
             expected_minutes = stats.get("expected_minutes", 75.0)
             mins_ratio = expected_minutes / 90.0
 
             # Player share (npxg_total / team_total_npxg with Bayesian shrinkage)
+            # Unknown position → conservative DF prior to avoid inflating defender lambda
             from app.pricing.team_xg import POSITION_NPXG_PRIORS, POSITION_XA_PRIORS, SHRINKAGE_N
             matches = stats.get("matches_played", 0) or 0
             shrink = min(matches / SHRINKAGE_N, 1.0)
 
             team_npxg = team_npxg_totals.get(team, 0.0) or 1e-9
             team_xa = team_xa_totals.get(team, 0.0) or 1e-9
-            npxg_prior = POSITION_NPXG_PRIORS.get(position or "MF", 0.08)
-            xa_prior = POSITION_XA_PRIORS.get(position or "MF", 0.10)
-            npxg_actual = (stats.get("npxg_total", 0.0) or 0.0) / team_npxg
-            xa_actual = (stats.get("xa_total", 0.0) or 0.0) / team_xa
+            npxg_prior = POSITION_NPXG_PRIORS.get(position or "DF", 0.02)
+            xa_prior = POSITION_XA_PRIORS.get(position or "DF", 0.03)
+            npxg_actual = npxg_total / team_npxg
+            xa_actual = xa_total / team_xa
             npxg_share = shrink * npxg_actual + (1 - shrink) * npxg_prior
             xa_share = shrink * xa_actual + (1 - shrink) * xa_prior
 
@@ -653,7 +663,6 @@ async def get_recommendations_for_date(
             await cache_player_stats_map(player_stats)
 
     # Step 5: Compute Top-Down team stats
-    from app.pricing.team_xg import compute_team_stats
     ev0_team_stats = await compute_team_stats(db)
 
     all_ts = list(ev0_team_stats.values())

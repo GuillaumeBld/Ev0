@@ -151,15 +151,26 @@ async def simulate_historical(
             team = stats.get("team", fixture.home_team)
             team_match_xg = home_match_xg if team == fixture.home_team else away_match_xg
 
+            # Skip players with no real scoring data to avoid false VALUE signals
+            npxg_total = stats.get("npxg_total", 0.0) or 0.0
+            xa_total = stats.get("xa_total", 0.0) or 0.0
+            xg_per_90 = stats.get("xg_per_90") or 0.0
+            xa_per_90 = stats.get("xa_per_90") or 0.0
+            if market_type == "goalscorer" and npxg_total <= 0.01 and xg_per_90 <= 0.005:
+                continue
+            if market_type == "assist" and xa_total <= 0.01 and xa_per_90 <= 0.005:
+                continue
+
             # Top-Down player share with Bayesian shrinkage
+            # Unknown position → conservative DF prior to avoid inflating defender lambda
             matches = stats.get("matches_played", 0) or 0
             shrink = min(matches / SHRINKAGE_N, 1.0)
             team_npxg = team_npxg_totals.get(team, 0.0) or 1e-9
             team_xa = team_xa_totals.get(team, 0.0) or 1e-9
-            npxg_prior = POSITION_NPXG_PRIORS.get(position or "MF", 0.08)
-            xa_prior = POSITION_XA_PRIORS.get(position or "MF", 0.10)
-            npxg_actual = (stats.get("npxg_total", 0.0) or 0.0) / team_npxg
-            xa_actual = (stats.get("xa_total", 0.0) or 0.0) / team_xa
+            npxg_prior = POSITION_NPXG_PRIORS.get(position or "DF", 0.02)
+            xa_prior = POSITION_XA_PRIORS.get(position or "DF", 0.03)
+            npxg_actual = npxg_total / team_npxg
+            xa_actual = xa_total / team_xa
             npxg_share = shrink * npxg_actual + (1 - shrink) * npxg_prior
             xa_share = shrink * xa_actual + (1 - shrink) * xa_prior
 
