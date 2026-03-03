@@ -36,6 +36,8 @@ from app.services.recommendation_service import (
 
 logger = logging.getLogger(__name__)
 
+CALIBRATION_SCALE = 0.62  # Post-hoc correction: model overestimates by ~1.6x
+
 
 async def simulate_historical(
     db: AsyncSession,
@@ -185,6 +187,7 @@ async def simulate_historical(
                 continue
 
             probability = 1 - math.exp(-lambda_val)
+            probability = probability * CALIBRATION_SCALE
             fair_odds = round(1 / probability, 2) if probability > 0 else 9999.0
             edge = calculate_edge(fair_odds, market_odds)
 

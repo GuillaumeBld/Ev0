@@ -27,6 +27,8 @@ from app.strategy.selector import RecommendationFilter, select_bets
 
 logger = logging.getLogger(__name__)
 
+CALIBRATION_SCALE = 0.62  # Post-hoc correction: model overestimates by ~1.6x
+
 # Position-based xG/xA defaults for players with stats in DB but missing per-90 values
 POSITION_DEFAULTS: dict[str, dict[str, float]] = {
     "FW": {"xg_per_90": 0.35, "xa_per_90": 0.15},
@@ -195,6 +197,7 @@ async def generate_recommendations(
                 lambda_val = max(0.001, team_match_xg * xa_share * mins_ratio)
 
             probability = 1 - math.exp(-lambda_val)
+            probability = probability * CALIBRATION_SCALE
             fair_odds = 1 / probability if probability > 0 else 9999.0
             fair_odds = round(fair_odds, 2)
 
