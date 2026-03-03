@@ -561,22 +561,44 @@ async def job_generate_recommendations():
         # Store recommendations in DB
         if recs:
             stored = 0
+            skipped = 0
             async with async_session() as session:
                 from app.models.fixtures import Fixture
+                from app.models.recommendations import Recommendation
 
                 result = await session.execute(select(Fixture))
                 fixtures_by_ext = {f.external_id: f for f in result.scalars().all()}
 
+                # Load existing pending/approved recommendations to avoid duplicates
+                existing_result = await session.execute(
+                    select(
+                        Recommendation.fixture_id,
+                        Recommendation.player_name,
+                        Recommendation.market_type,
+                    ).where(Recommendation.status.in_(["pending", "approved"]))
+                )
+                existing_keys: set[tuple] = {
+                    (row.fixture_id, row.player_name, row.market_type)
+                    for row in existing_result
+                }
+
                 for rec in recs:
                     fixture_ext_id = rec.get("fixture_id", "")
                     fixture = fixtures_by_ext.get(fixture_ext_id)
+                    fixture_id = fixture.id if fixture else 0
+                    player_name = rec.get("player_name", "")
+                    market_type = rec.get("market_type", "")
+
+                    if (fixture_id, player_name, market_type) in existing_keys:
+                        skipped += 1
+                        continue
 
                     try:
                         await store_recommendation(
                             session,
-                            fixture_id=fixture.id if fixture else 0,
-                            player_name=rec.get("player_name", ""),
-                            market_type=rec.get("market_type", ""),
+                            fixture_id=fixture_id,
+                            player_name=player_name,
+                            market_type=market_type,
                             pricing_result={
                                 "lambda_intensity": rec.get("lambda_intensity", 0),
                                 "probability": rec.get("fair_probability", 0),
@@ -587,12 +609,16 @@ async def job_generate_recommendations():
                             best_odds=rec.get("market_odds", 0),
                             edge=rec.get("edge", 0),
                         )
+                        existing_keys.add((fixture_id, player_name, market_type))
                         stored += 1
                     except Exception as exc:
                         logger.warning("Failed to store recommendation: %s", exc)
                         await session.rollback()
 
-            logger.info("Stored %d/%d recommendations", stored, len(recs))
+            logger.info(
+                "Stored %d/%d recommendations (%d duplicates skipped)",
+                stored, len(recs), skipped,
+            )
 
     except Exception as exc:
         logger.error("Error generating recommendations: %s", exc, exc_info=True)
