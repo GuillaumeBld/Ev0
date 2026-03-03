@@ -200,19 +200,22 @@ async def backfill_stats(leagues: list[str], season: str) -> int:
                     "xa_per_90": p.get("xa_per_90"),
                 }
 
-                ps = await store_player_stats(
-                    session,
-                    player_id=db_player.id,
-                    league=league,
-                    season=season,
-                    stats=stats_data,
-                )
-                # Override as_of_utc to season end for historical data
-                ps.as_of_utc = season_end
-                ps.source = source
-                await session.commit()
-
-                total += 1
+                try:
+                    ps = await store_player_stats(
+                        session,
+                        player_id=db_player.id,
+                        league=league,
+                        season=season,
+                        stats=stats_data,
+                    )
+                    # Override as_of_utc to season end for historical data
+                    ps.as_of_utc = season_end
+                    ps.source = source
+                    await session.commit()
+                    total += 1
+                except Exception:
+                    await session.rollback()
+                    continue
 
         # Small delay between leagues
         await asyncio.sleep(2.0)
