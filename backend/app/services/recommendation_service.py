@@ -544,17 +544,19 @@ async def get_recommendations_for_date(
             .where(OddsSnapshotModel.fixture_id == f.id)
             .order_by(OddsSnapshotModel.snapshot_utc.desc())
         )
-        fixture_odds: list[dict[str, Any]] = []
+        # Keep best odds per (player, market) — avoids duplicates from multiple bookmakers/snapshots
+        best_odds: dict[tuple[str, str], dict[str, Any]] = {}
         for o in odds_result.scalars().all():
-            fixture_odds.append(
-                {
+            key = (o.player_name, o.market_type)
+            existing = best_odds.get(key)
+            if existing is None or o.odds > existing["odds"]:
+                best_odds[key] = {
                     "player_name": o.player_name,
                     "market_type": o.market_type,
                     "odds": o.odds,
                     "bookmaker": o.bookmaker,
                 }
-            )
-        odds_data[fixture_id] = fixture_odds
+        odds_data[fixture_id] = list(best_odds.values())
 
     if not fixtures:
         return [], {
