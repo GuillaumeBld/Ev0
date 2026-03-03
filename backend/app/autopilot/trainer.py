@@ -214,7 +214,7 @@ async def run_backtest_training(
             features = extract_features(rec)
             action_idx = agent.act(features, explore=True)
             market_odds = float(rec.get("market_odds") or 2.0)
-            outcome = int(rec.get("outcome", 0))
+            outcome = 1 if rec.get("outcome") == "won" else 0
 
             stake = _compute_stake(action_idx, rec, bankroll)
             reward = _compute_reward(stake, market_odds, outcome, bankroll)
@@ -234,7 +234,7 @@ async def run_backtest_training(
             for rec in records:
                 ks = _compute_stake(2, rec, bankroll)  # action 2 = full kelly
                 market_odds_k = float(rec.get("market_odds") or 2.0)
-                outcome_k = int(rec.get("outcome", 0))
+                outcome_k = 1 if rec.get("outcome") == "won" else 0
                 kelly_pnl += ks * (market_odds_k - 1) if outcome_k == 1 else -ks
                 kelly_staked += ks
 
