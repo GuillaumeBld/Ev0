@@ -594,14 +594,20 @@ async def job_generate_recommendations():
             stored = 0
             skipped = 0
             async with async_session() as session:
+                from types import SimpleNamespace
+
                 from app.models.fixtures import Fixture
                 from app.models.recommendations import Recommendation
-
                 result = await session.execute(select(Fixture))
-                _fixtures = result.scalars().all()
-                for _f in _fixtures:
-                    session.expunge(_f)
-                fixtures_by_ext = {f.external_id: f for f in _fixtures}
+                fixtures_by_ext = {
+                    f.external_id: SimpleNamespace(
+                        id=f.id,
+                        home_team=f.home_team,
+                        away_team=f.away_team,
+                        kickoff_utc=f.kickoff_utc,
+                    )
+                    for f in result.scalars().all()
+                }
 
                 # Load existing pending/approved recommendations to avoid duplicates
                 existing_result = await session.execute(
