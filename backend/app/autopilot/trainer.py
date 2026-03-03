@@ -114,6 +114,38 @@ def _load_or_create_agent() -> LinearQAgent:
     return _load_agent() or LinearQAgent()
 
 
+def _create_fresh_agent_with_prior() -> LinearQAgent:
+    """Create a fresh agent pre-initialized with a supervised prior.
+
+    Sets W so that the kelly action is preferred for high-edge, high-confidence
+    bets from step 1.  This avoids the cold-start trap where random ε-greedy
+    exploration floods the agent with aggressive losses that push Q[betting]
+    deeply negative before it ever gets a chance to learn.
+
+    Feature indices (FEATURE_NAMES):
+      0 edge, 1 confidence, 2 implied_prob, 3 fair_prob, 4 lambda,
+      5 mins_ratio, 6 is_goalscorer, 7 is_premier_league, 8 is_forward, 9 bias
+    """
+    agent = LinearQAgent(epsilon=0.3)  # reduced ε — only 30% random exploration
+
+    edge_idx, conf_idx = 0, 1
+
+    # kelly (action 2): bet scales with edge and confidence
+    agent.W[2][edge_idx] = 2.0
+    agent.W[2][conf_idx] = 1.0
+
+    # half_kelly (action 1): half enthusiasm
+    agent.W[1][edge_idx] = 1.0
+    agent.W[1][conf_idx] = 0.5
+
+    # aggressive (action 3): intermediate — slightly riskier than kelly
+    agent.W[3][edge_idx] = 1.5
+    agent.W[3][conf_idx] = 0.75
+
+    # skip (action 0): stays near zero — must be beaten by betting Q-values
+    return agent
+
+
 def _compute_stake(action_idx: int, rec: dict, bankroll: float = _TRAINING_BANKROLL) -> float:
     """Compute stake given action and record."""
     fraction = ACTIONS[action_idx]
@@ -196,9 +228,12 @@ async def run_backtest_training(
     records = [r for r in records if r.get("edge", 0) >= 0.05]
     records.sort(key=lambda r: r["date"])
 
-    agent = _load_or_create_agent()
-    # Reset epsilon for fresh training pass
-    agent.epsilon = 1.0
+    # Always start from a fresh agent with supervised prior.
+    # Loading previously-trained (potentially poisoned) weights and resetting
+    # ε=1.0 causes random aggressive bets to push Q[betting] deeply negative
+    # before the agent can learn.  Starting fresh with ε=0.3 and a
+    # bet-on-positive-edge prior avoids this cold-start trap.
+    agent = _create_fresh_agent_with_prior()
 
     # Track Kelly baseline for comparison
     kelly_pnl = 0.0
