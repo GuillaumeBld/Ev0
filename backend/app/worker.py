@@ -613,6 +613,55 @@ async def job_generate_recommendations():
                     for row in existing_result
                 }
 
+                # Perplexity pre-match enrichment (once per fixture for VALUE recs)
+                from app.ingestion.perplexity_enricher import enrich_fixture_context
+
+                _value_by_fixture: dict[str, list[dict]] = {}
+                for _vr in recs:
+                    if _vr.get("classification") == "VALUE" and _vr.get("fixture_id"):
+                        _value_by_fixture.setdefault(_vr["fixture_id"], []).append(_vr)
+
+                _perp_ctx: dict[str, dict] = {}
+                for _ext_id, _frecs in _value_by_fixture.items():
+                    _fx = fixtures_by_ext.get(_ext_id)
+                    if not _fx:
+                        continue
+                    _kickoff = _fx.kickoff_utc.strftime("%Y-%m-%d") if _fx.kickoff_utc else ""
+                    _players = [
+                        {
+                            "name": _r["player_name"],
+                            "team": _r.get("team", ""),
+                            "market": _r.get("market_type", ""),
+                        }
+                        for _r in _frecs
+                    ]
+                    _perp_ctx[_ext_id] = await enrich_fixture_context(
+                        home_team=_fx.home_team,
+                        away_team=_fx.away_team,
+                        kickoff_date=_kickoff,
+                        players=_players,
+                    )
+
+                for _vr in recs:
+                    if _vr.get("classification") != "VALUE":
+                        continue
+                    _pctx = _perp_ctx.get(_vr.get("fixture_id", ""), {}).get(
+                        _vr.get("player_name", "")
+                    )
+                    if not _pctx:
+                        continue
+                    _cs = _pctx.get("context_score", 1.0)
+                    _vr["confidence"] = round(min(1.0, _vr.get("confidence", 0.5) * _cs), 4)
+                    if _cs <= 0.15:
+                        _vr["classification"] = "NO_VALUE"
+                    _vr.setdefault("explanation", {})["perplexity"] = {
+                        "confirmed_starter": _pctx.get("confirmed_starter"),
+                        "injury_risk": _pctx.get("injury_risk"),
+                        "recent_form": _pctx.get("recent_form"),
+                        "context_score": _cs,
+                        "notes": _pctx.get("notes", ""),
+                    }
+
                 for rec in recs:
                     fixture_ext_id = rec.get("fixture_id", "")
                     fixture = fixtures_by_ext.get(fixture_ext_id)

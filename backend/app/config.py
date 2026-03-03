@@ -23,6 +23,7 @@ class Settings(BaseSettings):  # type: ignore[misc]
     firecrawl_api_key: str | None = None  # Firecrawl for web scraping
     openrouter_api_key: str | None = None  # OpenRouter for LLM parsing
     api_football_key: str | None = None  # API-Football for reliable data
+    perplexity_api_key: str | None = None  # Perplexity sonar-pro for match context
 
     # LLM Parser settings
     llm_parser_model: str = "anthropic/claude-3.5-sonnet"  # Fast, good at extraction
