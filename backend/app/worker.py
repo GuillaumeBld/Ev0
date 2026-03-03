@@ -500,6 +500,27 @@ async def job_snapshot_direct_odds():
     logger.info("=== Direct odds snapshot complete ===")
 
 
+# ── Job 3b: Weekly Player Stats Refresh ──────────────────────────
+
+
+async def job_refresh_player_stats():
+    """Weekly: refresh Understat player stats for the current season.
+
+    Keeps xG/xA rates current as the season progresses.  Upserts all
+    player stats so stale priors don't pollute recommendations.
+    """
+    logger.info("=== Starting weekly player stats refresh ===")
+    try:
+        from app.scripts.backfill import backfill_stats
+
+        current_season = "2025-2026"
+        n = await backfill_stats(leagues=["ligue_1", "premier_league"], season=current_season)
+        logger.info("Stats refreshed: %d player records updated (%s)", n, current_season)
+    except Exception as exc:
+        logger.error("Error refreshing player stats: %s", exc, exc_info=True)
+    logger.info("=== Player stats refresh complete ===")
+
+
 # ── Job 4: Recommendation Generation ─────────────────────────────
 
 
@@ -660,23 +681,21 @@ async def job_autopilot_run():
         agent = LinearQAgent.load(WEIGHTS_PATH)
         mode = user_settings.get("autopilot_mode", "paper")
 
-        from datetime import date, timedelta
-
         from app.models.autopilot import AutopilotDecision
         from app.models.fixtures import Fixture
         from app.models.recommendations import Recommendation
 
-        today_start = datetime.combine(date.today(), datetime.min.time()).replace(tzinfo=UTC)
-        tomorrow_start = today_start + timedelta(days=1)
-
         async with async_session() as session:
+            # Look at all pending VALUE recs whose fixture hasn't kicked off yet,
+            # not just today's — ensures recs generated yesterday are still acted on.
+            from app.models.fixtures import Fixture as _Fixture
             stmt = (
                 select(Recommendation)
+                .join(_Fixture, Recommendation.fixture_id == _Fixture.id)
                 .where(
                     Recommendation.classification == "VALUE",
                     Recommendation.status == "pending",
-                    Recommendation.generated_utc >= today_start,
-                    Recommendation.generated_utc < tomorrow_start,
+                    _Fixture.kickoff_utc > datetime.now(UTC),
                 )
                 .order_by(Recommendation.edge.desc())
             )
@@ -717,7 +736,9 @@ async def job_autopilot_run():
 
                 import json as _json
                 features = extract_features(rec_dict)
-                action_idx = agent.act(features, explore=False)
+                # In paper mode, always explore so the agent accumulates real
+                # outcomes and can fine-tune.  Live mode uses greedy inference.
+                action_idx = agent.act(features, explore=(mode == "paper"))
                 fraction = ACTIONS[action_idx]
                 stake = _compute_stake(action_idx, rec_dict, bankroll)
 
@@ -905,6 +926,15 @@ def create_scheduler() -> AsyncIOScheduler:
         IntervalTrigger(hours=3),
         id="snapshot_direct_odds",
         name="Snapshot direct odds (Kambi, Betclic, ParionsSport)",
+        replace_existing=True,
+    )
+
+    # Weekly player stats refresh: every Monday at 06:00 UTC
+    scheduler.add_job(
+        job_refresh_player_stats,
+        CronTrigger(day_of_week="mon", hour=6, minute=0),
+        id="refresh_player_stats",
+        name="Refresh Understat player stats (current season)",
         replace_existing=True,
     )
 
