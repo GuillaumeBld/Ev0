@@ -598,7 +598,10 @@ async def job_generate_recommendations():
                 from app.models.recommendations import Recommendation
 
                 result = await session.execute(select(Fixture))
-                fixtures_by_ext = {f.external_id: f for f in result.scalars().all()}
+                _fixtures = result.scalars().all()
+                for _f in _fixtures:
+                    session.expunge(_f)
+                fixtures_by_ext = {f.external_id: f for f in _fixtures}
 
                 # Load existing pending/approved recommendations to avoid duplicates
                 existing_result = await session.execute(
