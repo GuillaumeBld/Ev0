@@ -125,8 +125,13 @@ def _create_fresh_agent_with_prior() -> LinearQAgent:
     Feature indices (FEATURE_NAMES):
       0 edge, 1 confidence, 2 implied_prob, 3 fair_prob, 4 lambda,
       5 mins_ratio, 6 is_goalscorer, 7 is_premier_league, 8 is_forward, 9 bias
+
+    alpha=0.0001: very small LR so the prior survives backtest training.
+    Backtest data has ~70% losing bets (goalscorer base rate), which would
+    push constant features (bias, expected_minutes) deeply negative at
+    higher learning rates, making the agent skip all bets.
     """
-    agent = LinearQAgent(epsilon=0.3)  # reduced ε — only 30% random exploration
+    agent = LinearQAgent(alpha=0.0001, epsilon=0.3)  # tiny LR to preserve prior
 
     edge_idx, conf_idx = 0, 1
 
