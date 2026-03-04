@@ -131,7 +131,7 @@ def _create_fresh_agent_with_prior() -> LinearQAgent:
     push constant features (bias, expected_minutes) deeply negative at
     higher learning rates, making the agent skip all bets.
     """
-    agent = LinearQAgent(alpha=0.0001, epsilon=0.3)  # tiny LR to preserve prior
+    agent = LinearQAgent(epsilon=0.3)
 
     edge_idx, conf_idx = 0, 1
 
@@ -172,11 +172,27 @@ def _compute_stake(action_idx: int, rec: dict, bankroll: float = _TRAINING_BANKR
 
 
 def _compute_reward(stake: float, market_odds: float, outcome: int, bankroll: float) -> float:
-    """Reward = pnl / bankroll (scale-invariant)."""
+    """Reward = pnl / bankroll (scale-invariant). Used for live fine-tuning."""
     if stake <= 0:
         return 0.0
     pnl = stake * (market_odds - 1.0) if outcome == 1 else -stake
     return pnl / max(bankroll, 1.0)
+
+
+def _compute_expected_reward(rec: dict, action_idx: int, bankroll: float) -> float:
+    """Expected reward = edge × stake / bankroll.
+
+    Used during backtest pre-training instead of realized outcome.
+    Always positive for positive-edge bets — gives a clean supervised
+    signal without outcome noise (goalscorer bets win only ~30% of the
+    time, so realized rewards have huge variance that drowns the signal).
+    """
+    fraction = ACTIONS[action_idx]
+    if fraction == 0.0:
+        return 0.0
+    edge = float(rec.get("edge", 0.0))
+    stake = _compute_stake(action_idx, rec, bankroll)
+    return edge * stake / max(bankroll, 1.0)
 
 
 async def run_backtest_training(
@@ -257,9 +273,12 @@ async def run_backtest_training(
             outcome = 1 if rec.get("outcome") == "won" else 0
 
             stake = _compute_stake(action_idx, rec, bankroll)
-            reward = _compute_reward(stake, market_odds, outcome, bankroll)
-            # Clip reward to prevent catastrophic weight drift over many epochs
-            reward = max(-0.02, min(0.02, reward))
+            # Use expected reward (edge × stake / bankroll) rather than
+            # realized outcome during backtest training.  Goalscorer bets
+            # win ~30% of the time so realized rewards are very noisy and
+            # would push constant features (bias, expected_minutes) deeply
+            # negative, making the agent skip all bets.
+            reward = _compute_expected_reward(rec, action_idx, bankroll)
 
             agent.update(features, action_idx, reward)
 
