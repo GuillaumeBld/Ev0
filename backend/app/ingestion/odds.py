@@ -23,6 +23,7 @@ ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 SPORT_KEYS = {
     "ligue_1": "soccer_france_ligue_one",
     "premier_league": "soccer_epl",
+    "champions_league": "soccer_uefa_champs_league",
 }
 
 # Legacy league key aliases (e.g. user settings may still have "ligue1")
@@ -129,6 +130,14 @@ class OddsSnapshot:
         return 1 / self.odds if self.odds > 0 else 0.0
 
 
+_QUOTA_REDIS_KEY = "odds_api:requests_remaining"
+_QUOTA_LOW_THRESHOLD = 20  # stop calling when fewer than this remain
+
+
+class QuotaExhaustedError(Exception):
+    """Raised when The Odds API monthly quota is too low to continue."""
+
+
 class OddsAPIClient:
     """Client for The Odds API."""
 
@@ -145,6 +154,39 @@ class OddsAPIClient:
             raise ValueError(f"Unknown league: {league}")
         return SPORT_KEYS[league]
 
+    def _update_quota(self, response: httpx.Response) -> None:
+        """Persist remaining request count from response headers to Redis."""
+        remaining = response.headers.get("x-requests-remaining")
+        if remaining is None:
+            return
+        try:
+            import redis as _redis
+            r = _redis.from_url(settings.redis_url, decode_responses=True)
+            r.set(_QUOTA_REDIS_KEY, remaining, ex=86400 * 32)  # 32-day TTL
+            remaining_int = int(remaining)
+            if remaining_int <= _QUOTA_LOW_THRESHOLD:
+                logger.warning(
+                    "Odds API quota low: %d requests remaining — pausing calls",
+                    remaining_int,
+                )
+        except Exception:
+            pass
+
+    def _check_quota(self) -> None:
+        """Raise QuotaExhaustedError if saved quota is below threshold."""
+        try:
+            import redis as _redis
+            r = _redis.from_url(settings.redis_url, decode_responses=True)
+            val = r.get(_QUOTA_REDIS_KEY)
+            if val is not None and int(val) <= _QUOTA_LOW_THRESHOLD:
+                raise QuotaExhaustedError(
+                    f"Odds API quota too low ({val} remaining) — skipping"
+                )
+        except QuotaExhaustedError:
+            raise
+        except Exception:
+            pass  # Redis unavailable → allow the call
+
     async def get_events(self, sport_key: str) -> list[dict[str, Any]]:
         """
         Get upcoming events for a sport.
@@ -159,12 +201,16 @@ class OddsAPIClient:
             logger.debug("Cache HIT for events %s (%d events)", sport_key, len(cached))
             return cached
 
+        self._check_quota()
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{self.base_url}/sports/{sport_key}/events",
                 params={"apiKey": self.api_key},
                 timeout=30.0,
             )
+
+            self._update_quota(response)
 
             if response.status_code != 200:
                 raise Exception(f"Odds API error: {response.status_code}")
@@ -200,6 +246,8 @@ class OddsAPIClient:
             logger.debug("Cache HIT for props %s/%s/%s", sport_key, event_id, market)
             return cached
 
+        self._check_quota()
+
         if regions is None:
             regions = REGIONS
 
@@ -213,6 +261,8 @@ class OddsAPIClient:
                 },
                 timeout=30.0,
             )
+
+            self._update_quota(response)
 
             if response.status_code != 200:
                 raise Exception(f"Odds API error: {response.status_code}")
