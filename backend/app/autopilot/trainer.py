@@ -253,6 +253,8 @@ async def run_backtest_training(
 
             stake = _compute_stake(action_idx, rec, bankroll)
             reward = _compute_reward(stake, market_odds, outcome, bankroll)
+            # Clip reward to prevent catastrophic weight drift over many epochs
+            reward = max(-0.02, min(0.02, reward))
 
             agent.update(features, action_idx, reward)
 
