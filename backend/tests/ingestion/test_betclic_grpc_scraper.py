@@ -2,6 +2,7 @@ import httpx
 import pytest
 
 from app.ingestion.betclic_grpc_scraper import (
+    _GRPC_HEADERS,
     _PAGE_HEADERS,
     BetclicGrpcScraper,
     decode_bytes_field,
@@ -50,3 +51,24 @@ async def test_fetch_matches_returns_list():
     assert "home_team" in m
     assert "away_team" in m
     assert "competition_id" in m
+
+
+@pytest.mark.asyncio
+async def test_fetch_match_odds_returns_selections():
+    """fetch_match_odds returns non-empty list for a known match."""
+    async with (
+        httpx.AsyncClient(headers=_GRPC_HEADERS, follow_redirects=True) as grpc_client,
+        httpx.AsyncClient(headers=_PAGE_HEADERS, follow_redirects=True) as page_client,
+    ):
+        scraper = BetclicGrpcScraper(page_client)
+        scraper._grpc_client = grpc_client
+        matches = await scraper.fetch_competition_matches("ligue_1")
+        assert matches, "Need at least one L1 match to test"
+        first = matches[0]
+        sels = await scraper.fetch_match_odds(
+            first["match_id"], first["home_team"], first["away_team"], first["league"]
+        )
+    assert isinstance(sels, list)
+    assert len(sels) > 10, f"Expected 20+ player selections per match, got {len(sels)}"
+    types = {s.market_type for s in sels}
+    assert "goalscorer" in types
