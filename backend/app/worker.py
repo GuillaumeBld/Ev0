@@ -418,14 +418,16 @@ async def job_snapshot_direct_odds():
         logger.error("Kambi scrape failed: %s", exc, exc_info=True)
 
     # ── 2. Betclic gRPC-web scraper (full player odds, no Playwright needed) ──
-    try:
-        from app.ingestion.betclic_grpc_scraper import scrape_betclic_leagues
-
-        betclic_results = await scrape_betclic_leagues(leagues)
-        all_match_odds.extend(betclic_results)
-        logger.info("Betclic gRPC scraper: %d match-odds objects", len(betclic_results))
-    except Exception as exc:
-        logger.error("Betclic gRPC scrape failed: %s", exc, exc_info=True)
+    # TODO: disabled — blackboxprotobuf.decode_message() hangs on ~60% of matches,
+    # leaving zombie threads at 100% CPU. Need to replace with subprocess isolation
+    # or a hand-written proto parser before re-enabling.
+    # try:
+    #     from app.ingestion.betclic_grpc_scraper import scrape_betclic_leagues
+    #     betclic_results = await scrape_betclic_leagues(leagues)
+    #     all_match_odds.extend(betclic_results)
+    #     logger.info("Betclic gRPC scraper: %d match-odds objects", len(betclic_results))
+    # except Exception as exc:
+    #     logger.error("Betclic gRPC scrape failed: %s", exc, exc_info=True)
 
     # ── 3. Playwright scrapers (Unibet page, ParionsSport) ──
     try:
