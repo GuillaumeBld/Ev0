@@ -72,3 +72,15 @@ async def test_fetch_match_odds_returns_selections():
     assert len(sels) > 10, f"Expected 20+ player selections per match, got {len(sels)}"
     types = {s.market_type for s in sels}
     assert "goalscorer" in types
+
+
+@pytest.mark.asyncio
+async def test_scrape_league_returns_match_odds():
+    """scrape_betclic_leagues returns MatchOdds with player selections for ligue_1."""
+    from app.ingestion.betclic_grpc_scraper import scrape_betclic_leagues
+    results = await scrape_betclic_leagues(["ligue_1"])
+    assert isinstance(results, list)
+    assert len(results) > 0
+    mo = results[0]
+    assert mo.home_team and mo.away_team
+    assert len(mo.selections) > 10

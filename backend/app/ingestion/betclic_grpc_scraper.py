@@ -11,6 +11,7 @@ Player name is in field 10 (bytes, UTF-8).
 """
 from __future__ import annotations
 
+import asyncio
 import codecs
 import datetime as _dt
 import json
@@ -24,7 +25,7 @@ from typing import Any
 import blackboxprotobuf  # type: ignore
 import httpx
 
-from app.ingestion.direct_scrapers import SelectionOdds
+from app.ingestion.direct_scrapers import MatchOdds, SelectionOdds
 
 logger = logging.getLogger(__name__)
 
@@ -195,8 +196,9 @@ async def _stream_first_grpc_frame(
     """POST a gRPC-web request and stream the response until the first data frame is complete.
 
     The server sends the response as chunked transfer-encoding and may keep the
-    connection open after the last data frame (waiting to send trailers).  Reading
-    until the first complete data frame (flags=0x00) avoids a ReadTimeout.
+    connection open after the last data frame (waiting to send trailers).  We
+    explicitly close the response as soon as we have the complete first data
+    frame to avoid blocking in the context-manager __aexit__ drain.
 
     Returns the raw payload bytes of the first data frame, or b'' if none found.
     """
@@ -215,9 +217,12 @@ async def _stream_first_grpc_frame(
                 needed = 5 + frame_len
                 if flags != 0x00:
                     # First frame is a trailer — nothing useful
+                    await r.aclose()
                     return b""
             if needed is not None and len(data) >= needed:
-                # We have the complete first data frame
+                # We have the complete first data frame — close immediately
+                # to avoid blocking in __aexit__ while the server keeps sending.
+                await r.aclose()
                 break
 
     if needed is None or len(data) < needed:
@@ -382,7 +387,7 @@ class BetclicGrpcScraper:
             logger.warning("BetclicGrpcScraper: unknown league %s", league)
             return []
 
-        slug, _comp_id = league_cfg
+        slug, comp_id = league_cfg
         url = f"{BETCLIC_BASE}/football-s1/{slug}/"
 
         try:
@@ -425,6 +430,10 @@ class BetclicGrpcScraper:
             if not match_id_raw:
                 continue
             competition = mx.get("competition", {})
+            # Filter to only the requested competition to avoid parsing protobufs
+            # from other competitions (the page shows all upcoming matches).
+            if competition.get("id", "") != comp_id:
+                continue
             results.append({
                 "match_id": int(match_id_raw),
                 "home_team": home,
@@ -460,7 +469,7 @@ class BetclicGrpcScraper:
         """
         body = encode_grpc_web_request(match_id, language)
         client = self._grpc_client if self._grpc_client is not None else self._client
-        timeout = httpx.Timeout(60.0, connect=10.0)
+        timeout = httpx.Timeout(30.0, connect=10.0)
 
         try:
             raw = await _stream_first_grpc_frame(client, GRPC_ENDPOINT, body, timeout)
@@ -480,7 +489,21 @@ class BetclicGrpcScraper:
             )
             return []
 
-        sels = _parse_match_proto(raw)
+        # Run protobuf decoding in a thread pool with a timeout because
+        # blackboxprotobuf.decode_message() is synchronous and can hang for
+        # certain large/nested protobuf structures (blocking the asyncio event loop).
+        loop = asyncio.get_event_loop()
+        try:
+            sels = await asyncio.wait_for(
+                loop.run_in_executor(None, _parse_match_proto, raw),
+                timeout=5.0,
+            )
+        except TimeoutError:
+            logger.warning(
+                "BetclicGrpcScraper: protobuf decode timed out for match %d (%s v %s)",
+                match_id, home_team, away_team,
+            )
+            return []
         logger.debug(
             "BetclicGrpcScraper: match %d (%s v %s): %d selections",
             match_id,
@@ -489,3 +512,76 @@ class BetclicGrpcScraper:
             len(sels),
         )
         return sels
+
+    async def scrape_league(self, league: str) -> list[MatchOdds]:
+        """Scrape all upcoming matches for a league: match list → gRPC per match."""
+        matches = await self.fetch_competition_matches(league)
+        if not matches:
+            return []
+
+        results: list[MatchOdds] = []
+
+        for i, mx in enumerate(matches):
+            sels = await self.fetch_match_odds(
+                mx["match_id"], mx["home_team"], mx["away_team"], league
+            )
+            if sels:
+                mo = MatchOdds(
+                    home_team=mx["home_team"],
+                    away_team=mx["away_team"],
+                    kickoff_utc=mx.get("kickoff_utc"),
+                    league=league,
+                )
+                mo.selections = sels
+                results.append(mo)
+
+            if i < len(matches) - 1:
+                await asyncio.sleep(_MATCH_SLEEP)
+
+        total_sel = sum(len(m.selections) for m in results)
+        logger.info(
+            "BetclicGrpcScraper %s: %d matches, %d total selections",
+            league, len(results), total_sel,
+        )
+        return results
+
+
+# ---------------------------------------------------------------------------
+# Module-level entry point
+# ---------------------------------------------------------------------------
+
+
+async def scrape_betclic_leagues(leagues: list[str] | None = None) -> list[MatchOdds]:
+    """Scrape all player odds from Betclic via gRPC-web for the given leagues.
+
+    Default: all leagues in BETCLIC_LEAGUES.
+    Returns MatchOdds objects with complete goalscorer + assist selections.
+    """
+    if leagues is None:
+        leagues = list(BETCLIC_LEAGUES.keys())
+
+    async with (
+        httpx.AsyncClient(headers=_PAGE_HEADERS, follow_redirects=True) as page_client,
+        httpx.AsyncClient(headers=_GRPC_HEADERS, follow_redirects=True) as grpc_client,
+    ):
+        scraper = BetclicGrpcScraper(page_client)
+        scraper._grpc_client = grpc_client
+
+        all_matches: list[MatchOdds] = []
+        for i, league in enumerate(leagues):
+            try:
+                matches = await scraper.scrape_league(league)
+                all_matches.extend(matches)
+            except Exception as exc:
+                logger.error(
+                    "BetclicGrpcScraper: league %s failed: %s", league, exc,
+                    exc_info=True,
+                )
+            if i < len(leagues) - 1:
+                await asyncio.sleep(_PAGE_SLEEP)
+
+    logger.info(
+        "scrape_betclic_leagues: %d total matches, %d leagues",
+        len(all_matches), len(leagues),
+    )
+    return all_matches
