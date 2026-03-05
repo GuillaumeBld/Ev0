@@ -22,7 +22,6 @@ import unicodedata
 from datetime import datetime
 from typing import Any
 
-import blackboxprotobuf  # type: ignore
 import httpx
 
 from app.ingestion.direct_scrapers import MatchOdds, SelectionOdds
@@ -233,68 +232,121 @@ async def _stream_first_grpc_frame(
     return data[5 : 5 + frame_len]
 
 
-def _parse_match_proto(proto_bytes: bytes) -> list[SelectionOdds]:
-    """Decode a GetMatchWithNotification protobuf response and extract player selections.
+def _proto_varint(data: bytes, pos: int) -> tuple[int, int]:
+    """Read a protobuf varint. Returns (value, new_pos)."""
+    result = shift = 0
+    while pos < len(data):
+        b = data[pos]
+        pos += 1
+        result |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            return result, pos
+        shift += 7
+    raise ValueError("truncated varint")
 
-    Response structure (discovered via blackboxprotobuf reverse engineering):
-        decoded["1"]["1"]["11"]["3"] = list of markets
-        market["2"] = market name (bytes, UTF-8)
-        market["9"] = state (3 = suspended/closed, skip)
-        market["11"] = list of team groups
-        group["2"] = list of selections
-        sel["10"] or sel["11"] = player name (bytes, UTF-8)
-        sel["12"] = decimal odds as IEEE 754 float64 big-endian
+
+def _proto_fields(data: bytes) -> dict[int, list]:
+    """Parse all fields from a protobuf message into {field_num: [values]}.
+
+    Values are:
+      - int  for wire type 0 (varint)
+      - bytes for wire type 1 (8 bytes, 64-bit)
+      - bytes for wire type 2 (length-delimited)
+      - bytes for wire type 5 (4 bytes, 32-bit)
+    """
+    out: dict[int, list] = {}
+    pos = 0
+    n = len(data)
+    while pos < n:
+        tag, pos = _proto_varint(data, pos)
+        fn, wt = tag >> 3, tag & 7
+        if wt == 0:
+            val, pos = _proto_varint(data, pos)
+        elif wt == 1:
+            val = data[pos: pos + 8]
+            pos += 8
+        elif wt == 2:
+            ln, pos = _proto_varint(data, pos)
+            val = data[pos: pos + ln]
+            pos += ln
+        elif wt == 5:
+            val = data[pos: pos + 4]
+            pos += 4
+        else:
+            break  # unknown wire type — stop
+        out.setdefault(fn, []).append(val)
+    return out
+
+
+def _parse_match_proto(proto_bytes: bytes) -> list[SelectionOdds]:
+    """Extract player selections from a GetMatchWithNotification protobuf response.
+
+    Hand-written parser — no external library, cannot hang.
+
+    Wire structure (reverse-engineered):
+        root.f1.f1.f11.f3[]  = markets
+        market.f2  = name (bytes, UTF-8)
+        market.f9  = state varint (3 = suspended → skip)
+        market.f11[] = team groups
+        group.f2[] = selections
+        sel.f10 or sel.f11 = player name (bytes, UTF-8)
+        sel.f12 = odds (8 bytes, IEEE 754 double, little-endian wire encoding)
     """
     try:
-        decoded, _ = blackboxprotobuf.decode_message(proto_bytes)
-    except Exception as exc:
-        logger.warning("BetclicGrpcScraper: protobuf decode failed: %s", exc)
+        root  = _proto_fields(proto_bytes)
+        f1    = _proto_fields(root[1][0])
+        f1f1  = _proto_fields(f1[1][0])
+        f11   = _proto_fields(f1f1[11][0])
+        markets = f11.get(3, [])
+    except (KeyError, IndexError, ValueError):
+        logger.warning("BetclicGrpcScraper: unexpected protobuf structure")
         return []
-
-    try:
-        markets = decoded["1"]["1"]["11"]["3"]
-    except (KeyError, TypeError):
-        logger.warning(
-            "BetclicGrpcScraper: unexpected protobuf structure (no markets at 1.1.11.3)"
-        )
-        return []
-
-    if not isinstance(markets, list):
-        markets = [markets]
 
     selections: list[SelectionOdds] = []
 
-    for market in markets:
-        if not isinstance(market, dict):
+    for market_bytes in markets:
+        try:
+            market = _proto_fields(market_bytes)
+        except Exception:
             continue
 
-        market_name = decode_bytes_field(market.get("2") or market.get("3") or "")
+        name_raw = market.get(2, [b""])[0]
+        market_name = name_raw.decode("utf-8", errors="replace") if name_raw else ""
         market_type = _classify_market(market_name)
         if not market_type:
             continue
-
-        if market.get("9") == 3:  # suspended/closed
+        if market.get(9, [0])[0] == 3:  # suspended/closed
             continue
 
-        team_groups = market.get("11", [])
-        if not isinstance(team_groups, list):
-            team_groups = [team_groups]
-
-        for group in team_groups:
-            if not isinstance(group, dict):
+        for group_bytes in market.get(11, []):
+            try:
+                group = _proto_fields(group_bytes)
+            except Exception:
                 continue
-            group_sels = group.get("2", [])
-            if not isinstance(group_sels, list):
-                group_sels = [group_sels]
 
-            for sel in group_sels:
-                if not isinstance(sel, dict):
+            for sel_bytes in group.get(2, []):
+                try:
+                    sel = _proto_fields(sel_bytes)
+                except Exception:
                     continue
 
-                player_name = decode_bytes_field(sel.get("10") or sel.get("11") or "")
-                odds = decode_odds_float64(sel.get("12"))
+                name_b = (sel.get(10) or sel.get(11) or [None])[0]
+                if not name_b:
+                    continue
+                player_name = name_b.decode("utf-8", errors="replace").strip()
+                if not player_name:
+                    continue
 
-                if not player_name or not odds:
+                odds_raw = (sel.get(12) or [None])[0]
+                if not odds_raw or len(odds_raw) != 8:
+                    continue
+                try:
+                    # Protobuf double is IEEE 754 little-endian on the wire
+                    odds_val = struct.unpack("<d", odds_raw)[0]
+                    if not (1.01 <= odds_val <= 1000.0):
+                        continue
+                    odds = round(odds_val, 2)
+                except struct.error:
                     continue
 
                 selections.append(
@@ -305,7 +357,7 @@ def _parse_match_proto(proto_bytes: bytes) -> list[SelectionOdds]:
                         bookmaker=BOOKMAKER,
                         raw_data={
                             "market_name": market_name,
-                            "selection_id": sel.get("1"),
+                            "selection_id": (sel.get(1) or [None])[0],
                         },
                     )
                 )
@@ -489,21 +541,7 @@ class BetclicGrpcScraper:
             )
             return []
 
-        # Run protobuf decoding in a thread pool with a timeout because
-        # blackboxprotobuf.decode_message() is synchronous and can hang for
-        # certain large/nested protobuf structures (blocking the asyncio event loop).
-        loop = asyncio.get_event_loop()
-        try:
-            sels = await asyncio.wait_for(
-                loop.run_in_executor(None, _parse_match_proto, raw),
-                timeout=5.0,
-            )
-        except TimeoutError:
-            logger.warning(
-                "BetclicGrpcScraper: protobuf decode timed out for match %d (%s v %s)",
-                match_id, home_team, away_team,
-            )
-            return []
+        sels = _parse_match_proto(raw)
         logger.debug(
             "BetclicGrpcScraper: match %d (%s v %s): %d selections",
             match_id,
