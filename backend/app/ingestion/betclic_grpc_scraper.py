@@ -12,9 +12,16 @@ Player name is in field 10 (bytes, UTF-8).
 from __future__ import annotations
 
 import codecs
+import datetime as _dt
+import json
 import logging
+import re
 import struct
+import unicodedata
+from datetime import datetime
 from typing import Any
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -141,3 +148,133 @@ def decode_odds_float64(raw: Any) -> float | None:
     except (struct.error, ValueError, OverflowError, TypeError):
         pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# HTML / ng-state helpers
+# ---------------------------------------------------------------------------
+
+
+def _slugify(s: str) -> str:
+    """URL-slugify a string (lower-case, ASCII-only, hyphens)."""
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+
+def _parse_kickoff(raw: str | None) -> datetime | None:
+    """Parse Betclic UTC kickoff string to datetime."""
+    if not raw:
+        return None
+    try:
+        # Format: "2026-03-05T20:10:00.0000000Z"
+        cleaned = raw.split(".")[0] + "+00:00"  # strip sub-seconds, add tz
+        return datetime.fromisoformat(cleaned)
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_ng_state(html: str) -> dict:
+    """Extract the Angular ng-state JSON from page HTML."""
+    m = re.search(
+        r'<script[^>]*id="ng-state"[^>]*type="application/json"[^>]*>(.*?)</script>',
+        html,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not m:
+        m = re.search(
+            r'<script[^>]*type="application/json"[^>]*id="ng-state"[^>]*>(.*?)</script>',
+            html,
+            re.DOTALL | re.IGNORECASE,
+        )
+    if not m:
+        return {}
+    try:
+        return json.loads(m.group(1))
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Scraper class
+# ---------------------------------------------------------------------------
+
+
+class BetclicGrpcScraper:
+    """Scrape Betclic odds via direct gRPC-web API calls to offering.begmedia.com."""
+
+    BOOKMAKER = "betclic"
+
+    def __init__(self, client: httpx.AsyncClient) -> None:
+        self._client = client
+        self._grpc_client: httpx.AsyncClient | None = None
+
+    async def fetch_competition_matches(self, league: str) -> list[dict]:
+        """Return upcoming match metadata for a league from the competition page ng-state.
+
+        Fetches the Betclic competition page HTML, extracts the Angular ng-state
+        JSON, and returns match metadata from the gRPC payload.
+
+        Returns:
+            List of dicts with keys: match_id, home_team, away_team,
+            kickoff_utc, competition_id, competition_name, league.
+            Past matches are excluded.
+        """
+        league_cfg = BETCLIC_LEAGUES.get(league)
+        if not league_cfg:
+            logger.warning("BetclicGrpcScraper: unknown league %s", league)
+            return []
+
+        slug, _comp_id = league_cfg
+        url = f"{BETCLIC_BASE}/football-s1/{slug}/"
+
+        try:
+            r = await self._client.get(url, timeout=20)
+            r.raise_for_status()
+        except Exception as exc:
+            logger.warning("BetclicGrpcScraper: page fetch failed %s: %s", url, exc)
+            return []
+
+        ng = _parse_ng_state(r.text)
+        payload = (
+            ng.get("grpc:4011162472", {})
+            .get("response", {})
+            .get("payload", {})
+        )
+        if not payload:
+            logger.warning(
+                "BetclicGrpcScraper: no grpc:4011162472 payload in ng-state for %s", league
+            )
+            return []
+
+        now = datetime.now(_dt.UTC)
+        results: list[dict] = []
+
+        for mx in payload.get("matches", []):
+            kickoff = _parse_kickoff(mx.get("matchDateUtc"))
+            if kickoff and kickoff < now:
+                continue  # skip past matches
+
+            contestants = mx.get("contestants", [])
+            if len(contestants) < 2:
+                continue
+
+            home = contestants[0].get("name", "")
+            away = contestants[1].get("name", "")
+            if not home or not away:
+                continue
+
+            competition = mx.get("competition", {})
+            results.append({
+                "match_id": int(mx["matchId"]),
+                "home_team": home,
+                "away_team": away,
+                "kickoff_utc": kickoff,
+                "competition_id": competition.get("id", ""),
+                "competition_name": competition.get("name", ""),
+                "league": league,
+            })
+
+        logger.info(
+            "BetclicGrpcScraper %s: %d upcoming matches found", league, len(results)
+        )
+        return results

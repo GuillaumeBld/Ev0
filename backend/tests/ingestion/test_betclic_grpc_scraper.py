@@ -1,8 +1,14 @@
 import struct
+
+import httpx
+import pytest
+
 from app.ingestion.betclic_grpc_scraper import (
-    encode_grpc_web_request,
+    BetclicGrpcScraper,
+    _PAGE_HEADERS,
     decode_bytes_field,
     decode_odds_float64,
+    encode_grpc_web_request,
 )
 
 
@@ -31,3 +37,18 @@ def test_decode_bytes_field_utf8():
 
 def test_decode_bytes_field_plain_string():
     assert decode_bytes_field("Lyon") == "Lyon"
+
+
+@pytest.mark.asyncio
+async def test_fetch_matches_returns_list():
+    """fetch_competition_matches returns a non-empty list for ligue_1."""
+    async with httpx.AsyncClient(headers=_PAGE_HEADERS, follow_redirects=True) as client:
+        scraper = BetclicGrpcScraper(client)
+        matches = await scraper.fetch_competition_matches("ligue_1")
+    assert isinstance(matches, list)
+    assert len(matches) > 0
+    m = matches[0]
+    assert "match_id" in m
+    assert "home_team" in m
+    assert "away_team" in m
+    assert "competition_id" in m
