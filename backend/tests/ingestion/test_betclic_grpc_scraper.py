@@ -1,11 +1,9 @@
-import struct
-
 import httpx
 import pytest
 
 from app.ingestion.betclic_grpc_scraper import (
-    BetclicGrpcScraper,
     _PAGE_HEADERS,
+    BetclicGrpcScraper,
     decode_bytes_field,
     decode_odds_float64,
     encode_grpc_web_request,

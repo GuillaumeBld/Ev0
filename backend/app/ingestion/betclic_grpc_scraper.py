@@ -65,11 +65,11 @@ _GRPC_HEADERS = {
 }
 
 # Market name fragments → canonical type
-_GOALSCORER_LABELS = ("buteur (tps r", "buteur anytime", "scorer anytime")
-_ASSIST_LABELS = ("passeur", "joueur d\u00e9cisif", "joueur decisif")
+_GOALSCORER_LABELS = ("buteur (tps r", "buteur anytime", "scorer anytime")  # used by fetch_match_odds
+_ASSIST_LABELS = ("passeur", "joueur d\u00e9cisif", "joueur decisif")       # used by fetch_match_odds
 
-_PAGE_SLEEP = 0.5   # seconds between competition page fetches
-_MATCH_SLEEP = 0.3  # seconds between match gRPC calls
+_PAGE_SLEEP = 0.5   # between competition page fetches (used by scrape_betclic_leagues)
+_MATCH_SLEEP = 0.3  # between match gRPC calls (used by scrape_league)
 
 
 # ---------------------------------------------------------------------------
@@ -166,8 +166,8 @@ def _parse_kickoff(raw: str | None) -> datetime | None:
     if not raw:
         return None
     try:
-        # Format: "2026-03-05T20:10:00.0000000Z"
-        cleaned = raw.split(".")[0] + "+00:00"  # strip sub-seconds, add tz
+        # Format: "2026-03-05T20:10:00.0000000Z" or "2026-03-05T20:10:00Z"
+        cleaned = raw.replace("Z", "").split(".")[0] + "+00:00"  # strip Z, sub-seconds; add tz
         return datetime.fromisoformat(cleaned)
     except (ValueError, TypeError):
         return None
@@ -206,7 +206,7 @@ class BetclicGrpcScraper:
 
     def __init__(self, client: httpx.AsyncClient) -> None:
         self._client = client
-        self._grpc_client: httpx.AsyncClient | None = None
+        self._grpc_client: httpx.AsyncClient | None = None  # set by scrape_betclic_leagues for gRPC calls
 
     async def fetch_competition_matches(self, league: str) -> list[dict]:
         """Return upcoming match metadata for a league from the competition page ng-state.
@@ -263,9 +263,12 @@ class BetclicGrpcScraper:
             if not home or not away:
                 continue
 
+            match_id_raw = mx.get("matchId")
+            if not match_id_raw:
+                continue
             competition = mx.get("competition", {})
             results.append({
-                "match_id": int(mx["matchId"]),
+                "match_id": int(match_id_raw),
                 "home_team": home,
                 "away_team": away,
                 "kickoff_utc": kickoff,
