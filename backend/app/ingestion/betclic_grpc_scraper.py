@@ -585,3 +585,49 @@ async def scrape_betclic_leagues(leagues: list[str] | None = None) -> list[Match
         len(all_matches), len(leagues),
     )
     return all_matches
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+
+if __name__ == "__main__":
+    import argparse
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    parser = argparse.ArgumentParser(description="Betclic gRPC-web full scraper")
+    parser.add_argument(
+        "--league",
+        choices=list(BETCLIC_LEAGUES.keys()),
+        default=None,
+        help="Scrape a single league (default: all)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print selections without storing to DB",
+    )
+    args = parser.parse_args()
+
+    leagues = [args.league] if args.league else None
+    results = asyncio.run(scrape_betclic_leagues(leagues))
+
+    total_sel = sum(len(m.selections) for m in results)
+    print(f"\n{'='*60}")
+    print(f"Betclic gRPC scrape: {len(results)} matches, {total_sel} selections")
+    print(f"{'='*60}")
+
+    if args.dry_run:
+        for mo in results:
+            print(f"\n  {mo.home_team} vs {mo.away_team} [{mo.league}]")
+            if mo.kickoff_utc:
+                print(f"  Kickoff: {mo.kickoff_utc.strftime('%Y-%m-%d %H:%M UTC')}")
+            by_type: dict[str, list] = {}
+            for s in mo.selections:
+                by_type.setdefault(s.market_type, []).append(s)
+            for mtype, sels in by_type.items():
+                print(f"  [{mtype}] {len(sels)} players")
+                for s in sorted(sels, key=lambda x: x.odds)[:5]:
+                    print(f"    {s.player_name}: {s.odds}")
