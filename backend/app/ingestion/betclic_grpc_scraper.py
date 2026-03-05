@@ -71,6 +71,8 @@ _MATCH_SLEEP = 0.3  # seconds between match gRPC calls
 
 def _encode_varint(value: int) -> bytes:
     """Encode a non-negative integer as protobuf varint."""
+    if value < 0:
+        raise ValueError(f"_encode_varint requires a non-negative integer, got {value}")
     result = b""
     while value > 0x7F:
         result += bytes([(value & 0x7F) | 0x80])
@@ -89,7 +91,7 @@ def encode_grpc_web_request(match_id: int, language: str = "fr") -> bytes:
     lang_bytes = language.encode("utf-8")
     proto = (
         b"\x08" + _encode_varint(match_id)
-        + b"\x12" + bytes([len(lang_bytes)]) + lang_bytes
+        + b"\x12" + _encode_varint(len(lang_bytes)) + lang_bytes
     )
     # gRPC-web frame: 1-byte flags (0x00) + 4-byte big-endian length
     return b"\x00" + struct.pack(">I", len(proto)) + proto
@@ -107,6 +109,7 @@ def decode_bytes_field(v: Any) -> str:
             return v.decode("utf-8")
         except UnicodeDecodeError:
             return v.decode("latin-1")
+    # blackboxprotobuf repr uses single-quotes: b'...' not b"..."
     if isinstance(v, str) and v.startswith("b'") and v.endswith("'"):
         inner = v[2:-1]
         try:
@@ -124,6 +127,10 @@ def decode_odds_float64(raw: Any) -> float | None:
 
     Betclic stores decimal odds in field 12 of each selection as a fixed64
     (big-endian IEEE 754 double). Valid odds are between 1.01 and 1000.0.
+
+    Big-endian is correct here because blackboxprotobuf decodes fixed64 fields
+    as unsigned integers using network byte order. Verified against a live
+    Betclic response: raw=4613419904283925545 → 2.77.
     """
     if raw is None:
         return None
@@ -131,6 +138,6 @@ def decode_odds_float64(raw: Any) -> float | None:
         val = struct.unpack(">d", struct.pack(">Q", int(raw)))[0]
         if 1.01 <= val <= 1000.0:
             return round(val, 2)
-    except (struct.error, ValueError, OverflowError):
+    except (struct.error, ValueError, OverflowError, TypeError):
         pass
     return None
