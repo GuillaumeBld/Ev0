@@ -147,6 +147,12 @@ TEAM_ALIASES: dict[str, str] = {
     "ac sparta praha": "sparta-prague",
     "bologna fc": "bologna",
     "bologna fc 1909": "bologna",
+    # UCL name mismatches: English bookmaker names vs German/French FotMob names.
+    # Keys are post-normalization (accent-free, fully lowercase).
+    "bayern munich": "bayern-munich",
+    "bayern munchen": "bayern-munich",
+    "sporting lisbon": "sporting",
+    "barcelone": "barcelona",
 }
 
 

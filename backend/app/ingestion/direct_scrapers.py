@@ -72,7 +72,7 @@ UNIBET_URLS: dict[str, str] = {
     "champions_league": "https://www.unibet.fr/sport/football/champions-league",
 }
 
-PARIONSSPORT_BASE = "https://www.enligne.parionssport.fdj.fr"
+PARIONSSPORT_BASE = "https://www.parionssport.fdj.fr"
 PARIONSSPORT_API = f"{PARIONSSPORT_BASE}/services-api/sportsbookdata/current"
 
 # Competition codes used by ParionsSport's REST API
@@ -538,9 +538,10 @@ class ParionsSportScraper:
             if matches:
                 logger.info("ParionsSport %s: %d matches via HTTP", league, len(matches))
                 return matches
-            logger.warning("ParionsSport HTTP returned 0 matches for %s — trying Playwright", league)
+            logger.info("ParionsSport HTTP returned 0 matches for %s — trying Playwright", league)
         except Exception as exc:
-            logger.warning("ParionsSport HTTP error (%s): %s — trying Playwright", league, exc)
+            # Expected when the API endpoint is geo-blocked or has changed structure
+            logger.info("ParionsSport HTTP unavailable for %s (%s) — trying Playwright", league, exc)
 
         # Playwright fallback
         if page is not None:
@@ -548,7 +549,7 @@ class ParionsSportScraper:
             logger.info("ParionsSport %s: %d matches via Playwright", league, len(matches))
             return matches
 
-        logger.error("ParionsSport: HTTP failed and no Playwright page available for %s", league)
+        logger.info("ParionsSport: HTTP unavailable and no Playwright page for %s — skipping", league)
         return []
 
     # ── HTTP path ──
@@ -569,7 +570,7 @@ class ParionsSportScraper:
 
         events = _extract_list(data, "events", "data", "items", "results")
         if not events:
-            logger.warning("ParionsSport HTTP: no events in response for %s", league)
+            logger.info("ParionsSport HTTP: no events in response for %s", league)
             return []
 
         matches: list[MatchOdds] = []

@@ -131,7 +131,7 @@ class OddsSnapshot:
 
 
 _QUOTA_REDIS_KEY = "odds_api:requests_remaining"
-_QUOTA_LOW_THRESHOLD = 20  # stop calling when fewer than this remain
+_QUOTA_LOW_THRESHOLD = 5  # stop calling when fewer than this remain
 
 
 class QuotaExhaustedError(Exception):
