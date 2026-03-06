@@ -7,7 +7,7 @@ import { clsx } from 'clsx'
 import { patchRecommendation } from '@/lib/api'
 
 interface Recommendation {
-  id: string
+  id: number
   player: string
   team: string
   opponent: string

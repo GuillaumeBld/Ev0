@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.bankroll import BankrollEntry
+from app.models.fixtures import Fixture as FixtureModel
 from app.models.recommendations import Recommendation as RecommendationModel
 from app.rate_limit import limiter
 from app.services.recommendation_service import get_recommendations_for_date
@@ -39,7 +40,7 @@ class Classification(StrEnum):
 class Recommendation(BaseModel):
     """A betting recommendation."""
 
-    id: str
+    id: int
     fixture_id: str
     fixture_name: str
     kickoff_utc: str
@@ -89,12 +90,78 @@ async def get_recommendations(
         error_msg = "Failed to generate recommendations. Please try again later."
         raw_recs = []
 
+    # Persist recs to DB so PATCH can look up by integer id
+    if raw_recs:
+        try:
+            # Build fixture external_id → DB integer id map
+            ext_ids = {r.get("fixture_id", "") for r in raw_recs if r.get("fixture_id")}
+            fix_result = await db.execute(
+                select(FixtureModel.external_id, FixtureModel.id).where(
+                    FixtureModel.external_id.in_(ext_ids)
+                )
+            )
+            fixture_map: dict[str, int] = {row.external_id: row.id for row in fix_result}
+
+            # Load today's already-stored recs
+            today_start = datetime.combine(effective_date, datetime.min.time(), tzinfo=UTC)
+            today_end = datetime.combine(effective_date, datetime.max.time(), tzinfo=UTC)
+            existing_result = await db.execute(
+                select(RecommendationModel).where(
+                    RecommendationModel.generated_utc >= today_start,
+                    RecommendationModel.generated_utc <= today_end,
+                )
+            )
+            existing_by_key: dict[tuple, int] = {
+                (r.fixture_id, r.player_name, r.market_type): r.id
+                for r in existing_result.scalars()
+            }
+
+            now = datetime.now(UTC)
+            new_db_recs: list[tuple[dict, RecommendationModel]] = []
+            for rec in raw_recs:
+                fix_db_id = fixture_map.get(rec.get("fixture_id", ""))
+                if fix_db_id is None:
+                    continue
+                key = (fix_db_id, rec["player_name"], rec["market_type"])
+                if key in existing_by_key:
+                    rec["_db_id"] = existing_by_key[key]
+                else:
+                    expl = rec.get("explanation") or {}
+                    db_rec = RecommendationModel(
+                        fixture_id=fix_db_id,
+                        player_name=rec["player_name"],
+                        market_type=rec["market_type"],
+                        lambda_intensity=float(expl.get("lambda", 0) or 0),
+                        fair_probability=round(1.0 / rec["fair_odds"], 6) if rec.get("fair_odds", 0) > 0 else 0.0,
+                        fair_odds=rec.get("fair_odds", 0.0),
+                        best_bookmaker=rec.get("best_bookmaker", ""),
+                        best_odds=rec.get("market_odds", 0.0),
+                        edge=rec.get("edge", 0.0),
+                        classification=rec.get("classification", "NO_VALUE"),
+                        confidence=rec.get("confidence", 0.5),
+                        explanation=expl,
+                        generated_utc=now,
+                    )
+                    new_db_recs.append((rec, db_rec))
+
+            if new_db_recs:
+                db.add_all([r for _, r in new_db_recs])
+                await db.flush()
+                for rec, db_rec in new_db_recs:
+                    rec["_db_id"] = db_rec.id
+                await db.commit()
+        except Exception as exc:
+            logger.warning("Could not persist recommendations to DB: %s", exc)
+
     # Transform to response models
     recommendations = []
     for rec in raw_recs:
+        db_id = rec.get("_db_id")
+        if db_id is None:
+            continue  # Skip recs without a DB id (fixture not found)
         recommendations.append(
             Recommendation(
-                id=rec.get("id", ""),
+                id=db_id,
                 fixture_id=rec.get("fixture_id", ""),
                 fixture_name=rec.get("fixture_name", ""),
                 kickoff_utc=str(rec.get("kickoff_utc", "")),
@@ -121,7 +188,7 @@ async def get_recommendations(
 
 @router.get("/recommendations/{recommendation_id}")
 async def get_recommendation_detail(
-    recommendation_id: str,
+    recommendation_id: int,
     db: AsyncSession = Depends(get_db),
 ):
     """Get detailed information about a specific recommendation."""
@@ -166,7 +233,7 @@ class RecommendationUpdate(BaseModel):
 
 
 class RecommendationUpdateResponse(BaseModel):
-    id: str
+    id: int
     status: str
     result: str | None
     pnl: float | None
@@ -178,7 +245,7 @@ class RecommendationUpdateResponse(BaseModel):
 @limiter.limit("30/minute")
 async def update_recommendation(
     request: Request,
-    recommendation_id: str,
+    recommendation_id: int,
     body: RecommendationUpdate,
     db: AsyncSession = Depends(get_db),
 ):

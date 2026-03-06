@@ -25,7 +25,7 @@ function parseOpponent(fixtureName: string, team: string): string {
 }
 
 interface ApiRecommendation {
-  id: string
+  id: number
   fixture_id: string
   fixture_name: string
   kickoff_utc: string
