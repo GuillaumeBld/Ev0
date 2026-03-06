@@ -145,6 +145,99 @@ async def job_sync_player_stats():
         logger.error("Error syncing player stats: %s", exc, exc_info=True)
 
 
+# ── Job 2c: FPL / Opta Stats Sync ────────────────────────────────
+
+
+async def job_sync_fpl_stats():
+    """Daily at 07:30 UTC: sync Opta/FPL player stats for all PL players.
+
+    Uses the free FPL API (fantasy.premierleague.com) which is powered by
+    Opta — the same data provider used by Premier League official stats.
+    Upserts PlayerStats rows with source="fpl" for every matched PL player.
+    """
+    logger.info("=== Starting FPL stats sync ===")
+
+    try:
+        from datetime import date
+
+        from app.ingestion.fpl_client import FPLClient, _normalize as _fpl_normalize
+        from app.models.players import Player, PlayerStats
+
+        fpl = FPLClient()
+        fpl_players = await fpl.get_all_players()
+        logger.info("FPL: fetched %d players", len(fpl_players))
+
+        # Build lookup: normalized_name → FPL player dict
+        fpl_lookup: dict[str, dict] = {p["normalized_name"]: p for p in fpl_players}
+
+        today = date.today()
+        season = f"{today.year - 1}/{today.year}" if today.month < 7 else f"{today.year}/{today.year + 1}"
+        as_of = datetime.now(UTC)
+
+        async with async_session() as session:
+            # Load all players in our DB
+            result = await session.execute(select(Player))
+            players = result.scalars().all()
+
+            matched = 0
+            upserted = 0
+            for player in players:
+                norm = _fpl_normalize(player.name)
+                fpl_p = fpl_lookup.get(norm)
+                if not fpl_p:
+                    continue
+                matched += 1
+
+                minutes = fpl_p["minutes"] or 0
+                xg = fpl_p["xg"]
+                xa = fpl_p["xa"]
+
+                # Check for existing snapshot today
+                existing = await session.execute(
+                    select(PlayerStats).where(
+                        PlayerStats.player_id == player.id,
+                        PlayerStats.source == "fpl",
+                        PlayerStats.season == season,
+                    )
+                )
+                stat = existing.scalars().first()
+
+                if stat is None:
+                    stat = PlayerStats(
+                        player_id=player.id,
+                        as_of_utc=as_of,
+                        league="premier_league",
+                        season=season,
+                        source="fpl",
+                    )
+                    session.add(stat)
+
+                stat.as_of_utc = as_of
+                stat.matches_played = fpl_p["goals"] + fpl_p["assists"]  # proxy
+                stat.minutes_played = minutes
+                stat.goals = fpl_p["goals"]
+                stat.assists = fpl_p["assists"]
+                stat.xg = xg
+                stat.xa = xa
+                stat.xg_per_90 = fpl_p["xg_per_90"]
+                stat.xa_per_90 = fpl_p["xa_per_90"]
+                # Store FPL-specific fields: form in npxg, ict_index in npxg_per_90
+                stat.npxg = fpl_p["form"]
+                stat.npxg_per_90 = fpl_p["ict_index"]
+                upserted += 1
+
+            await session.commit()
+            logger.info(
+                "FPL sync complete: %d/%d players matched, %d stats upserted",
+                matched, len(players), upserted,
+            )
+
+    except Exception as exc:
+        logger.error("Error syncing FPL stats: %s", exc, exc_info=True)
+
+    logger.info("=== FPL stats sync complete ===")
+
+
 # ── Job 2b: Match Events Sync ─────────────────────────────────────
 
 
@@ -914,19 +1007,37 @@ async def job_autopilot_settle():
                 if not rec or not fixture:
                     continue
 
+                # Skip decisions that were "skip" actions (stake=0)
+                stake = decision.stake or 0.0
+                if stake == 0:
+                    decision.result = "void"
+                    decision.pnl = 0.0
+                    decision.reward = 0.0
+                    decision.settled_at = datetime.now(UTC)
+                    settled_count += 1
+                    continue
+
+                # Map market_type → MatchEvent.event_type
+                _market_to_event = {
+                    "goalscorer": "goal",
+                    "anytime_score": "goal",
+                    "assist": "assist",
+                    "anytime_assist": "assist",
+                }
+                _event_type = _market_to_event.get(rec.market_type, rec.market_type)
+
                 # Check match events for outcome
                 ev_result = await session.execute(
                     select(MatchEvent).where(
                         MatchEvent.fixture_id == fixture.id,
                         MatchEvent.player_name == rec.player_name,
-                        MatchEvent.event_type == rec.market_type,
+                        MatchEvent.event_type == _event_type,
                     )
                 )
                 events = ev_result.scalars().all()
                 won = len(events) > 0
 
                 result_str = "won" if won else "lost"
-                stake = decision.stake or 10.0
                 pnl = round(
                     stake * (decision.best_odds - 1) if won else -stake, 2
                 )
@@ -984,6 +1095,15 @@ def create_scheduler() -> AsyncIOScheduler:
         CronTrigger(hour=7, minute=0),
         id="sync_player_stats",
         name="Sync player stats from FBref + Understat",
+        replace_existing=True,
+    )
+
+    # FPL/Opta stats: Daily at 07:30 UTC (after player stats sync)
+    scheduler.add_job(
+        job_sync_fpl_stats,
+        CronTrigger(hour=7, minute=30),
+        id="sync_fpl_stats",
+        name="Sync FPL/Opta player stats for PL players",
         replace_existing=True,
     )
 
