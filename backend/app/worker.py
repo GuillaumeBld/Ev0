@@ -485,19 +485,19 @@ async def job_snapshot_direct_odds():
 
             for sel in mo.selections:
                 try:
-                    await store_odds_snapshot(
-                        session,
-                        fixture_id=fixture.id,
-                        player_name=sel.player_name,
-                        market_type=sel.market_type,
-                        bookmaker=sel.bookmaker,
-                        odds=sel.odds,
-                        raw_data=sel.raw_data,
-                    )
+                    async with session.begin_nested():
+                        await store_odds_snapshot(
+                            session,
+                            fixture_id=fixture.id,
+                            player_name=sel.player_name,
+                            market_type=sel.market_type,
+                            bookmaker=sel.bookmaker,
+                            odds=sel.odds,
+                            raw_data=sel.raw_data,
+                        )
                     stored += 1
                 except Exception as exc:
                     logger.debug("Direct odds upsert skip (likely duplicate): %s", exc)
-                    await session.rollback()
 
         await session.commit()
 
