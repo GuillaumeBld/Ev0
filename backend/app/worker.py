@@ -899,7 +899,37 @@ async def job_autopilot_run():
             latest_entry = bal_result.scalar_one_or_none()
             bankroll = latest_entry.balance_after if latest_entry else 1000.0
 
+            from app.notifications import notify_autopilot_position
+
+            # Load stats for scorecard
+            from app.models.autopilot import AutopilotDecision as _AD
+            stats_result = await session.execute(
+                select(
+                    _AD.result,
+                    _AD.pnl,
+                    _AD.stake,
+                ).where(_AD.result.isnot(None))
+            )
+            _stats_rows = stats_result.all()
+            _sc_settled = len(_stats_rows)
+            _sc_won = sum(1 for r in _stats_rows if r.result == "won")
+            _sc_total_pnl = sum(r.pnl or 0.0 for r in _stats_rows)
+            _sc_staked = sum(r.stake or 0.0 for r in _stats_rows if r.result != "void")
+
+            # Count fine-tune runs
+            from app.models.autopilot import AutopilotDecision as _AD2
+            ft_result = await session.execute(
+                select(_AD2.id).where(_AD2.trained_on.is_(True)).limit(1)
+            )
+            # Approximate: count distinct fine-tune batches via settings
+            _ft_setting_result = await session.execute(
+                select(UserSettings).where(UserSettings.key == "autopilot_fine_tune_runs")
+            )
+            _ft_row = _ft_setting_result.scalar_one_or_none()
+            _sc_ft_runs = int(_ft_row.value) if _ft_row else 0
+
             decisions_made = 0
+            bets_this_run: list[dict] = []
             for rec in recs:
                 rec_dict = {
                     "edge": rec.edge,
@@ -945,12 +975,33 @@ async def job_autopilot_run():
                     rec.status = "approved"
                     rec.decided_utc = datetime.now(UTC)
                     decisions_made += 1
+                    bets_this_run.append({
+                        "player_name": rec.player_name,
+                        "fixture_name": fixture_name,
+                        "market_type": rec.market_type,
+                        "best_odds": rec.best_odds,
+                        "edge": rec.edge,
+                        "stake": stake,
+                        "action_idx": action_idx,
+                    })
 
             await session.commit()
             logger.info(
                 "Autopilot run: evaluated %d recs, approved %d bets (mode=%s)",
                 len(recs), decisions_made, mode,
             )
+
+            # Send one Telegram notification per bet taken
+            for bet in bets_this_run:
+                await notify_autopilot_position(
+                    **bet,
+                    mode=mode,
+                    settled=_sc_settled,
+                    won=_sc_won,
+                    total_pnl=_sc_total_pnl,
+                    staked_total=_sc_staked,
+                    fine_tune_runs=_sc_ft_runs,
+                )
 
     except Exception as exc:
         logger.error("Error in autopilot run: %s", exc, exc_info=True)
@@ -1003,6 +1054,9 @@ async def job_autopilot_settle():
             logger.info("Autopilot settle: %d decisions to settle", len(rows))
 
             settled_count = 0
+            batch_won = 0
+            batch_lost = 0
+            batch_pnl = 0.0
             for decision, rec, fixture in rows:
                 if not rec or not fixture:
                     continue
@@ -1057,15 +1111,71 @@ async def job_autopilot_settle():
                     rec.settled_utc = datetime.now(UTC)
 
                 settled_count += 1
+                if result_str == "won":
+                    batch_won += 1
+                elif result_str == "lost":
+                    batch_lost += 1
+                batch_pnl += pnl
 
             await session.commit()
             logger.info("Autopilot settle: settled %d decisions", settled_count)
+
+            if settled_count == 0:
+                return
+
+            # Load global stats for notifications
+            from app.models.autopilot import AutopilotDecision as _AD
+            from app.notifications import notify_autopilot_fine_tune, notify_autopilot_settle
+
+            all_stats = await session.execute(
+                select(_AD.result, _AD.pnl, _AD.stake).where(_AD.result.isnot(None))
+            )
+            _rows = all_stats.all()
+            _total_settled = len(_rows)
+            _total_won = sum(1 for r in _rows if r.result == "won")
+            _total_pnl = sum(r.pnl or 0.0 for r in _rows)
+            _total_staked = sum(r.stake or 0.0 for r in _rows if r.result != "void")
+
+            _ft_setting = await session.execute(
+                select(UserSettings).where(UserSettings.key == "autopilot_fine_tune_runs")
+            )
+            _ft_row = _ft_setting.scalar_one_or_none()
+            _ft_runs = int(_ft_row.value) if _ft_row else 0
+
+            await notify_autopilot_settle(
+                batch_won=batch_won,
+                batch_lost=batch_lost,
+                batch_pnl=batch_pnl,
+                total_settled=_total_settled,
+                total_won=_total_won,
+                total_pnl=_total_pnl,
+                staked_total=_total_staked,
+                fine_tune_runs=_ft_runs,
+            )
 
             # Fine-tune if enough new data
             if settled_count >= 10:
                 logger.info("Triggering fine_tune_from_db (settled=%d)", settled_count)
                 ft_result = await fine_tune_from_db(session)
                 logger.info("Fine-tune complete: %s", ft_result)
+
+                # Increment fine-tune run counter
+                _new_ft_runs = _ft_runs + 1
+                if _ft_row:
+                    _ft_row.value = str(_new_ft_runs)
+                else:
+                    session.add(UserSettings(key="autopilot_fine_tune_runs", value=str(_new_ft_runs)))
+                await session.commit()
+
+                await notify_autopilot_fine_tune(
+                    decisions_used=ft_result["decisions_used"],
+                    td_error_mean=ft_result["td_error_mean"],
+                    fine_tune_runs=_new_ft_runs,
+                    settled=_total_settled,
+                    won=_total_won,
+                    total_pnl=_total_pnl,
+                    staked_total=_total_staked,
+                )
 
     except Exception as exc:
         logger.error("Error in autopilot settle: %s", exc, exc_info=True)
