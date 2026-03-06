@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Calculator, RefreshCw, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
 import { getFixtures, priceMatch, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
@@ -75,7 +75,7 @@ function TeamTable({
           </span>
           <input
             type="number"
-            step="0.1"
+            step="0.05"
             min="0"
             max="5"
             placeholder="override"
@@ -225,6 +225,12 @@ export default function CalculatorPage() {
   const [homePenTaker, setHomePenTaker] = useState<number | null>(null)
   const [awayPenTaker, setAwayPenTaker] = useState<number | null>(null)
 
+  // xG refs so fetchPricing doesn't need them as deps (avoids re-fetch on each keystroke)
+  const homeXgRef = useRef(homeXgOverride)
+  const awayXgRef = useRef(awayXgOverride)
+  useEffect(() => { homeXgRef.current = homeXgOverride }, [homeXgOverride])
+  useEffect(() => { awayXgRef.current = awayXgOverride }, [awayXgOverride])
+
   // Load upcoming fixtures
   useEffect(() => {
     setLoadingFixtures(true)
@@ -240,8 +246,8 @@ export default function CalculatorPage() {
     try {
       const result = await priceMatch({
         fixture_id: fixtureId,
-        home_xg_override: homeXgOverride ? Number(homeXgOverride) : null,
-        away_xg_override: awayXgOverride ? Number(awayXgOverride) : null,
+        home_xg_override: homeXgRef.current ? Number(homeXgRef.current) : null,
+        away_xg_override: awayXgRef.current ? Number(awayXgRef.current) : null,
         home_pen_taker_override: homePenTaker,
         away_pen_taker_override: awayPenTaker,
       })
@@ -251,14 +257,14 @@ export default function CalculatorPage() {
     } finally {
       setLoading(false)
     }
-  }, [homeXgOverride, awayXgOverride, homePenTaker, awayPenTaker])
+  }, [homePenTaker, awayPenTaker])
 
-  // Auto-fetch when fixture selected or overrides change
+  // Auto-fetch only on fixture change or pen taker change — NOT on xG (use button)
   useEffect(() => {
     if (selectedFixtureId !== null) {
       fetchPricing(selectedFixtureId)
     }
-  }, [selectedFixtureId, homeXgOverride, awayXgOverride, homePenTaker, awayPenTaker, fetchPricing])
+  }, [selectedFixtureId, homePenTaker, awayPenTaker, fetchPricing])
 
   function handleFixtureSelect(e: React.ChangeEvent<HTMLSelectElement>) {
     const id = Number(e.target.value)
@@ -321,11 +327,17 @@ export default function CalculatorPage() {
         </div>
       </div>
 
-      {/* Loading state */}
-      {loading && (
-        <div className="flex items-center gap-2 text-gray-400 mb-6">
-          <RefreshCw className="w-4 h-4 animate-spin" />
-          <span className="text-sm">Calcul en cours…</span>
+      {/* Recalculate button (shown when a match is selected) */}
+      {selectedFixtureId && (
+        <div className="mb-4">
+          <button
+            onClick={() => fetchPricing(selectedFixtureId)}
+            disabled={loading}
+            className="flex items-center gap-2 px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Recalculer avec ces xG
+          </button>
         </div>
       )}
 
