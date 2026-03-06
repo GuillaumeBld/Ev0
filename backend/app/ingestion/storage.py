@@ -168,7 +168,7 @@ async def store_odds_snapshot(
     )
 
     session.add(snapshot)
-    await session.commit()
+    await session.flush()
     await session.refresh(snapshot)
 
     return snapshot

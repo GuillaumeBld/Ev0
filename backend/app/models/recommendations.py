@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, String, Text
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -54,6 +54,15 @@ class Recommendation(Base, TimestampMixin):
     generated_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     decided_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     settled_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "fixture_id",
+            "player_name",
+            "market_type",
+            name="uq_recommendation_fixture_player_market",
+        ),
+    )
 
     def __repr__(self) -> str:
         return f"<Recommendation {self.player_name} {self.market_type} edge={self.edge:.2%}>"

@@ -18,6 +18,7 @@ interface Match {
   status: 'upcoming' | 'live' | 'finished'
   homeScore?: number
   awayScore?: number
+  oddsCount: number
   odds: {
     player: string
     market: 'goalscorer' | 'assist'
@@ -44,6 +45,7 @@ function fixtureToMatch(f: FixtureOut): Match {
     status: statusMap[f.status] || 'upcoming',
     homeScore: f.home_score ?? undefined,
     awayScore: f.away_score ?? undefined,
+    oddsCount: f.odds_count ?? 0,
     odds: f.odds.map(o => ({
       player: o.player_name,
       market: o.market_type as 'goalscorer' | 'assist',
@@ -224,7 +226,7 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
 
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-400">
-              {match.odds.length} cotes
+              {match.oddsCount} cotes
             </span>
             <Link
               href={`/dashboard/calculator?match=${match.id}`}
@@ -243,7 +245,7 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
         </div>
 
         {/* Odds Preview */}
-        {match.odds.length > 0 && (
+        {match.oddsCount > 0 && (
           <div className="mt-4 pt-4 border-t border-gray-700">
             <button
               onClick={() => setExpanded(!expanded)}

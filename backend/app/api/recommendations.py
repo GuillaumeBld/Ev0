@@ -146,10 +146,30 @@ async def get_recommendations(
 
             if new_db_recs:
                 db.add_all([r for _, r in new_db_recs])
-                await db.flush()
-                for rec, db_rec in new_db_recs:
-                    rec["_db_id"] = db_rec.id
-                await db.commit()
+                try:
+                    await db.flush()
+                    for rec, db_rec in new_db_recs:
+                        rec["_db_id"] = db_rec.id
+                    await db.commit()
+                except Exception:
+                    # Unique constraint violation from concurrent request — roll back
+                    # and re-fetch the rows that the other request already inserted.
+                    await db.rollback()
+                    refetch_result = await db.execute(
+                        select(RecommendationModel).where(
+                            RecommendationModel.generated_utc >= today_start,
+                            RecommendationModel.generated_utc <= today_end,
+                        )
+                    )
+                    refetched: dict[tuple, int] = {
+                        (r.fixture_id, r.player_name, r.market_type): r.id
+                        for r in refetch_result.scalars()
+                    }
+                    for rec, _ in new_db_recs:
+                        fix_db_id = fixture_map.get(rec.get("fixture_id", ""))
+                        key = (fix_db_id, rec["player_name"], rec["market_type"])
+                        if key in refetched:
+                            rec["_db_id"] = refetched[key]
         except Exception as exc:
             logger.warning("Could not persist recommendations to DB: %s", exc)
 
