@@ -6,9 +6,8 @@ from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.db import get_db
 from app.models.fixtures import Fixture
@@ -88,9 +87,17 @@ async def list_fixtures(
         if (status in ("scheduled", "upcoming") or (not status))
         else Fixture.kickoff_utc.desc()
     )
+
+    # Count odds per fixture in a single subquery — never load all rows
+    odds_count_subq = (
+        select(OddsSnapshot.fixture_id, func.count().label("cnt"))
+        .group_by(OddsSnapshot.fixture_id)
+        .subquery()
+    )
+
     stmt = (
-        select(Fixture)
-        .options(selectinload(Fixture.odds_snapshots))
+        select(Fixture, func.coalesce(odds_count_subq.c.cnt, 0).label("odds_count"))
+        .outerjoin(odds_count_subq, Fixture.id == odds_count_subq.c.fixture_id)
         .order_by(order_col)
         .limit(limit)
     )
@@ -112,39 +119,26 @@ async def list_fixtures(
         )
 
     result = await db.execute(stmt)
-    fixtures = result.scalars().all()
+    rows = result.all()
 
-    items = []
-    for f in fixtures:
-        odds_out = [
-            OddsSnapshotOut(
-                id=o.id,
-                player_name=o.player_name,
-                market_type=o.market_type,
-                bookmaker=o.bookmaker,
-                odds=o.odds,
-                implied_probability=o.implied_probability,
-                snapshot_utc=str(o.snapshot_utc),
-            )
-            for o in f.odds_snapshots
-        ]
-        items.append(
-            FixtureOut(
-                id=f.id,
-                external_id=f.external_id,
-                league=f.league,
-                season=f.season,
-                matchweek=f.matchweek,
-                home_team=f.home_team,
-                away_team=f.away_team,
-                kickoff_utc=str(f.kickoff_utc),
-                status=f.status,
-                home_score=f.home_score,
-                away_score=f.away_score,
-                odds_count=len(f.odds_snapshots),
-                odds=odds_out,
-            )
+    items = [
+        FixtureOut(
+            id=f.id,
+            external_id=f.external_id,
+            league=f.league,
+            season=f.season,
+            matchweek=f.matchweek,
+            home_team=f.home_team,
+            away_team=f.away_team,
+            kickoff_utc=str(f.kickoff_utc),
+            status=f.status,
+            home_score=f.home_score,
+            away_score=f.away_score,
+            odds_count=count,
+            odds=[],
         )
+        for f, count in rows
+    ]
 
     return FixturesResponse(count=len(items), fixtures=items)
 
