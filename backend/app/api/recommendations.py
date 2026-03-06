@@ -121,7 +121,7 @@ async def get_recommendations(
 
 @router.get("/recommendations/{recommendation_id}")
 async def get_recommendation_detail(
-    recommendation_id: int,
+    recommendation_id: str,
     db: AsyncSession = Depends(get_db),
 ):
     """Get detailed information about a specific recommendation."""
@@ -166,7 +166,7 @@ class RecommendationUpdate(BaseModel):
 
 
 class RecommendationUpdateResponse(BaseModel):
-    id: int
+    id: str
     status: str
     result: str | None
     pnl: float | None
@@ -178,7 +178,7 @@ class RecommendationUpdateResponse(BaseModel):
 @limiter.limit("30/minute")
 async def update_recommendation(
     request: Request,
-    recommendation_id: int,
+    recommendation_id: str,
     body: RecommendationUpdate,
     db: AsyncSession = Depends(get_db),
 ):
