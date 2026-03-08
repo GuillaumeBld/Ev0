@@ -86,3 +86,17 @@ curl -X POST http://localhost:8000/backtest/simulate \
   -H "Content-Type: application/json" \
   -d '{"league": "ligue_1", "min_date": "2024-08-01", "max_date": "2025-06-30"}'
 ```
+
+## Documentation Auto-Update Rule
+
+**After every session where code is changed**, update the relevant files in `docs/user-guide/` before committing:
+
+| Changed area | Update this file |
+|-------------|-----------------|
+| Pricing model, edge/Kelly logic | `01-how-ev0-works.md` |
+| New dashboard page or tab changes | `02-using-the-dashboard.md` |
+| Autopilot agent, training, jobs | `03-autopilot.md` |
+| Scraping sources, bookmakers, frequencies | `04-data-scraping.md` |
+| New limitations, removed features, quota changes | `05-limitations.md` |
+
+This applies to ALL Claude Code sessions, including Yohan's on the VPS. The docs are the source of truth for how Ev0 works.
