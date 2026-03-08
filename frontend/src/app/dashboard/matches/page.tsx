@@ -288,6 +288,7 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
     awayTeam: '',
     league: 'ligue1' as Match['league'],
     status: 'upcoming' as Match['status'],
+    oddsCount: 0,
     odds: [] as Match['odds'],
   })
 
