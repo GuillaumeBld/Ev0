@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 services:
   db:
     image: postgres:15-alpine
@@ -24,26 +24,33 @@ services:
       context: ./backend
       dockerfile: Dockerfile
       args:
-        CACHE_BUST: "2026-02-22-v16"
+        CACHE_BUST: 2026-02-22-v16
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in env}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       CORS_ORIGINS_STR: ${CORS_ORIGINS_STR:?Set CORS_ORIGINS_STR in env}
       ODDS_API_KEY: ${ODDS_API_KEY:?Set ODDS_API_KEY in env}
-      DEPLOY_VERSION: "2026-02-22-v16"
+      DEPLOY_VERSION: 2026-02-22-v16
     depends_on:
       - db
       - redis
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     networks:
       - dokploy-network
+    labels:
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.ev0-compose-z5hvqt-4-web.rule=Host(`ev0-compose-z5hvqt-e34c1d-213-130-144-204.traefik.me`)
+      - traefik.http.routers.ev0-compose-z5hvqt-4-web.entrypoints=web
+      - traefik.http.services.ev0-compose-z5hvqt-4-web.loadbalancer.server.port=8000
+      - traefik.http.routers.ev0-compose-z5hvqt-4-web.service=ev0-compose-z5hvqt-4-web
+      - traefik.enable=true
   worker:
     build:
       context: ./backend
       dockerfile: Dockerfile.worker
       args:
-        CACHE_BUST: "2026-02-26-v1"
+        CACHE_BUST: 2026-02-26-v1
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in env}
@@ -112,6 +119,13 @@ services:
       - backend
     networks:
       - dokploy-network
+    labels:
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.ev0-compose-z5hvqt-3-web.rule=Host(`ev0-compose-z5hvqt-a4f9a7-213-130-144-204.traefik.me`)
+      - traefik.http.routers.ev0-compose-z5hvqt-3-web.entrypoints=web
+      - traefik.http.services.ev0-compose-z5hvqt-3-web.loadbalancer.server.port=3000
+      - traefik.http.routers.ev0-compose-z5hvqt-3-web.service=ev0-compose-z5hvqt-3-web
+      - traefik.enable=true
 networks:
   dokploy-network:
     external: true

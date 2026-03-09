@@ -64,12 +64,18 @@ BETCLIC_URLS: dict[str, str] = {
     "ligue_1": "https://www.betclic.fr/football-s1/ligue-1-s4/",
     "premier_league": "https://www.betclic.fr/football-s1/premier-league-s3/",
     "champions_league": "https://www.betclic.fr/football-s1/ligue-des-champions-s5/",
+    "bundesliga": "https://www.betclic.fr/football-s1/bundesliga-s14/",
+    "la_liga": "https://www.betclic.fr/football-s1/liga-s7/",
+    "serie_a": "https://www.betclic.fr/football-s1/serie-a-s17/",
 }
 
 UNIBET_URLS: dict[str, str] = {
     "ligue_1": "https://www.unibet.fr/sport/football/ligue-1",
     "premier_league": "https://www.unibet.fr/sport/football/premier-league",
     "champions_league": "https://www.unibet.fr/sport/football/champions-league",
+    "bundesliga": "https://www.unibet.fr/sport/football/bundesliga",
+    "la_liga": "https://www.unibet.fr/sport/football/la-liga",
+    "serie_a": "https://www.unibet.fr/sport/football/serie-a",
 }
 
 PARIONSSPORT_BASE = "https://www.parionssport.fdj.fr"
@@ -80,12 +86,18 @@ PARIONSSPORT_COMP: dict[str, str] = {
     "ligue_1": "FOOT_FR_L1",
     "premier_league": "FOOT_AN_PL",
     "champions_league": "FOOT_EU_CL",
+    "bundesliga": "FOOT_AL_BL1",
+    "la_liga": "FOOT_ES_D1",
+    "serie_a": "FOOT_IT_D1",
 }
 
 PARIONSSPORT_URLS: dict[str, str] = {
     "ligue_1": f"{PARIONSSPORT_BASE}/paris-football/ligue-1",
     "premier_league": f"{PARIONSSPORT_BASE}/paris-football/premier-league-anglaise",
     "champions_league": f"{PARIONSSPORT_BASE}/paris-football/ligue-des-champions",
+    "bundesliga": f"{PARIONSSPORT_BASE}/paris-football/bundesliga",
+    "la_liga": f"{PARIONSSPORT_BASE}/paris-football/la-liga-espagnole",
+    "serie_a": f"{PARIONSSPORT_BASE}/paris-football/serie-a-italienne",
 }
 
 _BROWSER_UA = (
@@ -829,7 +841,7 @@ async def _cli_main(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    leagues: list[str] = [args.league] if args.league else ["ligue_1", "premier_league", "champions_league"]
+    leagues: list[str] = [args.league] if args.league else ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a"]
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -912,7 +924,7 @@ async def _cli_main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(description="Scrape French bookmaker odds (Betclic / Unibet / ParionsSport)")
-    parser.add_argument("--league", choices=["ligue_1", "premier_league", "champions_league"], default=None, help="Single league")
+    parser.add_argument("--league", choices=["ligue_1", "premier_league", "champions_league", "bundesliga", "la_liga", "serie_a"], default=None, help="Single league")
     parser.add_argument(
         "--bookmaker", choices=["betclic", "unibet", "parionssport"], default=None, help="Single bookmaker"
     )

@@ -12,6 +12,9 @@ import httpx
 UNDERSTAT_LEAGUES = {
     "ligue_1": "Ligue_1",
     "premier_league": "EPL",
+    "bundesliga": "Bundesliga",
+    "la_liga": "La_liga",
+    "serie_a": "Serie_A",
 }
 
 # Current season (starting year)

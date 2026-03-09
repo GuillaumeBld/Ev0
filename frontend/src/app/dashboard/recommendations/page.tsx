@@ -9,11 +9,11 @@ import { getRecommendations } from '@/lib/api'
 type MarketFilter = 'all' | 'goalscorer' | 'assist'
 type EdgeFilter = 'all' | '5+' | '10+' | '15+'
 
-function edgeFilterToMinEdge(f: EdgeFilter): number | undefined {
+function edgeFilterToMinEdge(f: EdgeFilter): number {
   if (f === '5+') return 0.05
   if (f === '10+') return 0.10
   if (f === '15+') return 0.15
-  return undefined
+  return 0 // 'all' → envoie min_edge=0 pour ne pas utiliser le défaut 0.05 du backend
 }
 
 function parseOpponent(fixtureName: string, team: string): string {

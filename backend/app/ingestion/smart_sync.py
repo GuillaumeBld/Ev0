@@ -27,7 +27,7 @@ from app.models.players import Player, PlayerStats, Team
 
 # Constants
 SEASON = "2025-2026"
-LEAGUES = ["ligue_1", "premier_league"]
+LEAGUES = ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a"]
 
 
 def normalize_name(name: str) -> str:

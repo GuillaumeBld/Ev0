@@ -14,7 +14,7 @@ interface Match {
   time: string
   homeTeam: string
   awayTeam: string
-  league: 'ligue1' | 'premier_league'
+  league: 'ligue_1' | 'premier_league' | 'bundesliga' | 'la_liga' | 'serie_a'
   status: 'upcoming' | 'live' | 'finished'
   homeScore?: number
   awayScore?: number
@@ -53,6 +53,18 @@ function fixtureToMatch(f: FixtureOut): Match {
       odds: o.odds,
     })),
   }
+}
+
+const LEAGUE_COLORS: Record<string, string> = {
+  ligue_1:        'bg-blue-500/20 text-blue-400',
+  premier_league: 'bg-purple-500/20 text-purple-400',
+  bundesliga:     'bg-red-500/20 text-red-400',
+  la_liga:        'bg-yellow-500/20 text-yellow-400',
+  serie_a:        'bg-green-500/20 text-green-400',
+}
+const LEAGUE_LABELS: Record<string, string> = {
+  ligue_1: 'L1', premier_league: 'PL',
+  bundesliga: 'BL', la_liga: 'LL', serie_a: 'SA',
 }
 
 export default function MatchesPage() {
@@ -206,11 +218,9 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
 
             {/* League Badge + Status */}
             <div className="flex flex-wrap gap-2">
-              <span className={clsx(
-                'px-2 py-1 rounded text-xs',
-                match.league === 'ligue1' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400'
-              )}>
-                {match.league === 'ligue1' ? 'L1' : 'PL'}
+              <span className={clsx('px-2 py-1 rounded text-xs',
+                LEAGUE_COLORS[match.league] ?? 'bg-gray-500/20 text-gray-400')}>
+                {LEAGUE_LABELS[match.league] ?? match.league}
               </span>
 
               <span className={clsx(
@@ -286,7 +296,7 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
     time: '21:00',
     homeTeam: '',
     awayTeam: '',
-    league: 'ligue1' as Match['league'],
+    league: 'ligue_1' as Match['league'],
     status: 'upcoming' as Match['status'],
     oddsCount: 0,
     odds: [] as Match['odds'],
@@ -339,8 +349,11 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
                 onChange={(e) => setData({ ...data, league: e.target.value as Match['league'] })}
                 className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white"
               >
-                <option value="ligue1">Ligue 1</option>
+                <option value="ligue_1">Ligue 1</option>
                 <option value="premier_league">Premier League</option>
+                <option value="bundesliga">Bundesliga</option>
+                <option value="la_liga">La Liga</option>
+                <option value="serie_a">Serie A</option>
               </select>
             </div>
           </div>

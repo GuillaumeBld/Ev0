@@ -34,7 +34,7 @@ from app.ingestion.understat_scraper import fetch_understat_league
 from app.models.fixtures import Fixture
 from app.models.match_events import MatchEvent
 
-LEAGUES = ["ligue_1", "premier_league"]
+LEAGUES = ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a"]
 # Leagues where Understat has no data — use FotMob stats instead
 _FOTMOB_ONLY_LEAGUES = {"champions_league"}
 
@@ -247,7 +247,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Historical backfill for backtesting")
     parser.add_argument(
         "--league",
-        choices=["ligue_1", "premier_league", "champions_league"],
+        choices=["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a", "champions_league"],
         default=None,
         help="League to backfill (default: ligue_1 + premier_league)",
     )

@@ -13,6 +13,9 @@ FOTMOB_LEAGUES = {
     "ligue_1": 53,
     "premier_league": 47,
     "champions_league": 42,
+    "bundesliga": 54,
+    "la_liga": 87,
+    "serie_a": 55,
 }
 
 # Season name to match — must match what FotMob calls the current season
