@@ -2,6 +2,8 @@
 
 | Item | Statut |
 |------|--------|
+| Modèle C — remplacer FBref par Understat + Sofascore (npxG/xA anchor + quality/creation multiplier) | `[x]` |
+| Importer les données Sofascore manuellement (bloqué sur VPS) | `[x]` |
 | Corriger l'historique | `[ ]` |
 | Ajouter compo + remplacements (effectifs à jour, amélioration modèle joueurs) | `[ ]` |
 | Autopilot apprend de auto flat ? (feature/réflexion) | `[ ]` |
