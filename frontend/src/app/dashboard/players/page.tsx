@@ -39,6 +39,12 @@ interface SyncStatus {
   ligue_1_teams: number
   premier_league_players: number
   premier_league_teams: number
+  bundesliga_players: number
+  bundesliga_teams: number
+  la_liga_players: number
+  la_liga_teams: number
+  serie_a_players: number
+  serie_a_teams: number
   last_sync: string | null
 }
 
@@ -217,7 +223,13 @@ export default function PlayersPage() {
           <p className="text-gray-400 mt-1">
             {syncStatus && (
               <>
-                L1: {syncStatus.ligue_1_players} joueurs • PL: {syncStatus.premier_league_players} joueurs
+                {[
+                  ['L1', syncStatus.ligue_1_players],
+                  ['PL', syncStatus.premier_league_players],
+                  ['BL', syncStatus.bundesliga_players],
+                  ['LL', syncStatus.la_liga_players],
+                  ['SA', syncStatus.serie_a_players],
+                ].map(([label, count]) => `${label}: ${count}`).join(' • ')}
                 {syncStatus.last_sync && (
                   <span className="ml-2 text-gray-500">
                     (màj: {new Date(syncStatus.last_sync).toLocaleDateString('fr-FR')})
@@ -263,6 +275,9 @@ export default function PlayersPage() {
           <option value="">Toutes les ligues</option>
           <option value="ligue_1">Ligue 1</option>
           <option value="premier_league">Premier League</option>
+          <option value="bundesliga">Bundesliga</option>
+          <option value="la_liga">La Liga</option>
+          <option value="serie_a">Serie A</option>
         </select>
 
         <select

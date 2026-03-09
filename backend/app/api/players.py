@@ -130,6 +130,12 @@ class SyncStatusResponse(BaseModel):
     ligue_1_teams: int
     premier_league_players: int
     premier_league_teams: int
+    bundesliga_players: int
+    bundesliga_teams: int
+    la_liga_players: int
+    la_liga_teams: int
+    serie_a_players: int
+    serie_a_teams: int
     last_sync: datetime | None
 
 
@@ -293,31 +299,16 @@ async def get_sync_status(
 ) -> dict[str, Any]:
     """Get sync status."""
 
-    # Count L1
-    l1_players = await session.execute(
-        select(func.count(Player.id)).where(Player.league == "ligue_1")
-    )
-    l1_teams = await session.execute(select(func.count(Team.id)).where(Team.league == "ligue_1"))
+    counts: dict[str, int] = {}
+    for league in ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a"]:
+        p = await session.execute(select(func.count(Player.id)).where(Player.league == league))
+        t = await session.execute(select(func.count(Team.id)).where(Team.league == league))
+        counts[f"{league}_players"] = p.scalar() or 0
+        counts[f"{league}_teams"] = t.scalar() or 0
 
-    # Count PL
-    pl_players = await session.execute(
-        select(func.count(Player.id)).where(Player.league == "premier_league")
-    )
-    pl_teams = await session.execute(
-        select(func.count(Team.id)).where(Team.league == "premier_league")
-    )
+    last_sync = await session.execute(select(func.max(PlayerStats.as_of_utc)))
 
-    # Get last sync time
-    last_sync_stmt = select(func.max(PlayerStats.as_of_utc))
-    last_sync = await session.execute(last_sync_stmt)
-
-    return {
-        "ligue_1_players": l1_players.scalar() or 0,
-        "ligue_1_teams": l1_teams.scalar() or 0,
-        "premier_league_players": pl_players.scalar() or 0,
-        "premier_league_teams": pl_teams.scalar() or 0,
-        "last_sync": last_sync.scalar(),
-    }
+    return {**counts, "last_sync": last_sync.scalar()}
 
 
 @router.get("/{player_id}", response_model=PlayerWithStats)
