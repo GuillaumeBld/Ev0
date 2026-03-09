@@ -119,8 +119,8 @@ async def store_player_stats(
         as_of_utc=now,
         league=league,
         season=season,
-        matches_played=stats.get("matches", 0),
-        minutes_played=stats.get("minutes", 0),
+        matches_played=stats.get("matches_played", stats.get("matches", 0)),
+        minutes_played=stats.get("minutes_played", stats.get("minutes", 0)),
         goals=stats.get("goals", 0),
         npxg=stats.get("npxg", 0.0),
         xg=stats.get("xg", 0.0),
@@ -129,12 +129,26 @@ async def store_player_stats(
         assists=stats.get("assists", 0),
         xa=stats.get("xa", 0.0),
         key_passes=stats.get("key_passes", 0),
-        sca=stats.get("sca", 0),
-        passes_into_penalty_area=stats.get("passes_into_penalty_area", 0),
-        progressive_passes=stats.get("progressive_passes", 0),
-        crosses=stats.get("crosses", 0),
+        # Model C — Understat
+        xgchain=stats.get("xgchain", 0.0),
+        xgbuildup=stats.get("xgbuildup", 0.0),
+        # Model C — Sofascore
+        touches_attack_pen_area=stats.get("touches_attack_pen_area", 0),
+        big_chances_created=stats.get("big_chances_created", 0),
+        accurate_crosses=stats.get("accurate_crosses", 0),
+        total_crosses=stats.get("total_crosses", 0),
+        through_balls=stats.get("through_balls", 0),
+        sofascore_rating=stats.get("sofascore_rating"),
+        # Per-90 rates
         xg_per_90=stats.get("xg_per_90"),
+        npxg_per_90=stats.get("npxg_per_90"),
         xa_per_90=stats.get("xa_per_90"),
+        xgchain_per_90=stats.get("xgchain_per_90"),
+        shots_on_target_per_90=stats.get("shots_on_target_per_90"),
+        touches_attack_pen_area_per_90=stats.get("touches_attack_pen_area_per_90"),
+        bcc_per_90=stats.get("bcc_per_90"),
+        accurate_crosses_per_90=stats.get("accurate_crosses_per_90"),
+        through_balls_per_90=stats.get("through_balls_per_90"),
     )
 
     session.add(player_stats)

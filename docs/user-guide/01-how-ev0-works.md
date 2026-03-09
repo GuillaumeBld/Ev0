@@ -6,10 +6,14 @@ Ev0 cherche des paris à **valeur positive (+EV)** : des paris où notre estimat
 
 ### Étape 1 — Probabilité "fair"
 
-Pour chaque joueur et chaque match, Ev0 calcule une probabilité "fair" qu'il marque (buteur) ou fasse une passe décisive (passeur) :
+Pour chaque joueur et chaque match, Ev0 calcule une probabilité "fair" qu'il marque (buteur) ou fasse une passe décisive (passeur) via le **Modèle C** (Understat + Sofascore) :
 
-- **Module buteur** : basé sur xG/90min, minutes attendues, poste, forme récente (5 matchs)
-- **Module passeur** : basé sur xA/90min, occasions créées, centres, passes clés
+- **Module buteur** : `λ = npxG/90 × (mins/90) × quality_multiplier × conversion_rate × opponent_factor × form`
+  - Ancre : `npxG` (Understat — expected goals hors pénaltys)
+  - Multiplicateur qualité : SOT×0.40 + TAP×0.35 + xGChain×0.25 (normalisé par moyenne de ligue)
+- **Module passeur** : `λ = xA/90 × (mins/90) × creation_multiplier × opponent_factor × form`
+  - Ancre : `xA` (Understat — expected assists)
+  - Multiplicateur création : BCC×w + xGChain×w + Crosses×w + TB×w (poids adaptés au poste)
 
 ### Étape 2 — Cote "fair"
 
@@ -40,8 +44,11 @@ Le `kelly_multiplier` est entre 0.25 et 1.0 pour limiter la variance.
 
 | Signal | Module | Source |
 |--------|--------|--------|
-| xG/90min | Buteur | FBref / Understat |
-| xA/90min | Passeur | FBref / Understat |
+| npxG/90min (ancre buteur) | Buteur | Understat |
+| xA/90min (ancre passeur) | Passeur | Understat |
+| xGChain/90 | Buteur + Passeur | Understat |
+| SOT/90, TAP/90 | Buteur (quality multiplier) | Sofascore |
+| BCC/90, Crosses/90, TB/90 | Passeur (creation multiplier) | Sofascore |
 | Minutes attendues | Les deux | Modèle interne (historique) |
-| Forme récente | Les deux | 5 derniers matchs, pondérés |
-| Intensité lambda | Buteur | Poisson process (λ = xG × mins/90) |
+| Forme récente | Les deux | Décroissance exponentielle |
+| Intensité lambda | Les deux | Poisson process |

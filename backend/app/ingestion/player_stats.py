@@ -1,58 +1,42 @@
-"""Player stats ingestion from FBref.
+"""Player stats ingestion — Model C (Understat + Sofascore).
 
-Fetches shooting (xG, goals) and passing (xA, key passes) stats for players.
+Replaces FBref-based ingestion with:
+  - Understat : xG, npxG, xA, xGChain, xGBuildup, goals, assists, minutes
+  - Sofascore : SOT, TAP, BCC, accurate crosses, through balls, key passes
+
+Utility functions (normalize_player_name, calculate_per_90, calculate_form_factor)
+are unchanged and shared with the rest of the codebase.
 """
 
 import math
 import re
-import time
 import unicodedata
 from typing import Any
 
-from bs4 import BeautifulSoup
 
-# FBref team URLs (partial - need to map team names to IDs)
-FBREF_BASE_URL = "https://fbref.com"
-
-# Rate limiting
-_last_request_time: float = 0.0
-RATE_LIMIT_SECONDS = 3.5
-
+# ── Name normalisation (shared utility) ───────────────────────────
 
 def normalize_player_name(name: str) -> str:
     """
-    Normalize player name for consistent matching.
-
+    Normalize player name for consistent cross-source matching.
     - Remove accents
     - Lowercase
     - Replace spaces with hyphens
     """
-    # Remove accents
     normalized = unicodedata.normalize("NFKD", name)
     normalized = "".join(c for c in normalized if not unicodedata.combining(c))
-
-    # Lowercase and kebab-case
     normalized = normalized.lower().strip()
     normalized = re.sub(r"\s+", "-", normalized)
-
     return normalized
 
 
+# ── Per-90 / form helpers (shared utility) ────────────────────────
+
 def calculate_per_90(stat: float, minutes: int) -> float:
-    """
-    Calculate per-90-minute stat.
-
-    Args:
-        stat: Raw stat value (goals, xG, etc.)
-        minutes: Total minutes played
-
-    Returns:
-        Stat per 90 minutes, rounded to 3 decimals
-    """
+    """Calculate per-90-minute rate, rounded to 4 decimals."""
     if minutes <= 0:
         return 0.0
-
-    return round((stat / minutes) * 90, 3)
+    return round((stat / minutes) * 90, 4)
 
 
 def calculate_form_factor(
@@ -61,31 +45,26 @@ def calculate_form_factor(
     baseline: float | None = None,
 ) -> float:
     """
-    Calculate form factor using exponential decay weighting.
-
-    More recent matches have higher weight.
+    Exponential decay form factor.
 
     Args:
-        recent_values: List of values, most recent first
-        decay_lambda: Decay rate (higher = faster decay)
-        baseline: Expected average value (if None, uses mean of values)
+        recent_values: Values ordered most-recent first
+        decay_lambda:  Decay rate (0.025 ≈ 40-match half-life)
+        baseline:      Expected average (default: mean of recent_values)
 
     Returns:
-        Form factor (1.0 = average, >1 = good form, <1 = bad form)
+        1.0 = average form, >1.0 = above average, <1.0 = below average
     """
     if not recent_values:
         return 1.0
 
     if baseline is None:
         baseline = sum(recent_values) / len(recent_values)
-
     if baseline <= 0:
         return 1.0
 
-    # Calculate weighted average with exponential decay
     total_weight = 0.0
     weighted_sum = 0.0
-
     for i, value in enumerate(recent_values):
         weight = math.exp(-decay_lambda * i)
         weighted_sum += value * weight
@@ -94,283 +73,138 @@ def calculate_form_factor(
     if total_weight <= 0:
         return 1.0
 
-    weighted_avg = weighted_sum / total_weight
-    return weighted_avg / baseline
+    return (weighted_sum / total_weight) / baseline
 
 
-def _rate_limit() -> None:
-    """Enforce rate limiting for FBref requests."""
-    global _last_request_time
-
-    now = time.time()
-    elapsed = now - _last_request_time
-
-    if elapsed < RATE_LIMIT_SECONDS:
-        time.sleep(RATE_LIMIT_SECONDS - elapsed)
-
-    _last_request_time = time.time()
-
-
-class FBrefPlayerStatsParser:
-    """Parser for FBref player stats tables."""
-
-    def parse_shooting(self, html: str) -> list[dict[str, Any]]:
-        """
-        Parse FBref shooting stats table.
-
-        Extracts: player, minutes, goals, shots, shots_on_target, xg, npxg
-        """
-        soup = BeautifulSoup(html, "html.parser")
-        stats: list[dict[str, Any]] = []
-
-        table = soup.find("table", id=re.compile(r"stats.*shooting", re.IGNORECASE))
-        if not table:
-            table = soup.find("table", id="stats_shooting")
-        if not table:
-            return stats
-
-        tbody = table.find("tbody")
-        if not tbody or not hasattr(tbody, "find_all"):
-            return stats
-
-        for row in tbody.find_all("tr"):  # type: ignore[union-attr]
-            player_stat = self._parse_shooting_row(row)
-            if player_stat:
-                stats.append(player_stat)
-
-        return stats
-
-    def _parse_shooting_row(self, row: Any) -> dict[str, Any] | None:
-        """Parse a single shooting stats row."""
-        try:
-            player_cell = row.find("td", {"data-stat": "player"})
-            if not player_cell:
-                return None
-
-            player_name = player_cell.get_text(strip=True)
-            player_link = player_cell.find("a")
-            player_id = None
-            if player_link and "href" in player_link.attrs:
-                match = re.search(r"/players/([^/]+)/", player_link["href"])
-                if match:
-                    player_id = match.group(1)
-
-            # Extract stats
-            minutes = self._get_int(row, "minutes")
-            goals = self._get_int(row, "goals")
-            shots = self._get_int(row, "shots")
-            shots_on_target = self._get_int(row, "shots_on_target")
-            xg = self._get_float(row, "xg")
-            npxg = self._get_float(row, "npxg")
-
-            # Calculate per-90
-            xg_per_90 = calculate_per_90(xg, minutes)
-            npxg_per_90 = calculate_per_90(npxg, minutes)
-
-            return {
-                "player_name": player_name,
-                "player_id": player_id,
-                "minutes": minutes,
-                "goals": goals,
-                "shots": shots,
-                "shots_on_target": shots_on_target,
-                "xg": xg,
-                "npxg": npxg,
-                "xg_per_90": xg_per_90,
-                "npxg_per_90": npxg_per_90,
-            }
-        except Exception:
-            return None
-
-    def parse_passing(self, html: str) -> list[dict[str, Any]]:
-        """
-        Parse FBref passing stats table.
-
-        Extracts: player, assists, xa, key_passes, passes_into_penalty_area, etc.
-        """
-        soup = BeautifulSoup(html, "html.parser")
-        stats: list[dict[str, Any]] = []
-
-        table = soup.find("table", id=re.compile(r"stats.*passing", re.IGNORECASE))
-        if not table:
-            table = soup.find("table", id="stats_passing")
-        if not table:
-            return stats
-
-        tbody = table.find("tbody")
-        if not tbody or not hasattr(tbody, "find_all"):
-            return stats
-
-        for row in tbody.find_all("tr"):  # type: ignore[union-attr]
-            player_stat = self._parse_passing_row(row)
-            if player_stat:
-                stats.append(player_stat)
-
-        return stats
-
-    def _parse_passing_row(self, row: Any) -> dict[str, Any] | None:
-        """Parse a single passing stats row."""
-        try:
-            player_cell = row.find("td", {"data-stat": "player"})
-            if not player_cell:
-                return None
-
-            player_name = player_cell.get_text(strip=True)
-
-            # Extract stats
-            minutes = self._get_int(row, "minutes")
-            assists = self._get_int(row, "assists")
-            xa = self._get_float(row, "xa")
-            key_passes = self._get_int(row, "key_passes")
-            passes_into_penalty_area = self._get_int(row, "passes_into_penalty_area")
-            progressive_passes = self._get_int(row, "progressive_passes")
-            crosses = self._get_int(row, "crosses")
-
-            # Calculate per-90
-            xa_per_90 = calculate_per_90(xa, minutes)
-
-            return {
-                "player_name": player_name,
-                "minutes": minutes,
-                "assists": assists,
-                "xa": xa,
-                "xa_per_90": xa_per_90,
-                "key_passes": key_passes,
-                "passes_into_penalty_area": passes_into_penalty_area,
-                "progressive_passes": progressive_passes,
-                "crosses": crosses,
-            }
-        except Exception:
-            return None
-
-    def parse_gca(self, html: str) -> list[dict[str, Any]]:
-        """
-        Parse FBref goal/shot-creating actions table.
-
-        Extracts: SCA (shot-creating actions), GCA (goal-creating actions)
-        """
-        soup = BeautifulSoup(html, "html.parser")
-        stats: list[dict[str, Any]] = []
-
-        table = soup.find("table", id=re.compile(r"stats.*gca", re.IGNORECASE))
-        if not table:
-            return stats
-
-        tbody = table.find("tbody")
-        if not tbody or not hasattr(tbody, "find_all"):
-            return stats
-
-        for row in tbody.find_all("tr"):  # type: ignore[union-attr]
-            player_stat = self._parse_gca_row(row)
-            if player_stat:
-                stats.append(player_stat)
-
-        return stats
-
-    def _parse_gca_row(self, row: Any) -> dict[str, Any] | None:
-        """Parse a single GCA stats row."""
-        try:
-            player_cell = row.find("td", {"data-stat": "player"})
-            if not player_cell:
-                return None
-
-            player_name = player_cell.get_text(strip=True)
-            minutes = self._get_int(row, "minutes")
-            sca = self._get_int(row, "sca")
-            gca = self._get_int(row, "gca")
-
-            return {
-                "player_name": player_name,
-                "minutes": minutes,
-                "sca": sca,
-                "gca": gca,
-                "sca_per_90": calculate_per_90(sca, minutes),
-            }
-        except Exception:
-            return None
-
-    def _get_int(self, row: Any, stat_name: str) -> int:
-        """Extract integer from cell."""
-        cell = row.find("td", {"data-stat": stat_name})
-        if not cell:
-            return 0
-        text = cell.get_text(strip=True)
-        try:
-            return int(text.replace(",", ""))
-        except ValueError:
-            return 0
-
-    def _get_float(self, row: Any, stat_name: str) -> float:
-        """Extract float from cell."""
-        cell = row.find("td", {"data-stat": stat_name})
-        if not cell:
-            return 0.0
-        text = cell.get_text(strip=True)
-        try:
-            return float(text.replace(",", ""))
-        except ValueError:
-            return 0.0
-
-
-def fetch_player_stats(team_slug: str, season: str) -> list[dict[str, Any]]:
-    """
-    Fetch player stats for a team from FBref.
-
-    Combines shooting and passing stats for each player.
-
-    Args:
-        team_slug: Team identifier (e.g., "paris-saint-germain")
-        season: Season string (e.g., "2024-2025")
-
-    Returns:
-        List of player stats dicts with combined shooting + passing
-    """
-    # TODO: Map team slugs to FBref team IDs
-    # For now, return empty - this needs team ID mapping
-
-    _rate_limit()
-
-    # Placeholder - actual implementation needs team ID lookup
-    # URL format: https://fbref.com/en/squads/{team_id}/{season}/all_comps/
-
-    return []
-
+# ── Merge logic ───────────────────────────────────────────────────
 
 def merge_player_stats(
-    shooting: list[dict[str, Any]],
-    passing: list[dict[str, Any]],
-    gca: list[dict[str, Any]] | None = None,
+    understat_rows: list[dict[str, Any]],
+    sofascore_rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """
-    Merge shooting, passing, and GCA stats for players.
+    Merge Understat and Sofascore stats for each player.
 
-    Matches by normalized player name.
+    Matching is done by normalized player name.
+    Understat provides the xG/xA anchor; Sofascore provides the multiplier inputs.
+
+    Returns a list of merged dicts ready for PlayerStats upsert.
     """
-    merged = {}
+    # Index both sources by normalized name
+    understat_idx: dict[str, dict[str, Any]] = {}
+    for row in understat_rows:
+        key = normalize_player_name(row.get("player_name") or row.get("name", ""))
+        understat_idx[key] = row
 
-    # Start with shooting stats
-    for stat in shooting:
-        name = normalize_player_name(stat["player_name"])
-        merged[name] = stat.copy()
+    sofascore_idx: dict[str, dict[str, Any]] = {}
+    for row in sofascore_rows:
+        key = normalize_player_name(row.get("player_name") or row.get("name", ""))
+        sofascore_idx[key] = row
 
-    # Add passing stats
-    for stat in passing:
-        name = normalize_player_name(stat["player_name"])
-        if name in merged:
-            # Merge, keeping shooting stats as base
-            for key, value in stat.items():
-                if key not in merged[name] or merged[name][key] is None:
-                    merged[name][key] = value
-        else:
-            merged[name] = stat.copy()
+    all_keys = set(understat_idx) | set(sofascore_idx)
+    merged = []
 
-    # Add GCA stats
-    if gca:
-        for stat in gca:
-            name = normalize_player_name(stat["player_name"])
-            if name in merged:
-                merged[name]["sca"] = stat.get("sca", 0)
-                merged[name]["gca"] = stat.get("gca", 0)
-                merged[name]["sca_per_90"] = stat.get("sca_per_90", 0.0)
+    for key in all_keys:
+        us = understat_idx.get(key, {})
+        ss = sofascore_idx.get(key, {})
 
-    return list(merged.values())
+        # Prefer Understat for identity (it has the cleaner name from scraper)
+        base = us if us else ss
+
+        minutes = int(us.get("time", 0) or ss.get("minutes_played", 0) or 0)
+        matches = int(us.get("games", 0) or ss.get("appearances", 0) or 0)
+
+        # Season totals
+        goals = int(us.get("goals", 0) or ss.get("goals", 0) or 0)
+        assists = int(us.get("assists", 0) or ss.get("assists", 0) or 0)
+        xg = float(us.get("xG", 0.0) or 0.0)
+        npxg = float(us.get("npxG", 0.0) or 0.0)
+        xa = float(us.get("xA", 0.0) or 0.0)
+        xgchain = float(us.get("xGChain", 0.0) or 0.0)
+        xgbuildup = float(us.get("xGBuildup", 0.0) or 0.0)
+
+        shots_on_target = int(ss.get("shots_on_target", 0) or 0)
+        touches_attack_pen_area = int(ss.get("touches_attack_pen_area", 0) or 0)
+        big_chances_created = int(ss.get("big_chances_created", 0) or 0)
+        accurate_crosses = int(ss.get("accurate_crosses", 0) or 0)
+        total_crosses = int(ss.get("total_crosses", 0) or 0)
+        through_balls = int(ss.get("through_balls", 0) or 0)
+        key_passes = int(ss.get("key_passes", us.get("key_passes", 0)) or 0)
+
+        # Per-90 rates
+        row_out: dict[str, Any] = {
+            "player_name": base.get("player_name") or base.get("name", key),
+            "normalized_name": key,
+            "team": us.get("team_title") or ss.get("team", ""),
+            "position": us.get("position") or ss.get("position"),
+            "matches_played": matches,
+            "minutes_played": minutes,
+            # Understat
+            "goals": goals,
+            "assists": assists,
+            "xg": xg,
+            "npxg": npxg,
+            "xa": xa,
+            "xgchain": xgchain,
+            "xgbuildup": xgbuildup,
+            # Sofascore
+            "shots_on_target": shots_on_target,
+            "touches_attack_pen_area": touches_attack_pen_area,
+            "big_chances_created": big_chances_created,
+            "accurate_crosses": accurate_crosses,
+            "total_crosses": total_crosses,
+            "through_balls": through_balls,
+            "key_passes": key_passes,
+            "sofascore_rating": float(ss.get("rating", 0.0) or 0.0) or None,
+            # Per-90 (stored for pricing engine)
+            "xg_per_90": calculate_per_90(xg, minutes),
+            "npxg_per_90": calculate_per_90(npxg, minutes),
+            "xa_per_90": calculate_per_90(xa, minutes),
+            "xgchain_per_90": calculate_per_90(xgchain, minutes),
+            "shots_on_target_per_90": calculate_per_90(shots_on_target, minutes),
+            "touches_attack_pen_area_per_90": calculate_per_90(touches_attack_pen_area, minutes),
+            "bcc_per_90": calculate_per_90(big_chances_created, minutes),
+            "accurate_crosses_per_90": calculate_per_90(accurate_crosses, minutes),
+            "through_balls_per_90": calculate_per_90(through_balls, minutes),
+        }
+        merged.append(row_out)
+
+    return merged
+
+
+# ── League averages ───────────────────────────────────────────────
+
+def compute_league_averages_from_merged(
+    merged_rows: list[dict[str, Any]],
+    min_minutes: int = 450,
+) -> dict[str, float]:
+    """
+    Compute league-average per-90 values from a list of merged player rows.
+
+    Used to update LEAGUE_AVG_GOALSCORER and LEAGUE_AVG_ASSIST in team_xg.py
+    at the start of each season.
+
+    Only players with >= min_minutes are included.
+    """
+    eligible = [r for r in merged_rows if (r.get("minutes_played") or 0) >= min_minutes]
+    if not eligible:
+        return {}
+
+    n = len(eligible)
+
+    def avg(field: str) -> float:
+        return round(sum(r.get(field, 0.0) or 0.0 for r in eligible) / n, 4)
+
+    return {
+        # Goalscorer multiplier inputs
+        "sot":     avg("shots_on_target_per_90"),
+        "tap":     avg("touches_attack_pen_area_per_90"),
+        "xgchain": avg("xgchain_per_90"),
+        # Assist multiplier inputs
+        "bcc":     avg("bcc_per_90"),
+        "crosses": avg("accurate_crosses_per_90"),
+        "tb":      avg("through_balls_per_90"),
+        # Anchor baselines (informational)
+        "npxg":    avg("npxg_per_90"),
+        "xa":      avg("xa_per_90"),
+    }

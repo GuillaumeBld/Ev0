@@ -108,7 +108,7 @@ async def job_sync_fixtures():
 
 
 async def job_sync_player_stats():
-    """Sync player stats from Understat + FBref.
+    """Sync player stats from Understat + Sofascore (Model C).
 
     Uses sync_all_players which fetches from both sources,
     stores per-source stats, and computes averages.
@@ -143,6 +143,112 @@ async def job_sync_player_stats():
 
     except Exception as exc:
         logger.error("Error syncing player stats: %s", exc, exc_info=True)
+
+
+# ── Job 2b: Sofascore Stats Sync ─────────────────────────────────
+
+
+async def job_sync_sofascore_stats():
+    """Daily at 07:15 UTC: sync player stats from Sofascore API.
+
+    Fetches BCC, accurate crosses, through balls, SOT, TAP per player.
+    Merges with existing Understat data (source=average) via normalized name.
+    Updates player_stats rows with the new Sofascore fields.
+
+    Note: Sofascore may return 403 from VPS (Cloudflare block). In that case
+    this job completes with 0 updates — data must be imported manually.
+    """
+    logger.info("=== Starting Sofascore stats sync ===")
+
+    try:
+        from datetime import UTC, date
+
+        from app.ingestion.sofascore_scraper import LEAGUES, fetch_league_players
+        from app.ingestion.player_stats import normalize_player_name
+        from app.models.players import Player, PlayerStats
+
+        today = date.today()
+        season = f"{today.year - 1}/{today.year}" if today.month < 7 else f"{today.year}/{today.year + 1}"
+        as_of = datetime.now(UTC)
+
+        user_settings = await _load_user_settings()
+        active_leagues = _get_leagues(user_settings)
+
+        total_updated = 0
+
+        for league_key in active_leagues:
+            cfg = LEAGUES.get(league_key)
+            if not cfg:
+                continue
+
+            try:
+                ss_players = await fetch_league_players(cfg["tournament_id"], cfg["season_id"])
+                logger.info(
+                    "Sofascore: fetched %d players for %s",
+                    len(ss_players), league_key,
+                )
+            except Exception as exc:
+                logger.warning("Sofascore fetch failed for %s (blocked?): %s", league_key, exc)
+                continue
+
+            # Build lookup by normalized name
+            ss_lookup = {normalize_player_name(p.name): p for p in ss_players}
+
+            async with async_session() as session:
+                # Load all players in the DB for this league
+                result = await session.execute(
+                    select(Player).where(Player.league == league_key)
+                )
+                db_players = result.scalars().all()
+
+                updated = 0
+                for player in db_players:
+                    norm = normalize_player_name(player.name)
+                    ss = ss_lookup.get(norm)
+                    if not ss:
+                        continue
+
+                    # Find latest average snapshot for this player
+                    stats_result = await session.execute(
+                        select(PlayerStats)
+                        .where(
+                            PlayerStats.player_id == player.id,
+                            PlayerStats.source == "average",
+                            PlayerStats.season == CURRENT_SEASON,
+                        )
+                        .order_by(PlayerStats.as_of_utc.desc())
+                        .limit(1)
+                    )
+                    stat = stats_result.scalar_one_or_none()
+
+                    if stat is None:
+                        continue
+
+                    # Patch Sofascore fields
+                    stat.shots_on_target = ss.shots_on_target
+                    stat.touches_attack_pen_area = ss.touches_attack_pen_area
+                    stat.big_chances_created = ss.big_chances_created
+                    stat.accurate_crosses = ss.accurate_crosses
+                    stat.total_crosses = ss.total_crosses
+                    stat.through_balls = ss.through_balls
+                    stat.key_passes = ss.key_passes
+                    stat.sofascore_rating = ss.rating or None
+                    stat.sofascore_rating = ss.rating if ss.rating else None
+
+                    # Recompute per-90s
+                    stat.compute_per_90s()
+                    stat.as_of_utc = as_of
+
+                    updated += 1
+
+                await session.commit()
+                logger.info("Sofascore: updated %d players for %s", updated, league_key)
+                total_updated += updated
+
+        logger.info("=== Sofascore stats sync complete — %d players updated ===", total_updated)
+
+    except Exception as exc:
+        logger.error("Error in Sofascore stats sync: %s", exc, exc_info=True)
 
 
 # ── Job 2c: FPL / Opta Stats Sync ────────────────────────────────
@@ -1205,6 +1311,15 @@ def create_scheduler() -> AsyncIOScheduler:
         CronTrigger(hour=7, minute=0),
         id="sync_player_stats",
         name="Sync player stats from FBref + Understat",
+        replace_existing=True,
+    )
+
+    # Sofascore stats: Daily at 07:15 UTC (after Understat, before FPL)
+    scheduler.add_job(
+        job_sync_sofascore_stats,
+        CronTrigger(hour=7, minute=15),
+        id="sync_sofascore_stats",
+        name="Sync Sofascore player stats (BCC, SOT, TAP, crosses, TB)",
         replace_existing=True,
     )
 

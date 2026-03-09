@@ -12,15 +12,17 @@
 Le worker (`backend/app/worker.py`) lance `job_collect_odds()` toutes les heures.
 Les cotes sont stockées dans `OddsSnapshot` avec timestamp.
 
-### Statistiques joueurs
+### Statistiques joueurs (Modèle C)
 
 | Source | Données | Méthode |
 |--------|---------|---------|
-| FBref | xG, xA, passes clés, centres, minutes | HTTP scraping (BeautifulSoup) |
-| Understat | xG/tir détaillé | API JSON |
+| Understat | npxG, xA, xGChain, xGBuildup, goals, assists, minutes | API JSON non officielle |
+| Sofascore | SOT, TAP, BCC, accurate crosses, through balls, key passes, rating | API JSON non officielle |
 | FotMob | Fixtures, match events, lineups | API non officielle |
 
-Fréquence : mise à jour quotidienne via `job_update_stats()`.
+Fréquence : mise à jour quotidienne via `job_sync_player_stats()` (07:00 UTC) + `job_sync_sofascore_stats()` (07:15 UTC).
+
+**Note** : Sofascore est bloqué sur le VPS (Cloudflare 403). Si le job Sofascore échoue, les données peuvent être importées manuellement depuis une machine locale.
 
 ### Matchs et événements
 
@@ -32,7 +34,7 @@ Fréquence : mise à jour quotidienne via `job_update_stats()`.
 
 - **Betclic gRPC** : API non documentée, susceptible de casser si Betclic change son protocole
 - **Parions Sport** : retourne parfois 404 (protection anti-bot connue)
-- **FBref** : rate limiting strict — maximum 1 requête / 3 secondes
+- **Sofascore** : bloqué sur VPS (Cloudflare) — import manuel nécessaire depuis une machine locale
 - **Compositions** : non disponibles avant ~1h du match → incertitude sur les minutes attendues
 
 ## Données non scrappées (calcul interne)
