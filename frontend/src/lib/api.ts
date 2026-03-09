@@ -130,6 +130,13 @@ export async function getRecommendations(params?: {
   return data
 }
 
+export async function getExpiredRecommendations(params?: { date?: string }) {
+  const queryParams: Record<string, string> = {}
+  if (params?.date) queryParams.target_date = params.date
+  const { data } = await api.get('/api/v1/recommendations/expired', { params: queryParams })
+  return data
+}
+
 export async function getRecommendation(id: string) {
   const { data } = await api.get(`/api/v1/recommendations/${id}`)
   return data
@@ -265,6 +272,11 @@ export async function getHistory(params?: {
   status?: string
 }): Promise<HistoryResponse> {
   const { data } = await api.get('/api/v1/history', { params })
+  return data
+}
+
+export async function getAutoflatHistory(): Promise<HistoryResponse> {
+  const { data } = await api.get('/api/v1/history/autoflat')
   return data
 }
 

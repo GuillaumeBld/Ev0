@@ -84,21 +84,16 @@ async def get_history(
     stmt = (
         select(Recommendation, Fixture.home_team, Fixture.away_team)
         .join(Fixture, Recommendation.fixture_id == Fixture.id)
-        .where(
-            or_(
-                Recommendation.status.in_(["executed", "approved"]),
-                Recommendation.result.isnot(None),
-            )
-        )
+        .where(Recommendation.status == "approved")
         .order_by(Recommendation.generated_utc.desc())
         .limit(limit)
     )
 
     # Filter by result status
     if status and status != "all":
-        if status == "pending":
+        if status == "running":
             stmt = stmt.where(Recommendation.result.is_(None))
-        elif status in ("won", "lost"):
+        elif status in ("won", "lost", "void"):
             stmt = stmt.where(Recommendation.result == status)
 
     result = await db.execute(stmt)
@@ -121,7 +116,7 @@ async def get_history(
     bets = []
     for rec, home_team, away_team in rows:
         fixture_name = f"{home_team} vs {away_team}"
-        display_status = rec.result or "pending"
+        display_status = rec.result if rec.result else "running"
 
         bets.append(
             HistoryItem(
@@ -135,8 +130,74 @@ async def get_history(
                 best_bookmaker=rec.best_bookmaker,
                 status=display_status,
                 result=rec.result,
-                pnl=rec.pnl or 0.0,
+                pnl=rec.pnl if rec.result else None,
                 stake=stake_map.get(rec.id),
+            )
+        )
+
+    return HistoryResponse(count=len(bets), bets=bets)
+
+
+@router.get("/history/autoflat", response_model=HistoryResponse)
+async def get_autoflat_history(
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(500, le=1000),
+):
+    """All recommendations treated as 10€ flat bets, result computed from MatchEvents."""
+    from app.models.match_events import MatchEvent
+
+    _market_to_event = {
+        "goalscorer": "goal",
+        "anytime_score": "goal",
+        "assist": "assist",
+        "anytime_assist": "assist",
+    }
+
+    stmt = (
+        select(Recommendation, Fixture)
+        .join(Fixture, Recommendation.fixture_id == Fixture.id)
+        .order_by(Recommendation.generated_utc.desc())
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    bets = []
+    for rec, fixture in rows:
+        fixture_name = f"{fixture.home_team} vs {fixture.away_team}"
+
+        computed_result = rec.result
+        computed_pnl = rec.pnl
+
+        if computed_result is None and fixture.status == "finished":
+            event_type = _market_to_event.get(rec.market_type, rec.market_type)
+            ev = await db.execute(
+                select(MatchEvent).where(
+                    MatchEvent.fixture_id == fixture.id,
+                    MatchEvent.player_name == rec.player_name,
+                    MatchEvent.event_type == event_type,
+                ).limit(1)
+            )
+            won = ev.scalar_one_or_none() is not None
+            computed_result = "won" if won else "lost"
+            computed_pnl = round(10.0 * (rec.best_odds - 1) if won else -10.0, 2)
+
+        display_status = computed_result if computed_result else "running"
+
+        bets.append(
+            HistoryItem(
+                id=rec.id,
+                date=str(rec.generated_utc.date()) if rec.generated_utc else "",
+                fixture_name=fixture_name,
+                player_name=rec.player_name,
+                market_type=rec.market_type,
+                best_odds=rec.best_odds,
+                edge=rec.edge,
+                best_bookmaker=rec.best_bookmaker,
+                status=display_status,
+                result=computed_result,
+                pnl=computed_pnl,
+                stake=10.0,
             )
         )
 

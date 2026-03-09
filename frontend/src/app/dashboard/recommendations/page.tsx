@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Filter, RefreshCw, TrendingUp, Calendar } from 'lucide-react'
+import { Filter, RefreshCw, TrendingUp, Calendar, ChevronDown } from 'lucide-react'
 import { RecommendationCard } from '@/components/RecommendationCard'
-import { getRecommendations } from '@/lib/api'
+import { getRecommendations, getExpiredRecommendations } from '@/lib/api'
 
 type MarketFilter = 'all' | 'goalscorer' | 'assist'
 type EdgeFilter = 'all' | '5+' | '10+' | '15+'
@@ -45,6 +45,7 @@ export default function RecommendationsPage() {
   const [marketFilter, setMarketFilter] = useState<MarketFilter>('all')
   const [edgeFilter, setEdgeFilter] = useState<EdgeFilter>('5+')
   const [selectedDate, setSelectedDate] = useState<string>('')
+  const [expiredOpen, setExpiredOpen] = useState(false)
 
   useEffect(() => {
     setSelectedDate(new Date().toISOString().split('T')[0])
@@ -79,7 +80,31 @@ export default function RecommendationsPage() {
     },
   })
 
+  const { data: expiredData } = useQuery({
+    queryKey: ['recommendations-expired', selectedDate],
+    enabled: !!selectedDate,
+    queryFn: async () => {
+      const response = await getExpiredRecommendations({ date: selectedDate })
+      const recs: ApiRecommendation[] = response.recommendations || []
+      return recs.map((rec) => ({
+        id: rec.id,
+        player: rec.player_name,
+        team: rec.team,
+        opponent: parseOpponent(rec.fixture_name, rec.team),
+        market: rec.market_type,
+        fairOdds: rec.fair_odds,
+        bestOdds: rec.best_odds,
+        bookmaker: rec.best_bookmaker,
+        edge: rec.edge,
+        confidence: rec.confidence,
+        kickoff: rec.kickoff_utc,
+        explanation: rec.explanation,
+      }))
+    },
+  })
+
   const filteredRecs = data || []
+  const expiredRecs = expiredData || []
 
   return (
     <div className="p-4 md:p-8">
@@ -184,6 +209,34 @@ export default function RecommendationsPage() {
           <p className="text-gray-400">Aucune recommandation ne correspond aux filtres</p>
         </div>
       )}
+
+      {/* Section Expirées */}
+      <div className="mt-8">
+        <button
+          onClick={() => setExpiredOpen(!expiredOpen)}
+          className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors mb-4"
+        >
+          <ChevronDown className={`w-4 h-4 transition-transform ${expiredOpen ? 'rotate-180' : ''}`} />
+          <span className="text-sm font-medium">Expirées ({expiredRecs.length})</span>
+        </button>
+
+        {expiredOpen && (
+          expiredRecs.length === 0 ? (
+            <p className="text-sm text-gray-500 italic">Aucune recommandation expirée pour cette date.</p>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 opacity-50">
+              {expiredRecs.map((rec) => (
+                <div key={rec.id} className="relative">
+                  <div className="absolute top-3 right-3 z-10 px-2 py-0.5 bg-gray-600 text-gray-300 text-xs rounded">
+                    Expiré
+                  </div>
+                  <RecommendationCard recommendation={rec} />
+                </div>
+              ))}
+            </div>
+          )
+        )}
+      </div>
     </div>
   )
 }

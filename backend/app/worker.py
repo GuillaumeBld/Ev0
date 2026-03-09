@@ -1210,10 +1210,10 @@ async def job_autopilot_settle():
                 decision.reward = reward
                 decision.settled_at = datetime.now(UTC)
 
-                # Also update linked recommendation
+                # Also update linked recommendation (always 10€ fixed stake for display)
                 if rec.result is None:
                     rec.result = result_str
-                    rec.pnl = pnl
+                    rec.pnl = round(10.0 * (decision.best_odds - 1) if won else -10.0, 2)
                     rec.settled_utc = datetime.now(UTC)
 
                 settled_count += 1
@@ -1287,6 +1287,33 @@ async def job_autopilot_settle():
         logger.error("Error in autopilot settle: %s", exc, exc_info=True)
 
     logger.info("=== Autopilot settle complete ===")
+
+
+# ── Job: Expire Recommendations ───────────────────────────────────
+
+
+async def job_expire_recommendations():
+    """Every 5 min: expire pending recommendations whose fixture has kicked off."""
+    from app.db import async_session
+    from app.models.recommendations import Recommendation
+    from app.models.fixtures import Fixture
+
+    now = datetime.now(UTC)
+    async with async_session() as session:
+        result = await session.execute(
+            select(Recommendation)
+            .join(Fixture, Recommendation.fixture_id == Fixture.id)
+            .where(
+                Recommendation.status == "pending",
+                Fixture.kickoff_utc <= now,
+            )
+        )
+        recs = result.scalars().all()
+        for rec in recs:
+            rec.status = "expired"
+        if recs:
+            await session.commit()
+            logger.info("Expired %d recommendations", len(recs))
 
 
 # ── Scheduler Setup ───────────────────────────────────────────────
@@ -1392,6 +1419,15 @@ def create_scheduler() -> AsyncIOScheduler:
         CronTrigger(hour=9, minute=0),
         id="autopilot_settle",
         name="Autopilot: settle paper trades from match events",
+        replace_existing=True,
+    )
+
+    # Expire recommendations: Every 5 minutes
+    scheduler.add_job(
+        job_expire_recommendations,
+        IntervalTrigger(minutes=5),
+        id="expire_recommendations",
+        name="Expire pending recommendations past kickoff",
         replace_existing=True,
     )
 

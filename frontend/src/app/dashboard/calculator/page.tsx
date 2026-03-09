@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { Calculator, RefreshCw, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
 import { getFixtures, priceMatch, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
@@ -211,7 +212,10 @@ function TeamTable({
 
 // ── Main page ─────────────────────────────────────────────────────
 
-export default function CalculatorPage() {
+function CalculatorInner() {
+  const searchParams = useSearchParams()
+  const matchParam = searchParams.get('match')
+
   const [fixtures, setFixtures] = useState<FixtureOut[]>([])
   const [selectedFixtureId, setSelectedFixtureId] = useState<number | null>(null)
   const [pricing, setPricing] = useState<MatchPriceResponse | null>(null)
@@ -231,14 +235,21 @@ export default function CalculatorPage() {
   useEffect(() => { homeXgRef.current = homeXgOverride }, [homeXgOverride])
   useEffect(() => { awayXgRef.current = awayXgOverride }, [awayXgOverride])
 
-  // Load upcoming fixtures
+  // Load upcoming fixtures, auto-select if ?match= param present
   useEffect(() => {
     setLoadingFixtures(true)
     getFixtures({ status: 'scheduled', limit: 200 })
-      .then((res) => setFixtures(res.fixtures))
+      .then((res) => {
+        setFixtures(res.fixtures)
+        if (matchParam) {
+          const id = Number(matchParam)
+          const found = res.fixtures.find(f => f.id === id)
+          if (found) setSelectedFixtureId(id)
+        }
+      })
       .catch(() => setFixtures([]))
       .finally(() => setLoadingFixtures(false))
-  }, [])
+  }, [matchParam])
 
   const fetchPricing = useCallback(async (fixtureId: number) => {
     setLoading(true)
@@ -398,5 +409,13 @@ export default function CalculatorPage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function CalculatorPage() {
+  return (
+    <Suspense>
+      <CalculatorInner />
+    </Suspense>
   )
 }

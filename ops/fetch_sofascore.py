@@ -18,10 +18,9 @@ OUTPUT = sys.argv[1] if len(sys.argv) > 1 else "/tmp/sofascore_data.json"
 LEAGUES = {
     "ligue_1":        {"tid": 34,  "sid": 77356, "label": "Ligue 1 25/26"},
     "premier_league": {"tid": 17,  "sid": 76986, "label": "Premier League 25/26"},
-    # Bundesliga / La Liga / Serie A — season IDs à confirmer quand actifs dans l'app
-    # "bundesliga":   {"tid": 35, "sid": ???, "label": "Bundesliga 25/26"},
-    # "la_liga":      {"tid": 8,  "sid": ???, "label": "La Liga 25/26"},
-    # "serie_a":      {"tid": 23, "sid": ???, "label": "Serie A 25/26"},
+    "bundesliga":     {"tid": 35, "sid": 77333, "label": "Bundesliga 25/26"},
+    "la_liga":        {"tid": 8,  "sid": 77559, "label": "La Liga 25/26"},
+    "serie_a":        {"tid": 23, "sid": 76457, "label": "Serie A 25/26"},
 }
 
 STAT_FIELDS = (

@@ -206,6 +206,50 @@ async def get_recommendations(
     )
 
 
+@router.get("/recommendations/expired", response_model=RecommendationsResponse)
+async def get_expired_recommendations(
+    db: AsyncSession = Depends(get_db),
+    target_date: date | None = Query(None, description="Date (default: today)"),
+) -> RecommendationsResponse:
+    """Get expired recommendations for a given date (past kickoff)."""
+    effective_date = target_date or date.today()
+    day_start = datetime.combine(effective_date, datetime.min.time(), tzinfo=UTC)
+    day_end = datetime.combine(effective_date, datetime.max.time(), tzinfo=UTC)
+
+    result = await db.execute(
+        select(RecommendationModel, FixtureModel)
+        .join(FixtureModel, RecommendationModel.fixture_id == FixtureModel.id)
+        .where(
+            RecommendationModel.status == "expired",
+            FixtureModel.kickoff_utc >= day_start,
+            FixtureModel.kickoff_utc <= day_end,
+        )
+        .order_by(FixtureModel.kickoff_utc.asc())
+    )
+    rows = result.all()
+
+    recommendations = [
+        Recommendation(
+            id=rec.id,
+            fixture_id=fix.external_id,
+            fixture_name=f"{fix.home_team} vs {fix.away_team}",
+            kickoff_utc=fix.kickoff_utc.isoformat(),
+            player_name=rec.player_name,
+            team="",
+            market_type=rec.market_type,
+            fair_odds=rec.fair_odds,
+            best_bookmaker=rec.best_bookmaker,
+            best_odds=rec.best_odds,
+            edge=rec.edge,
+            classification=rec.classification,
+            confidence=rec.confidence,
+            explanation=rec.explanation or {},
+        )
+        for rec, fix in rows
+    ]
+    return RecommendationsResponse(recommendations=recommendations, error=None)
+
+
 @router.get("/recommendations/{recommendation_id}")
 async def get_recommendation_detail(
     recommendation_id: int,
@@ -287,7 +331,7 @@ async def update_recommendation(
 
     # Update status (approve/reject)
     if body.status:
-        valid_statuses = {"pending", "approved", "rejected", "executed"}
+        valid_statuses = {"pending", "approved", "rejected", "executed", "expired"}
         if body.status not in valid_statuses:
             raise HTTPException(status_code=400, detail=f"Invalid status: {body.status}")
         rec.status = body.status

@@ -2,9 +2,9 @@
 
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Calendar, Clock, Trash2, ChevronRight } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { Plus, Calendar, Trash2 } from 'lucide-react'
 import { clsx } from 'clsx'
-import Link from 'next/link'
 import { getFixtures, createFixture, deleteFixture, createOdds } from '@/lib/api'
 import type { FixtureOut } from '@/lib/api'
 
@@ -56,15 +56,17 @@ function fixtureToMatch(f: FixtureOut): Match {
 }
 
 const LEAGUE_COLORS: Record<string, string> = {
-  ligue_1:        'bg-blue-500/20 text-blue-400',
-  premier_league: 'bg-purple-500/20 text-purple-400',
-  bundesliga:     'bg-red-500/20 text-red-400',
-  la_liga:        'bg-yellow-500/20 text-yellow-400',
-  serie_a:        'bg-green-500/20 text-green-400',
+  ligue_1:          'bg-blue-500/20 text-blue-400',
+  premier_league:   'bg-purple-500/20 text-purple-400',
+  bundesliga:       'bg-red-500/20 text-red-400',
+  la_liga:          'bg-yellow-500/20 text-yellow-400',
+  serie_a:          'bg-green-500/20 text-green-400',
+  champions_league: 'bg-cyan-500/20 text-cyan-400',
 }
 const LEAGUE_LABELS: Record<string, string> = {
   ligue_1: 'L1', premier_league: 'PL',
   bundesliga: 'BL', la_liga: 'LL', serie_a: 'SA',
+  champions_league: 'UCL',
 }
 
 export default function MatchesPage() {
@@ -191,10 +193,14 @@ export default function MatchesPage() {
 
 function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) => void }) {
   const [expanded, setExpanded] = useState(false)
+  const router = useRouter()
 
   return (
     <div className="bg-gray-800 rounded-xl overflow-hidden">
-      <div className="p-4">
+      <div
+        className="p-4 cursor-pointer hover:bg-gray-750 transition-colors"
+        onClick={() => router.push(`/dashboard/calculator?match=${match.id}`)}
+      >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex flex-col sm:flex-row sm:items-center gap-3">
             {/* Date/Time */}
@@ -238,15 +244,8 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
             <span className="text-sm text-gray-400">
               {match.oddsCount} cotes
             </span>
-            <Link
-              href={`/dashboard/calculator?match=${match.id}`}
-              className="p-2 text-brand-400 hover:text-brand-300 transition-colors"
-              title="Calculer pricing"
-            >
-              <ChevronRight className="w-5 h-5" />
-            </Link>
             <button
-              onClick={() => onDelete(match.id)}
+              onClick={(e) => { e.stopPropagation(); onDelete(match.id) }}
               className="p-2 text-gray-400 hover:text-red-400 transition-colors"
             >
               <Trash2 className="w-4 h-4" />
@@ -258,7 +257,7 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
         {match.oddsCount > 0 && (
           <div className="mt-4 pt-4 border-t border-gray-700">
             <button
-              onClick={() => setExpanded(!expanded)}
+              onClick={(e) => { e.stopPropagation(); setExpanded(!expanded) }}
               className="text-sm text-gray-400 hover:text-white transition-colors"
             >
               {expanded ? 'Masquer les cotes' : 'Voir les cotes'}
