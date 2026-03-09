@@ -60,6 +60,9 @@ def fetch_fbref_data(league: str) -> tuple[list[dict], list[dict]]:
     league_map = {
         "ligue_1": "FRA-Ligue 1",
         "premier_league": "ENG-Premier League",
+        "bundesliga": "GER-Bundesliga",
+        "la_liga": "ESP-La Liga",
+        "serie_a": "ITA-Serie A",
     }
 
     sd_league = league_map.get(league)
@@ -438,7 +441,7 @@ async def sync_all():
     print(f"soccerdata available: {HAS_SOCCERDATA}")
     print("=" * 60)
 
-    for league in ["ligue_1", "premier_league"]:
+    for league in ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a"]:
         await sync_league(league)
 
     print("\n" + "=" * 60)

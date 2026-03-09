@@ -27,6 +27,9 @@ FOTMOB_SEASON_IDS = {
     "ligue_1": 27212,
     "premier_league": 27110,
     "champions_league": 28184,  # 2025/2026 UCL season, discovered 2026-03-03
+    "bundesliga": 26891,        # 2025/2026, discovered 2026-03-09
+    "la_liga": 27233,           # 2025/2026, discovered 2026-03-09
+    "serie_a": 27044,           # 2025/2026, discovered 2026-03-09
 }
 
 # Module-level cache for discovered season IDs: (league, season_name) -> TournamentId
