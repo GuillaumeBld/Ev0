@@ -45,6 +45,9 @@ async def get_dates_data(page, slug: str, year: int) -> dict:
         if match:
             raw = match.group(1).encode().decode("unicode_escape")
             data = json.loads(raw)
+    # datesData is a list of match objects — convert to dict keyed by match id
+    if isinstance(data, list):
+        data = {m["id"]: m for m in data if "id" in m}
     return data or {}
 
 
