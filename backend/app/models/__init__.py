@@ -6,6 +6,7 @@ from app.models.base import Base
 from app.models.fixtures import Fixture
 from app.models.match_events import MatchEvent
 from app.models.odds import OddsSnapshot
+from app.models.player_match_minutes import PlayerMatchMinutes
 from app.models.players import DataSource, Player, PlayerStats, Team
 from app.models.recommendations import Recommendation
 from app.models.settings import UserSettings
@@ -19,6 +20,7 @@ __all__ = [
     "MatchEvent",
     "OddsSnapshot",
     "Player",
+    "PlayerMatchMinutes",
     "PlayerStats",
     "Recommendation",
     "Team",
