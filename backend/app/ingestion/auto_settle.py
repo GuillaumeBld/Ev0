@@ -58,6 +58,9 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
 
     logger.info("auto_settle: %d recs to settle", len(rows))
 
+    # Cache has_minutes_data per fixture_id to avoid redundant probes
+    _pmm_cache: dict[int, bool] = {}
+
     settled = 0
     for rec, fixture in rows:
         event_types = _MARKET_TO_EVENTS.get(rec.market_type)
@@ -67,12 +70,14 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
 
         # --- VOID detection via PlayerMatchMinutes ---
         # Check if we have minutes data for this fixture
-        any_pmm = await db.execute(
-            select(PlayerMatchMinutes)
-            .where(PlayerMatchMinutes.fixture_id == fixture.id)
-            .limit(1)
-        )
-        has_minutes_data = any_pmm.scalar_one_or_none() is not None
+        if fixture.id not in _pmm_cache:
+            any_pmm = await db.execute(
+                select(PlayerMatchMinutes)
+                .where(PlayerMatchMinutes.fixture_id == fixture.id)
+                .limit(1)
+            )
+            _pmm_cache[fixture.id] = any_pmm.scalar_one_or_none() is not None
+        has_minutes_data = _pmm_cache[fixture.id]
 
         if has_minutes_data:
             # Look up this specific player's minutes
@@ -84,7 +89,7 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
             )
             pmm = pmm_row.scalar_one_or_none()
 
-            if pmm is None or pmm.minutes_played == 0:
+            if pmm is None or pmm.minutes_played <= 0:
                 # Player didn't play (not in squad or 0 minutes) → VOID
                 rec.result = "void"
                 rec.pnl = 0.0
