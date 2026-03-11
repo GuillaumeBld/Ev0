@@ -18,6 +18,62 @@ import re
 
 from playwright.async_api import async_playwright
 
+# Team name map: Understat names (lowercase) → DB names (lowercase)
+# Used for --fixtures mode to correlate Understat matches with DB fixtures
+_TEAM_NAME_MAP = {
+    "manchester city": "man city",
+    "manchester united": "man utd",
+    "nottingham forest": "nott'm forest",
+    "newcastle united": "newcastle",
+    "wolverhampton wanderers": "wolves",
+    "tottenham hotspur": "tottenham",
+    "brighton & hove albion": "brighton",
+    "west ham united": "west ham",
+    "leicester city": "leicester",
+    "ipswich town": "ipswich",
+    "paris saint-germain": "psg",
+    "olympique de marseille": "marseille",
+    "olympique lyonnais": "lyon",
+    "stade de reims": "reims",
+    "stade brestois 29": "brest",
+    "rc strasbourg alsace": "strasbourg",
+    "stade rennais fc": "rennes",
+    "fc nantes": "nantes",
+    "ogc nice": "nice",
+    "montpellier hsc": "montpellier",
+    "rc lens": "lens",
+    "toulouse fc": "toulouse",
+    "borussia dortmund": "dortmund",
+    "bayer leverkusen": "leverkusen",
+    "eintracht frankfurt": "frankfurt",
+    "vfb stuttgart": "stuttgart",
+    "sc freiburg": "freiburg",
+    "1. fc union berlin": "union berlin",
+    "1. fsv mainz 05": "mainz",
+    "fc augsburg": "augsburg",
+    "1. fc heidenheim 1846": "heidenheim",
+    "sv werder bremen": "werder bremen",
+    "borussia mönchengladbach": "gladbach",
+    "vfl wolfsburg": "wolfsburg",
+    "vfl bochum": "bochum",
+    "fc st. pauli": "st. pauli",
+    "atletico madrid": "atlético madrid",
+    "deportivo alaves": "alavés",
+    "leganes": "leganés",
+    "real valladolid": "valladolid",
+    "ac milan": "milan",
+    "hellas verona": "verona",
+}
+
+
+def _norm(name: str) -> str:
+    return _TEAM_NAME_MAP.get(name.lower().strip(), name.lower().strip())
+
+
+def _teams_match(us_home: str, us_away: str, db_home: str, db_away: str) -> bool:
+    return _norm(us_home) == db_home.lower().strip() and _norm(us_away) == db_away.lower().strip()
+
+
 OUTPUT = "/tmp/understat_rosters.json"
 RATE_LIMIT = 2.0  # seconds between requests
 
@@ -91,6 +147,10 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("output", nargs="?", default=OUTPUT)
     parser.add_argument("--limit", type=int, default=None, help="Max matches per league (for testing)")
+    parser.add_argument(
+        "--fixtures", type=str, default=None,
+        help="JSON file with list of {fixture_id, league, home, away, date} — targeted mode"
+    )
     args = parser.parse_args()
 
     results: dict[str, dict] = {}
@@ -106,43 +166,104 @@ async def main():
         )
         page = await context.new_page()
 
-        for league_key, (slug, year) in LEAGUES.items():
-            print(f"\n=== {league_key} ({slug}/{year}) ===")
-            dates_data = await get_dates_data(page, slug, year)
+        if args.fixtures:
+            # Targeted mode: only fetch specific fixtures
+            with open(args.fixtures) as f:
+                pending = json.load(f)
 
-            # Filter to finished matches only
-            finished = {
-                mid: m for mid, m in dates_data.items()
-                if m.get("isResult")
-            }
-            print(f"  {len(finished)} finished matches found")
+            if not pending:
+                print("No pending fixtures.")
+                await browser.close()
+                with open(args.output, "w") as f:
+                    json.dump({}, f)
+                return
 
-            match_ids = list(finished.keys())
-            if args.limit:
-                match_ids = match_ids[:args.limit]
+            # Group by league
+            by_league: dict[str, list] = {}
+            for fx in pending:
+                by_league.setdefault(fx["league"], []).append(fx)
 
-            for i, mid in enumerate(match_ids):
-                m = finished[mid]
-                home = m.get("h", {}).get("title", "")
-                away = m.get("a", {}).get("title", "")
-                dt_str = m.get("datetime", "")[:10]  # "2025-08-17"
-
-                if mid in results:
-                    continue  # already fetched
-
-                print(f"  [{i+1}/{len(match_ids)}] {home} vs {away} ({dt_str}) id={mid}")
-                try:
-                    rosters_data = await get_rosters_data(page, mid)
-                    if not rosters_data:
-                        print(f"    WARNING: empty rostersData for match {mid}")
-                        continue
-                    results[mid] = parse_roster(rosters_data, home, away, dt_str)
-                    print(f"    → {len(results[mid]['players'])} players")
-                except Exception as e:
-                    print(f"    ERROR: {e}")
+            for league_key, fixtures in by_league.items():
+                league_cfg = LEAGUES.get(league_key)
+                if not league_cfg:
+                    print(f"  SKIP: unknown league '{league_key}'")
                     continue
+                slug, year = league_cfg
+                print(f"\n=== {league_key} — {len(fixtures)} fixture(s) to fetch ===")
+                dates_data = await get_dates_data(page, slug, year)
+                finished = {mid: m for mid, m in dates_data.items() if m.get("isResult")}
 
-                await asyncio.sleep(RATE_LIMIT)
+                for fx in fixtures:
+                    # Find matching Understat match by date + team names
+                    match_ref = None
+                    for mid, m in finished.items():
+                        us_home = m.get("h", {}).get("title", "")
+                        us_away = m.get("a", {}).get("title", "")
+                        dt_str = m.get("datetime", "")[:10]
+                        if dt_str == fx["date"] and _teams_match(us_home, us_away, fx["home"], fx["away"]):
+                            match_ref = (mid, us_home, us_away, dt_str)
+                            break
+
+                    if match_ref is None:
+                        print(f"  SKIP: no Understat match for {fx['home']} vs {fx['away']} ({fx['date']})")
+                        continue
+
+                    mid, home, away, dt_str = match_ref
+                    if mid in results:
+                        continue
+
+                    print(f"  {home} vs {away} ({dt_str}) id={mid}")
+                    try:
+                        rosters_data = await get_rosters_data(page, mid)
+                        if not rosters_data:
+                            print(f"    WARNING: empty rostersData for match {mid}")
+                            continue
+                        results[mid] = parse_roster(rosters_data, home, away, dt_str)
+                        print(f"    → {len(results[mid]['players'])} players")
+                    except Exception as e:
+                        print(f"    ERROR: {e}")
+                        continue
+
+                    await asyncio.sleep(RATE_LIMIT)
+
+        else:
+            # Full mode: fetch all leagues (used for manual backfill)
+            for league_key, (slug, year) in LEAGUES.items():
+                print(f"\n=== {league_key} ({slug}/{year}) ===")
+                dates_data = await get_dates_data(page, slug, year)
+
+                finished = {
+                    mid: m for mid, m in dates_data.items()
+                    if m.get("isResult")
+                }
+                print(f"  {len(finished)} finished matches found")
+
+                match_ids = list(finished.keys())
+                if args.limit:
+                    match_ids = match_ids[:args.limit]
+
+                for i, mid in enumerate(match_ids):
+                    m = finished[mid]
+                    home = m.get("h", {}).get("title", "")
+                    away = m.get("a", {}).get("title", "")
+                    dt_str = m.get("datetime", "")[:10]
+
+                    if mid in results:
+                        continue
+
+                    print(f"  [{i+1}/{len(match_ids)}] {home} vs {away} ({dt_str}) id={mid}")
+                    try:
+                        rosters_data = await get_rosters_data(page, mid)
+                        if not rosters_data:
+                            print(f"    WARNING: empty rostersData for match {mid}")
+                            continue
+                        results[mid] = parse_roster(rosters_data, home, away, dt_str)
+                        print(f"    → {len(results[mid]['players'])} players")
+                    except Exception as e:
+                        print(f"    ERROR: {e}")
+                        continue
+
+                    await asyncio.sleep(RATE_LIMIT)
 
         await browser.close()
 
