@@ -1,0 +1,66 @@
+name: Auto-Settle
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # toutes les 30 min
+  workflow_dispatch:           # déclenchement manuel pour tests
+
+jobs:
+  settle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install chromium --with-deps
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Get pending fixtures
+        id: pending
+        run: |
+          scp -i ~/.ssh/vps_key ops/get_pending_fixtures.py root@${{ secrets.VPS_HOST }}:/tmp/get_pending_fixtures.py
+          ssh -i ~/.ssh/vps_key root@${{ secrets.VPS_HOST }} \
+            "docker cp /tmp/get_pending_fixtures.py ev0-compose-z5hvqt-backend-1:/tmp/ && \
+             docker exec -e PYTHONPATH=/app ev0-compose-z5hvqt-backend-1 python3 /tmp/get_pending_fixtures.py" \
+            > /tmp/pending_fixtures.json
+          COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/pending_fixtures.json'))))")
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+          echo "Pending fixtures: $COUNT"
+          cat /tmp/pending_fixtures.json
+
+      - name: Fetch Understat rosters
+        if: steps.pending.outputs.count != '0'
+        run: |
+          python3 ops/fetch_understat_rosters.py /tmp/understat_rosters.json --fixtures /tmp/pending_fixtures.json
+
+      - name: Import rosters into DB
+        if: steps.pending.outputs.count != '0'
+        run: |
+          scp -i ~/.ssh/vps_key /tmp/understat_rosters.json root@${{ secrets.VPS_HOST }}:/tmp/understat_rosters.json
+          scp -i ~/.ssh/vps_key ops/import_understat_rosters.py root@${{ secrets.VPS_HOST }}:/tmp/import_understat_rosters.py
+          ssh -i ~/.ssh/vps_key root@${{ secrets.VPS_HOST }} \
+            "docker cp /tmp/understat_rosters.json ev0-compose-z5hvqt-backend-1:/tmp/ && \
+             docker cp /tmp/import_understat_rosters.py ev0-compose-z5hvqt-backend-1:/tmp/ && \
+             docker exec -e PYTHONPATH=/app ev0-compose-z5hvqt-backend-1 python3 /tmp/import_understat_rosters.py"
+
+      - name: Trigger auto-settle
+        if: steps.pending.outputs.count != '0'
+        run: |
+          ssh -i ~/.ssh/vps_key root@${{ secrets.VPS_HOST }} \
+            "docker exec ev0-compose-z5hvqt-backend-1 curl -s -X POST http://localhost:8000/api/v1/history/settle"
