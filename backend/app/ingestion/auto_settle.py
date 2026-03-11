@@ -60,6 +60,7 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
 
     # Cache has_minutes_data per fixture_id to avoid redundant probes
     _pmm_cache: dict[int, bool] = {}
+    _events_cache: dict[int, bool] = {}
 
     settled = 0
     for rec, fixture in rows:
@@ -104,11 +105,12 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
             # Player played — fall through to MatchEvents check
 
         # --- WON/LOST via MatchEvents ---
-        # Check if any MatchEvents exist for this fixture at all
-        any_event = await db.execute(
-            select(MatchEvent).where(MatchEvent.fixture_id == fixture.id).limit(1)
-        )
-        if any_event.scalar_one_or_none() is None:
+        if fixture.id not in _events_cache:
+            any_event = await db.execute(
+                select(MatchEvent).where(MatchEvent.fixture_id == fixture.id).limit(1)
+            )
+            _events_cache[fixture.id] = any_event.scalar_one_or_none() is not None
+        if not _events_cache[fixture.id]:
             logger.info(
                 "auto_settle: no MatchEvents for fixture %d (%s vs %s) — skipping",
                 fixture.id, fixture.home_team, fixture.away_team,
