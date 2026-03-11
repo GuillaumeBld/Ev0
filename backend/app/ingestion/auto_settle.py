@@ -2,9 +2,12 @@
 
 For each approved recommendation with result=None:
   1. Check if the fixture is finished
-  2. Check if MatchEvents exist for that fixture
-  3. Determine result: WON (goal or assist event found), LOST (played but no event)
-     VOID must be set manually (no lineup/minutes data available)
+  2. If PlayerMatchMinutes data is available for the fixture:
+     - Player absent or 0 minutes → VOID
+     - Player played (>0 min) → WON/LOST from MatchEvents
+  3. If no PlayerMatchMinutes data:
+     - WON (goal or assist event found), LOST (no event)
+     - VOID must be set manually
   4. Update recommendation: result, pnl, settled_utc
 """
 
@@ -16,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.fixtures import Fixture
 from app.models.match_events import MatchEvent
+from app.models.player_match_minutes import PlayerMatchMinutes
 from app.models.recommendations import Recommendation
 
 logger = logging.getLogger(__name__)
@@ -32,11 +36,9 @@ _MARKET_TO_EVENTS: dict[str, list[str]] = {
 async def settle_approved_recommendations(db: AsyncSession) -> int:
     """Settle all unsettled approved recommendations for finished fixtures.
 
-    Uses the MatchEvents table (goals/assists) to determine WON or LOST.
+    Uses PlayerMatchMinutes for VOID detection when available.
+    Uses MatchEvents (goals/assists) for WON/LOST.
     Returns the number of recommendations settled.
-
-    Note: VOID (player didn't play) cannot be determined from MatchEvents
-    and must be set manually.
     """
     # 1. Find all approved recs with result=None + finished fixture
     stmt = (
@@ -56,7 +58,6 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
 
     logger.info("auto_settle: %d recs to settle", len(rows))
 
-    # 2. For each rec, look up MatchEvents
     settled = 0
     for rec, fixture in rows:
         event_types = _MARKET_TO_EVENTS.get(rec.market_type)
@@ -64,6 +65,40 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
             logger.warning("auto_settle: unknown market_type '%s' for rec %d", rec.market_type, rec.id)
             continue
 
+        # --- VOID detection via PlayerMatchMinutes ---
+        # Check if we have minutes data for this fixture
+        any_pmm = await db.execute(
+            select(PlayerMatchMinutes)
+            .where(PlayerMatchMinutes.fixture_id == fixture.id)
+            .limit(1)
+        )
+        has_minutes_data = any_pmm.scalar_one_or_none() is not None
+
+        if has_minutes_data:
+            # Look up this specific player's minutes
+            pmm_row = await db.execute(
+                select(PlayerMatchMinutes).where(
+                    PlayerMatchMinutes.fixture_id == fixture.id,
+                    PlayerMatchMinutes.player_name == rec.player_name,
+                )
+            )
+            pmm = pmm_row.scalar_one_or_none()
+
+            if pmm is None or pmm.minutes_played == 0:
+                # Player didn't play (not in squad or 0 minutes) → VOID
+                rec.result = "void"
+                rec.pnl = 0.0
+                rec.settled_utc = datetime.now(UTC)
+                settled += 1
+                logger.info(
+                    "auto_settle: rec %d (%s %s) → VOID (minutes=%s)",
+                    rec.id, rec.player_name, rec.market_type,
+                    pmm.minutes_played if pmm else "absent",
+                )
+                continue
+            # Player played — fall through to MatchEvents check
+
+        # --- WON/LOST via MatchEvents ---
         # Check if any MatchEvents exist for this fixture at all
         any_event = await db.execute(
             select(MatchEvent).where(MatchEvent.fixture_id == fixture.id).limit(1)
@@ -75,7 +110,6 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
             )
             continue
 
-        # Check if player scored/assisted
         player_event = await db.execute(
             select(MatchEvent).where(
                 MatchEvent.fixture_id == fixture.id,
