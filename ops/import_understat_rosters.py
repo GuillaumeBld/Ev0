@@ -10,9 +10,9 @@ Inserts PlayerMatchMinutes rows (skips existing on conflict).
 
 import asyncio
 import json
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone, datetime as dt
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.db import async_session
@@ -77,13 +77,15 @@ def teams_match(understat_name: str, db_name: str) -> bool:
 
 
 async def find_fixture(session, home: str, away: str, match_date_str: str) -> Fixture | None:
-    """Find a DB fixture by team names + date (±1 day tolerance for timezone shifts)."""
+    """Find a DB fixture by team names + date (window: -1 day to +2 days to handle timezone shifts)."""
     match_date = date.fromisoformat(match_date_str)
-    # Load fixtures in ±1 day window then match by name
+    # Load fixtures in -1/+2 day window then match by name
+    from_dt = dt(match_date.year, match_date.month, match_date.day, tzinfo=timezone.utc) - timedelta(days=1)
+    to_dt = dt(match_date.year, match_date.month, match_date.day, tzinfo=timezone.utc) + timedelta(days=2)
     result = await session.execute(
         select(Fixture).where(
-            Fixture.kickoff_utc >= (match_date - timedelta(days=1)).isoformat(),
-            Fixture.kickoff_utc <= (match_date + timedelta(days=2)).isoformat(),
+            Fixture.kickoff_utc >= from_dt,
+            Fixture.kickoff_utc <= to_dt,
             Fixture.status == "finished",
         )
     )
