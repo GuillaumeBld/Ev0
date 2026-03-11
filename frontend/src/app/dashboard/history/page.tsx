@@ -7,7 +7,7 @@ import {
   ChevronDown, ChevronUp, Loader2, MinusCircle
 } from 'lucide-react'
 import { clsx } from 'clsx'
-import { getHistory, getAutoflatHistory, patchRecommendation } from '@/lib/api'
+import { getHistory, getAutoflatHistory, patchRecommendation, triggerAutoSettle } from '@/lib/api'
 import type { HistoryItem } from '@/lib/api'
 
 type BetStatus = 'won' | 'lost' | 'running' | 'void'
@@ -46,6 +46,7 @@ export default function HistoryPage() {
   const [statusFilter, setStatusFilter] = useState<BetStatus | 'all'>('all')
   const [sortField, setSortField] = useState<'date' | 'pnl' | 'edge'>('date')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [settling, setSettling] = useState(false)
 
   const { data: approvedData, isLoading: loadingApproved } = useQuery({
     queryKey: ['history-approved', statusFilter],
@@ -70,6 +71,18 @@ export default function HistoryPage() {
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
     },
   })
+
+  const handleAutoSettle = async () => {
+    setSettling(true)
+    try {
+      const res = await triggerAutoSettle()
+      queryClient.invalidateQueries({ queryKey: ['history-approved'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
+      alert(`${res.settled} paris settlés automatiquement`)
+    } finally {
+      setSettling(false)
+    }
+  }
 
   const allBets = (data?.bets || []).map(historyItemToBet)
 
@@ -102,6 +115,14 @@ export default function HistoryPage() {
         <button className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors">
           <Download className="w-4 h-4" />
           Export CSV
+        </button>
+        <button
+          onClick={handleAutoSettle}
+          disabled={settling}
+          className="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white rounded-lg transition-colors"
+        >
+          {settling ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+          Auto-settle
         </button>
       </div>
 

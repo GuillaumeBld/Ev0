@@ -8,6 +8,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.ingestion.auto_settle import settle_approved_recommendations
 from app.models.bankroll import BankrollEntry
 from app.models.fixtures import Fixture
 from app.models.recommendations import Recommendation
@@ -202,6 +203,15 @@ async def get_autoflat_history(
         )
 
     return HistoryResponse(count=len(bets), bets=bets)
+
+
+@router.post("/history/settle", response_model=dict)
+async def trigger_auto_settle(
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger auto-settlement via Understat for all pending approved recs."""
+    count = await settle_approved_recommendations(db)
+    return {"settled": count}
 
 
 @router.get("/stats", response_model=StatsResponse)

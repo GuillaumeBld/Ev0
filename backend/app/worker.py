@@ -21,6 +21,7 @@ from sqlalchemy import select
 from app.cache import close_redis
 from app.config import settings
 from app.db import async_session, engine
+from app.ingestion.auto_settle import settle_approved_recommendations
 from app.ingestion.fotmob_scraper import fetch_fotmob_fixtures
 from app.ingestion.odds import ingest_odds_for_league, normalize_league_key
 from app.ingestion.storage import (
@@ -1316,6 +1317,17 @@ async def job_expire_recommendations():
             logger.info("Expired %d recommendations", len(recs))
 
 
+async def job_auto_settle():
+    """Every 3 hours: auto-settle approved recommendations via Understat."""
+    logger.info("=== Starting auto-settle job ===")
+    try:
+        async with async_session() as session:
+            count = await settle_approved_recommendations(session)
+        logger.info("auto_settle: settled %d recommendations", count)
+    except Exception:
+        logger.exception("auto_settle job failed")
+
+
 # ── Scheduler Setup ───────────────────────────────────────────────
 
 
@@ -1429,6 +1441,14 @@ def create_scheduler() -> AsyncIOScheduler:
         id="expire_recommendations",
         name="Expire pending recommendations past kickoff",
         replace_existing=True,
+    )
+
+    scheduler.add_job(
+        job_auto_settle,
+        IntervalTrigger(hours=3),
+        id="auto_settle",
+        max_instances=1,
+        coalesce=True,
     )
 
     return scheduler

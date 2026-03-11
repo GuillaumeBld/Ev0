@@ -280,6 +280,11 @@ export async function getAutoflatHistory(): Promise<HistoryResponse> {
   return data
 }
 
+export async function triggerAutoSettle(): Promise<{ settled: number }> {
+  const { data } = await api.post('/api/v1/history/settle')
+  return data
+}
+
 export async function getStats(): Promise<StatsResponse> {
   const { data } = await api.get('/api/v1/stats')
   return data
