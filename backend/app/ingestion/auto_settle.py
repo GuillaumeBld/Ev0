@@ -2,12 +2,12 @@
 
 For each approved recommendation with result=None:
   1. Check if the fixture is finished
-  2. If PlayerMatchMinutes data is available for the fixture:
+  2. If no PlayerMatchMinutes data for the fixture → skip (leave running)
+     We need minutes data to distinguish LOST from VOID.
+  3. If PlayerMatchMinutes data is available:
      - Player absent or 0 minutes → VOID
-     - Player played (>0 min) → WON/LOST from MatchEvents
-  3. If no PlayerMatchMinutes data:
-     - WON (goal or assist event found), LOST (no event)
-     - VOID must be set manually
+     - Player played (>0 min) + goal/assist in MatchEvents → WON
+     - Player played (>0 min) + no event → LOST
   4. Update recommendation: result, pnl, settled_utc
 """
 
@@ -80,17 +80,24 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
             _pmm_cache[fixture.id] = any_pmm.scalar_one_or_none() is not None
         has_minutes_data = _pmm_cache[fixture.id]
 
-        if has_minutes_data:
-            # Look up this specific player's minutes
-            pmm_row = await db.execute(
-                select(PlayerMatchMinutes).where(
-                    PlayerMatchMinutes.fixture_id == fixture.id,
-                    PlayerMatchMinutes.player_name == rec.player_name,
-                )
+        if not has_minutes_data:
+            # No minutes data yet — can't distinguish LOST from VOID → leave running
+            logger.debug(
+                "auto_settle: no PlayerMatchMinutes for fixture %d (%s vs %s) — skipping",
+                fixture.id, fixture.home_team, fixture.away_team,
             )
-            pmm = pmm_row.scalar_one_or_none()
+            continue
 
-            if pmm is None or pmm.minutes_played <= 0:
+        # Look up this specific player's minutes
+        pmm_row = await db.execute(
+            select(PlayerMatchMinutes).where(
+                PlayerMatchMinutes.fixture_id == fixture.id,
+                PlayerMatchMinutes.player_name == rec.player_name,
+            )
+        )
+        pmm = pmm_row.scalar_one_or_none()
+
+        if pmm is None or pmm.minutes_played <= 0:
                 # Player didn't play (not in squad or 0 minutes) → VOID
                 rec.result = "void"
                 rec.pnl = 0.0
@@ -102,7 +109,7 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
                     pmm.minutes_played if pmm else "absent",
                 )
                 continue
-            # Player played — fall through to MatchEvents check
+        # Player played — fall through to MatchEvents check
 
         # --- WON/LOST via MatchEvents ---
         if fixture.id not in _events_cache:
