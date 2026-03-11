@@ -14,8 +14,7 @@ Output: /tmp/understat_rosters.json (or specified path)
 import argparse
 import asyncio
 import json
-import sys
-from datetime import date
+import re
 
 from playwright.async_api import async_playwright
 
@@ -42,10 +41,8 @@ async def get_dates_data(page, slug: str, year: int) -> dict:
     if data is None:
         # Fallback: try to extract from script tags (old embed format)
         content = await page.content()
-        import re
         match = re.search(r"datesData\s*=\s*JSON\.parse\('(.+?)'\)", content)
         if match:
-            import urllib.parse
             raw = match.group(1).encode().decode("unicode_escape")
             data = json.loads(raw)
     return data or {}
@@ -59,7 +56,6 @@ async def get_rosters_data(page, understat_id: str) -> dict:
     if data is None:
         # Fallback: try to extract from script tags
         content = await page.content()
-        import re
         match = re.search(r"rostersData\s*=\s*JSON\.parse\('(.+?)'\)", content)
         if match:
             raw = match.group(1).encode().decode("unicode_escape")
@@ -67,7 +63,7 @@ async def get_rosters_data(page, understat_id: str) -> dict:
     return data or {}
 
 
-def parse_roster(rosters_data: dict, understat_id: str, home: str, away: str, match_date: str) -> dict:
+def parse_roster(rosters_data: dict, home: str, away: str, match_date: str) -> dict:
     """Convert raw rostersData into our output format."""
     players = []
     for side in ("h", "a"):
@@ -137,7 +133,7 @@ async def main():
                     if not rosters_data:
                         print(f"    WARNING: empty rostersData for match {mid}")
                         continue
-                    results[mid] = parse_roster(rosters_data, mid, home, away, dt_str)
+                    results[mid] = parse_roster(rosters_data, home, away, dt_str)
                     print(f"    → {len(results[mid]['players'])} players")
                 except Exception as e:
                     print(f"    ERROR: {e}")
