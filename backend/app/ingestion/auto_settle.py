@@ -24,6 +24,31 @@ from app.models.recommendations import Recommendation
 
 logger = logging.getLogger(__name__)
 
+
+def _normalize_name(name: str) -> str:
+    """Normalize a player name for fuzzy matching.
+
+    Removes hyphens, apostrophes, spaces, lowercases.
+    Examples: 'Al-Tamari' == 'Al Tamari' == 'Altamari'
+              "N'Diaye" == 'Ndiaye' == 'N Diaye'
+    """
+    normalized = name.lower().strip()
+    normalized = normalized.replace("-", "").replace("'", "").replace("\u2019", "").replace(" ", "")
+    return normalized
+
+
+def _find_pmm_by_name(pmm_list: list, player_name: str):
+    """Find a PlayerMatchMinutes object by normalized player name.
+
+    Returns the first match or None.
+    """
+    norm = _normalize_name(player_name)
+    for pmm in pmm_list:
+        if _normalize_name(pmm.player_name) == norm:
+            return pmm
+    return None
+
+
 # market_type → list of valid MatchEvent.event_type values
 _MARKET_TO_EVENTS: dict[str, list[str]] = {
     "goalscorer": ["goal", "penalty_goal"],
@@ -58,8 +83,8 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
 
     logger.info("auto_settle: %d recs to settle", len(rows))
 
-    # Cache has_minutes_data per fixture_id to avoid redundant probes
-    _pmm_cache: dict[int, bool] = {}
+    # Cache all PMM rows per fixture_id (None = not loaded yet, [] = loaded but empty)
+    _pmm_cache: dict[int, list] = {}
     _events_cache: dict[int, bool] = {}
 
     settled = 0
@@ -70,17 +95,17 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
             continue
 
         # --- VOID detection via PlayerMatchMinutes ---
-        # Check if we have minutes data for this fixture
+        # Load all PMM rows for fixture once, then match by normalized name
         if fixture.id not in _pmm_cache:
-            any_pmm = await db.execute(
+            all_pmm = await db.execute(
                 select(PlayerMatchMinutes)
                 .where(PlayerMatchMinutes.fixture_id == fixture.id)
-                .limit(1)
             )
-            _pmm_cache[fixture.id] = any_pmm.scalar_one_or_none() is not None
-        has_minutes_data = _pmm_cache[fixture.id]
+            _pmm_cache[fixture.id] = list(all_pmm.scalars().all())
 
-        if not has_minutes_data:
+        pmm_rows = _pmm_cache[fixture.id]
+
+        if not pmm_rows:
             # No minutes data yet — can't distinguish LOST from VOID → leave running
             logger.debug(
                 "auto_settle: no PlayerMatchMinutes for fixture %d (%s vs %s) — skipping",
@@ -88,14 +113,7 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
             )
             continue
 
-        # Look up this specific player's minutes
-        pmm_row = await db.execute(
-            select(PlayerMatchMinutes).where(
-                PlayerMatchMinutes.fixture_id == fixture.id,
-                PlayerMatchMinutes.player_name == rec.player_name,
-            )
-        )
-        pmm = pmm_row.scalar_one_or_none()
+        pmm = _find_pmm_by_name(pmm_rows, rec.player_name)
 
         if pmm is None or pmm.minutes_played <= 0:
                 # Player didn't play (not in squad or 0 minutes) → VOID
