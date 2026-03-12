@@ -22,17 +22,15 @@ from app.models.player_match_minutes import PlayerMatchMinutes
 DATA_PATH = "/tmp/understat_rosters.json"
 
 TEAM_NAME_MAP = {
-    "manchester city": "man city",
-    "manchester united": "man utd",
-    "nottingham forest": "nott'm forest",
-    "newcastle united": "newcastle",
-    "wolverhampton wanderers": "wolves",
-    "tottenham hotspur": "tottenham",
-    "brighton & hove albion": "brighton",
-    "west ham united": "west ham",
-    "leicester city": "leicester",
-    "ipswich town": "ipswich",
-    "paris saint-germain": "psg",
+    # EPL — Understat uses short names, DB uses full names
+    "tottenham": "tottenham hotspur",
+    "bournemouth": "afc bournemouth",
+    "leeds": "leeds united",
+    "brighton": "brighton & hove albion",
+    "west ham": "west ham united",
+    "leicester": "leicester city",
+    "ipswich": "ipswich town",
+    # Ligue 1 — Understat uses full French names, DB uses short names
     "olympique de marseille": "marseille",
     "olympique lyonnais": "lyon",
     "stade de reims": "reims",
@@ -44,26 +42,18 @@ TEAM_NAME_MAP = {
     "montpellier hsc": "montpellier",
     "rc lens": "lens",
     "toulouse fc": "toulouse",
-    "borussia dortmund": "dortmund",
-    "bayer leverkusen": "leverkusen",
-    "eintracht frankfurt": "frankfurt",
-    "vfb stuttgart": "stuttgart",
-    "sc freiburg": "freiburg",
+    # Bundesliga — Understat uses full German names, DB uses short names
     "1. fc union berlin": "union berlin",
-    "1. fsv mainz 05": "mainz",
+    "1. fsv mainz 05": "mainz 05",
     "fc augsburg": "augsburg",
-    "1. fc heidenheim 1846": "heidenheim",
+    "1. fc heidenheim 1846": "fc heidenheim",
     "sv werder bremen": "werder bremen",
-    "borussia mönchengladbach": "gladbach",
     "vfl wolfsburg": "wolfsburg",
     "vfl bochum": "bochum",
     "fc st. pauli": "st. pauli",
-    "atletico madrid": "atlético madrid",
-    "deportivo alaves": "alavés",
-    "leganes": "leganés",
-    "real valladolid": "valladolid",
+    "sc freiburg": "freiburg",
+    # Serie A
     "ac milan": "milan",
-    "hellas verona": "verona",
 }
 
 
