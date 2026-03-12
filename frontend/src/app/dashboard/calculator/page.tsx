@@ -238,7 +238,7 @@ function CalculatorInner() {
   // Load upcoming fixtures, auto-select if ?match= param present
   useEffect(() => {
     setLoadingFixtures(true)
-    getFixtures({ status: 'scheduled', limit: 200 })
+    getFixtures({ status: 'scheduled', limit: 200, upcoming_only: true })
       .then((res) => {
         setFixtures(res.fixtures)
         if (matchParam) {
