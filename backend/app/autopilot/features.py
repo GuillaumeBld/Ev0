@@ -1,7 +1,7 @@
 """Feature extraction for the autopilot RL agent.
 
 Converts a recommendation dict (backtest record or live rec) into a
-normalised 10-dimensional state vector that the Q-agent can consume.
+normalised 13-dimensional state vector that the Q-agent can consume.
 
 Backtest record keys  (from backtest/simulator.py):
   edge, confidence, market_odds, fair_odds, fair_prob, market, league,
@@ -15,7 +15,7 @@ Live recommendation keys (from models/recommendations.py):
 
 import numpy as np
 
-FEATURE_DIM = 10
+FEATURE_DIM = 13
 
 FEATURE_NAMES = [
     "edge",
@@ -27,15 +27,20 @@ FEATURE_NAMES = [
     "is_goalscorer",  # 1 if goalscorer market
     "is_premier_league",  # 1 if PL
     "is_forward",     # 1 if FW/ST position
+    "edge_rank",      # normalised rank among today's recs
+    "n_recs_today",   # number of recs today / 10
+    "odds_movement",  # % drop from first snapshot (steam signal)
     "bias",           # always 1.0
 ]
 
 
 def extract_features(rec: dict) -> np.ndarray:
-    """Convert a recommendation dict to a normalised 10-dim feature vector.
+    """Convert a recommendation dict to a normalised 13-dim feature vector.
 
     Works for both backtest records and live Recommendation ORM objects
-    (passed as dicts).
+    (passed as dicts).  The 3 contextual features (edge_rank, n_recs_today,
+    odds_movement) are set to safe defaults here; use
+    extract_features_with_context() to fill them with real values.
     """
     # --- edge ---
     edge = float(rec.get("edge", 0.0))
@@ -96,21 +101,63 @@ def extract_features(rec: dict) -> np.ndarray:
         position = position.upper()
     is_forward = 1.0 if position in ("FW", "ST", "CF", "SS") else 0.0
 
-    features = np.array(
-        [
-            edge,
-            confidence,
-            implied_prob,
-            fair_prob,
-            lambda_val,
-            mins_ratio,
-            is_goalscorer,
-            is_premier_league,
-            is_forward,
-            1.0,  # bias
-        ],
-        dtype=np.float64,
-    )
+    features = np.zeros(FEATURE_DIM, dtype=np.float64)
+    features[0] = edge
+    features[1] = confidence
+    features[2] = implied_prob
+    features[3] = fair_prob
+    features[4] = lambda_val
+    features[5] = mins_ratio
+    features[6] = is_goalscorer
+    features[7] = is_premier_league
+    features[8] = is_forward
+    features[9] = 0.5   # edge_rank: unknown → middle
+    features[10] = 0.1  # n_recs_today: assume 1 rec
+    features[11] = 0.0  # odds_movement: no data
+    features[12] = 1.0  # bias
+
+    return normalize_features(features)
+
+
+def extract_features_with_context(
+    rec: dict,
+    all_recs_today: list[dict] | None = None,
+    odds_snapshots: list | None = None,
+) -> np.ndarray:
+    """Extract features with contextual info (rank among today's recs, odds movement).
+    Falls back to extract_features() defaults if context not provided."""
+    # Start with the base features (first 9 + bias at 12)
+    features = extract_features(rec)
+
+    # Override the 3 contextual features with real values if available
+
+    # edge_rank: normalized rank of this rec's edge among today's recs (0=worst, 1=best)
+    edge = float(rec.get("edge", 0.0))
+    if all_recs_today and len(all_recs_today) > 1:
+        edges = sorted([float(r.get("edge", 0)) for r in all_recs_today])
+        rank = 0
+        for i, e in enumerate(edges):
+            if abs(e - edge) < 1e-9:
+                rank = i
+                break
+        features[9] = rank / (len(edges) - 1)
+    else:
+        features[9] = 0.5
+
+    # n_recs_today: number of recs today normalized (1=0.1, 10+=1.0)
+    n_recs = len(all_recs_today) if all_recs_today else 1
+    features[10] = min(n_recs / 10.0, 1.0)
+
+    # odds_movement: % change from first to last snapshot (positive = odds dropped = steam)
+    if odds_snapshots and len(odds_snapshots) >= 2:
+        first_odds = float(odds_snapshots[0])
+        current_odds = float(odds_snapshots[-1])
+        if first_odds > 1.0:
+            features[11] = (first_odds - current_odds) / first_odds
+        else:
+            features[11] = 0.0
+    else:
+        features[11] = 0.0
 
     return normalize_features(features)
 
@@ -125,5 +172,8 @@ def normalize_features(features: np.ndarray) -> np.ndarray:
     clipped[4] = np.clip(clipped[4], 0.0, 2.0)     # lambda
     clipped[5] = np.clip(clipped[5], 0.0, 1.0)     # mins_ratio
     # binary features [6..8] are already 0 or 1
-    # bias [9] is always 1.0
+    clipped[9] = np.clip(clipped[9], 0.0, 1.0)     # edge_rank
+    clipped[10] = np.clip(clipped[10], 0.0, 1.0)   # n_recs_today
+    clipped[11] = np.clip(clipped[11], -0.5, 0.5)  # odds_movement
+    # bias [12] is always 1.0
     return clipped

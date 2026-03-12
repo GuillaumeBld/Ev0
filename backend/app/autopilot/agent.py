@@ -58,7 +58,7 @@ class LinearQAgent:
 
     def q_values(self, features: np.ndarray) -> np.ndarray:
         """Return Q(s, a) for all actions. Shape: (N_ACTIONS,)."""
-        return self.W @ features  # (4, 10) @ (10,) → (4,)
+        return self.W @ features  # (4, 13) @ (13,) → (4,)
 
     def act(self, features: np.ndarray, explore: bool = False) -> int:
         """Select action index.
