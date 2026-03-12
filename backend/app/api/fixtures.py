@@ -71,6 +71,13 @@ class FixturesResponse(BaseModel):
 # ── Endpoints ────────────────────────────────────────────────────
 
 
+def _apply_upcoming_only_filter(stmt, upcoming_only: bool):
+    """Filter fixtures to only those with kickoff in the future."""
+    if not upcoming_only:
+        return stmt
+    return stmt.where(Fixture.kickoff_utc > datetime.now(UTC))
+
+
 @router.get("/fixtures", response_model=FixturesResponse)
 async def list_fixtures(
     db: AsyncSession = Depends(get_db),
@@ -79,6 +86,7 @@ async def list_fixtures(
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
     limit: int = Query(50, le=200),
+    upcoming_only: bool = Query(False),
 ):
     """List fixtures with optional filters."""
     # Default sort: upcoming first (asc), finished last (desc)
@@ -117,6 +125,7 @@ async def list_fixtures(
         stmt = stmt.where(
             Fixture.kickoff_utc <= datetime.combine(to_date, datetime.max.time(), tzinfo=UTC)
         )
+    stmt = _apply_upcoming_only_filter(stmt, upcoming_only)
 
     result = await db.execute(stmt)
     rows = result.all()
