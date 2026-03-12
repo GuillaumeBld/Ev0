@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
-import { Plus, Calendar, Trash2 } from 'lucide-react'
+import { Plus, Calendar, Trash2, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
 import { getFixtures, createFixture, deleteFixture, createOdds } from '@/lib/api'
 import type { FixtureOut } from '@/lib/api'
@@ -72,14 +72,21 @@ const LEAGUE_LABELS: Record<string, string> = {
 export default function MatchesPage() {
   const queryClient = useQueryClient()
   const [showAddForm, setShowAddForm] = useState(false)
-  const [filter, setFilter] = useState<'all' | 'upcoming' | 'finished'>('upcoming')
+  const [finishedOpen, setFinishedOpen] = useState(false)
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['fixtures', filter],
-    queryFn: () => getFixtures(filter !== 'all' ? { status: filter } : {}),
+  const { data: upcomingData, isLoading: upcomingLoading } = useQuery({
+    queryKey: ['fixtures-upcoming'],
+    queryFn: () => getFixtures({ status: 'upcoming', upcoming_only: true, limit: 100 }),
   })
 
-  const matches = (data?.fixtures || []).map(fixtureToMatch)
+  const { data: finishedData, isLoading: finishedLoading } = useQuery({
+    queryKey: ['fixtures-finished'],
+    queryFn: () => getFixtures({ status: 'finished', limit: 100 }),
+    enabled: finishedOpen,
+  })
+
+  const upcomingMatches = (upcomingData?.fixtures ?? []).map(fixtureToMatch)
+  const finishedMatches = (finishedData?.fixtures ?? []).map(fixtureToMatch)
 
   const createMutation = useMutation({
     mutationFn: async (match: Omit<Match, 'id'>) => {
@@ -90,7 +97,6 @@ export default function MatchesPage() {
         away_team: match.awayTeam,
         league: match.league,
       })
-      // Create odds entries for the new fixture
       for (const odd of match.odds) {
         await createOdds(fixture.id, {
           player_name: odd.player,
@@ -102,7 +108,8 @@ export default function MatchesPage() {
       return fixture
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['fixtures'] })
+      queryClient.invalidateQueries({ queryKey: ['fixtures-upcoming'] })
+      queryClient.invalidateQueries({ queryKey: ['fixtures-finished'] })
       setShowAddForm(false)
     },
   })
@@ -110,7 +117,8 @@ export default function MatchesPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: number) => deleteFixture(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['fixtures'] })
+      queryClient.invalidateQueries({ queryKey: ['fixtures-upcoming'] })
+      queryClient.invalidateQueries({ queryKey: ['fixtures-finished'] })
     },
   })
 
@@ -130,7 +138,7 @@ export default function MatchesPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white">Matchs</h1>
-          <p className="text-gray-400 mt-1">{matches.length} matchs enregistrés</p>
+          <p className="text-gray-400 mt-1">{upcomingMatches.length} matchs à venir</p>
         </div>
         <button
           onClick={() => setShowAddForm(true)}
@@ -141,52 +149,65 @@ export default function MatchesPage() {
         </button>
       </div>
 
-      {/* Filter */}
-      <div className="flex gap-2 mb-6">
-        {(['upcoming', 'finished', 'all'] as const).map((f) => (
-          <button
-            key={f}
-            onClick={() => setFilter(f)}
-            className={clsx(
-              'px-4 py-2 rounded-lg text-sm transition-colors',
-              filter === f
-                ? 'bg-brand-600 text-white'
-                : 'bg-gray-800 text-gray-400 hover:text-white'
-            )}
-          >
-            {f === 'upcoming' ? 'À venir' : f === 'finished' ? 'Terminés' : 'Tous'}
-          </button>
-        ))}
-      </div>
-
       {/* Add Form Modal */}
       {showAddForm && (
         <MatchForm onSave={handleAdd} onCancel={() => setShowAddForm(false)} />
       )}
 
-      {/* Loading */}
-      {isLoading && (
-        <div className="space-y-4">
-          {[1, 2].map((i) => (
-            <div key={i} className="bg-gray-800 rounded-xl h-24 animate-pulse" />
-          ))}
-        </div>
-      )}
+      {/* Matchs à venir */}
+      <div className="mb-8">
+        <h2 className="text-lg font-semibold text-white mb-4">
+          Matchs à venir
+          <span className="ml-2 text-sm font-normal text-gray-400">({upcomingMatches.length})</span>
+        </h2>
+        {upcomingLoading ? (
+          <div className="space-y-4">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="bg-gray-800 rounded-xl h-24 animate-pulse" />
+            ))}
+          </div>
+        ) : upcomingMatches.length === 0 ? (
+          <div className="bg-gray-800 rounded-xl p-8 text-center">
+            <Calendar className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+            <p className="text-gray-400">Aucun match à venir</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {upcomingMatches.map((match) => (
+              <MatchCard key={match.id} match={match} onDelete={handleDelete} />
+            ))}
+          </div>
+        )}
+      </div>
 
-      {/* Matches Grid */}
-      {!isLoading && (
-        <div className="space-y-4">
-          {matches.map((match) => (
-            <MatchCard key={match.id} match={match} onDelete={handleDelete} />
-          ))}
-          {matches.length === 0 && (
-            <div className="bg-gray-800 rounded-xl p-8 text-center">
-              <Calendar className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-              <p className="text-gray-400">Aucun match trouvé</p>
+      {/* Matchs terminés — collapsible */}
+      <div>
+        <button
+          onClick={() => setFinishedOpen(!finishedOpen)}
+          className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors mb-4"
+        >
+          <ChevronDown className={`w-4 h-4 transition-transform ${finishedOpen ? 'rotate-180' : ''}`} />
+          <span className="text-sm font-medium">Matchs terminés</span>
+        </button>
+
+        {finishedOpen && (
+          finishedLoading ? (
+            <div className="space-y-4">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="bg-gray-800 rounded-xl h-24 animate-pulse" />
+              ))}
             </div>
-          )}
-        </div>
-      )}
+          ) : finishedMatches.length === 0 ? (
+            <p className="text-sm text-gray-500 italic">Aucun match terminé.</p>
+          ) : (
+            <div className="space-y-4 opacity-75">
+              {finishedMatches.map((match) => (
+                <MatchCard key={match.id} match={match} onDelete={handleDelete} />
+              ))}
+            </div>
+          )
+        )}
+      </div>
     </div>
   )
 }
