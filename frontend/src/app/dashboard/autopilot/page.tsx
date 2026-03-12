@@ -111,7 +111,7 @@ export default function AutopilotPage() {
       </div>
 
       {/* Status Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
         <StatCard
           title="Paris (30j)"
           value={metrics ? metrics.total_bets.toString() : '—'}
@@ -140,6 +140,15 @@ export default function AutopilotPage() {
           icon={Zap}
           color="purple"
         />
+        <div className="bg-gray-800 rounded-xl p-4 border border-gray-700">
+          <p className="text-sm text-gray-400">Brier Score</p>
+          <p className="text-2xl font-bold text-white">
+            {performance?.brier_score != null
+              ? performance.brier_score.toFixed(4)
+              : '—'}
+          </p>
+          <p className="text-xs text-gray-500">{'< 0.25 = mieux que pile/face'}</p>
+        </div>
       </div>
 
       {/* Training Section */}
@@ -271,6 +280,45 @@ export default function AutopilotPage() {
                 <p className="text-xs text-gray-400 mt-1">{ACTION_LABELS[action] ?? action}</p>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Calibration */}
+      {performance?.calibration && performance.calibration.length > 0 && (
+        <div className="bg-gray-800 rounded-xl p-4 sm:p-6 border border-gray-700 mt-6">
+          <h2 className="text-lg font-semibold text-white mb-4">Calibration</h2>
+          <p className="text-xs text-gray-400 mb-4">Probabilité prédite vs taux de victoire réel</p>
+          <div className="space-y-3">
+            {performance.calibration.map((b: any, i: number) => (
+              <div key={i} className="flex items-center gap-3">
+                <span className="text-xs text-gray-400 w-20 shrink-0">{b.bucket}</span>
+                <div className="flex-1 flex gap-2 items-center">
+                  <div className="flex-1 bg-gray-700 rounded-full h-4 relative overflow-hidden">
+                    <div
+                      className="bg-blue-500 h-4 rounded-full absolute top-0 left-0"
+                      style={{ width: `${Math.min(b.predicted * 100, 100)}%` }}
+                    />
+                    <div
+                      className="bg-green-400 h-2 rounded-full absolute top-1 left-0"
+                      style={{ width: `${Math.min(b.actual * 100, 100)}%` }}
+                    />
+                  </div>
+                  <span className="text-xs text-gray-300 w-24 shrink-0">
+                    {(b.predicted * 100).toFixed(0)}% / {(b.actual * 100).toFixed(0)}%
+                  </span>
+                </div>
+                <span className="text-xs text-gray-500 w-12 text-right">{b.count} paris</span>
+              </div>
+            ))}
+            <div className="flex gap-4 text-xs text-gray-500 mt-2">
+              <span className="flex items-center gap-1">
+                <span className="w-3 h-3 bg-blue-500 rounded-full inline-block" /> Prédit
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="w-3 h-2 bg-green-400 rounded-full inline-block" /> Réel
+              </span>
+            </div>
           </div>
         </div>
       )}
