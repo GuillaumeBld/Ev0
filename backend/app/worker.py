@@ -956,7 +956,7 @@ async def job_autopilot_run():
             return
 
         from app.autopilot.agent import ACTIONS
-        from app.autopilot.features import extract_features
+        from app.autopilot.features import extract_features_with_context
         from app.autopilot.trainer import _compute_stake, _load_agent, weights_exist
 
         if not weights_exist():
@@ -968,6 +968,7 @@ async def job_autopilot_run():
 
         from app.models.autopilot import AutopilotDecision
         from app.models.fixtures import Fixture
+        from app.models.odds import OddsSnapshot
         from app.models.recommendations import Recommendation
 
         async with async_session() as session:
@@ -1035,10 +1036,10 @@ async def job_autopilot_run():
             _ft_row = _ft_setting_result.scalar_one_or_none()
             _sc_ft_runs = int(_ft_row.value) if _ft_row else 0
 
-            decisions_made = 0
-            bets_this_run: list[dict] = []
+            # Build all rec dicts up front for contextual features
+            all_rec_dicts = []
             for rec in recs:
-                rec_dict = {
+                all_rec_dicts.append({
                     "edge": rec.edge,
                     "confidence": rec.confidence,
                     "best_odds": rec.best_odds,
@@ -1047,10 +1048,27 @@ async def job_autopilot_run():
                     "lambda_intensity": rec.lambda_intensity,
                     "market_type": rec.market_type,
                     "explanation": rec.explanation or {},
-                }
+                })
 
+            decisions_made = 0
+            bets_this_run: list[dict] = []
+            for rec, rec_dict in zip(recs, all_rec_dicts):
                 import json as _json
-                features = extract_features(rec_dict)
+
+                # Query odds history for this player+market+fixture
+                odds_stmt = (
+                    select(OddsSnapshot.odds)
+                    .where(
+                        OddsSnapshot.fixture_id == rec.fixture_id,
+                        OddsSnapshot.player_name == rec.player_name,
+                        OddsSnapshot.market_type == rec.market_type,
+                    )
+                    .order_by(OddsSnapshot.snapshot_utc.asc())
+                )
+                odds_result = await session.execute(odds_stmt)
+                odds_history = [row[0] for row in odds_result.all()]
+
+                features = extract_features_with_context(rec_dict, all_rec_dicts, odds_history or None)
                 # In paper mode, always explore so the agent accumulates real
                 # outcomes and can fine-tune.  Live mode uses greedy inference.
                 action_idx = agent.act(features, explore=(mode == "paper"))

@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.autopilot.agent import ACTION_LABELS, ACTIONS, LinearQAgent
-from app.autopilot.features import extract_features
+from app.autopilot.features import extract_features, extract_features_with_context
 from app.autopilot.performance import compute_metrics
 from app.autopilot.trainer import (
     WEIGHTS_PATH,
@@ -218,9 +218,10 @@ async def get_autopilot_today(db: AsyncSession = Depends(get_db)):
         for fx in fx_result.scalars().all():
             fixture_map[fx.id] = fx
 
-    output = []
+    # Build all rec dicts up front for contextual features
+    all_rec_dicts = []
     for rec in recs:
-        rec_dict = {
+        all_rec_dicts.append({
             "edge": rec.edge,
             "confidence": rec.confidence,
             "best_odds": rec.best_odds,
@@ -229,9 +230,27 @@ async def get_autopilot_today(db: AsyncSession = Depends(get_db)):
             "lambda_intensity": rec.lambda_intensity,
             "market_type": rec.market_type,
             "explanation": rec.explanation or {},
-        }
+        })
 
-        features = extract_features(rec_dict)
+    # Query odds snapshots for contextual features
+    from app.models.odds import OddsSnapshot
+
+    output = []
+    for rec, rec_dict in zip(recs, all_rec_dicts):
+        # Get odds history for this player+market+fixture
+        odds_stmt = (
+            select(OddsSnapshot.odds)
+            .where(
+                OddsSnapshot.fixture_id == rec.fixture_id,
+                OddsSnapshot.player_name == rec.player_name,
+                OddsSnapshot.market_type == rec.market_type,
+            )
+            .order_by(OddsSnapshot.snapshot_utc.asc())
+        )
+        odds_result = await db.execute(odds_stmt)
+        odds_history = [row[0] for row in odds_result.all()]
+
+        features = extract_features_with_context(rec_dict, all_rec_dicts, odds_history or None)
         action_idx = agent.act(features, explore=False)
         qvals = agent.q_values(features)
 
