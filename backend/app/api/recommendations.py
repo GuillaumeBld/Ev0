@@ -37,6 +37,16 @@ class Classification(StrEnum):
     AVOID = "AVOID"
 
 
+class RecommendationStatus(StrEnum):
+    """Recommendation status enum."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXECUTED = "executed"
+    EXPIRED = "expired"
+
+
 class Recommendation(BaseModel):
     """A betting recommendation."""
 
@@ -54,7 +64,7 @@ class Recommendation(BaseModel):
     classification: Classification
     confidence: float
     explanation: dict
-    status: str = "pending"
+    status: RecommendationStatus = RecommendationStatus.PENDING
 
 
 class RecommendationsResponse(BaseModel):
@@ -207,7 +217,7 @@ async def get_recommendations(
                 classification=rec.get("classification", "NO_VALUE"),
                 confidence=rec.get("confidence", 0.5),
                 explanation=rec.get("explanation", {}),
-                status=status_map.get(db_id, "pending"),
+                status=status_map.get(db_id, RecommendationStatus.PENDING),
             )
         )
 
@@ -257,6 +267,7 @@ async def get_expired_recommendations(
             classification=rec.classification,
             confidence=rec.confidence,
             explanation=rec.explanation or {},
+            status=rec.status,
         )
         for rec, fix in rows
     ]
