@@ -500,6 +500,9 @@ export interface AutopilotPerformance {
   pnl_curve: { date: string; pnl: number; cumulative: number }[]
   action_distribution: Record<string, number>
   feature_importance: Record<string, number>
+  brier_score?: number | null
+  calibration_buckets?: { bucket: string; predicted: number; actual: number; count: number }[]
+  calibration?: { bucket: string; predicted: number; actual: number; count: number }[]
 }
 
 export async function getAutopilotStatus(): Promise<AutopilotStatus> {
