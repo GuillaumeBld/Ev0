@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.autopilot.agent import ACTION_LABELS, ACTIONS, LinearQAgent
 from app.autopilot.features import extract_features, extract_features_with_context
-from app.autopilot.performance import compute_metrics
+from app.autopilot.performance import compute_brier_score, compute_calibration_buckets, compute_metrics
 from app.autopilot.trainer import (
     WEIGHTS_PATH,
     _compute_stake,
@@ -312,7 +312,11 @@ async def get_autopilot_performance(db: AsyncSession = Depends(get_db)):
             pass
 
     return AutopilotPerformanceResponse(
-        metrics=metrics,
+        metrics={
+            **metrics,
+            "brier_score": compute_brier_score(decisions),
+            "calibration": compute_calibration_buckets(decisions),
+        },
         pnl_curve=metrics.pop("pnl_curve", []),
         action_distribution=metrics.pop("action_distribution", {}),
         feature_importance=feature_importance,

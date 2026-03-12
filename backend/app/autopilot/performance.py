@@ -81,3 +81,48 @@ def compute_metrics(decisions: list) -> dict:
             ACTION_LABELS[i]: action_dist[i] for i in range(len(ACTIONS))
         },
     }
+
+
+def compute_brier_score(decisions: list) -> float | None:
+    """Brier score: mean squared error of predicted probability vs outcome.
+    Lower is better. 0.25 = coin flip baseline."""
+    scored = [d for d in decisions if d.result in ("won", "lost") and d.best_odds and d.best_odds > 1]
+    if not scored:
+        return None
+    total = 0.0
+    for d in scored:
+        predicted_prob = 1.0 / d.best_odds
+        actual = 1.0 if d.result == "won" else 0.0
+        total += (predicted_prob - actual) ** 2
+    return round(total / len(scored), 6)
+
+
+def compute_calibration_buckets(decisions: list, n_buckets: int = 5) -> list[dict]:
+    """Group decisions by predicted probability bucket.
+    Returns list of {bucket, predicted, actual, count}."""
+    scored = [d for d in decisions if d.result in ("won", "lost") and d.best_odds and d.best_odds > 1]
+    if not scored:
+        return []
+
+    scored.sort(key=lambda d: 1.0 / d.best_odds)
+    bucket_size = max(len(scored) // n_buckets, 1)
+    buckets = []
+
+    for i in range(0, len(scored), bucket_size):
+        chunk = scored[i:i + bucket_size]
+        if not chunk:
+            break
+        probs = [1.0 / d.best_odds for d in chunk]
+        actuals = [1.0 if d.result == "won" else 0.0 for d in chunk]
+        avg_pred = sum(probs) / len(probs)
+        avg_actual = sum(actuals) / len(actuals)
+        lo = min(probs)
+        hi = max(probs)
+        buckets.append({
+            "bucket": f"{lo*100:.0f}-{hi*100:.0f}%",
+            "predicted": round(avg_pred, 4),
+            "actual": round(avg_actual, 4),
+            "count": len(chunk),
+        })
+
+    return buckets
