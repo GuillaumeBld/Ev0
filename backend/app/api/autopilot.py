@@ -152,6 +152,51 @@ async def train_autopilot(
     return TrainingResult(**training, fine_tune=fine)
 
 
+_REDIS_OPTIM_KEY = "autopilot:last_optimization"
+
+
+def _save_optimization_result(result: dict) -> None:
+    """Persist last optimization result to Redis."""
+    import json
+
+    try:
+        import redis as _redis
+
+        from app.config import settings
+        r = _redis.from_url(settings.redis_url, decode_responses=True)
+        from datetime import UTC, datetime
+        payload = {**result, "completed_at": datetime.now(UTC).isoformat()}
+        r.set(_REDIS_OPTIM_KEY, json.dumps(payload, default=str))
+    except Exception as exc:
+        logger.warning("Failed to save optimization result to Redis: %s", exc)
+
+
+def _load_optimization_result() -> dict | None:
+    """Load last optimization result from Redis."""
+    import json
+
+    try:
+        import redis as _redis
+
+        from app.config import settings
+        r = _redis.from_url(settings.redis_url, decode_responses=True)
+        raw = r.get(_REDIS_OPTIM_KEY)
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        pass
+    return None
+
+
+@router.get("/autopilot/optimization")
+async def get_last_optimization():
+    """Return the last optimization result (or null if never run)."""
+    result = _load_optimization_result()
+    if not result:
+        return {"status": "never_run"}
+    return result
+
+
 @router.post("/autopilot/optimize", response_model=OptimizationResult)
 async def optimize_agent(
     body: OptimizeRequest = OptimizeRequest(),
@@ -187,6 +232,9 @@ async def optimize_agent(
                 )
             _save_agent(agent)
             logger.info("Agent retrained with optimized params via API")
+
+    # Persist result to Redis for dashboard display
+    _save_optimization_result(result)
 
     return result
 

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Brain, Play, ToggleLeft, ToggleRight, AlertCircle, TrendingUp, Target, BarChart3, Zap, Loader2 } from 'lucide-react'
 import { clsx } from 'clsx'
@@ -11,6 +11,7 @@ import {
   toggleAutopilot,
   trainAutopilot,
   optimizeAutopilot,
+  getLastOptimization,
 } from '@/lib/api'
 import type { AutopilotDecisionOut, OptimizationResult } from '@/lib/api'
 
@@ -60,11 +61,21 @@ export default function AutopilotPage() {
   const [isOptimizing, setIsOptimizing] = useState(false)
   const [optimizationResult, setOptimizationResult] = useState<OptimizationResult | null>(null)
   const [optimizationError, setOptimizationError] = useState<string | null>(null)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Load last optimization result on mount
+  useEffect(() => {
+    getLastOptimization().then((result) => {
+      if (result) setOptimizationResult(result)
+    })
+  }, [])
 
   const handleOptimize = async () => {
     setIsOptimizing(true)
     setOptimizationError(null)
-    setOptimizationResult(null)
+    setElapsedSeconds(0)
+    timerRef.current = setInterval(() => setElapsedSeconds((s) => s + 1), 1000)
     try {
       const result = await optimizeAutopilot(100)
       if (result.error) {
@@ -79,6 +90,7 @@ export default function AutopilotPage() {
       setOptimizationError(err?.response?.data?.detail || err?.message || 'Erreur optimisation')
     } finally {
       setIsOptimizing(false)
+      if (timerRef.current) clearInterval(timerRef.current)
     }
   }
 
@@ -326,7 +338,7 @@ export default function AutopilotPage() {
           {isOptimizing ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin" />
-              Optimisation en cours... 100 trials Bayesian (TPE)
+              Optimisation en cours... {Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, '0')}
             </>
           ) : (
             <>
@@ -336,9 +348,22 @@ export default function AutopilotPage() {
           )}
         </button>
 
+        {isOptimizing && (
+          <p className="mt-2 text-xs text-gray-500">
+            100 trials Bayesian (TPE) sur {optimizationResult?.records_used?.toLocaleString() ?? '~60K'} records. Peut prendre 5 a 10 minutes.
+          </p>
+        )}
+
         {optimizationResult && !isOptimizing && (
           <div className="mt-4 bg-green-900/30 border border-green-700 rounded-lg p-3 text-sm text-green-300">
             Optimisation terminée. Log-wealth: {optimizationResult.best_log_wealth.toFixed(4)}. Agent mis à jour.
+            {optimizationResult.completed_at && (
+              <span className="block text-xs text-green-400/70 mt-1">
+                {new Date(optimizationResult.completed_at).toLocaleDateString('fr-FR', {
+                  weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+                })} — {optimizationResult.duration_s}s
+              </span>
+            )}
           </div>
         )}
 

@@ -547,14 +547,26 @@ export interface OptimizationResult {
   n_folds: number
   records_used: number
   duration_s: number
+  completed_at?: string | null
   error?: string | null
+  status?: string
+}
+
+export async function getLastOptimization(): Promise<OptimizationResult | null> {
+  try {
+    const { data } = await api.get('/api/v1/autopilot/optimization')
+    if (data.status === 'never_run') return null
+    return data
+  } catch {
+    return null
+  }
 }
 
 export async function optimizeAutopilot(n_trials?: number): Promise<OptimizationResult> {
   const { data } = await api.post('/api/v1/autopilot/optimize', {
     n_trials: n_trials ?? 100,
   }, {
-    timeout: 120_000, // optimization can take 30-60s
+    timeout: 600_000, // optimization can take up to 10 min on large datasets
   })
   return data
 }

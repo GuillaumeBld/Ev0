@@ -1429,6 +1429,10 @@ async def job_autopilot_reoptimize():
             _save_agent(agent)
             logger.info("Agent retrained and saved with optimized params")
 
+        # Persist result to Redis for dashboard display
+        from app.api.autopilot import _save_optimization_result
+        _save_optimization_result(result)
+
     except Exception:
         logger.exception("job_autopilot_reoptimize failed")
 
