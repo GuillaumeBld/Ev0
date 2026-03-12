@@ -5,9 +5,9 @@ Update: W[a] += alpha * (reward - Q(s,a)) * features
 
 Actions map to Kelly fraction multipliers:
   0 → 0.0  (skip)
-  1 → 0.5  (half Kelly)
-  2 → 1.0  (full Kelly)
-  3 → 1.5  (aggressive)
+  1 → 0.25 (quarter Kelly)
+  2 → 0.5  (half Kelly)
+  3 → 1.0  (full Kelly)
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from app.autopilot.features import FEATURE_DIM, FEATURE_NAMES
 
 logger = logging.getLogger(__name__)
 
-ACTIONS: list[float] = [0.0, 0.5, 1.0, 1.5]
-ACTION_LABELS: list[str] = ["skip", "half_kelly", "kelly", "aggressive"]
+ACTIONS: list[float] = [0.0, 0.25, 0.5, 1.0]
+ACTION_LABELS: list[str] = ["skip", "quarter_kelly", "half_kelly", "kelly"]
 N_ACTIONS = len(ACTIONS)
 
 

@@ -15,16 +15,16 @@ import type { AutopilotDecisionOut } from '@/lib/api'
 
 const ACTION_COLORS: Record<string, string> = {
   skip: 'text-gray-400',
+  quarter_kelly: 'text-blue-400',
   half_kelly: 'text-yellow-400',
   kelly: 'text-green-400',
-  aggressive: 'text-brand-400',
 }
 
 const ACTION_LABELS: Record<string, string> = {
   skip: 'Passer',
+  quarter_kelly: '¼ Kelly',
   half_kelly: '½ Kelly',
   kelly: 'Kelly',
-  aggressive: 'Agressif',
 }
 
 export default function AutopilotPage() {
