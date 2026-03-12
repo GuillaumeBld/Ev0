@@ -19,6 +19,7 @@ interface Recommendation {
   confidence: number
   kickoff: string
   explanation?: Record<string, any>
+  status?: 'pending' | 'approved' | 'rejected'
 }
 
 interface RecommendationCardProps {
@@ -27,7 +28,9 @@ interface RecommendationCardProps {
 
 export function RecommendationCard({ recommendation: rec }: RecommendationCardProps) {
   const [expanded, setExpanded] = useState(false)
-  const [status, setStatus] = useState<'pending' | 'approved' | 'rejected'>('pending')
+  const [status, setStatus] = useState<'pending' | 'approved' | 'rejected'>(
+    (rec.status as 'pending' | 'approved' | 'rejected') ?? 'pending'
+  )
   const queryClient = useQueryClient()
 
   const mutation = useMutation({
@@ -37,6 +40,7 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
       setStatus(newStatus)
       queryClient.invalidateQueries({ queryKey: ['history'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['recommendations'] })
     },
   })
 

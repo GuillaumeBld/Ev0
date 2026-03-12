@@ -50,6 +50,7 @@ export interface Recommendation {
   classification: 'VALUE' | 'NO_VALUE' | 'AVOID'
   confidence: number
   explanation: Record<string, any>
+  status?: string
   error?: string | null
 }
 

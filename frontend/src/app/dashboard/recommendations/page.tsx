@@ -39,6 +39,7 @@ interface ApiRecommendation {
   classification: string
   confidence: number
   explanation: Record<string, any>
+  status?: string
 }
 
 export default function RecommendationsPage() {
@@ -54,6 +55,7 @@ export default function RecommendationsPage() {
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['recommendations', selectedDate, marketFilter, edgeFilter],
     enabled: !!selectedDate,
+    refetchInterval: 10_000,
     queryFn: async () => {
       const minEdge = edgeFilterToMinEdge(edgeFilter)
       const response = await getRecommendations({
@@ -76,6 +78,7 @@ export default function RecommendationsPage() {
         confidence: rec.confidence,
         kickoff: rec.kickoff_utc,
         explanation: rec.explanation,
+        status: (rec.status as 'pending' | 'approved' | 'rejected') ?? 'pending',
       }))
     },
   })
