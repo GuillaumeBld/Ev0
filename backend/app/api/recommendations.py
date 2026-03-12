@@ -54,6 +54,7 @@ class Recommendation(BaseModel):
     classification: Classification
     confidence: float
     explanation: dict
+    status: str = "pending"
 
 
 class RecommendationsResponse(BaseModel):
@@ -173,6 +174,17 @@ async def get_recommendations(
         except Exception as exc:
             logger.warning("Could not persist recommendations to DB: %s", exc)
 
+    # Load current statuses from DB for all rec ids
+    db_ids = [rec["_db_id"] for rec in raw_recs if rec.get("_db_id")]
+    status_map: dict[int, str] = {}
+    if db_ids:
+        status_rows = await db.execute(
+            select(RecommendationModel.id, RecommendationModel.status).where(
+                RecommendationModel.id.in_(db_ids)
+            )
+        )
+        status_map = {row.id: row.status for row in status_rows}
+
     # Transform to response models
     recommendations = []
     for rec in raw_recs:
@@ -195,6 +207,7 @@ async def get_recommendations(
                 classification=rec.get("classification", "NO_VALUE"),
                 confidence=rec.get("confidence", 0.5),
                 explanation=rec.get("explanation", {}),
+                status=status_map.get(db_id, "pending"),
             )
         )
 
