@@ -5,10 +5,13 @@ import { CheckCircle, AlertCircle, Clock } from 'lucide-react'
 
 interface HealthData {
   status: string
-  odds_quota_remaining?: number
-  last_scrape_at?: string
-  autopilot_enabled?: boolean
-  worker_running?: boolean
+  service?: string
+}
+
+interface AutopilotData {
+  enabled: boolean
+  trained: boolean
+  mode: string
 }
 
 async function fetchHealth(): Promise<HealthData> {
@@ -17,11 +20,29 @@ async function fetchHealth(): Promise<HealthData> {
   return res.json()
 }
 
+async function fetchAutopilotStatus(): Promise<AutopilotData | null> {
+  try {
+    const res = await fetch('/api/v1/autopilot/status')
+    if (!res.ok) return null
+    return res.json()
+  } catch {
+    return null
+  }
+}
+
 export default function LiveSystemStatus() {
   const { data, isLoading, isError } = useQuery({
     queryKey: ['health'],
     queryFn: fetchHealth,
     refetchInterval: 60_000,
+    retry: 1,
+  })
+
+  const { data: autopilot } = useQuery({
+    queryKey: ['health-autopilot'],
+    queryFn: fetchAutopilotStatus,
+    refetchInterval: 60_000,
+    retry: 1,
   })
 
   if (isLoading) return (
@@ -38,28 +59,20 @@ export default function LiveSystemStatus() {
     </div>
   )
 
+  const isHealthy = data.status === 'healthy' || data.status === 'ok'
+
   const items = [
     {
       label: 'Système',
-      ok: data.status === 'ok',
-      value: data.status === 'ok' ? 'Opérationnel' : 'Dégradé',
-    },
-    {
-      label: 'Quota odds',
-      ok: (data.odds_quota_remaining ?? 100) > 10,
-      value: data.odds_quota_remaining !== undefined
-        ? `${data.odds_quota_remaining} restants`
-        : 'N/A',
-    },
-    {
-      label: 'Worker',
-      ok: data.worker_running ?? true,
-      value: data.worker_running ? 'Actif' : 'Arrêté',
+      ok: isHealthy,
+      value: isHealthy ? 'Opérationnel' : 'Dégradé',
     },
     {
       label: 'Autopilot',
       ok: true,
-      value: data.autopilot_enabled ? 'Activé' : 'Désactivé',
+      value: autopilot?.enabled
+        ? `Activé (${autopilot.mode})`
+        : 'Désactivé',
     },
   ]
 

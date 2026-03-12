@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Brain, Play, ToggleLeft, ToggleRight, AlertCircle, TrendingUp, Target, BarChart3, Zap } from 'lucide-react'
+import { Brain, Play, ToggleLeft, ToggleRight, AlertCircle, TrendingUp, Target, BarChart3, Zap, Loader2 } from 'lucide-react'
 import { clsx } from 'clsx'
 import {
   getAutopilotStatus,
@@ -10,8 +10,9 @@ import {
   getAutopilotPerformance,
   toggleAutopilot,
   trainAutopilot,
+  optimizeAutopilot,
 } from '@/lib/api'
-import type { AutopilotDecisionOut } from '@/lib/api'
+import type { AutopilotDecisionOut, OptimizationResult } from '@/lib/api'
 
 const ACTION_COLORS: Record<string, string> = {
   skip: 'text-gray-400',
@@ -56,6 +57,30 @@ export default function AutopilotPage() {
   })
 
   const [isTraining, setIsTraining] = useState(false)
+  const [isOptimizing, setIsOptimizing] = useState(false)
+  const [optimizationResult, setOptimizationResult] = useState<OptimizationResult | null>(null)
+  const [optimizationError, setOptimizationError] = useState<string | null>(null)
+
+  const handleOptimize = async () => {
+    setIsOptimizing(true)
+    setOptimizationError(null)
+    setOptimizationResult(null)
+    try {
+      const result = await optimizeAutopilot(100)
+      if (result.error) {
+        setOptimizationError(result.error)
+      } else {
+        setOptimizationResult(result)
+        queryClient.invalidateQueries({ queryKey: ['autopilot-status'] })
+        queryClient.invalidateQueries({ queryKey: ['autopilot-today'] })
+        queryClient.invalidateQueries({ queryKey: ['autopilot-performance'] })
+      }
+    } catch (err: any) {
+      setOptimizationError(err?.response?.data?.detail || err?.message || 'Erreur optimisation')
+    } finally {
+      setIsOptimizing(false)
+    }
+  }
 
   const handleTrain = async () => {
     setIsTraining(true)
@@ -208,6 +233,119 @@ export default function AutopilotPage() {
           <div className="mt-4 flex items-center gap-2 text-red-400 text-sm">
             <AlertCircle className="w-4 h-4 flex-shrink-0" />
             {trainingError}
+          </div>
+        )}
+      </div>
+
+      {/* Optimization Section */}
+      <div className="bg-gray-800 rounded-xl p-6 mb-8">
+        <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+          <Zap className="w-5 h-5 text-yellow-400" />
+          Optimisation
+        </h2>
+
+        {optimizationResult && (
+          <>
+            {/* Stat cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+              <div className="bg-gray-700/50 rounded-lg p-4">
+                <p className="text-xs text-gray-400">Log-Wealth</p>
+                <p className="text-xl font-bold text-white mt-1">
+                  {optimizationResult.best_log_wealth.toFixed(4)}
+                </p>
+              </div>
+              <div className="bg-gray-700/50 rounded-lg p-4">
+                <p className="text-xs text-gray-400">DSR</p>
+                <p className="text-xl font-bold text-white mt-1">
+                  {optimizationResult.dsr.toFixed(2)}
+                </p>
+                <p className="text-xs mt-0.5">
+                  {optimizationResult.dsr > 1
+                    ? <span className="text-green-400">significatif</span>
+                    : <span className="text-yellow-400">insuffisant</span>}
+                </p>
+              </div>
+              <div className="bg-gray-700/50 rounded-lg p-4">
+                <p className="text-xs text-gray-400">Features</p>
+                <p className="text-xl font-bold text-white mt-1">
+                  {optimizationResult.n_features} / 12
+                </p>
+                <div className="mt-1 bg-gray-600 rounded-full h-1.5">
+                  <div
+                    className="bg-yellow-400 h-1.5 rounded-full"
+                    style={{ width: `${(optimizationResult.n_features / 12) * 100}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Best params grid */}
+            {optimizationResult.best_params && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm bg-gray-700/30 rounded-lg p-3 mb-4">
+                {Object.entries(optimizationResult.best_params)
+                  .filter(([k]) => !k.startsWith('use_'))
+                  .map(([k, v]) => (
+                    <div key={k} className="flex justify-between">
+                      <span className="text-gray-400">{k}</span>
+                      <span className="font-mono text-gray-200">
+                        {typeof v === 'number' ? (v < 0.01 ? v.toExponential(1) : v.toFixed(4)) : String(v)}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            )}
+
+            {/* Disabled features */}
+            {optimizationResult.best_params && (() => {
+              const disabled = Object.entries(optimizationResult.best_params)
+                .filter(([k, v]) => k.startsWith('use_') && v === false)
+                .map(([k]) => k.replace('use_', ''))
+              return disabled.length > 0 ? (
+                <p className="text-sm text-gray-400 mb-3">
+                  Features désactivées: {disabled.join(', ')}
+                </p>
+              ) : (
+                <p className="text-sm text-gray-400 mb-3">
+                  Toutes les features sont actives
+                </p>
+              )
+            })()}
+
+            {/* Metadata */}
+            <p className="text-xs text-gray-500 mb-4">
+              {optimizationResult.n_trials} trials &middot; {optimizationResult.n_folds} folds walk-forward &middot; {optimizationResult.duration_s}s &middot; ROI: {(optimizationResult.best_roi * 100).toFixed(1)}%
+            </p>
+          </>
+        )}
+
+        <button
+          onClick={handleOptimize}
+          disabled={isOptimizing}
+          className="flex items-center gap-2 px-5 py-2.5 bg-yellow-600 hover:bg-yellow-500 disabled:bg-yellow-800 disabled:opacity-60 text-white text-sm font-medium rounded-lg transition-colors"
+        >
+          {isOptimizing ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Optimisation en cours... 100 trials Bayesian (TPE)
+            </>
+          ) : (
+            <>
+              <Zap className="w-4 h-4" />
+              Lancer Optimisation
+            </>
+          )}
+        </button>
+
+        {optimizationResult && !isOptimizing && (
+          <div className="mt-4 bg-green-900/30 border border-green-700 rounded-lg p-3 text-sm text-green-300">
+            Optimisation terminée. Log-wealth: {optimizationResult.best_log_wealth.toFixed(4)}. Agent mis à jour.
+          </div>
+        )}
+
+        {optimizationError && (
+          <div className="mt-4 flex items-center gap-2 text-red-400 text-sm">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            {optimizationError}
           </div>
         )}
       </div>

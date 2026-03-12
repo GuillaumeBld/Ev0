@@ -38,8 +38,16 @@ Tous les paris settlés. Filtrer par date, ligue, marché, résultat.
 Statistiques : win rate global, ROI par ligue/marché.
 
 ## Autopilot (/autopilot)
-Agent RL qui décide automatiquement quels paris prendre et à quelle mise.
-Voir l'onglet Autopilot dans la documentation pour les détails.
+L'agent qui decide automatiquement quels paris prendre et a quelle mise.
+
+La page est organisee en plusieurs sections :
+- **En haut** : cartes resumant les performances des 30 derniers jours (nombre de paris, win rate, ROI, Sharpe, Brier score) et un bouton pour activer/desactiver l'agent
+- **Entrainement** : bouton pour entrainer l'agent sur les donnees historiques. Affiche les resultats une fois termine (nombre de records, P&L, Sharpe)
+- **Optimisation** : bouton "Lancer Optimisation" qui cherche automatiquement les meilleurs reglages pour l'agent (~30 a 60 secondes). Affiche ensuite la croissance du capital (log-wealth), la fiabilite du resultat (DSR), et quelles informations l'agent utilise ou ignore. L'agent est mis a jour automatiquement apres chaque optimisation
+- **Decisions du jour** : tableau avec chaque pari recommande, l'action choisie par l'agent (passer, quart Kelly, demi Kelly, Kelly), et le montant de la mise
+- **En bas** : courbe P&L cumulative, importance de chaque information dans la decision, repartition des actions, et graphique de calibration
+
+Voir la page Autopilot dans la documentation pour comprendre comment l'agent fonctionne.
 
 ## Santé (/health)
 État du système en temps réel : API quota, dernière mise à jour des cotes, statut des jobs worker.

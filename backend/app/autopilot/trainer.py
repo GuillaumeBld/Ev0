@@ -195,6 +195,35 @@ def _compute_expected_reward(rec: dict, action_idx: int, bankroll: float) -> flo
     return edge * stake / max(bankroll, 1.0)
 
 
+def train_single_pass(
+    agent: LinearQAgent,
+    records: list[dict],
+    bankroll: float = _TRAINING_BANKROLL,
+    l1_lambda: float = 0.0,
+    feature_mask: np.ndarray | None = None,
+) -> float:
+    """One epoch of training on records. Returns cumulative PnL.
+
+    Used by both run_backtest_training() and autoresearch inner loop.
+    """
+    epoch_pnl = 0.0
+    for rec in records:
+        features = extract_features(rec)
+        if feature_mask is not None:
+            features = features * feature_mask
+        action_idx = agent.act(features, explore=True)
+        stake = _compute_stake(action_idx, rec, bankroll)
+        reward = _compute_expected_reward(rec, action_idx, bankroll)
+        agent.update(features, action_idx, reward)
+        if l1_lambda > 0:
+            agent.W -= l1_lambda * np.sign(agent.W)
+        market_odds = float(rec.get("market_odds") or 2.0)
+        outcome = 1 if rec.get("outcome") in (1, "won") else 0
+        if stake > 0:
+            epoch_pnl += stake * (market_odds - 1) if outcome == 1 else -stake
+    return epoch_pnl
+
+
 async def run_backtest_training(
     db: AsyncSession,
     min_date: str | None = None,
@@ -270,7 +299,7 @@ async def run_backtest_training(
             features = extract_features(rec)
             action_idx = agent.act(features, explore=True)
             market_odds = float(rec.get("market_odds") or 2.0)
-            outcome = 1 if rec.get("outcome") == "won" else 0
+            outcome = 1 if rec.get("outcome") in (1, "won") else 0
 
             stake = _compute_stake(action_idx, rec, bankroll)
             # Use expected reward (edge × stake / bankroll) rather than

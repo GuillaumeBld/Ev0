@@ -88,6 +88,24 @@ class LinearQAgent:
         self.steps_trained += 1
         return float(abs(td_error))
 
+    # ── Factory ─────────────────────────────────────────────────
+
+    @classmethod
+    def from_params(cls, params: dict) -> LinearQAgent:
+        """Create agent from Optuna trial params."""
+        agent = cls(
+            alpha=params.get("alpha", 0.01),
+            epsilon=params.get("epsilon_init", 0.3),
+            epsilon_decay=params.get("epsilon_decay", 0.995),
+        )
+        # Apply supervised prior from params
+        edge_idx, conf_idx = 0, 1
+        agent.W[2][edge_idx] = params.get("prior_edge_weight", 2.0)
+        agent.W[2][conf_idx] = params.get("prior_conf_weight", 1.0)
+        agent.W[1][edge_idx] = params.get("prior_edge_weight", 2.0) / 2
+        agent.W[1][conf_idx] = params.get("prior_conf_weight", 1.0) / 2
+        return agent
+
     # ── Persistence ──────────────────────────────────────────────
 
     def save(self, path: str | Path) -> None:

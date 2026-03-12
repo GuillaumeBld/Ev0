@@ -533,3 +533,28 @@ export async function getAutopilotPerformance(): Promise<AutopilotPerformance> {
   const { data } = await api.get('/api/v1/autopilot/performance')
   return data
 }
+
+// ── Autopilot Optimization ──────────────────────────────────────
+
+export interface OptimizationResult {
+  best_params: Record<string, number | boolean> | null
+  best_log_wealth: number
+  best_roi: number
+  sharpe: number
+  dsr: number
+  n_features: number
+  n_trials: number
+  n_folds: number
+  records_used: number
+  duration_s: number
+  error?: string | null
+}
+
+export async function optimizeAutopilot(n_trials?: number): Promise<OptimizationResult> {
+  const { data } = await api.post('/api/v1/autopilot/optimize', {
+    n_trials: n_trials ?? 100,
+  }, {
+    timeout: 120_000, // optimization can take 30-60s
+  })
+  return data
+}

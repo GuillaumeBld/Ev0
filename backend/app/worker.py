@@ -1375,6 +1375,64 @@ async def job_auto_settle():
         logger.exception("auto_settle job failed")
 
 
+# ── Job: Autopilot Re-optimize (Weekly) ──────────────────────────
+
+
+async def job_autopilot_reoptimize():
+    """Weekly: re-run Optuna optimization on current code with latest data.
+
+    Updates agent weights with best hyperparams found.
+    """
+    from app.autopilot.autoresearch import run_optimization
+    from app.backtest.simulator import simulate_historical
+
+    try:
+        async with async_session() as db:
+            records = await simulate_historical(db)
+
+        if len(records) < 300:
+            logger.info("Not enough records for optimization (%d)", len(records))
+            return
+
+        result = run_optimization(records, n_trials=100)
+
+        if "error" in result:
+            logger.warning("Optimization failed: %s", result["error"])
+            return
+
+        logger.info(
+            "Autopilot optimization: log_wealth=%.4f roi=%.2f%% dsr=%.3f (%d trials, %.1fs)",
+            result.get("best_log_wealth", 0),
+            result.get("best_roi", 0) * 100,
+            result.get("dsr", 0),
+            result.get("n_trials", 0),
+            result.get("duration_s", 0),
+        )
+
+        # Retrain agent with best params and save
+        best_params = result.get("best_params", {})
+        if best_params:
+            from app.autopilot.agent import LinearQAgent
+            from app.autopilot.trainer import _save_agent, train_single_pass
+
+            agent = LinearQAgent.from_params(best_params)
+            value_records = sorted(
+                [r for r in records if r.get("edge", 0) >= 0.05],
+                key=lambda r: r["date"],
+            )
+            for _ in range(best_params.get("n_epochs", 3)):
+                train_single_pass(
+                    agent,
+                    value_records,
+                    l1_lambda=best_params.get("l1_lambda", 0),
+                )
+            _save_agent(agent)
+            logger.info("Agent retrained and saved with optimized params")
+
+    except Exception:
+        logger.exception("job_autopilot_reoptimize failed")
+
+
 # ── Scheduler Setup ───────────────────────────────────────────────
 
 
@@ -1494,6 +1552,17 @@ def create_scheduler() -> AsyncIOScheduler:
         job_auto_settle,
         IntervalTrigger(hours=3),
         id="auto_settle",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Autopilot re-optimize: Weekly Sunday at 03:00 UTC
+    scheduler.add_job(
+        job_autopilot_reoptimize,
+        CronTrigger(day_of_week="sun", hour=3, minute=0),
+        id="autopilot_reoptimize",
+        name="Autopilot: Optuna hyperparameter re-optimization",
+        replace_existing=True,
         max_instances=1,
         coalesce=True,
     )

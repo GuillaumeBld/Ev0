@@ -1,75 +1,106 @@
-# Autopilot — Agent RL
+# Autopilot
 
-## Principe
+## C'est quoi ?
 
-L'Autopilot est un agent de Q-learning linéaire (sans deep learning) qui apprend quels paris prendre et à quelle fraction de Kelly, en optimisant le P&L à long terme.
+L'Autopilot est le "cerveau" d'Ev0 qui prend les décisions de paris tout seul. Pour chaque recommandation du jour, il regarde les caractéristiques du pari (edge, confiance, cote, etc.) et choisit quoi faire : passer, miser prudemment, ou miser plus fort.
 
-## Architecture
+Il apprend de ses erreurs au fil du temps, exactement comme un parieur qui ajuste sa stratégie après avoir vu ce qui marche et ce qui ne marche pas.
 
-**Modèle** : Q-learning linéaire bandit (γ=0, pas de lookahead)
+## Comment il décide ?
 
-```
-Q(s, a) = W[a] · features
-```
+L'agent analyse 13 informations sur chaque pari pour prendre sa décision :
 
-- `W` : matrice de poids 4 × 13 (4 actions × 13 features)
-- `features` : vecteur d'état à 13 dimensions normalisées
+| Information | Ce que ca veut dire |
+|-------------|---------------------|
+| Edge | L'avantage qu'on a sur le bookmaker (plus c'est haut, mieux c'est) |
+| Confiance | A quel point Ev0 est sur de son calcul |
+| Probabilite implicite | Ce que la cote du bookmaker "dit" sur les chances du joueur |
+| Probabilite juste | Ce qu'Ev0 pense etre la vraie probabilite |
+| Intensite lambda | A quel point le joueur est "dangereux" (buts attendus) |
+| Minutes attendues | Combien de temps le joueur devrait jouer (un remplacant a moins de chances) |
+| Marche buteur | Est-ce un pari buteur ? (vs passeur) |
+| Premier League | Est-ce un match de Premier League ? |
+| Attaquant | Le joueur joue-t-il en attaque ? |
+| Rang de l'edge | Ce pari est-il le meilleur du jour ou un pari moyen ? |
+| Nombre de paris du jour | Combien de paris sont disponibles aujourd'hui (plus il y en a, plus l'agent est selectif) |
+| Mouvement de cote | La cote a-t-elle baisse recemment ? (signe que d'autres parieurs ont repere la valeur) |
+| Biais | Valeur fixe qui aide l'agent a calibrer ses decisions |
 
-**Mise à jour** :
-```
-W[a] += alpha × (reward - Q(s, a)) × features
-```
+A partir de ces informations, l'agent choisit une de ces 4 actions :
 
-**Récompense** : `pnl / bankroll` (scale-invariant)
+| Action | Ce que ca fait |
+|--------|---------------|
+| Passer | Ne pas parier (le risque ne vaut pas le coup) |
+| Quart Kelly | Mise prudente (25% de la mise optimale) |
+| Demi Kelly | Mise moderee (50% de la mise optimale) |
+| Kelly | Mise pleine (mise optimale selon le critere de Kelly) |
 
-## Features (état)
+## Comment il apprend ?
 
-| # | Feature | Description |
-|---|---------|-------------|
-| 0 | edge | Edge calculé par Ev0 |
-| 1 | confidence | Score de confiance interne |
-| 2 | implied_prob | 1 / market_odds |
-| 3 | fair_prob | Probabilité fair Ev0 |
-| 4 | lambda | Intensité Poisson |
-| 5 | mins_ratio | Minutes attendues / 90 |
-| 6 | is_goalscorer | 1 si marché buteur |
-| 7 | is_premier_league | 1 si Premier League |
-| 8 | is_forward | 1 si le joueur est attaquant |
-| 9 | edge_rank | Rang de l'edge parmi les recs du jour (0=pire, 1=meilleur) |
-| 10 | n_recs_today | Nombre de recs du jour / 10 (plus il y en a, plus l'agent est sélectif) |
-| 11 | odds_movement | Variation de cote depuis le 1er snapshot (positif = cote a baissé = steam) |
-| 12 | bias | Toujours 1.0 |
+### Phase 1 : Pre-entrainement
 
-## Actions
+Avant de le laisser decider en conditions reelles, on l'entraine sur les donnees historiques. L'agent rejoue tous les matchs passes, fait ses choix, et ajuste sa strategie en fonction de ce qui aurait marche. Le tout en respectant l'ordre chronologique -- il ne "triche" jamais en regardant dans le futur.
 
-| Index | Action | Kelly multiplier |
-|-------|--------|-----------------|
-| 0 | skip | 0.0× (ne pas parier) |
-| 1 | quarter_kelly | 0.25× |
-| 2 | half_kelly | 0.5× |
-| 3 | kelly | 1.0× |
+### Phase 2 : Fine-tuning en continu
 
-## Entraînement
+Une fois en service, l'agent continue d'apprendre a chaque fois qu'un de ses paris est settle (gagne ou perdu). Apres 10 nouveaux resultats, il met automatiquement a jour sa strategie.
 
-1. **Pré-entraînement** : sur les données de backtest (saison 2024-2025), tri chronologique strict pour éviter le data leakage. ε-greedy avec décroissance 1.0 → 0.1.
-2. **Fine-tuning** : sur les décisions paper trade settlées en base. Se déclenche automatiquement après 10+ nouvelles décisions settlées.
+## Mode Paper vs Live
 
-Poids persistés dans `backend/app/autopilot/weights/agent.npz`.
+- **Paper** (par defaut) : l'agent prend ses decisions et on les enregistre, mais aucun vrai pari n'est place. C'est un mode "simulation" pour verifier que l'agent performe bien avant de lui confier de l'argent reel.
+- **Live** : les decisions menent a de vrais paris. Non disponible pour l'instant.
 
-## Mode paper vs live
+## Optimisation automatique
 
-- **Paper** : l'agent décide, on enregistre la décision, mais aucun pari réel n'est placé.
-- **Live** : les décisions sont transmises pour exécution réelle. **Non implémenté encore.**
+L'Autopilot peut s'auto-optimiser pour trouver les meilleurs reglages possibles. Le systeme essaie automatiquement des centaines de combinaisons de parametres et garde uniquement la meilleure.
 
-## Jobs automatiques
+### Comment ca marche ?
 
-| Job | Fréquence | Description |
-|-----|-----------|-------------|
-| autopilot_run | Toutes les 2h | Analyse les recs du jour, crée des AutopilotDecision |
-| autopilot_settle | Quotidien 09:00 UTC | Settle les paper trades sur les matchs terminés |
+Imaginons que l'agent a plusieurs "boutons de reglage" : a quelle vitesse il apprend, a quel point il explore de nouvelles strategies, quelles informations il prend en compte, etc. L'optimisation teste 100 combinaisons differentes de ces reglages et mesure laquelle fait le plus d'argent sur les donnees historiques.
 
-## Métriques de calibration
+Pour eviter de se tromper (un reglage qui marche sur le passe mais pas sur le futur), l'evaluation utilise une methode stricte :
 
-- **Brier Score** : erreur quadratique moyenne des probabilités prédites vs résultat réel. Score < 0.25 = mieux que pile/face.
-- **Calibration plot** : les probabilités prédites sont-elles fiables ? Par bucket de probabilité, on compare la prédiction moyenne au taux de victoire réel.
-- **Reward shaping** : l'agent reçoit une récompense positive (+0.02) quand il skip un pari qui aurait perdu, et une pénalité (-0.01) quand il skip un pari qui aurait gagné.
+- Les donnees sont decoupees en 5 periodes
+- Pour chaque periode, l'agent est entraine uniquement sur ce qui s'est passe **avant**, puis teste sur cette periode
+- Il y a un "trou" de 30 jours entre l'entrainement et le test, pour s'assurer qu'il ne profite pas d'informations trop proches
+
+### Ce qui est optimise
+
+- **Vitesse d'apprentissage** : trop vite = instable, trop lent = n'apprend pas
+- **Exploration** : au debut l'agent essaie des choses au hasard pour decouvrir ce qui marche. L'optimisation regle combien de temps il explore vs exploite
+- **Regularisation** : empeche l'agent de devenir trop complexe (un modele simple generalise mieux)
+- **Selection des features** : certaines des 12 informations sont peut-etre du bruit. L'optimisation peut les desactiver pour simplifier la decision
+- **Force du prior** : a quel point l'agent fait confiance a la regle de base "mise plus quand l'edge est grand"
+
+### Les metriques affichees
+
+| Metrique | Ce que ca veut dire |
+|----------|---------------------|
+| Log-Wealth | La croissance du capital -- c'est la metrique principale. Plus c'est haut, plus la strategie fait de l'argent de maniere durable |
+| DSR | Indique si le resultat est statistiquement fiable ou si c'est peut-etre juste de la chance. Au-dessus de 1 = significatif |
+| Features actives | Combien d'informations l'agent utilise sur les 12 disponibles. Moins = plus simple = souvent mieux |
+| ROI | Le pourcentage de gain par rapport a ce qui est mise |
+
+### Quand ca tourne ?
+
+- **Automatiquement** chaque dimanche a 3h du matin -- l'agent se re-optimise avec les dernieres donnees
+- **A la demande** via le bouton "Lancer Optimisation" dans le dashboard (prend environ 30 a 60 secondes)
+
+Apres chaque optimisation, l'agent est automatiquement mis a jour avec les meilleurs reglages trouves.
+
+### Amelioration manuelle par IA
+
+En plus de l'optimisation des reglages, on peut lancer des sessions Claude Code pour modifier le code de l'agent lui-meme : ajouter de nouvelles informations, en retirer, changer la logique de decision. Chaque modification est testee, et on ne garde que ce qui ameliore les resultats. Le fichier `autoresearch_program.md` a la racine du projet contient les instructions pour ces sessions.
+
+## Taches automatiques
+
+| Tache | Frequence | Ce qu'elle fait |
+|-------|-----------|-----------------|
+| Evaluation | Toutes les 2h | L'agent regarde les recommandations du jour et decide quoi parier |
+| Settlement | Tous les jours a 9h | Verifie les resultats des matchs et met a jour les paris (gagne/perdu) |
+| Re-optimisation | Chaque dimanche a 3h | Cherche les meilleurs reglages et met a jour l'agent |
+
+## Qualite des predictions
+
+- **Brier Score** : mesure la precision des probabilites predites. En dessous de 0.25, c'est mieux que de tirer a pile ou face.
+- **Calibration** : quand l'agent dit "ce joueur a 30% de chances de marquer", est-ce qu'il marque vraiment environ 30% du temps ? Le graphique de calibration compare les predictions aux resultats reels.

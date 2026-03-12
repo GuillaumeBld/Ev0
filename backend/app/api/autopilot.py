@@ -89,6 +89,24 @@ class AutopilotDecisionOut(BaseModel):
     rationale: dict
 
 
+class OptimizationResult(BaseModel):
+    best_params: dict | None = None
+    best_log_wealth: float = 0.0
+    best_roi: float = 0.0
+    sharpe: float = 0.0
+    dsr: float = 0.0
+    n_features: int = 0
+    n_trials: int = 0
+    n_folds: int = 0
+    records_used: int = 0
+    duration_s: float = 0.0
+    error: str | None = None
+
+
+class OptimizeRequest(BaseModel):
+    n_trials: int = 100
+
+
 class AutopilotPerformanceResponse(BaseModel):
     metrics: dict
     pnl_curve: list[dict]
@@ -132,6 +150,45 @@ async def train_autopilot(
     )
     fine = await fine_tune_from_db(db)
     return TrainingResult(**training, fine_tune=fine)
+
+
+@router.post("/autopilot/optimize", response_model=OptimizationResult)
+async def optimize_agent(
+    body: OptimizeRequest = OptimizeRequest(),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run Optuna walk-forward optimization, retrain agent, and return results."""
+    import asyncio
+
+    from app.autopilot.autoresearch import run_optimization
+    from app.backtest.simulator import simulate_historical
+
+    records = await simulate_historical(db)
+
+    # run_optimization is CPU-bound; run in thread to avoid blocking event loop
+    result = await asyncio.to_thread(run_optimization, records, body.n_trials)
+
+    if "error" not in result:
+        # Retrain agent with best params and save
+        best_params = result.get("best_params", {})
+        if best_params:
+            from app.autopilot.trainer import _save_agent, train_single_pass
+
+            agent = LinearQAgent.from_params(best_params)
+            value_records = sorted(
+                [r for r in records if r.get("edge", 0) >= 0.05],
+                key=lambda r: r["date"],
+            )
+            for _ in range(best_params.get("n_epochs", 3)):
+                train_single_pass(
+                    agent,
+                    value_records,
+                    l1_lambda=best_params.get("l1_lambda", 0),
+                )
+            _save_agent(agent)
+            logger.info("Agent retrained with optimized params via API")
+
+    return result
 
 
 @router.get("/autopilot/status", response_model=AutopilotStatus)
