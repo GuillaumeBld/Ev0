@@ -1186,12 +1186,41 @@ async def job_autopilot_settle():
                 if not rec or not fixture:
                     continue
 
-                # Skip decisions that were "skip" actions (stake=0)
-                stake = decision.stake or 0.0
-                if stake == 0:
-                    decision.result = "void"
-                    decision.pnl = 0.0
-                    decision.reward = 0.0
+                # Reward shaping for skip decisions (action_idx == 0)
+                if decision.action_idx == 0:
+                    # Map market_type → MatchEvent.event_type
+                    _skip_market_to_event = {
+                        "goalscorer": "goal",
+                        "anytime_score": "goal",
+                        "assist": "assist",
+                        "anytime_assist": "assist",
+                    }
+                    _skip_event_type = _skip_market_to_event.get(
+                        rec.market_type, rec.market_type
+                    )
+
+                    from sqlalchemy import func as sa_func
+                    ev_skip_result = await session.execute(
+                        select(MatchEvent).where(
+                            MatchEvent.fixture_id == fixture.id,
+                            sa_func.lower(MatchEvent.player_name)
+                            == sa_func.lower(decision.player_name),
+                            MatchEvent.event_type == _skip_event_type,
+                        )
+                    )
+                    would_have_won = ev_skip_result.scalars().first() is not None
+
+                    if would_have_won:
+                        # Skip was wrong — missed a winner
+                        decision.result = "skip_wrong"
+                        decision.pnl = 0.0
+                        decision.reward = -0.01
+                    else:
+                        # Skip was right — avoided a loss
+                        decision.result = "skip_correct"
+                        decision.pnl = 0.0
+                        decision.reward = 0.02
+
                     decision.settled_at = datetime.now(UTC)
                     settled_count += 1
                     continue
