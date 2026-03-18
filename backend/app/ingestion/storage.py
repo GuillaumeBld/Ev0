@@ -129,6 +129,18 @@ async def store_player_stats(
         )
         return None
 
+    # Skip if a row already exists for this player/league on today's UTC date.
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    existing = await session.execute(
+        select(PlayerStats.id).where(
+            PlayerStats.player_id == player_id,
+            PlayerStats.league == league,
+            PlayerStats.as_of_utc >= today_start,
+        )
+    )
+    if existing.first() is not None:
+        return None
+
     player_stats = PlayerStats(
         player_id=player_id,
         as_of_utc=now,

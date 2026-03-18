@@ -14,14 +14,14 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Unique index on (player_id, league, date(as_of_utc)).
-    # Prevents duplicate rows from multiple ingestion runs on the same day.
-    # Uses a functional index on the date portion of the timestamp.
+    # Non-unique index on (player_id, league) for fast lookups in the dedup check
+    # added to store_player_stats. Deduplication per UTC day is enforced at the
+    # application level (storage.py) since DATE(timestamptz) is not IMMUTABLE in Postgres.
     op.execute("""
-        CREATE UNIQUE INDEX uq_player_stats_player_league_date
-        ON player_stats (player_id, league, DATE(as_of_utc))
+        CREATE INDEX IF NOT EXISTS ix_player_stats_player_league
+        ON player_stats (player_id, league, as_of_utc DESC)
     """)
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX IF EXISTS uq_player_stats_player_league_date")
+    op.execute("DROP INDEX IF EXISTS ix_player_stats_player_league")
