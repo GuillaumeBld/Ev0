@@ -110,9 +110,24 @@ async def store_player_stats(
     league: str,
     season: str,
     stats: dict[str, Any],
-) -> PlayerStats:
-    """Store a player stats snapshot."""
+) -> PlayerStats | None:
+    """Store a player stats snapshot.
+
+    Returns None and skips insertion if the row fails sanity checks
+    (e.g. season-total minutes stored with matches_played=1).
+    """
     now = datetime.now(UTC)
+
+    matches = stats.get("matches_played", stats.get("matches", 0)) or 0
+    minutes = stats.get("minutes_played", stats.get("minutes", 0)) or 0
+    if matches > 0 and minutes / matches > 120:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "Skipping corrupt player_stats for player_id=%s league=%s: "
+            "%d min / %d matches = %.0f min/game (max 120)",
+            player_id, league, minutes, matches, minutes / matches,
+        )
+        return None
 
     player_stats = PlayerStats(
         player_id=player_id,
