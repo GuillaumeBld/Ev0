@@ -320,7 +320,7 @@ async def job_sync_fpl_stats():
                     session.add(stat)
 
                 stat.as_of_utc = as_of
-                stat.matches_played = fpl_p["goals"] + fpl_p["assists"]  # proxy
+                stat.matches_played = max(1, round(minutes / 80)) if minutes > 0 else 0  # estimated from minutes (FPL has no appearances field)
                 stat.minutes_played = minutes
                 stat.goals = fpl_p["goals"]
                 stat.assists = fpl_p["assists"]
