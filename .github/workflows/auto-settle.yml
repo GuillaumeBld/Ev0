@@ -66,4 +66,4 @@ jobs:
         run: |
           ssh -i ~/.ssh/vps_key root@"${{ secrets.VPS_HOST }}" \
             "docker exec ev0-compose-z5hvqt-backend-1 python3 -c \
-            \"import urllib.request; urllib.request.urlopen(urllib.request.Request('http://localhost:8000/api/v1/history/settle', method='POST'))\""
+            \"import urllib.request, sys; req = urllib.request.Request('http://localhost:8000/api/v1/history/settle', data=b'', method='POST', headers={'Content-Type': 'application/json'}); resp = urllib.request.urlopen(req, timeout=30); print(resp.status); sys.exit(0 if resp.status < 300 else 1)\""
