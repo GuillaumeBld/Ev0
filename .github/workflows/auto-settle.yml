@@ -65,4 +65,5 @@ jobs:
         if: steps.pending.outputs.count != '0'
         run: |
           ssh -i ~/.ssh/vps_key root@"${{ secrets.VPS_HOST }}" \
-            "docker exec ev0-compose-z5hvqt-backend-1 curl -s -X POST http://localhost:8000/api/v1/history/settle"
+            "docker exec ev0-compose-z5hvqt-backend-1 python3 -c \
+            \"import urllib.request; urllib.request.urlopen(urllib.request.Request('http://localhost:8000/api/v1/history/settle', method='POST'))\""
