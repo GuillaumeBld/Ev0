@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 ESPN_LEAGUE_SLUGS = {
     "ligue_1": "fra.1",
     "premier_league": "eng.1",
+    "bundesliga": "ger.1",
+    "la_liga": "esp.1",
+    "serie_a": "ita.1",
     "champions_league": "uefa.champions",
 }
 
