@@ -1411,6 +1411,23 @@ async def job_auto_finish_fixtures():
         )
 
 
+# ── Job: Settlement Pipeline (every 30 min) ──────────────────────
+
+
+async def job_settle_pipeline():
+    """Every 30 min: auto-finish → sync match events (ESPN) → settle.
+
+    Chains the three settlement steps in sequence so a bet can be settled
+    within ~30 min of kickoff + 2h instead of waiting for three independent
+    job cycles (up to 4h30 previously).
+    """
+    logger.info("=== Settlement pipeline: start ===")
+    await job_auto_finish_fixtures()
+    await job_sync_match_events()
+    await job_auto_settle()
+    logger.info("=== Settlement pipeline: done ===")
+
+
 # ── Job: Autopilot Re-optimize (Weekly) ──────────────────────────
 
 
@@ -1516,14 +1533,7 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Match events: Daily at 08:00 UTC (after fixtures sync)
-    scheduler.add_job(
-        job_sync_match_events,
-        CronTrigger(hour=8, minute=0),
-        id="sync_match_events",
-        name="Sync match events from FotMob",
-        replace_existing=True,
-    )
+    # Match events: handled by settle_pipeline (every 30 min)
 
     # Odds: Every hour
     scheduler.add_job(
@@ -1588,20 +1598,12 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # Settlement pipeline: every 30 min (auto-finish → ESPN events → settle)
     scheduler.add_job(
-        job_auto_settle,
-        IntervalTrigger(hours=3),
-        id="auto_settle",
-        max_instances=1,
-        coalesce=True,
-    )
-
-    # Auto-finish fixtures: Every 30 minutes (replaces broken FotMob fixture sync)
-    scheduler.add_job(
-        job_auto_finish_fixtures,
+        job_settle_pipeline,
         IntervalTrigger(minutes=30),
-        id="auto_finish_fixtures",
-        name="Auto-finish fixtures past kickoff + 2h",
+        id="settle_pipeline",
+        name="Settlement pipeline: auto-finish + match events + settle",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
