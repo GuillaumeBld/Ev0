@@ -22,13 +22,11 @@ from app.cache import close_redis
 from app.config import settings
 from app.db import async_session, engine
 from app.ingestion.auto_settle import settle_approved_recommendations
-from app.ingestion.fotmob_scraper import fetch_fotmob_fixtures
 from app.ingestion.odds import ingest_odds_for_league, normalize_league_key
 from app.ingestion.storage import (
     store_match_events,
     store_odds_snapshot,
     store_recommendation,
-    upsert_fixture,
 )
 from app.models.settings import UserSettings
 
@@ -75,34 +73,12 @@ def _get_leagues(user_settings: dict[str, str]) -> list[str]:
 
 
 async def job_sync_fixtures():
-    """Sync fixtures from FotMob for all leagues and store in DB."""
-    logger.info("=== Starting fixtures sync ===")
+    """Fixture status updates are handled by job_auto_finish_fixtures (kickoff + 2h rule).
 
-    user_settings = await _load_user_settings()
-    leagues = _get_leagues(user_settings)
-    logger.info("Active leagues: %s", leagues)
-
-    for league in leagues:
-        try:
-            fixtures = await fetch_fotmob_fixtures(league, CURRENT_SEASON)
-            logger.info("Fetched %d fixtures for %s", len(fixtures), league)
-
-            stored = 0
-            async with async_session() as session:
-                for f in fixtures:
-                    try:
-                        await upsert_fixture(session, f)
-                        stored += 1
-                    except Exception as exc:
-                        logger.warning("Failed to upsert fixture %s: %s", f.get("fixture_id"), exc)
-                        await session.rollback()
-
-            logger.info("Stored %d/%d fixtures for %s", stored, len(fixtures), league)
-
-        except Exception as exc:
-            logger.error("Error syncing %s fixtures: %s", league, exc, exc_info=True)
-
-    logger.info("=== Fixtures sync complete ===")
+    FotMob /api/leagues returns 404 — this job is intentionally a no-op.
+    New fixtures for future seasons must be seeded manually via the backfill scripts.
+    """
+    logger.info("job_sync_fixtures: skipped (FotMob API unavailable — see job_auto_finish_fixtures)")
 
 
 # ── Job 2: Player Stats Sync ─────────────────────────────────────
