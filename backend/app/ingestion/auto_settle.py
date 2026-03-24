@@ -2,13 +2,14 @@
 
 For each approved recommendation with result=None:
   1. Check if the fixture is finished
-  2. If no PlayerMatchMinutes data for the fixture → skip (leave running)
-     We need minutes data to distinguish LOST from VOID.
-  3. If PlayerMatchMinutes data is available:
+  2. If MatchEvents exist for the fixture:
+     - Check PMM if available: player absent or 0 minutes → VOID
+     - Otherwise: player has matching goal/assist event → WON, else → LOST
+  3. If no MatchEvents but PMM exists:
      - Player absent or 0 minutes → VOID
-     - Player played (>0 min) + goal/assist in MatchEvents → WON
-     - Player played (>0 min) + no event → LOST
-  4. Update recommendation: result, pnl, settled_utc
+     - Player played but no events → stuck (events not synced yet)
+  4. If neither MatchEvents nor PMM → skip (leave running)
+  5. Update recommendation: result, pnl, settled_utc
 """
 
 import logging
@@ -98,8 +99,7 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
             logger.warning("auto_settle: unknown market_type '%s' for rec %d", rec.market_type, rec.id)
             continue
 
-        # --- VOID detection via PlayerMatchMinutes ---
-        # Load all PMM rows for fixture once, then match by normalized name
+        # --- Load PMM (optional, used for VOID detection) ---
         if fixture.id not in _pmm_cache:
             all_pmm = await db.execute(
                 select(PlayerMatchMinutes)
@@ -109,72 +109,88 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
 
         pmm_rows = _pmm_cache[fixture.id]
 
-        if not pmm_rows:
-            # No minutes data yet — can't distinguish LOST from VOID → leave running
-            logger.debug(
-                "auto_settle: no PlayerMatchMinutes for fixture %d (%s vs %s) — skipping",
-                fixture.id, fixture.home_team, fixture.away_team,
-            )
-            stuck_fixture_ids.add(fixture.id)
-            continue
-
-        pmm = _find_pmm_by_name(pmm_rows, rec.player_name)
-
-        if pmm is None or pmm.minutes_played <= 0:
-            # Player didn't play (not in squad or 0 minutes) → VOID
-            rec.result = "void"
-            rec.pnl = 0.0
-            rec.settled_utc = datetime.now(UTC)
-            settled += 1
-            void_count += 1
-            logger.info(
-                "auto_settle: rec %d (%s %s) → VOID (minutes=%s)",
-                rec.id, rec.player_name, rec.market_type,
-                pmm.minutes_played if pmm else "absent",
-            )
-            continue
-        # Player played — fall through to MatchEvents check
-
-        # --- WON/LOST via MatchEvents ---
+        # --- Load MatchEvents ---
         if fixture.id not in _events_cache:
             any_event = await db.execute(
                 select(MatchEvent).where(MatchEvent.fixture_id == fixture.id).limit(1)
             )
             _events_cache[fixture.id] = any_event.scalar_one_or_none() is not None
-        if not _events_cache[fixture.id]:
+
+        has_events = _events_cache[fixture.id]
+
+        if has_events:
+            # MatchEvents available: check PMM for VOID first (if available)
+            if pmm_rows:
+                pmm = _find_pmm_by_name(pmm_rows, rec.player_name)
+                if pmm is not None and pmm.minutes_played <= 0:
+                    rec.result = "void"
+                    rec.pnl = 0.0
+                    rec.settled_utc = datetime.now(UTC)
+                    settled += 1
+                    void_count += 1
+                    logger.info(
+                        "auto_settle: rec %d (%s %s) → VOID (minutes=0, PMM available)",
+                        rec.id, rec.player_name, rec.market_type,
+                    )
+                    continue
+
+            # Settle WON/LOST from MatchEvents
+            all_events_result = await db.execute(
+                select(MatchEvent).where(
+                    MatchEvent.fixture_id == fixture.id,
+                    MatchEvent.event_type.in_(event_types),
+                )
+            )
+            fixture_events = all_events_result.scalars().all()
+            norm_rec_name = _normalize_name(rec.player_name)
+            won = any(_normalize_name(ev.player_name) == norm_rec_name for ev in fixture_events)
+
+            result = "won" if won else "lost"
+            pnl = round(10.0 * (rec.best_odds - 1), 2) if won else -10.0
+
+            rec.result = result
+            rec.pnl = pnl
+            rec.settled_utc = datetime.now(UTC)
+            settled += 1
+            if won:
+                won_count += 1
+            else:
+                lost_count += 1
+
             logger.info(
-                "auto_settle: no MatchEvents for fixture %d (%s vs %s) — skipping",
+                "auto_settle: rec %d (%s %s) → %s pnl=%.2f",
+                rec.id, rec.player_name, rec.market_type, result, pnl,
+            )
+
+        elif pmm_rows:
+            # No events but PMM exists: VOID if player didn't play, else stuck
+            pmm = _find_pmm_by_name(pmm_rows, rec.player_name)
+            if pmm is None or pmm.minutes_played <= 0:
+                rec.result = "void"
+                rec.pnl = 0.0
+                rec.settled_utc = datetime.now(UTC)
+                settled += 1
+                void_count += 1
+                logger.info(
+                    "auto_settle: rec %d (%s %s) → VOID (minutes=%s, no events)",
+                    rec.id, rec.player_name, rec.market_type,
+                    pmm.minutes_played if pmm else "absent",
+                )
+            else:
+                # Player played but no events yet — wait for event sync
+                logger.debug(
+                    "auto_settle: fixture %d has PMM but no events yet — skipping rec %d",
+                    fixture.id, rec.id,
+                )
+                stuck_fixture_ids.add(fixture.id)
+
+        else:
+            # Neither events nor PMM — leave running
+            logger.debug(
+                "auto_settle: no data for fixture %d (%s vs %s) — skipping",
                 fixture.id, fixture.home_team, fixture.away_team,
             )
             stuck_fixture_ids.add(fixture.id)
-            continue
-
-        all_events_result = await db.execute(
-            select(MatchEvent).where(
-                MatchEvent.fixture_id == fixture.id,
-                MatchEvent.event_type.in_(event_types),
-            )
-        )
-        fixture_events = all_events_result.scalars().all()
-        norm_rec_name = _normalize_name(rec.player_name)
-        won = any(_normalize_name(ev.player_name) == norm_rec_name for ev in fixture_events)
-
-        result = "won" if won else "lost"
-        pnl = round(10.0 * (rec.best_odds - 1), 2) if won else -10.0
-
-        rec.result = result
-        rec.pnl = pnl
-        rec.settled_utc = datetime.now(UTC)
-        settled += 1
-        if won:
-            won_count += 1
-        else:
-            lost_count += 1
-
-        logger.info(
-            "auto_settle: rec %d (%s %s) → %s pnl=%.2f",
-            rec.id, rec.player_name, rec.market_type, result, pnl,
-        )
 
     await db.commit()
     logger.info("auto_settle: committed %d settlements", settled)
