@@ -10,8 +10,7 @@
 | ✅ Dissocier approbation/rejet et résultat dans l'historique (onglets Approuvés + AutoFlat, badge Running) | `[x]` |
 | ✅ Corriger l'historique (P&L 10€ fixe, settlement cohérent) | `[x]` |
 | ✅ Auto-settle GitHub Actions (cron 30 min, scraping Understat via Playwright, import PMM, settlement automatique) | `[x]` |
-| ✅ Fuzzy matching des noms de joueurs (hyphens, apostrophes, espaces, prénoms intermédiaires : Al-Tamari == Al Tamari, Idrissa Gueye == Idrissa Gana Gueye) | `[x]` |
-| ✅ Migration source match events FotMob → ESPN (toutes leagues, pipeline auto-finish + ESPN + settle toutes les 30 min, délai max kickoff+2h30) | `[x]` |
+| ✅ Fuzzy matching des noms de joueurs (hyphens, apostrophes, espaces : Al-Tamari == Al Tamari, N'Diaye == Ndiaye) | `[x]` |
 | Ajouter compo + remplacements (effectifs à jour, amélioration modèle joueurs) | `[ ]` |
 | Autopilot apprend de auto flat ? (feature/réflexion) | `[ ]` |
 | ✅ Corriger "PL" dans match (display bug, Premier League uniquement) | `[x]` |
