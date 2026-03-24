@@ -30,33 +30,54 @@
 ## Session du 24/03/2026 — Pipeline de settlement autonome
 
 ### Contexte
-Le pipeline de settlement automatique était cassé sur plusieurs points. FotMob (source historique) retourne des erreurs 403/404. Les bets approuvés restaient bloqués en "Running" indéfiniment.
+Le pipeline de settlement automatique était cassé sur plusieurs points. FotMob (source historique) retourne des erreurs 403/404 depuis le VPS. Les bets approuvés restaient bloqués en "Running" indéfiniment — 91 bets en attente au début de la session.
+
+---
 
 ### Ce qui a été fait
 
-**1. Fix curl → python3 dans GitHub Actions**
-Le container Docker n'avait pas `curl`. Remplacé par `urllib.request` natif Python avec timeout et gestion des codes d'erreur.
+**1. Fix `curl` → `python3` dans GitHub Actions**
+Le container Docker backend n'a pas `curl`. Le step "Trigger auto-settle" du workflow crashait silencieusement. Remplacé par `urllib.request` natif Python avec timeout (30s), Content-Type header et vérification du code retour.
 
-**2. Migration FotMob → ESPN pour les match events**
-FotMob retourne 403 sur `/api/matchDetails` depuis le VPS (Cloudflare). ESPN couvre toutes les leagues supportées via son API publique (Ligue 1, PL, Bundesliga, La Liga, Serie A, LDC). Migration complète effectuée.
+**2. Migration FotMob → ESPN pour les match events (Big 5 + LDC)**
+FotMob retourne 403 sur `/api/matchDetails` depuis le VPS (Cloudflare block). Understat a changé son architecture entre-temps (données JSON plus embarquées dans le HTML, chargées via JS). ESPN couvre toutes les leagues supportées via son API publique gratuite :
+- Ligue 1 → `fra.1`
+- Premier League → `eng.1`
+- Bundesliga → `ger.1`
+- La Liga → `esp.1`
+- Serie A → `ita.1`
+- Champions League → `uefa.champions`
 
-**3. Pipeline de settlement chaîné (toutes les 30 min)**
-Avant : 3 jobs indépendants → délai max **4h30** entre fin du match et settlement.
-Après : 1 seul pipeline `auto-finish → ESPN events → settle` toutes les 30 min → délai max **2h30**.
+Migration complète effectuée dans `job_sync_match_events`.
 
-**4. Fix matchs 0-0**
-ESPN retournait une liste vide pour les matchs sans buts, indiscernable d'un "match non trouvé". Ajout d'un sentinel `match_processed` en DB pour débloquer le settlement (tous goalscorer/assist → LOST).
+**3. Pipeline de settlement chaîné toutes les 30 min**
+Avant : 3 jobs indépendants — `auto_finish_fixtures` (30 min), `sync_match_events` (1x/jour à 08h00), `auto_settle` (toutes les 3h) → délai max **4h30** entre fin du match et settlement.
 
-**5. Fuzzy matching étendu aux prénoms intermédiaires**
-ESPN supprime parfois les prénoms intermédiaires : `Idrissa Gueye` ≠ `Idrissa Gana Gueye`. Ajout d'une fonction `_names_match()` qui vérifie prénom + nom de famille indépendamment du prénom intermédiaire.
+Après : 1 seul `job_settle_pipeline` qui enchaîne les 3 en séquence toutes les 30 min → délai max **2h30** (kickoff + 2h + 30 min worst case).
 
-**6. Fix logique settlement (PMM optionnel)**
-Le settlement bloquait si `PlayerMatchMinutes = 0`, même quand les MatchEvents étaient disponibles. PMM est maintenant optionnel (utilisé uniquement pour détecter les VOID), le settlement procède directement WON/LOST si les events existent.
+**4. Fix logique settlement — PMM optionnel**
+Le settlement bloquait entièrement si `PlayerMatchMinutes = 0` pour une fixture, même quand les MatchEvents étaient déjà en DB. PMM est maintenant optionnel : utilisé uniquement pour détecter les VOID (joueur n'a pas joué). Si les MatchEvents existent, le settlement procède directement en WON/LOST.
 
-### Résultat
+**5. Fix matchs 0-0**
+ESPN retournait `[]` à la fois pour "match non trouvé" et "match trouvé, 0 buts". Résultat : les matchs 0-0 restaient bloqués car aucun event en DB → settlement infini. Fix : `get_match_events` retourne maintenant `None` (non trouvé) vs `[]` (trouvé, 0 buts). Quand `[]`, un sentinel `event_type="match_processed"` est stocké en DB pour débloquer le settlement → tous les bets goalscorer/assist passent en LOST.
+
+**6. Fuzzy matching étendu aux prénoms intermédiaires**
+ESPN supprime parfois les prénoms intermédiaires : `Idrissa Gueye` (ESPN) ≠ `Idrissa Gana Gueye` (DB). Le matching exact normalisé échouait. Nouvelle fonction `_names_match()` : vérifie prénom + nom de famille indépendamment du prénom intermédiaire, en plus des règles existantes (hyphens, apostrophes, espaces).
+
+Correction manuelle appliquée : bet de **Idrissa Gana Gueye (assist vs Chelsea)** settléLOST par erreur → corrigé en **WON (+45€)**.
+
+**7. Fix container backend en état "Created"**
+Après le rebuild du worker, le container backend était resté en état `Created` (non démarré). Site inaccessible. Redémarré et stabilisé avec `docker compose up -d --no-build --no-deps backend worker`.
+
+---
+
+### Résultat final
 - **91 bets settlés, 0 en attente**
 - 13 WON · 65 LOST · 13 VOID
-- PnL total : -351,30€
+- PnL total : **-351,30€**
+- Pipeline opérationnel : prochain settlement automatique dans ≤ 30 min après la fin d'un match
+
+---
 
 ### Prochain chantier
-→ **Mode compo** : intégrer les compositions d'équipe et remplacements pour améliorer le modèle de prédiction joueur (minutes attendues, titulariat).
+→ **Mode compo** : intégrer les compositions d'équipe et remplacements pour améliorer le modèle de prédiction (minutes attendues, titulariat, impact des remplacements sur les probabilités).
