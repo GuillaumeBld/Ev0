@@ -1417,6 +1417,59 @@ async def job_auto_settle():
         logger.exception("auto_settle job failed")
 
 
+# ── Job: Auto-Finish Fixtures ─────────────────────────────────────
+
+
+async def job_auto_finish_fixtures():
+    """Every 30 min: mark fixtures as finished if kickoff + 2h has passed.
+
+    FotMob /api/leagues returns 404 so fixture statuses never update automatically.
+    This time-based fallback ensures settlement can proceed for recent matches.
+    Sends a Telegram alert listing which fixtures were auto-finished.
+    """
+    from datetime import timedelta
+
+    from app.models.fixtures import Fixture
+    from app.notifications import send_telegram_alert
+
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(hours=2)
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(Fixture).where(
+                Fixture.status == "scheduled",
+                Fixture.kickoff_utc < cutoff,
+            )
+        )
+        fixtures = list(result.scalars().all())
+
+        if not fixtures:
+            logger.debug("job_auto_finish_fixtures: no fixtures to auto-finish")
+            return
+
+        for fx in fixtures:
+            fx.status = "finished"
+
+        await session.commit()
+
+        logger.info(
+            "job_auto_finish_fixtures: auto-finished %d fixtures (kickoff + 2h passed)",
+            len(fixtures),
+        )
+
+        names = "\n".join(
+            f"• {fx.home_team} vs {fx.away_team} ({fx.kickoff_utc.strftime('%d/%m %H:%M')} UTC)"
+            for fx in fixtures[:10]
+        )
+        await send_telegram_alert(
+            f"⏱️ <b>[Ev0] Auto-finish fixtures</b>\n\n"
+            f"{len(fixtures)} match(s) passés en <b>finished</b> (kickoff +2h dépassé) :\n"
+            f"{names}"
+            + (" ..." if len(fixtures) > 10 else "")
+        )
+
+
 # ── Job: Autopilot Re-optimize (Weekly) ──────────────────────────
 
 
@@ -1598,6 +1651,17 @@ def create_scheduler() -> AsyncIOScheduler:
         job_auto_settle,
         IntervalTrigger(hours=3),
         id="auto_settle",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Auto-finish fixtures: Every 30 minutes (replaces broken FotMob fixture sync)
+    scheduler.add_job(
+        job_auto_finish_fixtures,
+        IntervalTrigger(minutes=30),
+        id="auto_finish_fixtures",
+        name="Auto-finish fixtures past kickoff + 2h",
+        replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
