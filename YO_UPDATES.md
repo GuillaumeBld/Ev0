@@ -79,5 +79,15 @@ Après le rebuild du worker, le container backend était resté en état `Create
 
 ---
 
-### Prochain chantier
-→ **Mode compo** : intégrer les compositions d'équipe et remplacements pour améliorer le modèle de prédiction (minutes attendues, titulariat, impact des remplacements sur les probabilités).
+---
+
+## Prochaines sessions
+
+**1. Mode compo** *(priorité 1)*
+Intégrer les compositions d'équipe et remplacements pour améliorer le modèle de prédiction : minutes attendues, titulariat, impact des remplacements sur les probabilités de scorer/assister.
+
+**2. Revoir le scraping xG** *(priorité 2)*
+Les xG des matchs sont souvent faux. Revoir les sources et la méthode de scraping pour améliorer la fiabilité des données d'entrée du modèle.
+
+**3. Adapter le scraping des books FR après fusion PSEL / Unibet** *(priorité 3 — urgent fin mars)*
+La fusion ParionsSport (PSEL) et Unibet est annoncée pour fin mars 2026. La fréquence de scraping et les endpoints devront être revus une fois la fusion effective.
