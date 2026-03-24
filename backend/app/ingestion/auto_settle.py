@@ -121,18 +121,18 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
         pmm = _find_pmm_by_name(pmm_rows, rec.player_name)
 
         if pmm is None or pmm.minutes_played <= 0:
-                # Player didn't play (not in squad or 0 minutes) → VOID
-                rec.result = "void"
-                rec.pnl = 0.0
-                rec.settled_utc = datetime.now(UTC)
-                settled += 1
-                void_count += 1
-                logger.info(
-                    "auto_settle: rec %d (%s %s) → VOID (minutes=%s)",
-                    rec.id, rec.player_name, rec.market_type,
-                    pmm.minutes_played if pmm else "absent",
-                )
-                continue
+            # Player didn't play (not in squad or 0 minutes) → VOID
+            rec.result = "void"
+            rec.pnl = 0.0
+            rec.settled_utc = datetime.now(UTC)
+            settled += 1
+            void_count += 1
+            logger.info(
+                "auto_settle: rec %d (%s %s) → VOID (minutes=%s)",
+                rec.id, rec.player_name, rec.market_type,
+                pmm.minutes_played if pmm else "absent",
+            )
+            continue
         # Player played — fall through to MatchEvents check
 
         # --- WON/LOST via MatchEvents ---
@@ -149,14 +149,15 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
             stuck_fixture_ids.add(fixture.id)
             continue
 
-        player_event = await db.execute(
+        all_events_result = await db.execute(
             select(MatchEvent).where(
                 MatchEvent.fixture_id == fixture.id,
-                MatchEvent.player_name == rec.player_name,
                 MatchEvent.event_type.in_(event_types),
-            ).limit(1)
+            )
         )
-        won = player_event.scalar_one_or_none() is not None
+        fixture_events = all_events_result.scalars().all()
+        norm_rec_name = _normalize_name(rec.player_name)
+        won = any(_normalize_name(ev.player_name) == norm_rec_name for ev in fixture_events)
 
         result = "won" if won else "lost"
         pnl = round(10.0 * (rec.best_odds - 1), 2) if won else -10.0
