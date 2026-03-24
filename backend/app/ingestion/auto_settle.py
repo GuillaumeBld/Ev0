@@ -38,14 +38,35 @@ def _normalize_name(name: str) -> str:
     return normalized
 
 
-def _find_pmm_by_name(pmm_list: list, player_name: str):
-    """Find a PlayerMatchMinutes object by normalized player name.
+def _names_match(a: str, b: str) -> bool:
+    """Check if two player names refer to the same person.
 
-    Returns the first match or None.
+    Handles cases where one source drops a middle name:
+      'Idrissa Gueye' == 'Idrissa Gana Gueye'
+      'N'Diaye' == 'Ndiaye'
     """
-    norm = _normalize_name(player_name)
+    na, nb = _normalize_name(a), _normalize_name(b)
+    if na == nb:
+        return True
+    # One normalized form contains the other (covers suffix/prefix middle names)
+    if na in nb or nb in na:
+        return True
+    # First name + last name match even if middle name differs
+    a_words = [w for w in a.lower().split() if w]
+    b_words = [w for w in b.lower().split() if w]
+    if len(a_words) >= 2 and len(b_words) >= 2:
+        if (
+            _normalize_name(a_words[0]) == _normalize_name(b_words[0])
+            and _normalize_name(a_words[-1]) == _normalize_name(b_words[-1])
+        ):
+            return True
+    return False
+
+
+def _find_pmm_by_name(pmm_list: list, player_name: str):
+    """Find a PlayerMatchMinutes object by normalized player name."""
     for pmm in pmm_list:
-        if _normalize_name(pmm.player_name) == norm:
+        if _names_match(pmm.player_name, player_name):
             return pmm
     return None
 
@@ -142,8 +163,7 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
                 )
             )
             fixture_events = all_events_result.scalars().all()
-            norm_rec_name = _normalize_name(rec.player_name)
-            won = any(_normalize_name(ev.player_name) == norm_rec_name for ev in fixture_events)
+            won = any(_names_match(ev.player_name, rec.player_name) for ev in fixture_events)
 
             result = "won" if won else "lost"
             pnl = round(10.0 * (rec.best_odds - 1), 2) if won else -10.0
