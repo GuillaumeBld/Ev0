@@ -244,17 +244,18 @@ class ESPNClient:
         home_team: str,
         away_team: str,
         kickoff_date: str,
-    ) -> list[dict]:
+    ) -> list[dict] | None:
         """Fetch goal/assist events for a specific match.
 
         Args:
-            league: "ligue_1" or "premier_league"
-            home_team: Home team name (as stored in DB, e.g. "Paris Saint-Germain")
+            league: league slug (e.g. "ligue_1", "premier_league")
+            home_team: Home team name (as stored in DB)
             away_team: Away team name
             kickoff_date: Date string "YYYY-MM-DD"
 
         Returns:
-            List of event dicts: {"player_name": str, "event_type": str, "minute": int|None}
+            List of event dicts when match is found (empty list = match found, 0 goals).
+            None when the match could not be found on ESPN.
             event_type is one of: "goal", "assist", "own_goal", "penalty_goal"
         """
         # Try the given date ± 1 day in case of timezone edge cases
@@ -284,7 +285,7 @@ class ESPNClient:
             "ESPNClient: no ESPN match found for %s vs %s on %s",
             home_team, away_team, kickoff_date,
         )
-        return []
+        return None
 
 
 async def fetch_match_events_espn(

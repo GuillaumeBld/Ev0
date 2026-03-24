@@ -374,7 +374,13 @@ async def job_sync_match_events():
                             fixture.away_team,
                             kickoff_date,
                         )
-                        if events:
+                        if events is None:
+                            # Match not found on ESPN
+                            logger.debug(
+                                "ESPN: match not found for %s vs %s on %s",
+                                fixture.home_team, fixture.away_team, kickoff_date,
+                            )
+                        elif events:
                             stored = await store_match_events(session, fixture.id, events)
                             if stored > 0:
                                 synced += 1
@@ -383,9 +389,14 @@ async def job_sync_match_events():
                                     stored, fixture.home_team, fixture.away_team,
                                 )
                         else:
-                            logger.debug(
-                                "ESPN: no events for %s vs %s on %s",
-                                fixture.home_team, fixture.away_team, kickoff_date,
+                            # Match found, 0 scoring events (e.g. 0-0) — store sentinel
+                            await store_match_events(session, fixture.id, [
+                                {"player_name": "__processed__", "event_type": "match_processed", "minute": None}
+                            ])
+                            synced += 1
+                            logger.info(
+                                "ESPN: 0 goals for %s vs %s — sentinel stored",
+                                fixture.home_team, fixture.away_team,
                             )
                     except Exception as exc:
                         logger.warning("ESPN failed for fixture %s: %s", fixture.id, exc)
