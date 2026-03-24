@@ -15,24 +15,18 @@ import argparse
 import asyncio
 from datetime import UTC, datetime
 
-from sqlalchemy import select
-
 from app.db import async_session
 from app.ingestion.fotmob_scraper import (
     discover_season_id,
     fetch_fotmob_fixtures,
     fetch_fotmob_league,
-    fetch_match_events,
 )
 from app.ingestion.storage import (
-    store_match_events,
     store_player_stats,
     upsert_fixture,
     upsert_player,
 )
 from app.ingestion.understat_scraper import fetch_understat_league
-from app.models.fixtures import Fixture
-from app.models.match_events import MatchEvent
 
 LEAGUES = ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a"]
 # Leagues where Understat has no data — use FotMob stats instead
@@ -86,63 +80,16 @@ async def backfill_fixtures(leagues: list[str], season: str) -> int:
 
 
 async def backfill_events(leagues: list[str], season: str, limit: int | None = None) -> int:
-    """Fetch match events for finished fixtures that don't have events yet."""
-    total_stored = 0
-    processed = 0
+    """Fetch match events for finished fixtures that don't have events yet.
 
-    async with async_session() as session:
-        # Find finished fixtures for this season that have no match events
-        has_events = select(MatchEvent.fixture_id).distinct().subquery()
-
-        stmt = (
-            select(Fixture)
-            .where(Fixture.status == "finished")
-            .where(Fixture.season == season)
-            .where(~Fixture.id.in_(select(has_events.c.fixture_id)))
-            .order_by(Fixture.kickoff_utc)
-        )
-
-        if leagues != LEAGUES:
-            stmt = stmt.where(Fixture.league.in_(leagues))
-
-        result = await session.execute(stmt)
-        fixtures = list(result.scalars().all())
-
-    if not fixtures:
-        print("[events] No fixtures need event backfill")
-        return 0
-
-    target = min(len(fixtures), limit) if limit else len(fixtures)
-    print(f"[events] {len(fixtures)} fixtures need events, processing {target}")
-
-    for fixture in fixtures[:target]:
-        # Extract FotMob match ID from external_id
-        if not fixture.external_id.startswith("fotmob_"):
-            continue
-
-        match_id_str = fixture.external_id.removeprefix("fotmob_")
-        try:
-            match_id = int(match_id_str)
-        except (ValueError, TypeError):
-            continue
-
-        events = await fetch_match_events(match_id)
-
-        if events:
-            async with async_session() as session:
-                stored = await store_match_events(session, fixture.id, events)
-                total_stored += stored
-
-        processed += 1
-
-        if (processed % 25) == 0:
-            print(f"  [{processed}/{target}] {total_stored} events stored so far")
-
-        # Rate-limit: 1 req/sec
-        await asyncio.sleep(1.0)
-
-    print(f"\n[events] Done — {total_stored} events from {processed} fixtures")
-    return total_stored
+    NOTE: The FotMob /api/matchDetails endpoint (previously used here) returns
+    403 from the VPS and has been removed. Match events are now collected in
+    real-time by the worker via Understat + ESPN. This step is a no-op for
+    historical backfill — use the worker's job_sync_match_events instead.
+    """
+    print("[events] Skipped — FotMob matchDetails endpoint removed (403 on VPS).")
+    print("         Match events are collected in real-time by the worker (Understat + ESPN).")
+    return 0
 
 
 # ── Step 3: Player stats ─────────────────────────────────────────
