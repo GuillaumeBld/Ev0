@@ -325,34 +325,30 @@ async def job_sync_fpl_stats():
 
 
 async def job_sync_match_events():
-    """Sync match events (goals, assists) for finished fixtures.
+    """Sync match events (goals, assists) for finished fixtures via ESPN.
 
-    Primary source: Understat (Big 5 leagues) — rostersData provides goals + assists per player.
-    CL source: ESPN public API — used for Champions League.
-
-    FotMob is no longer used (api/matchDetails returns 403 on VPS).
+    ESPN covers all supported leagues: Ligue 1, PL, Bundesliga, La Liga, Serie A, CL.
+    One HTTP call per fixture (scoreboard + summary).
     """
     logger.info("=== Starting match events sync ===")
 
-    from datetime import date as _date, timedelta as _td
+    from datetime import timedelta as _td
 
-    from app.ingestion.espn_client import ESPNClient
-    from app.ingestion.understat_match import fetch_league_match_events, norm_understat_team
+    from app.ingestion.espn_client import ESPNClient, ESPN_LEAGUE_SLUGS
     from app.models.fixtures import Fixture
     from app.models.match_events import MatchEvent
     from app.notifications import send_telegram_alert
 
-    _understat_leagues = frozenset({"ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a"})
-    _espn_leagues = frozenset({"champions_league"})
+    import httpx as _httpx
 
     try:
         async with async_session() as session:
-            # Find finished fixtures missing match events
             fixtures_with_events = select(MatchEvent.fixture_id).distinct().subquery()
             result = await session.execute(
                 select(Fixture)
                 .where(Fixture.status == "finished")
                 .where(Fixture.id.notin_(select(fixtures_with_events.c.fixture_id)))
+                .where(Fixture.league.in_(ESPN_LEAGUE_SLUGS.keys()))
                 .order_by(Fixture.kickoff_utc.desc())
                 .limit(100)
             )
@@ -365,118 +361,46 @@ async def job_sync_match_events():
 
             logger.info("Found %d finished fixtures without match events", len(fixtures))
 
-            # Group by league
-            by_league: dict[str, list] = {}
-            for fx in fixtures:
-                by_league.setdefault(fx.league, []).append(fx)
-
             synced = 0
-            understat_ok = 0
-            espn_ok = 0
-
-            # ── Understat: Big 5 ──────────────────────────────────────────
-            for league, league_fixtures in by_league.items():
-                if league not in _understat_leagues:
-                    continue
-
-                logger.info("Understat: fetching events for %s (%d fixtures)", league, len(league_fixtures))
-                try:
-                    understat_matches = await fetch_league_match_events(league, CURRENT_SEASON)
-                except Exception as exc:
-                    logger.warning("Understat fetch failed for %s: %s", league, exc)
-                    continue
-
-                # Index by (norm_home, norm_away, date)
-                understat_index: dict[tuple[str, str, str], dict] = {}
-                for m in understat_matches:
-                    key = (
-                        norm_understat_team(m["home_team"]),
-                        norm_understat_team(m["away_team"]),
-                        m["match_date"],
-                    )
-                    understat_index[key] = m
-
-                for fixture in league_fixtures:
-                    kickoff_date = fixture.kickoff_utc.strftime("%Y-%m-%d")
-                    norm_home = fixture.home_team.lower().strip()
-                    norm_away = fixture.away_team.lower().strip()
-
-                    # Try ± 1 day for UTC edge cases
-                    d = _date.fromisoformat(kickoff_date)
-                    match_data = None
-                    for delta in (0, -1, 1):
-                        try_date = (d + _td(days=delta)).isoformat()
-                        match_data = understat_index.get((norm_home, norm_away, try_date))
-                        if match_data:
-                            break
-
-                    if not match_data or not match_data["events"]:
-                        logger.debug(
-                            "Understat: no match found for %s vs %s on %s",
-                            fixture.home_team, fixture.away_team, kickoff_date,
-                        )
-                        continue
-
-                    try:
-                        stored = await store_match_events(session, fixture.id, match_data["events"])
-                        if stored > 0:
-                            synced += 1
-                            understat_ok += 1
-                            logger.info(
-                                "Stored %d events for %s vs %s (source=understat)",
-                                stored, fixture.home_team, fixture.away_team,
-                            )
-                    except Exception as exc:
-                        logger.warning("Failed to store Understat events for fixture %s: %s", fixture.id, exc)
-
-            # ── ESPN: Champions League ────────────────────────────────────
-            import httpx as _httpx
             async with _httpx.AsyncClient(follow_redirects=True, timeout=20.0) as http:
                 espn_client = ESPNClient(http)
 
-                for league, league_fixtures in by_league.items():
-                    if league not in _espn_leagues:
-                        continue
-
-                    for fixture in league_fixtures:
-                        kickoff_date = fixture.kickoff_utc.strftime("%Y-%m-%d")
-                        try:
-                            events = await espn_client.get_match_events(
-                                league,
-                                fixture.home_team,
-                                fixture.away_team,
-                                kickoff_date,
-                            )
-                            if events:
-                                stored = await store_match_events(session, fixture.id, events)
-                                if stored > 0:
-                                    synced += 1
-                                    espn_ok += 1
-                                    logger.info(
-                                        "Stored %d events for %s vs %s (source=espn)",
-                                        stored, fixture.home_team, fixture.away_team,
-                                    )
-                            else:
-                                logger.debug(
-                                    "ESPN: no events for %s vs %s on %s",
-                                    fixture.home_team, fixture.away_team, kickoff_date,
+                for fixture in fixtures:
+                    kickoff_date = fixture.kickoff_utc.strftime("%Y-%m-%d")
+                    try:
+                        events = await espn_client.get_match_events(
+                            fixture.league,
+                            fixture.home_team,
+                            fixture.away_team,
+                            kickoff_date,
+                        )
+                        if events:
+                            stored = await store_match_events(session, fixture.id, events)
+                            if stored > 0:
+                                synced += 1
+                                logger.info(
+                                    "Stored %d events for %s vs %s (source=espn)",
+                                    stored, fixture.home_team, fixture.away_team,
                                 )
-                        except Exception as exc:
-                            logger.warning("ESPN failed for fixture %s: %s", fixture.id, exc)
+                        else:
+                            logger.debug(
+                                "ESPN: no events for %s vs %s on %s",
+                                fixture.home_team, fixture.away_team, kickoff_date,
+                            )
+                    except Exception as exc:
+                        logger.warning("ESPN failed for fixture %s: %s", fixture.id, exc)
 
-                        await asyncio.sleep(1.0)
+                    await asyncio.sleep(1.0)
 
-            logger.info(
-                "Synced match events for %d/%d fixtures (understat=%d, espn=%d)",
-                synced, len(fixtures), understat_ok, espn_ok,
-            )
+            logger.info("Synced match events for %d/%d fixtures (source=espn)", synced, len(fixtures))
 
             # ── Alert: fixtures still missing events >24h after finishing ─
             now = datetime.now(UTC)
+            fixtures_with_events2 = select(MatchEvent.fixture_id).distinct().subquery()
             result2 = await session.execute(
                 select(Fixture)
                 .where(Fixture.status == "finished")
-                .where(Fixture.id.notin_(select(fixtures_with_events.c.fixture_id)))
+                .where(Fixture.id.notin_(select(fixtures_with_events2.c.fixture_id)))
                 .where(Fixture.kickoff_utc < now - _td(hours=24))
             )
             still_missing = list(result2.scalars().all())
