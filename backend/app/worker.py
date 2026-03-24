@@ -1385,10 +1385,51 @@ async def job_expire_recommendations():
 async def job_auto_settle():
     """Every 3 hours: auto-settle approved recommendations via Understat."""
     logger.info("=== Starting auto-settle job ===")
+    from datetime import timedelta
+
+    from app.models.fixtures import Fixture
+    from app.notifications import send_telegram_alert
+
     try:
         async with async_session() as session:
-            count = await settle_approved_recommendations(session)
-        logger.info("auto_settle: settled %d recommendations", count)
+            stats = await settle_approved_recommendations(session)
+
+        settled = stats["settled"]
+        logger.info("auto_settle: settled %d recommendations", settled)
+
+        if settled > 0:
+            await send_telegram_alert(
+                f"✅ <b>[Ev0] Settlement automatique</b>\n\n"
+                f"{settled} pari(s) réglé(s) :\n"
+                f"• Gagnés : {stats['won']}\n"
+                f"• Perdus : {stats['lost']}\n"
+                f"• Voids : {stats['void']}"
+            )
+
+        # Alert if recs are stuck for fixtures finished >48h ago
+        if stats["stuck_fixture_ids"]:
+            now = datetime.now(UTC)
+            async with async_session() as session:
+                result = await session.execute(
+                    select(Fixture).where(
+                        Fixture.id.in_(stats["stuck_fixture_ids"]),
+                        Fixture.kickoff_utc < now - timedelta(hours=48),
+                    )
+                )
+                old_stuck = list(result.scalars().all())
+
+            if old_stuck:
+                names = "\n".join(
+                    f"• {fx.home_team} vs {fx.away_team} ({fx.kickoff_utc.strftime('%d/%m')})"
+                    for fx in old_stuck[:5]
+                )
+                await send_telegram_alert(
+                    f"🚨 <b>[Ev0] Settlement bloqué</b>\n\n"
+                    f"{len(old_stuck)} match(s) terminé(s) depuis >48h impossible(s) à settler :\n"
+                    f"{names}\n\n"
+                    f"Cause probable : PlayerMatchMinutes ou MatchEvents manquants."
+                )
+
     except Exception:
         logger.exception("auto_settle job failed")
 

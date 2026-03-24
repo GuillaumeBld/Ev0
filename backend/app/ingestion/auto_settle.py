@@ -58,12 +58,12 @@ _MARKET_TO_EVENTS: dict[str, list[str]] = {
 }
 
 
-async def settle_approved_recommendations(db: AsyncSession) -> int:
+async def settle_approved_recommendations(db: AsyncSession) -> dict:
     """Settle all unsettled approved recommendations for finished fixtures.
 
     Uses PlayerMatchMinutes for VOID detection when available.
     Uses MatchEvents (goals/assists) for WON/LOST.
-    Returns the number of recommendations settled.
+    Returns a dict with keys: settled, won, lost, void, stuck_fixture_ids.
     """
     # 1. Find all approved recs with result=None + finished fixture
     stmt = (
@@ -79,7 +79,7 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
 
     if not rows:
         logger.info("auto_settle: no unsettled approved recs with finished fixtures")
-        return 0
+        return {"settled": 0, "won": 0, "lost": 0, "void": 0, "stuck_fixture_ids": []}
 
     logger.info("auto_settle: %d recs to settle", len(rows))
 
@@ -88,6 +88,10 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
     _events_cache: dict[int, bool] = {}
 
     settled = 0
+    won_count = 0
+    lost_count = 0
+    void_count = 0
+    stuck_fixture_ids: set[int] = set()
     for rec, fixture in rows:
         event_types = _MARKET_TO_EVENTS.get(rec.market_type)
         if event_types is None:
@@ -111,6 +115,7 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
                 "auto_settle: no PlayerMatchMinutes for fixture %d (%s vs %s) — skipping",
                 fixture.id, fixture.home_team, fixture.away_team,
             )
+            stuck_fixture_ids.add(fixture.id)
             continue
 
         pmm = _find_pmm_by_name(pmm_rows, rec.player_name)
@@ -121,6 +126,7 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
                 rec.pnl = 0.0
                 rec.settled_utc = datetime.now(UTC)
                 settled += 1
+                void_count += 1
                 logger.info(
                     "auto_settle: rec %d (%s %s) → VOID (minutes=%s)",
                     rec.id, rec.player_name, rec.market_type,
@@ -140,6 +146,7 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
                 "auto_settle: no MatchEvents for fixture %d (%s vs %s) — skipping",
                 fixture.id, fixture.home_team, fixture.away_team,
             )
+            stuck_fixture_ids.add(fixture.id)
             continue
 
         player_event = await db.execute(
@@ -158,6 +165,10 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
         rec.pnl = pnl
         rec.settled_utc = datetime.now(UTC)
         settled += 1
+        if won:
+            won_count += 1
+        else:
+            lost_count += 1
 
         logger.info(
             "auto_settle: rec %d (%s %s) → %s pnl=%.2f",
@@ -166,4 +177,10 @@ async def settle_approved_recommendations(db: AsyncSession) -> int:
 
     await db.commit()
     logger.info("auto_settle: committed %d settlements", settled)
-    return settled
+    return {
+        "settled": settled,
+        "won": won_count,
+        "lost": lost_count,
+        "void": void_count,
+        "stuck_fixture_ids": list(stuck_fixture_ids),
+    }
