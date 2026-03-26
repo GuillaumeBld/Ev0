@@ -57,7 +57,8 @@ async def resolve_lineup(
     )
     rows = result.scalars().all()
     if rows:
-        best = min(rows, key=lambda lu: PRIORITY[lu.lineup_type])
+        # Use .get(..., 99) for consistency with the _overrides path
+        best = min(rows, key=lambda lu: PRIORITY.get(lu.lineup_type, 99))
         players_result = await session.execute(
             select(TeamLineupPlayer).where(TeamLineupPlayer.lineup_id == best.id)
         )
