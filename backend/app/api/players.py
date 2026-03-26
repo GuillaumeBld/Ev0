@@ -358,6 +358,17 @@ async def get_player(
     }
 
 
+@router.patch("/{player_id}/striker")
+async def toggle_striker(player_id: int, session: AsyncSession = Depends(get_db)):
+    """Toggle le flag is_striker du joueur."""
+    player = await session.get(Player, player_id)
+    if player is None:
+        raise HTTPException(404, "Player not found")
+    player.is_striker = not player.is_striker
+    await session.commit()
+    return {"id": player_id, "is_striker": player.is_striker}
+
+
 @router.post("/sync")
 async def trigger_sync(
     strategy: str = Query(
