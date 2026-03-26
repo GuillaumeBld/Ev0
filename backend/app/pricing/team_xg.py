@@ -144,8 +144,9 @@ class MatchPricingResult:
     away_match_xg: float
     home_players: list[PlayerAllocation] = field(default_factory=list)
     away_players: list[PlayerAllocation] = field(default_factory=list)
-    home_lineup_type: str | None = None
-    away_lineup_type: str | None = None
+    # Optional redistributed pricing when caller supplies a starter list
+    home_lineup_players: list[PlayerAllocation] | None = None
+    away_lineup_players: list[PlayerAllocation] | None = None
 
 
 # ── Stage 1: Team stats ───────────────────────────────────────────
@@ -239,13 +240,8 @@ def estimate_team_match_xg(
 def compute_player_shares(
     players: list[dict[str, Any]],
     team: str,
-    zero_shares: bool = False,
 ) -> list[PlayerShare]:
-    """Compute npxG/xA shares with Bayesian shrinkage + attach Model C per-90 stats.
-
-    When zero_shares=True all shares are forced to 0 (used for benched players
-    so they appear in the output with near-zero probability).
-    """
+    """Compute npxG/xA shares with Bayesian shrinkage + attach Model C per-90 stats."""
     team_npxg = sum(p.get("npxg", 0.0) or 0.0 for p in players) or 1e-9
     team_xa = sum(p.get("xa", 0.0) or 0.0 for p in players) or 1e-9
 
@@ -258,18 +254,14 @@ def compute_player_shares(
         npxg_prior = POSITION_NPXG_PRIORS.get(pos or "MF", 0.08)
         xa_prior = POSITION_XA_PRIORS.get(pos or "MF", 0.10)
 
-        if zero_shares:
-            npxg_share = 0.0
-            xa_share = 0.0
-        else:
-            npxg_share = (
-                shrink * ((p.get("npxg", 0.0) or 0.0) / team_npxg)
-                + (1 - shrink) * npxg_prior
-            )
-            xa_share = (
-                shrink * ((p.get("xa", 0.0) or 0.0) / team_xa)
-                + (1 - shrink) * xa_prior
-            )
+        npxg_share = (
+            shrink * ((p.get("npxg", 0.0) or 0.0) / team_npxg)
+            + (1 - shrink) * npxg_prior
+        )
+        xa_share = (
+            shrink * ((p.get("xa", 0.0) or 0.0) / team_xa)
+            + (1 - shrink) * xa_prior
+        )
 
         mins = p.get("minutes_played", 0) or 0
         exp_mins = max(0.0, min(90.0, (mins / matches) if matches > 0 else 75.0))
@@ -456,42 +448,38 @@ async def _load_team_players(db: AsyncSession, team: str) -> list[dict[str, Any]
     return players
 
 
-# ── Lineup integration ────────────────────────────────────────────
+# ── Lineup pricing (optional redistribution) ─────────────────────
 
-async def _split_players_by_lineup(
+def compute_lineup_allocation(
     players: list[dict[str, Any]],
-    fixture_id: int,
+    starter_names: list[str],
     team: str,
-    db: AsyncSession,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
-    """Split players into (starters, benched, lineup_type).
+    match_xg: float,
+) -> list[PlayerAllocation]:
+    """Compute redistributed allocations for a specific set of starters.
 
-    Starters are used for xG share computation (correct redistribution among
-    the actual playing XI). Benched players are kept for display with zeroed
-    shares so the full squad remains visible in the calculator.
+    The team xG is split only among the named starters → each player gets a
+    larger share than in the full-squad calculation, giving a more accurate
+    probability when the lineup is known.
 
-    Returns (all_players, [], None) when no lineup is available (fallback).
+    Returns [] if fewer than 5 starters matched in the DB (name mismatch /
+    missing data safety fallback).
     """
-    from app.ingestion.lineup_resolver import resolve_lineup
-
-    resolved = await resolve_lineup(fixture_id, team, db)
-    if resolved is None:
-        return players, [], None
-
-    starter_names = {
-        p.player_name.strip().lower()
-        for p in resolved.players
-        if p.is_starter
-    }
-
-    starters = [p for p in players if p["player_name"].strip().lower() in starter_names]
-    benched  = [p for p in players if p["player_name"].strip().lower() not in starter_names]
-
-    # Safety: < 5 starters matched → name mismatch / missing data → fall back
+    norm = {n.strip().lower() for n in starter_names}
+    starters = [p for p in players if p["player_name"].strip().lower() in norm]
     if len(starters) < 5:
-        return players, [], None
+        return []
 
-    return starters, benched, resolved.lineup_type
+    shares = compute_player_shares(starters, team)
+    pen_id = detect_penalty_taker(starters)
+    for s in shares:
+        s.is_pen_taker = s.player_id == pen_id
+
+    return sorted(
+        [allocate_player(s, match_xg, s.is_pen_taker) for s in shares],
+        key=lambda a: a.prob_goal,
+        reverse=True,
+    )
 
 
 # ── Orchestration ─────────────────────────────────────────────────
@@ -503,8 +491,16 @@ async def load_match_pricing(
     away_xg_override: float | None = None,
     home_pen_taker_override: int | None = None,
     away_pen_taker_override: int | None = None,
+    home_starters: list[str] | None = None,
+    away_starters: list[str] | None = None,
 ) -> MatchPricingResult:
-    """Full Top-Down pricing pipeline for one fixture (Model C)."""
+    """Full Top-Down pricing pipeline for one fixture (Model C).
+
+    home_starters / away_starters: optional list of player names. When
+    provided, the response also contains home_lineup_players /
+    away_lineup_players with xG redistributed among those starters only.
+    The main home_players / away_players always contains the full squad.
+    """
     team_stats = await compute_team_stats(db)
     home_team = fixture.home_team
     away_team = fixture.away_team
@@ -543,25 +539,11 @@ async def load_match_pricing(
     home_players_db = await _load_team_players(db, home_team)
     away_players_db = await _load_team_players(db, away_team)
 
-    # Split into starters (for xG redistribution) + benched (display only, 0 share)
-    home_starters, home_benched, home_lineup_type = await _split_players_by_lineup(
-        home_players_db, fixture.id, home_team, db
-    )
-    away_starters, away_benched, away_lineup_type = await _split_players_by_lineup(
-        away_players_db, fixture.id, away_team, db
-    )
+    home_shares = compute_player_shares(home_players_db, home_team)
+    away_shares = compute_player_shares(away_players_db, away_team)
 
-    # Shares computed only on starters → each starter gets a larger slice of team xG
-    home_shares = compute_player_shares(home_starters, home_team)
-    away_shares = compute_player_shares(away_starters, away_team)
-
-    # Benched players: zeroed shares (prob ≈ 0) so they appear in the table but signal
-    # they're not expected to contribute
-    home_shares += compute_player_shares(home_benched, home_team, zero_shares=True)
-    away_shares += compute_player_shares(away_benched, away_team, zero_shares=True)
-
-    home_pen_id = home_pen_taker_override or detect_penalty_taker(home_starters or home_players_db)
-    away_pen_id = away_pen_taker_override or detect_penalty_taker(away_starters or away_players_db)
+    home_pen_id = home_pen_taker_override or detect_penalty_taker(home_players_db)
+    away_pen_id = away_pen_taker_override or detect_penalty_taker(away_players_db)
     for s in home_shares:
         s.is_pen_taker = s.player_id == home_pen_id
     for s in away_shares:
@@ -576,6 +558,15 @@ async def load_match_pricing(
         key=lambda a: a.prob_goal, reverse=True,
     )
 
+    home_lineup = (
+        compute_lineup_allocation(home_players_db, home_starters, home_team, home_match_xg)
+        if home_starters else None
+    )
+    away_lineup = (
+        compute_lineup_allocation(away_players_db, away_starters, away_team, away_match_xg)
+        if away_starters else None
+    )
+
     return MatchPricingResult(
         fixture_id=fixture.id,
         home_team=home_team,
@@ -584,6 +575,6 @@ async def load_match_pricing(
         away_match_xg=round(away_match_xg, 3),
         home_players=home_allocs,
         away_players=away_allocs,
-        home_lineup_type=home_lineup_type,
-        away_lineup_type=away_lineup_type,
+        home_lineup_players=home_lineup or None,
+        away_lineup_players=away_lineup or None,
     )

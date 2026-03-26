@@ -2,10 +2,10 @@
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { Calculator, RefreshCw, ChevronDown, Users } from 'lucide-react'
+import { Calculator, RefreshCw, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
 import { getFixtures, priceMatch, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
-import { LineupDisplay, LineupData } from '@/components/lineups/LineupDisplay'
+import { LineupPricingWidget } from '@/components/calculator/LineupPricingWidget'
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -29,12 +29,6 @@ const POS_COLOR: Record<string, string> = {
 
 // ── Team table ─────────────────────────────────────────────────────
 
-const LINEUP_BADGE: Record<string, { label: string; className: string }> = {
-  official:        { label: 'Compo officielle',  className: 'bg-green-600/20 text-green-400' },
-  probable_manual: { label: 'Compo probable',    className: 'bg-orange-500/20 text-orange-300' },
-  last_known:      { label: 'Dernière compo',    className: 'bg-gray-600/30 text-gray-400' },
-}
-
 interface TeamTableProps {
   teamName: string
   matchXg: number
@@ -44,8 +38,6 @@ interface TeamTableProps {
   penTakerOverride: number | null
   onPenTakerClick: (playerId: number) => void
   isHome: boolean
-  lineupType: string | null
-  lineupData: LineupData | null
 }
 
 function TeamTable({
@@ -57,10 +49,7 @@ function TeamTable({
   penTakerOverride,
   onPenTakerClick,
   isHome,
-  lineupType,
-  lineupData,
 }: TeamTableProps) {
-  const [lineupOpen, setLineupOpen] = useState(false)
   return (
     <div className="bg-gray-800 rounded-xl overflow-hidden">
       {/* Header */}
@@ -76,19 +65,6 @@ function TeamTable({
           )}>
             {isHome ? 'DOM.' : 'EXT.'}
           </span>
-          {lineupType && LINEUP_BADGE[lineupType] && (
-            <button
-              onClick={() => setLineupOpen(o => !o)}
-              className={clsx(
-                'flex items-center gap-1 text-xs px-2 py-0.5 rounded transition-opacity hover:opacity-80',
-                LINEUP_BADGE[lineupType].className,
-              )}
-            >
-              <Users className="w-3 h-3" />
-              {LINEUP_BADGE[lineupType].label}
-              <ChevronDown className={clsx('w-3 h-3 transition-transform', lineupOpen && 'rotate-180')} />
-            </button>
-          )}
         </div>
         {/* xG display + override */}
         <div className="flex items-center gap-2">
@@ -111,13 +87,6 @@ function TeamTable({
           />
         </div>
       </div>
-
-      {/* Lineup widget */}
-      {lineupOpen && lineupData && (
-        <div className="px-4 py-3 border-b border-gray-700 bg-gray-900/40">
-          <LineupDisplay lineup={lineupData} />
-        </div>
-      )}
 
       {/* Table */}
       <div className="overflow-x-auto">
@@ -255,15 +224,15 @@ function CalculatorInner() {
   const [loadingFixtures, setLoadingFixtures] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // Lineup display data (fetched in parallel with pricing)
-  const [homeLineupData, setHomeLineupData] = useState<LineupData | null>(null)
-  const [awayLineupData, setAwayLineupData] = useState<LineupData | null>(null)
-
   // Overrides
   const [homeXgOverride, setHomeXgOverride] = useState('')
   const [awayXgOverride, setAwayXgOverride] = useState('')
   const [homePenTaker, setHomePenTaker] = useState<number | null>(null)
   const [awayPenTaker, setAwayPenTaker] = useState<number | null>(null)
+
+  // Lineup starters for compo redistribution (sent to priceMatch)
+  const homeStartersRef = useRef<string[] | null>(null)
+  const awayStartersRef = useRef<string[] | null>(null)
 
   // xG refs so fetchPricing doesn't need them as deps (avoids re-fetch on each keystroke)
   const homeXgRef = useRef(homeXgOverride)
@@ -297,6 +266,8 @@ function CalculatorInner() {
         away_xg_override: awayXgRef.current ? Number(awayXgRef.current) : null,
         home_pen_taker_override: homePenTaker,
         away_pen_taker_override: awayPenTaker,
+        home_starters: homeStartersRef.current,
+        away_starters: awayStartersRef.current,
       })
       setPricing(result)
     } catch (e: any) {
@@ -321,19 +292,8 @@ function CalculatorInner() {
     setAwayXgOverride('')
     setHomePenTaker(null)
     setAwayPenTaker(null)
-    setHomeLineupData(null)
-    setAwayLineupData(null)
-    if (id) {
-      fetch(`/api/v1/lineups/fixture/${id}`)
-        .then(r => r.ok ? r.json() : null)
-        .then(d => {
-          if (d) {
-            setHomeLineupData(d.home ?? null)
-            setAwayLineupData(d.away ?? null)
-          }
-        })
-        .catch(() => { /* non-fatal */ })
-    }
+    homeStartersRef.current = null
+    awayStartersRef.current = null
   }
 
   function handleHomePenClick(playerId: number) {
@@ -342,6 +302,13 @@ function CalculatorInner() {
 
   function handleAwayPenClick(playerId: number) {
     setAwayPenTaker(prev => prev === playerId ? null : playerId)
+  }
+
+  function handleCalculateWithLineup(side: 'home' | 'away', starters: string[]) {
+    if (!selectedFixtureId) return
+    if (side === 'home') homeStartersRef.current = starters.length >= 5 ? starters : null
+    else awayStartersRef.current = starters.length >= 5 ? starters : null
+    fetchPricing(selectedFixtureId)
   }
 
   const selectedFixture = fixtures.find(f => f.id === selectedFixtureId)
@@ -424,33 +391,52 @@ function CalculatorInner() {
         </div>
       )}
 
-      {/* Tables */}
+      {/* Tables + lineup widgets */}
       {pricing && !loading && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <TeamTable
-            teamName={pricing.home_team}
-            matchXg={pricing.home_match_xg}
-            players={pricing.home_players}
-            xgOverride={homeXgOverride}
-            onXgOverride={setHomeXgOverride}
-            penTakerOverride={homePenTaker}
-            onPenTakerClick={handleHomePenClick}
-            isHome={true}
-            lineupType={pricing.home_lineup_type}
-            lineupData={homeLineupData}
-          />
-          <TeamTable
-            teamName={pricing.away_team}
-            matchXg={pricing.away_match_xg}
-            players={pricing.away_players}
-            xgOverride={awayXgOverride}
-            onXgOverride={setAwayXgOverride}
-            penTakerOverride={awayPenTaker}
-            onPenTakerClick={handleAwayPenClick}
-            isHome={false}
-            lineupType={pricing.away_lineup_type}
-            lineupData={awayLineupData}
-          />
+          {/* Home */}
+          <div>
+            <TeamTable
+              teamName={pricing.home_team}
+              matchXg={pricing.home_match_xg}
+              players={pricing.home_players}
+              xgOverride={homeXgOverride}
+              onXgOverride={setHomeXgOverride}
+              penTakerOverride={homePenTaker}
+              onPenTakerClick={handleHomePenClick}
+              isHome={true}
+            />
+            <LineupPricingWidget
+              fixtureId={pricing.fixture_id}
+              team={pricing.home_team}
+              teamPlayers={pricing.home_players}
+              lineupPlayers={pricing.home_lineup_players ?? null}
+              isHome={true}
+              onCalculate={(starters) => handleCalculateWithLineup('home', starters)}
+            />
+          </div>
+
+          {/* Away */}
+          <div>
+            <TeamTable
+              teamName={pricing.away_team}
+              matchXg={pricing.away_match_xg}
+              players={pricing.away_players}
+              xgOverride={awayXgOverride}
+              onXgOverride={setAwayXgOverride}
+              penTakerOverride={awayPenTaker}
+              onPenTakerClick={handleAwayPenClick}
+              isHome={false}
+            />
+            <LineupPricingWidget
+              fixtureId={pricing.fixture_id}
+              team={pricing.away_team}
+              teamPlayers={pricing.away_players}
+              lineupPlayers={pricing.away_lineup_players ?? null}
+              isHome={false}
+              onCalculate={(starters) => handleCalculateWithLineup('away', starters)}
+            />
+          </div>
         </div>
       )}
 
