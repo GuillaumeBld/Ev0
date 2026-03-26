@@ -110,6 +110,8 @@ export interface MatchPriceResponse {
   away_match_xg: number
   home_players: PlayerAllocationOut[]
   away_players: PlayerAllocationOut[]
+  home_lineup_type: string | null
+  away_lineup_type: string | null
 }
 
 export async function priceMatch(request: MatchPriceRequest): Promise<MatchPriceResponse> {

@@ -21,8 +21,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.pricing.goalscorer import calculate_quality_multiplier
 from app.pricing.assist import calculate_creation_multiplier
+from app.pricing.goalscorer import calculate_quality_multiplier
 
 # ── Constants ─────────────────────────────────────────────────────
 
@@ -144,6 +144,8 @@ class MatchPricingResult:
     away_match_xg: float
     home_players: list[PlayerAllocation] = field(default_factory=list)
     away_players: list[PlayerAllocation] = field(default_factory=list)
+    home_lineup_type: str | None = None
+    away_lineup_type: str | None = None
 
 
 # ── Stage 1: Team stats ───────────────────────────────────────────
@@ -181,7 +183,7 @@ async def compute_team_stats(db: AsyncSession) -> dict[str, TeamStats]:
                 "def_matches": 0,
             }
 
-    for side, score_col, concede_col in [
+    for _side, score_col, concede_col in [
         ("home", "home_team", "away_score"),
         ("away", "away_team", "home_score"),
     ]:
@@ -193,7 +195,7 @@ async def compute_team_stats(db: AsyncSession) -> dict[str, TeamStats]:
                 func.count(Fixture.id).label("matches"),
             )
             .where(Fixture.status == "finished")
-            .where(getattr(Fixture, "home_score").isnot(None))
+            .where(Fixture.home_score.isnot(None))
             .group_by(getattr(Fixture, score_col.replace("_score", "_team")
                                if "_score" in score_col else score_col))
         )
@@ -445,6 +447,51 @@ async def _load_team_players(db: AsyncSession, team: str) -> list[dict[str, Any]
     return players
 
 
+# ── Lineup integration ────────────────────────────────────────────
+
+async def _apply_lineup_minutes(
+    shares: list[PlayerShare],
+    fixture_id: int,
+    team: str,
+    db: AsyncSession,
+) -> str | None:
+    """Override expected_minutes from the best available lineup.
+
+    Returns the lineup_type used ("official", "probable_manual", "last_known")
+    or None if no lineup is available for this team/fixture.
+
+    Minutes assignment:
+      - Starter → 90
+      - Substitute → 30
+      - Not in lineup → 0
+    """
+    from app.ingestion.lineup_resolver import resolve_lineup
+
+    resolved = await resolve_lineup(fixture_id, team, db)
+    if resolved is None:
+        return None
+
+    starters: set[str] = set()
+    subs: set[str] = set()
+    for p in resolved.players:
+        key = p.player_name.strip().lower()
+        if p.is_starter:
+            starters.add(key)
+        else:
+            subs.add(key)
+
+    for share in shares:
+        key = share.player_name.strip().lower()
+        if key in starters:
+            share.expected_minutes = 90.0
+        elif key in subs:
+            share.expected_minutes = 30.0
+        else:
+            share.expected_minutes = 0.0
+
+    return resolved.lineup_type
+
+
 # ── Orchestration ─────────────────────────────────────────────────
 
 async def load_match_pricing(
@@ -497,6 +544,10 @@ async def load_match_pricing(
     home_shares = compute_player_shares(home_players_db, home_team)
     away_shares = compute_player_shares(away_players_db, away_team)
 
+    # Apply lineup overrides (starters=90min, subs=30min, absent=0min)
+    home_lineup_type = await _apply_lineup_minutes(home_shares, fixture.id, home_team, db)
+    away_lineup_type = await _apply_lineup_minutes(away_shares, fixture.id, away_team, db)
+
     home_pen_id = home_pen_taker_override or detect_penalty_taker(home_players_db)
     away_pen_id = away_pen_taker_override or detect_penalty_taker(away_players_db)
     for s in home_shares:
@@ -521,4 +572,6 @@ async def load_match_pricing(
         away_match_xg=round(away_match_xg, 3),
         home_players=home_allocs,
         away_players=away_allocs,
+        home_lineup_type=home_lineup_type,
+        away_lineup_type=away_lineup_type,
     )
