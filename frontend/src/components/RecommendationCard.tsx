@@ -5,6 +5,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, ChevronUp, Check, X, Loader2 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { patchRecommendation } from '@/lib/api'
+import { LineupDisplay, LineupData } from '@/components/lineups/LineupDisplay'
 
 interface Recommendation {
   id: number
@@ -20,6 +21,7 @@ interface Recommendation {
   kickoff: string
   explanation?: Record<string, any>
   status?: 'pending' | 'approved' | 'rejected'
+  lineup?: LineupData | null
 }
 
 interface RecommendationCardProps {
@@ -196,7 +198,13 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
 
       {/* Expanded details */}
       {expanded && (
-        <div className="px-5 pb-5 border-t border-gray-700 pt-4">
+        <div className="px-5 pb-5 border-t border-gray-700 pt-4 space-y-4">
+          {rec.lineup && (
+            <div>
+              <p className="text-xs font-medium text-gray-500 mb-2 uppercase tracking-wide">Compo {rec.team}</p>
+              <LineupDisplay lineup={rec.lineup} />
+            </div>
+          )}
           <div className="text-sm text-gray-400 space-y-2">
             {rec.explanation?.inputs ? (() => {
               const inputs = rec.explanation.inputs

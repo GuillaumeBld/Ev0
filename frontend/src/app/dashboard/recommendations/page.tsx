@@ -1,13 +1,21 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Filter, RefreshCw, TrendingUp, Calendar, ChevronDown } from 'lucide-react'
 import { RecommendationCard } from '@/components/RecommendationCard'
 import { getRecommendations, getExpiredRecommendations } from '@/lib/api'
+import { LineupData } from '@/components/lineups/LineupDisplay'
 
 type MarketFilter = 'all' | 'goalscorer' | 'assist'
 type EdgeFilter = 'all' | '5+' | '10+' | '15+'
+
+type FixtureLineupCache = {
+  home_team: string
+  away_team: string
+  home: LineupData | null
+  away: LineupData | null
+}
 
 function edgeFilterToMinEdge(f: EdgeFilter): number {
   if (f === '5+') return 0.05
@@ -47,6 +55,8 @@ export default function RecommendationsPage() {
   const [edgeFilter, setEdgeFilter] = useState<EdgeFilter>('5+')
   const [selectedDate, setSelectedDate] = useState<string>('')
   const [expiredOpen, setExpiredOpen] = useState(false)
+  const [lineupCache, setLineupCache] = useState<Record<string, FixtureLineupCache>>({})
+  const fetchingFixtures = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     setSelectedDate(new Date().toISOString().split('T')[0])
@@ -67,6 +77,7 @@ export default function RecommendationsPage() {
       const recs: ApiRecommendation[] = response.recommendations || []
       return recs.map((rec) => ({
         id: rec.id,
+        fixtureId: String(rec.fixture_id),
         player: rec.player_name,
         team: rec.team,
         opponent: parseOpponent(rec.fixture_name, rec.team),
@@ -108,6 +119,21 @@ export default function RecommendationsPage() {
 
   const filteredRecs = data || []
   const expiredRecs = expiredData || []
+
+  // Fetch lineups for each unique fixture in recommendations (non-fatal, cached)
+  useEffect(() => {
+    if (!filteredRecs.length) return
+    const uniqueIds = [...new Set(filteredRecs.map((r) => r.fixtureId))]
+    for (const fxId of uniqueIds) {
+      if (!fxId || lineupCache[fxId] || fetchingFixtures.current.has(fxId)) continue
+      fetchingFixtures.current.add(fxId)
+      fetch(`/api/v1/lineups/fixture/${fxId}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (d) setLineupCache((prev) => ({ ...prev, [fxId]: d })) })
+        .catch(() => { /* non-fatal */ })
+        .finally(() => fetchingFixtures.current.delete(fxId))
+    }
+  }, [filteredRecs]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="p-4 md:p-8">
@@ -202,9 +228,16 @@ export default function RecommendationsPage() {
         </div>
       ) : filteredRecs.length > 0 ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {filteredRecs.map((rec) => (
-            <RecommendationCard key={rec.id} recommendation={rec} />
-          ))}
+          {filteredRecs.map((rec) => {
+            const { fixtureId, ...recProps } = rec
+            const fx = lineupCache[fixtureId]
+            const lineup = fx
+              ? (rec.team === fx.home_team ? fx.home : fx.away)
+              : undefined
+            return (
+              <RecommendationCard key={rec.id} recommendation={{ ...recProps, lineup }} />
+            )
+          })}
         </div>
       ) : (
         <div className="bg-gray-800 rounded-xl p-12 text-center">
