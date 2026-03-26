@@ -364,9 +364,10 @@ async def toggle_striker(player_id: int, session: AsyncSession = Depends(get_db)
     player = await session.get(Player, player_id)
     if player is None:
         raise HTTPException(404, "Player not found")
-    player.is_striker = not player.is_striker
+    new_value = not player.is_striker
+    player.is_striker = new_value
     await session.commit()
-    return {"id": player_id, "is_striker": player.is_striker}
+    return {"id": player_id, "is_striker": new_value}
 
 
 @router.post("/sync")
