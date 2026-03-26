@@ -27,6 +27,14 @@ Cliquer sur un joueur pour voir ses stats, son historique de recommandations, et
 Calendrier des matchs à venir. Voir quels matchs ont des recommandations actives.
 Possibilité d'ajouter manuellement un match ou d'ajuster les minutes attendues d'un joueur.
 
+## Compos (/lineups)
+Saisie manuelle des compositions probables avant les matchs.
+- Sélectionner un match → voir la compo active de chaque équipe (badge : Officielle / Probable / Dernière compo)
+- Cliquer **Modifier** pour saisir une compo probable : sélectionner les joueurs + leur poste (GK/DEF/MID/FWD)
+- Enregistrer → la compo devient active pour ce match (mode "Probable")
+- **Effacer** → revient à la dernière compo officielle connue
+- Le statut BU (avant-centre) d'un joueur se définit dans la page Joueurs (icône 🎯)
+
 ## Backtest (/backtest)
 Lance le simulateur sur les données historiques (saison 2024-2025). Affiche :
 - Nombre de paris simulés, win rate, ROI
