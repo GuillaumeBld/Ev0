@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { RefreshCw, Search, Filter, ChevronDown, ChevronUp, Database, TrendingUp, AlertCircle } from 'lucide-react'
+import { RefreshCw, Search, Filter, ChevronDown, ChevronUp, Database, TrendingUp, AlertCircle, Crosshair } from 'lucide-react'
 import { clsx } from 'clsx'
 
 interface PlayerStats {
@@ -32,6 +32,7 @@ interface Player {
   ev0_xg_per_90: number
   ev0_xa_per_90: number
   ev0_npxg_per_90: number
+  is_striker: boolean
 }
 
 interface SyncStatus {
@@ -434,7 +435,27 @@ export default function PlayersPage() {
                       )}
                       onClick={() => setExpandedPlayer(isExpanded ? null : player.id)}
                     >
-                      <td className="px-4 py-3 text-sm text-white font-medium">{player.name}</td>
+                      <td className="px-4 py-3 text-sm text-white font-medium">
+                        <div className="flex items-center gap-2">
+                          <button
+                            title={player.is_striker ? "Retirer statut BU" : "Marquer comme avant-centre (BU)"}
+                            onClick={async (e) => {
+                              e.stopPropagation()
+                              const res = await fetch(`/api/v1/players/${player.id}/striker`, { method: 'PATCH' })
+                              if (res.ok) {
+                                const updated = await res.json()
+                                setPlayers(prev => prev.map(p => p.id === player.id ? { ...p, is_striker: updated.is_striker } : p))
+                              }
+                            }}
+                            className={`p-1 rounded transition-colors hover:bg-gray-700 ${
+                              player.is_striker ? 'text-orange-500' : 'text-gray-500'
+                            }`}
+                          >
+                            <Crosshair size={14} />
+                          </button>
+                          {player.name}
+                        </div>
+                      </td>
                       <td className="px-4 py-3 text-sm text-gray-300">{player.team || '-'}</td>
                       <td className="px-4 py-3 text-center hidden md:table-cell">
                         <span className={clsx(
