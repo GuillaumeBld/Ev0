@@ -123,7 +123,7 @@ export default function RecommendationsPage() {
   // Fetch lineups for each unique fixture in recommendations (non-fatal, cached)
   useEffect(() => {
     if (!filteredRecs.length) return
-    const uniqueIds = [...new Set(filteredRecs.map((r) => r.fixtureId))]
+    const uniqueIds = Array.from(new Set(filteredRecs.map((r) => r.fixtureId)))
     for (const fxId of uniqueIds) {
       if (!fxId || lineupCache[fxId] || fetchingFixtures.current.has(fxId)) continue
       fetchingFixtures.current.add(fxId)
