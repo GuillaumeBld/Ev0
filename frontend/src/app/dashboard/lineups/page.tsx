@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { LineupDisplay, LineupData } from "@/components/lineups/LineupDisplay"
@@ -23,28 +23,43 @@ type FixtureLineups = {
 }
 
 export default function LineupsAdminPage() {
-  const [fixtures, setFixtures]     = useState<Fixture[]>([])
-  const [selected, setSelected]     = useState<Fixture | null>(null)
-  const [lineups, setLineups]       = useState<FixtureLineups | null>(null)
+  const [fixtures, setFixtures]       = useState<Fixture[]>([])
+  const [selected, setSelected]       = useState<Fixture | null>(null)
+  const [lineups, setLineups]         = useState<FixtureLineups | null>(null)
   const [editingTeam, setEditingTeam] = useState<"home" | "away" | null>(null)
+  const [error, setError]             = useState<string | null>(null)
+  // Ref so handleSaved always sees the latest selected fixture
+  const selectedRef = useRef<Fixture | null>(null)
 
   useEffect(() => {
     fetch("/api/v1/fixtures?status=scheduled&limit=30")
-      .then(r => r.json())
-      .then((data) => setFixtures(Array.isArray(data) ? data : data.fixtures ?? []))
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json()
+      })
+      .then((data) => setFixtures(data.fixtures ?? []))
+      .catch(e => setError(`Impossible de charger les matchs : ${e.message}`))
   }, [])
 
   const loadLineups = useCallback(async (fixture: Fixture) => {
     setSelected(fixture)
+    selectedRef.current = fixture
     setEditingTeam(null)
-    const r = await fetch(`/api/v1/lineups/fixture/${fixture.id}`)
-    setLineups(await r.json())
+    setError(null)
+    try {
+      const r = await fetch(`/api/v1/lineups/fixture/${fixture.id}`)
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      setLineups(await r.json())
+    } catch (e: unknown) {
+      setError(`Impossible de charger les compos : ${e instanceof Error ? e.message : e}`)
+    }
   }, [])
 
-  function handleSaved() {
-    if (selected) loadLineups(selected)
+  const handleSaved = useCallback(() => {
+    const current = selectedRef.current
+    if (current) loadLineups(current)
     setEditingTeam(null)
-  }
+  }, [loadLineups])
 
   return (
     <div className="p-6 space-y-6">
@@ -54,6 +69,10 @@ export default function LineupsAdminPage() {
           Saisie manuelle des compositions avant les matchs.
         </p>
       </div>
+
+      {error && (
+        <p className="text-sm text-red-400">{error}</p>
+      )}
 
       {/* Sélecteur de match */}
       <div className="flex flex-wrap gap-2">
@@ -65,6 +84,9 @@ export default function LineupsAdminPage() {
             onClick={() => loadLineups(fx)}
           >
             {fx.home_team} vs {fx.away_team}
+            <span className="ml-1 text-xs opacity-70">
+              {new Date(fx.kickoff_utc).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })}
+            </span>
           </Button>
         ))}
       </div>
