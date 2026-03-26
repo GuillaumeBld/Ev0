@@ -43,4 +43,4 @@ build/
 
 # Project specific
 _archive/
-docs/_site/
+docs/_site/.worktrees/
