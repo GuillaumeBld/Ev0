@@ -87,6 +87,9 @@ class MatchPriceRequest(BaseModel):
     away_xg_override: float | None = None
     home_pen_taker_override: int | None = None  # player_id
     away_pen_taker_override: int | None = None  # player_id
+    # Optional: redistribute xG among these starters only
+    home_starters: list[str] | None = None
+    away_starters: list[str] | None = None
 
 
 class PlayerAllocationOut(BaseModel):
@@ -116,8 +119,9 @@ class MatchPriceResponse(BaseModel):
     away_match_xg: float
     home_players: list[PlayerAllocationOut]
     away_players: list[PlayerAllocationOut]
-    home_lineup_type: str | None = None
-    away_lineup_type: str | None = None
+    # Populated only when starters were supplied in the request
+    home_lineup_players: list[PlayerAllocationOut] | None = None
+    away_lineup_players: list[PlayerAllocationOut] | None = None
 
 
 @router.post("/price/match", response_model=MatchPriceResponse)
@@ -147,6 +151,8 @@ async def price_match(
         away_xg_override=request.away_xg_override,
         home_pen_taker_override=request.home_pen_taker_override,
         away_pen_taker_override=request.away_pen_taker_override,
+        home_starters=request.home_starters,
+        away_starters=request.away_starters,
     )
 
     def _to_out(allocs: list) -> list[PlayerAllocationOut]:
@@ -180,6 +186,6 @@ async def price_match(
         away_match_xg=pricing.away_match_xg,
         home_players=_to_out(pricing.home_players),
         away_players=_to_out(pricing.away_players),
-        home_lineup_type=pricing.home_lineup_type,
-        away_lineup_type=pricing.away_lineup_type,
+        home_lineup_players=_to_out(pricing.home_lineup_players) if pricing.home_lineup_players else None,
+        away_lineup_players=_to_out(pricing.away_lineup_players) if pricing.away_lineup_players else None,
     )
