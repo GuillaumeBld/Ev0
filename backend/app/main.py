@@ -19,6 +19,9 @@ from app.api import (
     pricing,
     recommendations,
 )
+from app.api import (
+    lineups as lineups_api,
+)
 from app.api import settings as settings_api
 from app.cache import close_redis
 from app.config import settings
@@ -68,3 +71,4 @@ app.include_router(backtest.router, prefix="/api/v1", tags=["backtest"])
 app.include_router(bankroll.router, prefix="/api/v1", tags=["bankroll"])
 app.include_router(settings_api.router, prefix="/api/v1", tags=["settings"])
 app.include_router(autopilot.router, prefix="/api/v1", tags=["autopilot"])
+app.include_router(lineups_api.router, prefix="/api/v1", tags=["lineups"])
