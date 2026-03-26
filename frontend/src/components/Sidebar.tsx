@@ -17,6 +17,7 @@ import {
   Calculator,
   Brain,
   BookOpen,
+  ClipboardList,
   X
 } from 'lucide-react'
 import { clsx } from 'clsx'
@@ -33,6 +34,7 @@ const navigation = [
   { name: 'Recommendations', href: '/dashboard/recommendations', icon: Target },
   { name: 'Joueurs', href: '/dashboard/players', icon: Users },
   { name: 'Matchs', href: '/dashboard/matches', icon: Calendar },
+  { name: 'Compos', href: '/dashboard/lineups', icon: ClipboardList },
   { name: 'Backtest', href: '/dashboard/backtest', icon: TrendingUp },
   { name: 'Historique', href: '/dashboard/history', icon: History },
   { name: 'Autopilot', href: '/dashboard/autopilot', icon: Brain },
