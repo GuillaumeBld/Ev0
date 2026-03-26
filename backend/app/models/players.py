@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -42,10 +42,15 @@ class Player(Base, TimestampMixin):
 
     # Position: FW / MF / W / FB / DF / GK
     position: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    is_striker: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     # Metadata
     nationality: Mapped[str | None] = mapped_column(String(100), nullable=True)
     birth_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    def __init__(self, **kwargs: object) -> None:
+        kwargs.setdefault("is_striker", False)
+        super().__init__(**kwargs)
 
     def __repr__(self) -> str:
         return f"<Player {self.name} ({self.team})>"
