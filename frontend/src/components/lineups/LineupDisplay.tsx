@@ -32,11 +32,15 @@ function centerBU(players: LineupPlayer[]): LineupPlayer[] {
   return [...wings.slice(0, split), ...bus, ...wings.slice(split)]
 }
 
-/** Déduit la formation en comptant DEF-MID-FWD parmi les titulaires. */
-function getFormation(players: LineupPlayer[]): string {
-  const starters = players.filter(p => p.is_starter && p.position !== "GK")
+/**
+ * Déduit la formation en comptant DEF-MID-FWD.
+ * Attend en entrée uniquement les titulaires (is_starter=true).
+ */
+function getFormation(starters: LineupPlayer[]): string {
   const counts: Record<string, number> = {}
-  for (const p of starters) counts[p.position] = (counts[p.position] ?? 0) + 1
+  for (const p of starters) {
+    if (p.position !== "GK") counts[p.position] = (counts[p.position] ?? 0) + 1
+  }
   const parts = (["DEF", "MID", "FWD"] as const)
     .map(pos => counts[pos] ?? 0)
     .filter(n => n > 0)
@@ -44,7 +48,7 @@ function getFormation(players: LineupPlayer[]): string {
 }
 
 export function LineupDisplay({ lineup }: { lineup: LineupData }) {
-  const badge    = BADGE_CONFIG[lineup.lineup_type]
+  const badge = BADGE_CONFIG[lineup.lineup_type] ?? BADGE_CONFIG["last_known"]
   const starters = lineup.players.filter(p => p.is_starter)
   const formation = getFormation(starters)
 
@@ -72,9 +76,9 @@ export function LineupDisplay({ lineup }: { lineup: LineupData }) {
         const sorted = pos === "FWD" ? centerBU(line) : line
         return (
           <div key={pos} className="flex gap-x-3 justify-center py-0.5 flex-wrap">
-            {sorted.map((p, i) => (
+            {sorted.map(p => (
               <span
-                key={i}
+                key={p.player_name}
                 className={
                   p.is_striker
                     ? "font-bold underline decoration-orange-400"
