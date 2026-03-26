@@ -108,6 +108,8 @@ class PlayerWithStats(BaseModel):
     fotmob: PlayerStatsResponse | None
     average: PlayerStatsResponse | None
 
+    is_striker: bool
+
     # Computed EV0 values (using average or best available)
     ev0_xg_per_90: float
     ev0_xa_per_90: float
@@ -234,6 +236,7 @@ async def list_players(
                 "team": player.team,
                 "position": player.position,
                 "league": player.league,
+                "is_striker": player.is_striker,
                 "api_football": stats_to_response(api_football),
                 "fbref": stats_to_response(fbref),
                 "understat": stats_to_response(understat),
@@ -347,6 +350,7 @@ async def get_player(
         "team": player.team,
         "position": player.position,
         "league": player.league,
+        "is_striker": player.is_striker,
         "api_football": stats_to_response(api_football),
         "fbref": stats_to_response(fbref),
         "understat": stats_to_response(understat),

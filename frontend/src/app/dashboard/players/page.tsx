@@ -67,6 +67,7 @@ export default function PlayersPage() {
   const [minMinutes, setMinMinutes] = useState(0)
   const [expandedPlayer, setExpandedPlayer] = useState<number | null>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
+  const [togglingStriker, setTogglingStriker] = useState<Set<number>>(new Set())
 
   const fetchTeams = useCallback(async (league: string) => {
     try {
@@ -439,15 +440,26 @@ export default function PlayersPage() {
                         <div className="flex items-center gap-2">
                           <button
                             title={player.is_striker ? "Retirer statut BU" : "Marquer comme avant-centre (BU)"}
+                            disabled={togglingStriker.has(player.id)}
                             onClick={async (e) => {
                               e.stopPropagation()
-                              const res = await fetch(`/api/v1/players/${player.id}/striker`, { method: 'PATCH' })
-                              if (res.ok) {
-                                const updated = await res.json()
-                                setPlayers(prev => prev.map(p => p.id === player.id ? { ...p, is_striker: updated.is_striker } : p))
+                              if (togglingStriker.has(player.id)) return
+                              setTogglingStriker(prev => new Set(prev).add(player.id))
+                              try {
+                                const res = await fetch(`/api/v1/players/${player.id}/striker`, { method: 'PATCH' })
+                                if (res.ok) {
+                                  const updated = await res.json()
+                                  setPlayers(prev => prev.map(p => p.id === player.id ? { ...p, is_striker: updated.is_striker } : p))
+                                } else {
+                                  setFetchError(`Impossible de modifier le statut BU (HTTP ${res.status})`)
+                                }
+                              } catch {
+                                setFetchError("Impossible de modifier le statut BU")
+                              } finally {
+                                setTogglingStriker(prev => { const s = new Set(prev); s.delete(player.id); return s })
                               }
                             }}
-                            className={`p-1 rounded transition-colors hover:bg-gray-700 ${
+                            className={`p-1 rounded transition-colors hover:bg-gray-700 disabled:opacity-40 ${
                               player.is_striker ? 'text-orange-500' : 'text-gray-500'
                             }`}
                           >
