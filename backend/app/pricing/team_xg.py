@@ -449,47 +449,41 @@ async def _load_team_players(db: AsyncSession, team: str) -> list[dict[str, Any]
 
 # ── Lineup integration ────────────────────────────────────────────
 
-async def _apply_lineup_minutes(
-    shares: list[PlayerShare],
+async def _filter_players_by_lineup(
+    players: list[dict[str, Any]],
     fixture_id: int,
     team: str,
     db: AsyncSession,
-) -> str | None:
-    """Override expected_minutes from the best available lineup.
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Filter the player list to only the starters in the best available lineup.
 
-    Returns the lineup_type used ("official", "probable_manual", "last_known")
-    or None if no lineup is available for this team/fixture.
+    The goal is betting-correct xG redistribution: the team's xG is split
+    only among the actual starters, giving each a higher share than if the
+    whole squad diluted the pot.
 
-    Minutes assignment:
-      - Starter → 90
-      - Substitute → 30
-      - Not in lineup → 0
+    Returns (filtered_players, lineup_type) or (original_players, None) if
+    no lineup is available or the match yields fewer than 5 usable players
+    (safety fallback).
     """
     from app.ingestion.lineup_resolver import resolve_lineup
 
     resolved = await resolve_lineup(fixture_id, team, db)
     if resolved is None:
-        return None
+        return players, None
 
-    starters: set[str] = set()
-    subs: set[str] = set()
-    for p in resolved.players:
-        key = p.player_name.strip().lower()
-        if p.is_starter:
-            starters.add(key)
-        else:
-            subs.add(key)
+    starter_names = {
+        p.player_name.strip().lower()
+        for p in resolved.players
+        if p.is_starter
+    }
 
-    for share in shares:
-        key = share.player_name.strip().lower()
-        if key in starters:
-            share.expected_minutes = 90.0
-        elif key in subs:
-            share.expected_minutes = 30.0
-        else:
-            share.expected_minutes = 0.0
+    filtered = [p for p in players if p["player_name"].strip().lower() in starter_names]
 
-    return resolved.lineup_type
+    # Safety: if < 5 starters matched in DB (name mismatch / missing data), fall back
+    if len(filtered) < 5:
+        return players, None
+
+    return filtered, resolved.lineup_type
 
 
 # ── Orchestration ─────────────────────────────────────────────────
@@ -541,12 +535,16 @@ async def load_match_pricing(
     home_players_db = await _load_team_players(db, home_team)
     away_players_db = await _load_team_players(db, away_team)
 
+    # Filter to lineup starters when available → xG redistributed among fewer players
+    home_players_db, home_lineup_type = await _filter_players_by_lineup(
+        home_players_db, fixture.id, home_team, db
+    )
+    away_players_db, away_lineup_type = await _filter_players_by_lineup(
+        away_players_db, fixture.id, away_team, db
+    )
+
     home_shares = compute_player_shares(home_players_db, home_team)
     away_shares = compute_player_shares(away_players_db, away_team)
-
-    # Apply lineup overrides (starters=90min, subs=30min, absent=0min)
-    home_lineup_type = await _apply_lineup_minutes(home_shares, fixture.id, home_team, db)
-    away_lineup_type = await _apply_lineup_minutes(away_shares, fixture.id, away_team, db)
 
     home_pen_id = home_pen_taker_override or detect_penalty_taker(home_players_db)
     away_pen_id = away_pen_taker_override or detect_penalty_taker(away_players_db)

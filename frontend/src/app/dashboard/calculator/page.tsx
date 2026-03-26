@@ -2,9 +2,10 @@
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { Calculator, RefreshCw, ChevronDown } from 'lucide-react'
+import { Calculator, RefreshCw, ChevronDown, Users } from 'lucide-react'
 import { clsx } from 'clsx'
 import { getFixtures, priceMatch, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
+import { LineupDisplay, LineupData } from '@/components/lineups/LineupDisplay'
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -44,6 +45,7 @@ interface TeamTableProps {
   onPenTakerClick: (playerId: number) => void
   isHome: boolean
   lineupType: string | null
+  lineupData: LineupData | null
 }
 
 function TeamTable({
@@ -56,7 +58,9 @@ function TeamTable({
   onPenTakerClick,
   isHome,
   lineupType,
+  lineupData,
 }: TeamTableProps) {
+  const [lineupOpen, setLineupOpen] = useState(false)
   return (
     <div className="bg-gray-800 rounded-xl overflow-hidden">
       {/* Header */}
@@ -73,9 +77,17 @@ function TeamTable({
             {isHome ? 'DOM.' : 'EXT.'}
           </span>
           {lineupType && LINEUP_BADGE[lineupType] && (
-            <span className={clsx('text-xs px-2 py-0.5 rounded', LINEUP_BADGE[lineupType].className)}>
+            <button
+              onClick={() => setLineupOpen(o => !o)}
+              className={clsx(
+                'flex items-center gap-1 text-xs px-2 py-0.5 rounded transition-opacity hover:opacity-80',
+                LINEUP_BADGE[lineupType].className,
+              )}
+            >
+              <Users className="w-3 h-3" />
               {LINEUP_BADGE[lineupType].label}
-            </span>
+              <ChevronDown className={clsx('w-3 h-3 transition-transform', lineupOpen && 'rotate-180')} />
+            </button>
           )}
         </div>
         {/* xG display + override */}
@@ -99,6 +111,13 @@ function TeamTable({
           />
         </div>
       </div>
+
+      {/* Lineup widget */}
+      {lineupOpen && lineupData && (
+        <div className="px-4 py-3 border-b border-gray-700 bg-gray-900/40">
+          <LineupDisplay lineup={lineupData} />
+        </div>
+      )}
 
       {/* Table */}
       <div className="overflow-x-auto">
@@ -236,6 +255,10 @@ function CalculatorInner() {
   const [loadingFixtures, setLoadingFixtures] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Lineup display data (fetched in parallel with pricing)
+  const [homeLineupData, setHomeLineupData] = useState<LineupData | null>(null)
+  const [awayLineupData, setAwayLineupData] = useState<LineupData | null>(null)
+
   // Overrides
   const [homeXgOverride, setHomeXgOverride] = useState('')
   const [awayXgOverride, setAwayXgOverride] = useState('')
@@ -298,6 +321,19 @@ function CalculatorInner() {
     setAwayXgOverride('')
     setHomePenTaker(null)
     setAwayPenTaker(null)
+    setHomeLineupData(null)
+    setAwayLineupData(null)
+    if (id) {
+      fetch(`/api/v1/lineups/fixture/${id}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          if (d) {
+            setHomeLineupData(d.home ?? null)
+            setAwayLineupData(d.away ?? null)
+          }
+        })
+        .catch(() => { /* non-fatal */ })
+    }
   }
 
   function handleHomePenClick(playerId: number) {
@@ -401,6 +437,7 @@ function CalculatorInner() {
             onPenTakerClick={handleHomePenClick}
             isHome={true}
             lineupType={pricing.home_lineup_type}
+            lineupData={homeLineupData}
           />
           <TeamTable
             teamName={pricing.away_team}
@@ -412,6 +449,7 @@ function CalculatorInner() {
             onPenTakerClick={handleAwayPenClick}
             isHome={false}
             lineupType={pricing.away_lineup_type}
+            lineupData={awayLineupData}
           />
         </div>
       )}
