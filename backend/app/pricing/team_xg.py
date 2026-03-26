@@ -239,8 +239,13 @@ def estimate_team_match_xg(
 def compute_player_shares(
     players: list[dict[str, Any]],
     team: str,
+    zero_shares: bool = False,
 ) -> list[PlayerShare]:
-    """Compute npxG/xA shares with Bayesian shrinkage + attach Model C per-90 stats."""
+    """Compute npxG/xA shares with Bayesian shrinkage + attach Model C per-90 stats.
+
+    When zero_shares=True all shares are forced to 0 (used for benched players
+    so they appear in the output with near-zero probability).
+    """
     team_npxg = sum(p.get("npxg", 0.0) or 0.0 for p in players) or 1e-9
     team_xa = sum(p.get("xa", 0.0) or 0.0 for p in players) or 1e-9
 
@@ -253,14 +258,18 @@ def compute_player_shares(
         npxg_prior = POSITION_NPXG_PRIORS.get(pos or "MF", 0.08)
         xa_prior = POSITION_XA_PRIORS.get(pos or "MF", 0.10)
 
-        npxg_share = (
-            shrink * ((p.get("npxg", 0.0) or 0.0) / team_npxg)
-            + (1 - shrink) * npxg_prior
-        )
-        xa_share = (
-            shrink * ((p.get("xa", 0.0) or 0.0) / team_xa)
-            + (1 - shrink) * xa_prior
-        )
+        if zero_shares:
+            npxg_share = 0.0
+            xa_share = 0.0
+        else:
+            npxg_share = (
+                shrink * ((p.get("npxg", 0.0) or 0.0) / team_npxg)
+                + (1 - shrink) * npxg_prior
+            )
+            xa_share = (
+                shrink * ((p.get("xa", 0.0) or 0.0) / team_xa)
+                + (1 - shrink) * xa_prior
+            )
 
         mins = p.get("minutes_played", 0) or 0
         exp_mins = max(0.0, min(90.0, (mins / matches) if matches > 0 else 75.0))
@@ -449,27 +458,25 @@ async def _load_team_players(db: AsyncSession, team: str) -> list[dict[str, Any]
 
 # ── Lineup integration ────────────────────────────────────────────
 
-async def _filter_players_by_lineup(
+async def _split_players_by_lineup(
     players: list[dict[str, Any]],
     fixture_id: int,
     team: str,
     db: AsyncSession,
-) -> tuple[list[dict[str, Any]], str | None]:
-    """Filter the player list to only the starters in the best available lineup.
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    """Split players into (starters, benched, lineup_type).
 
-    The goal is betting-correct xG redistribution: the team's xG is split
-    only among the actual starters, giving each a higher share than if the
-    whole squad diluted the pot.
+    Starters are used for xG share computation (correct redistribution among
+    the actual playing XI). Benched players are kept for display with zeroed
+    shares so the full squad remains visible in the calculator.
 
-    Returns (filtered_players, lineup_type) or (original_players, None) if
-    no lineup is available or the match yields fewer than 5 usable players
-    (safety fallback).
+    Returns (all_players, [], None) when no lineup is available (fallback).
     """
     from app.ingestion.lineup_resolver import resolve_lineup
 
     resolved = await resolve_lineup(fixture_id, team, db)
     if resolved is None:
-        return players, None
+        return players, [], None
 
     starter_names = {
         p.player_name.strip().lower()
@@ -477,13 +484,14 @@ async def _filter_players_by_lineup(
         if p.is_starter
     }
 
-    filtered = [p for p in players if p["player_name"].strip().lower() in starter_names]
+    starters = [p for p in players if p["player_name"].strip().lower() in starter_names]
+    benched  = [p for p in players if p["player_name"].strip().lower() not in starter_names]
 
-    # Safety: if < 5 starters matched in DB (name mismatch / missing data), fall back
-    if len(filtered) < 5:
-        return players, None
+    # Safety: < 5 starters matched → name mismatch / missing data → fall back
+    if len(starters) < 5:
+        return players, [], None
 
-    return filtered, resolved.lineup_type
+    return starters, benched, resolved.lineup_type
 
 
 # ── Orchestration ─────────────────────────────────────────────────
@@ -535,19 +543,25 @@ async def load_match_pricing(
     home_players_db = await _load_team_players(db, home_team)
     away_players_db = await _load_team_players(db, away_team)
 
-    # Filter to lineup starters when available → xG redistributed among fewer players
-    home_players_db, home_lineup_type = await _filter_players_by_lineup(
+    # Split into starters (for xG redistribution) + benched (display only, 0 share)
+    home_starters, home_benched, home_lineup_type = await _split_players_by_lineup(
         home_players_db, fixture.id, home_team, db
     )
-    away_players_db, away_lineup_type = await _filter_players_by_lineup(
+    away_starters, away_benched, away_lineup_type = await _split_players_by_lineup(
         away_players_db, fixture.id, away_team, db
     )
 
-    home_shares = compute_player_shares(home_players_db, home_team)
-    away_shares = compute_player_shares(away_players_db, away_team)
+    # Shares computed only on starters → each starter gets a larger slice of team xG
+    home_shares = compute_player_shares(home_starters, home_team)
+    away_shares = compute_player_shares(away_starters, away_team)
 
-    home_pen_id = home_pen_taker_override or detect_penalty_taker(home_players_db)
-    away_pen_id = away_pen_taker_override or detect_penalty_taker(away_players_db)
+    # Benched players: zeroed shares (prob ≈ 0) so they appear in the table but signal
+    # they're not expected to contribute
+    home_shares += compute_player_shares(home_benched, home_team, zero_shares=True)
+    away_shares += compute_player_shares(away_benched, away_team, zero_shares=True)
+
+    home_pen_id = home_pen_taker_override or detect_penalty_taker(home_starters or home_players_db)
+    away_pen_id = away_pen_taker_override or detect_penalty_taker(away_starters or away_players_db)
     for s in home_shares:
         s.is_pen_taker = s.player_id == home_pen_id
     for s in away_shares:
