@@ -116,6 +116,8 @@ class MatchPriceResponse(BaseModel):
     away_match_xg: float
     home_players: list[PlayerAllocationOut]
     away_players: list[PlayerAllocationOut]
+    home_lineup_type: str | None = None
+    away_lineup_type: str | None = None
 
 
 @router.post("/price/match", response_model=MatchPriceResponse)
@@ -178,4 +180,6 @@ async def price_match(
         away_match_xg=pricing.away_match_xg,
         home_players=_to_out(pricing.home_players),
         away_players=_to_out(pricing.away_players),
+        home_lineup_type=pricing.home_lineup_type,
+        away_lineup_type=pricing.away_lineup_type,
     )

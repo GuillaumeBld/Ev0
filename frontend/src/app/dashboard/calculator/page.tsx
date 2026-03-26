@@ -28,6 +28,12 @@ const POS_COLOR: Record<string, string> = {
 
 // ── Team table ─────────────────────────────────────────────────────
 
+const LINEUP_BADGE: Record<string, { label: string; className: string }> = {
+  official:        { label: 'Compo officielle',  className: 'bg-green-600/20 text-green-400' },
+  probable_manual: { label: 'Compo probable',    className: 'bg-orange-500/20 text-orange-300' },
+  last_known:      { label: 'Dernière compo',    className: 'bg-gray-600/30 text-gray-400' },
+}
+
 interface TeamTableProps {
   teamName: string
   matchXg: number
@@ -37,6 +43,7 @@ interface TeamTableProps {
   penTakerOverride: number | null
   onPenTakerClick: (playerId: number) => void
   isHome: boolean
+  lineupType: string | null
 }
 
 function TeamTable({
@@ -48,6 +55,7 @@ function TeamTable({
   penTakerOverride,
   onPenTakerClick,
   isHome,
+  lineupType,
 }: TeamTableProps) {
   return (
     <div className="bg-gray-800 rounded-xl overflow-hidden">
@@ -56,14 +64,19 @@ function TeamTable({
         'px-4 py-3 flex items-center justify-between',
         isHome ? 'bg-orange-500/10 border-b border-orange-500/20' : 'bg-blue-500/10 border-b border-blue-500/20',
       )}>
-        <div>
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="font-semibold text-white text-sm">{teamName}</span>
           <span className={clsx(
-            'ml-2 text-xs font-medium px-2 py-0.5 rounded',
+            'text-xs font-medium px-2 py-0.5 rounded',
             isHome ? 'bg-orange-500/20 text-orange-300' : 'bg-blue-500/20 text-blue-300',
           )}>
             {isHome ? 'DOM.' : 'EXT.'}
           </span>
+          {lineupType && LINEUP_BADGE[lineupType] && (
+            <span className={clsx('text-xs px-2 py-0.5 rounded', LINEUP_BADGE[lineupType].className)}>
+              {LINEUP_BADGE[lineupType].label}
+            </span>
+          )}
         </div>
         {/* xG display + override */}
         <div className="flex items-center gap-2">
@@ -387,6 +400,7 @@ function CalculatorInner() {
             penTakerOverride={homePenTaker}
             onPenTakerClick={handleHomePenClick}
             isHome={true}
+            lineupType={pricing.home_lineup_type}
           />
           <TeamTable
             teamName={pricing.away_team}
@@ -397,6 +411,7 @@ function CalculatorInner() {
             penTakerOverride={awayPenTaker}
             onPenTakerClick={handleAwayPenClick}
             isHome={false}
+            lineupType={pricing.away_lineup_type}
           />
         </div>
       )}
