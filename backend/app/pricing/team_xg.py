@@ -416,6 +416,7 @@ async def _load_team_players(db: AsyncSession, team: str) -> list[dict[str, Any]
             & (PlayerStats.as_of_utc == latest_subq.c.max_date),
         )
         .where(Player.team.in_(candidates))
+        .where(PlayerStats.source == "average")
     )
 
     players = []
