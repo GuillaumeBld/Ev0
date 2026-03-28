@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Integer, String
+from sqlalchemy import DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -33,6 +33,18 @@ class Fixture(Base, TimestampMixin):
     away_team: Mapped[str] = mapped_column(String(100))
     home_team_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     away_team_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    home_canonical_team_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("canonical_teams.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    away_canonical_team_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("canonical_teams.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Timing
     kickoff_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

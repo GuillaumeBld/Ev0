@@ -8,6 +8,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
 
+# Forward-declare to avoid circular import
+_CANONICAL_TEAMS_FK = "canonical_teams.id"
+
 
 class DataSource(StrEnum):
     """Data source for player stats."""
@@ -38,6 +41,12 @@ class Player(Base, TimestampMixin):
     # Current team
     team: Mapped[str | None] = mapped_column(String(100), nullable=True)
     team_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    canonical_team_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey(_CANONICAL_TEAMS_FK, ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     league: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     # Position: FW / MF / W / FB / DF / GK
