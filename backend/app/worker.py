@@ -541,10 +541,10 @@ async def job_snapshot_odds():
 
 
 async def job_snapshot_direct_odds():
-    """Snapshot odds from Kambi (Unibet) HTTP API + Playwright scrapers.
+    """Snapshot odds from Unibet LVS HTTP API + Playwright scrapers.
 
     Flow:
-    1. Kambi HTTP API (Unibet) — no browser needed, always runs first
+    1. Unibet LVS API (nouveau site post-fusion PSEL) — no browser needed
     2. Playwright scrapers (Betclic, Unibet page, ParionsSport) — best-effort
     3. Match each MatchOdds → DB fixture by team name + date window
     4. Persist selections via store_odds_snapshot()
@@ -560,15 +560,15 @@ async def job_snapshot_direct_odds():
 
     all_match_odds = []
 
-    # ── 1. Kambi HTTP scraper (Unibet — pure HTTP, no Playwright needed) ──
+    # ── 1. Unibet LVS scraper (nouveau site post-fusion PSEL, pure HTTP) ──
     try:
-        from app.ingestion.kambi_scraper import scrape_all_kambi
+        from app.ingestion.unibet_lvs_scraper import scrape_all_unibet
 
-        kambi_results = await scrape_all_kambi(leagues)
-        all_match_odds.extend(kambi_results)
-        logger.info("Kambi scraper: %d match-odds objects", len(kambi_results))
+        unibet_results = await scrape_all_unibet(leagues)
+        all_match_odds.extend(unibet_results)
+        logger.info("Unibet LVS scraper: %d match-odds objects", len(unibet_results))
     except Exception as exc:
-        logger.error("Kambi scrape failed: %s", exc, exc_info=True)
+        logger.error("Unibet LVS scrape failed: %s", exc, exc_info=True)
 
     # ── 2. Betclic gRPC-web scraper (full player odds, no Playwright needed) ──
     try:
@@ -701,7 +701,7 @@ async def job_generate_recommendations():
     if not settings.odds_api_key:
         logger.warning(
             "ODDS_API_KEY not configured — The Odds API snapshots are skipped. "
-            "Recommendations will use direct/Kambi odds from the DB."
+            "Recommendations will use direct/Unibet LVS odds from the DB."
         )
 
     try:
@@ -1555,12 +1555,12 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Direct odds (Kambi/Unibet HTTP + Playwright scrapers): Every 3 hours
+    # Direct odds (Unibet LVS HTTP + Playwright scrapers): Every 3 hours
     scheduler.add_job(
         job_snapshot_direct_odds,
         IntervalTrigger(hours=3),
         id="snapshot_direct_odds",
-        name="Snapshot direct odds (Kambi, Betclic, ParionsSport)",
+        name="Snapshot direct odds (Unibet LVS, Betclic, ParionsSport)",
         replace_existing=True,
     )
 
