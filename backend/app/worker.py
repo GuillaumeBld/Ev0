@@ -112,7 +112,7 @@ async def job_sync_player_stats():
         except Exception as exc:
             logger.warning("Smart sync failed, falling back to direct sync: %s", exc)
 
-        # Fallback: direct FBref + Understat sync
+        # Fallback: direct Understat + FotMob sync
         from app.ingestion.sync_all_players import sync_all
 
         await sync_all()
@@ -1522,7 +1522,7 @@ def create_scheduler() -> AsyncIOScheduler:
         job_sync_player_stats,
         CronTrigger(hour=7, minute=0),
         id="sync_player_stats",
-        name="Sync player stats from FBref + Understat",
+        name="Sync player stats from Understat + FotMob",
         replace_existing=True,
     )
 

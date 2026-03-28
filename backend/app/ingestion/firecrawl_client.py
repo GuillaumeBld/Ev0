@@ -1,6 +1,6 @@
 """Firecrawl web scraping client.
 
-Handles JavaScript rendering and anti-bot bypass for FBref/Understat.
+Handles JavaScript rendering and anti-bot bypass for Understat.
 """
 
 from typing import Any
@@ -63,31 +63,6 @@ class FirecrawlClient:
             )
             resp.raise_for_status()
             return resp.json()
-
-    async def scrape_fbref_players(self, league: str) -> str:
-        """Scrape FBref player stats page.
-
-        Args:
-            league: ligue_1 or premier_league
-
-        Returns:
-            Raw HTML content
-        """
-        urls = {
-            "ligue_1": "https://fbref.com/en/comps/13/stats/Ligue-1-Stats",
-            "premier_league": "https://fbref.com/en/comps/9/stats/Premier-League-Stats",
-        }
-
-        url = urls.get(league)
-        if not url:
-            raise ValueError(f"Unknown league: {league}")
-
-        result = await self.scrape(url, formats=["rawHtml"], wait_for=5000)
-
-        if result.get("success") and result.get("data"):
-            return result["data"].get("rawHtml", "")
-
-        raise RuntimeError(f"Firecrawl scrape failed: {result}")
 
     async def scrape_understat_league(self, league: str) -> str:
         """Scrape Understat league page.

@@ -1,21 +1,9 @@
-"""Complete player stats synchronization from FBref and Understat.
-
-Uses soccerdata for FBref (handles rate limiting and anti-scraping).
-Uses direct HTTP for Understat with proper JSON extraction.
-"""
+"""Complete player stats synchronization from Understat and FotMob."""
 
 import asyncio
 import re
 import unicodedata
 from datetime import UTC, datetime
-
-try:
-    import soccerdata as sd
-
-    HAS_SOCCERDATA = True
-except ImportError:
-    HAS_SOCCERDATA = False
-    print("Warning: soccerdata not installed, FBref sync disabled")
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,12 +13,9 @@ from app.models.players import Player, PlayerStats, Team
 
 # Constants
 SEASON = "2025-2026"
-SEASON_SD = "2526"  # For soccerdata
 
 from app.ingestion.fotmob_scraper import fetch_fotmob_league  # noqa: E402
-from app.ingestion.understat_scraper import (  # noqa: E402
-    fetch_understat_league,
-)
+from app.ingestion.understat_scraper import fetch_understat_league  # noqa: E402
 
 
 def normalize_name(name: str) -> str:
@@ -47,108 +32,6 @@ def calculate_per_90(stat: float, minutes: int) -> float:
     if minutes <= 0:
         return 0.0
     return round((stat / minutes) * 90, 3)
-
-
-# ============ FBREF FETCHING VIA SOCCERDATA ============
-
-
-def fetch_fbref_data(league: str) -> tuple[list[dict], list[dict]]:
-    """Fetch FBref data using soccerdata library."""
-    if not HAS_SOCCERDATA:
-        return [], []
-
-    league_map = {
-        "ligue_1": "FRA-Ligue 1",
-        "premier_league": "ENG-Premier League",
-        "bundesliga": "GER-Bundesliga",
-        "la_liga": "ESP-La Liga",
-        "serie_a": "ITA-Serie A",
-    }
-
-    sd_league = league_map.get(league)
-    if not sd_league:
-        return [], []
-
-    players = []
-    teams = []
-
-    try:
-        fbref = sd.FBref(leagues=[sd_league], seasons=SEASON_SD)
-
-        # Get player stats
-        try:
-            shooting = fbref.read_player_season_stats(stat_type="shooting")
-            passing = fbref.read_player_season_stats(stat_type="passing")
-
-            # Process shooting stats
-            for idx, row in shooting.iterrows():
-                if isinstance(idx, tuple):
-                    _, _, team, player = idx
-                else:
-                    player = str(idx)
-                    team = ""
-
-                minutes = int(row.get("Min", row.get("minutes", 0)) or 0)
-                xg = float(row.get("xG", 0) or 0)
-                npxg = float(row.get("npxG", 0) or 0)
-
-                players.append(
-                    {
-                        "name": player,
-                        "team": team,
-                        "minutes": minutes,
-                        "goals": int(row.get("Gls", row.get("goals", 0)) or 0),
-                        "xg": xg,
-                        "npxg": npxg,
-                        "shots": int(row.get("Sh", row.get("shots", 0)) or 0),
-                        "xg_per_90": calculate_per_90(xg, minutes),
-                        "npxg_per_90": calculate_per_90(npxg, minutes),
-                    }
-                )
-
-            # Merge passing stats
-            passing_by_name = {}
-            for idx, row in passing.iterrows():
-                if isinstance(idx, tuple):
-                    _, _, team, player = idx
-                else:
-                    player = str(idx)
-
-                xa = float(row.get("xA", row.get("xAG", 0)) or 0)
-                minutes = int(row.get("Min", row.get("minutes", 0)) or 0)
-
-                passing_by_name[normalize_name(player)] = {
-                    "assists": int(row.get("Ast", row.get("assists", 0)) or 0),
-                    "xa": xa,
-                    "xa_per_90": calculate_per_90(xa, minutes),
-                }
-
-            for p in players:
-                norm = normalize_name(p["name"])
-                if norm in passing_by_name:
-                    p.update(passing_by_name[norm])
-
-        except Exception as e:
-            print(f"Error reading FBref player stats for {league}: {e}")
-
-        # Get teams from schedule
-        try:
-            schedule = fbref.read_schedule()
-            team_names = set()
-            for _idx, row in schedule.iterrows():
-                team_names.add(row.get("home_team", ""))
-                team_names.add(row.get("away_team", ""))
-
-            for name in team_names:
-                if name:
-                    teams.append({"name": name})
-        except Exception as e:
-            print(f"Error reading FBref schedule for {league}: {e}")
-
-    except Exception as e:
-        print(f"Error initializing FBref for {league}: {e}")
-
-    return players, teams
 
 
 # ============ DATABASE OPERATIONS ============
@@ -173,8 +56,6 @@ async def upsert_team(session: AsyncSession, league: str, data: dict) -> Team:
         )
         session.add(team)
 
-    if data.get("fbref_id"):
-        team.fbref_id = data["fbref_id"]
     if data.get("understat_id"):
         team.understat_id = data["understat_id"]
 
@@ -203,8 +84,6 @@ async def upsert_player(session: AsyncSession, league: str, data: dict) -> Playe
     else:
         player.team = data.get("team") or player.team
 
-    if data.get("fbref_id"):
-        player.fbref_id = data["fbref_id"]
     if data.get("understat_id"):
         player.understat_id = data["understat_id"]
     if data.get("position"):
@@ -219,7 +98,7 @@ async def store_stats(session: AsyncSession, player_id: int, league: str, source
 
     For source="average", always INSERTs a new snapshot row so that temporal
     deltas can be computed for form factor and rolling conversion rate.
-    For other sources (fbref, understat, fotmob), upserts the single row.
+    For other sources (understat, fotmob), upserts the single row.
     """
     now = datetime.now(UTC)
 
@@ -301,12 +180,12 @@ async def store_stats(session: AsyncSession, player_id: int, league: str, source
 
 
 async def compute_and_store_averages(session: AsyncSession, player_id: int, league: str):
-    """Compute average stats from both sources."""
+    """Compute average stats from Understat + FotMob sources."""
     stmt = select(PlayerStats).where(
         PlayerStats.player_id == player_id,
         PlayerStats.league == league,
         PlayerStats.season == SEASON,
-        PlayerStats.source.in_(["fbref", "understat", "fotmob"]),
+        PlayerStats.source.in_(["understat", "fotmob"]),
     )
     result = await session.execute(stmt)
     sources = result.scalars().all()
@@ -334,7 +213,7 @@ async def compute_and_store_averages(session: AsyncSession, player_id: int, leag
 
 
 async def sync_league(league: str):
-    """Sync all players for a league from both sources."""
+    """Sync all players for a league from Understat + FotMob."""
     print(f"\n{'=' * 50}")
     print(f"Syncing {league.upper()} - Season {SEASON}")
     print(f"{'=' * 50}")
@@ -342,22 +221,18 @@ async def sync_league(league: str):
     # 1. Fetch Understat data
     print(f"\nFetching Understat data for {league}...")
     understat_players, understat_teams = await fetch_understat_league(league)
+    print(f"  Extracted {len(understat_players)} players, {len(understat_teams)} teams from Understat ({league})")
     print(f"  Found {len(understat_players)} players from Understat")
     print(f"  Found {len(understat_teams)} teams from Understat")
 
     # 2. Fetch FotMob data
     print(f"\nFetching FotMob data for {league}...")
     fotmob_players, fotmob_teams = await fetch_fotmob_league(league)
+    print(f"  Extracted {len(fotmob_players)} players, {len(fotmob_teams)} teams from FotMob ({league})")
     print(f"  Found {len(fotmob_players)} players from FotMob")
     print(f"  Found {len(fotmob_teams)} teams from FotMob")
 
-    # 3. Fetch FBref data (optional, may be empty if soccerdata unavailable)
-    print(f"\nFetching FBref data for {league}...")
-    fbref_players, fbref_teams = await asyncio.to_thread(fetch_fbref_data, league)
-    print(f"  Found {len(fbref_players)} players from FBref")
-    print(f"  Found {len(fbref_teams)} teams from FBref")
-
-    # 4. Store in database
+    # 3. Store in database
     print("\nStoring in database...")
     async with async_session() as session:
         # Store teams
@@ -369,9 +244,6 @@ async def sync_league(league: str):
             team_count += 1
         for t in fotmob_teams:
             await upsert_team(session, league, {"name": t["name"]})
-            team_count += 1
-        for t in fbref_teams:
-            await upsert_team(session, league, {"name": t["name"], "fbref_id": t.get("fbref_id")})
             team_count += 1
         print(f"  Upserted {team_count} team records")
 
@@ -404,19 +276,6 @@ async def sync_league(league: str):
             await store_stats(session, player.id, league, "fotmob", p)
         print(f"  Stored {len(fotmob_players)} FotMob player records")
 
-        # Store FBref players
-        for p in fbref_players:
-            player = await upsert_player(
-                session,
-                league,
-                {
-                    "name": p["name"],
-                    "team": p["team"],
-                },
-            )
-            await store_stats(session, player.id, league, "fbref", p)
-        print(f"  Stored {len(fbref_players)} FBref player records")
-
         # Compute averages
         print("  Computing averages...")
         stmt = select(Player).where(Player.league == league)
@@ -437,8 +296,7 @@ async def sync_all():
     print("=" * 60)
     print("EV0 - Full Player Stats Sync")
     print(f"Season: {SEASON}")
-    print("Sources: FBref + Understat")
-    print(f"soccerdata available: {HAS_SOCCERDATA}")
+    print("Sources: Understat + FotMob")
     print("=" * 60)
 
     for league in ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a"]:
