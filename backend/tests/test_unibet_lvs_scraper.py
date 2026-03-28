@@ -10,6 +10,7 @@ from app.ingestion.unibet_lvs_scraper import (
     UnibetLVSScraper,
     _parse_price,
     _parse_start,
+    scrape_all_unibet,
 )
 
 
@@ -206,3 +207,38 @@ class TestFetchEventIds:
         scraper = UnibetLVSScraper(httpx.AsyncClient())
         events = await scraper.fetch_event_ids("ligue_inconnue")
         assert events == []
+
+
+class TestScrapeAllUnibet:
+    """Tests for scrape_all_unibet: token acquisition + multi-league aggregation."""
+
+    @pytest.mark.asyncio
+    async def test_auth_failure_returns_empty(self):
+        """If _get_token raises, scrape_all_unibet returns []."""
+        with patch.object(
+            UnibetLVSScraper,
+            "_get_token",
+            new=AsyncMock(side_effect=httpx.ConnectError("refused")),
+        ):
+            result = await scrape_all_unibet(["ligue_1"])
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_aggregates_results(self):
+        """Results from each league are concatenated into a single list."""
+        ligue_1_matches = [MagicMock(), MagicMock()]
+        premier_league_matches = [MagicMock(), MagicMock(), MagicMock()]
+
+        async def fake_scrape_league(self, league: str):
+            if league == "ligue_1":
+                return ligue_1_matches
+            if league == "premier_league":
+                return premier_league_matches
+            return []
+
+        with patch.object(UnibetLVSScraper, "_get_token", new=AsyncMock(return_value="tok")):
+            with patch.object(UnibetLVSScraper, "scrape_league", new=fake_scrape_league):
+                result = await scrape_all_unibet(["ligue_1", "premier_league"])
+
+        assert len(result) == len(ligue_1_matches) + len(premier_league_matches)

@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -172,7 +173,7 @@ class UnibetLVSScraper:
         via les clés "parent".
         """
         # Trouver l'événement
-        event_key = next((k for k in items if k.startswith("e")), None)
+        event_key = next((k for k in items if re.match(r'^e\d+$', k)), None)
         if not event_key:
             return None
 
