@@ -6,11 +6,14 @@
 
 | Bookmaker | Méthode | Fréquence |
 |-----------|---------|-----------|
-| Betclic | gRPC (API non officielle) | Toutes les heures |
-| Parions Sport | HTTP scraping | Toutes les heures |
+| Unibet | API LVS HTTP (nouveau site post-fusion PSEL, mars 2026) | Toutes les 3h |
+| Betclic | gRPC (API non officielle) | Toutes les 3h |
+| Parions Sport | HTTP scraping | Toutes les 3h |
 
-Le worker (`backend/app/worker.py`) lance `job_collect_odds()` toutes les heures.
+Le worker (`backend/app/worker.py`) lance `job_snapshot_direct_odds()` toutes les 3h.
 Les cotes sont stockées dans `OddsSnapshot` avec timestamp.
+
+**Note Unibet** : Le site Unibet.fr a fusionné avec PSEL en mars 2026 (Kambi abandonné). Le nouveau site tourne sur la plateforme LVS (Lineup7/SportEase). Le scraper (`unibet_lvs_scraper.py`) s'authentifie via token anonyme, sans compte ni Playwright requis. Couvre le Big 5 + Ligue des Champions, marchés buteur et passeur décisif.
 
 ### Statistiques joueurs (Modèle C)
 
@@ -32,6 +35,7 @@ Fréquence : mise à jour quotidienne via `job_sync_player_stats()` (07:00 UTC) 
 
 ## Limitations du scraping
 
+- **Unibet LVS** : API non documentée, node IDs des compétitions peuvent changer si Unibet restructure son catalogue
 - **Betclic gRPC** : API non documentée, susceptible de casser si Betclic change son protocole
 - **Parions Sport** : retourne parfois 404 (protection anti-bot connue)
 - **Sofascore** : bloqué sur VPS (Cloudflare) — import manuel nécessaire depuis une machine locale
