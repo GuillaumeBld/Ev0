@@ -20,6 +20,17 @@ interface LineupPricingWidgetProps {
 
 // ── Helpers ────────────────────────────────────────────────────────
 
+const POS_ORDER: Record<string, number> = { FW: 0, MF: 1, DF: 2 }
+
+function sortByPositionThenName(players: PlayerAllocationOut[]): PlayerAllocationOut[] {
+  return [...players].sort((a, b) => {
+    const pa = POS_ORDER[a.position ?? ''] ?? 3
+    const pb = POS_ORDER[b.position ?? ''] ?? 3
+    if (pa !== pb) return pa - pb
+    return a.player_name.localeCompare(b.player_name)
+  })
+}
+
 function fmtOdds(o: number): string {
   return o >= 100 ? '—' : o.toFixed(2)
 }
@@ -161,29 +172,42 @@ export function LineupPricingWidget({
               <p className="text-xs text-gray-500 mb-2">
                 Sélectionne les titulaires ({selected.size} sélectionnés)
               </p>
-              <div className="grid grid-cols-2 gap-1 max-h-56 overflow-y-auto pr-1">
-                {teamPlayers.map((p) => (
-                  <label
-                    key={p.player_id}
-                    className={clsx(
-                      'flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-xs transition-colors',
-                      selected.has(p.player_name)
-                        ? (isHome ? 'bg-orange-500/15 text-orange-200' : 'bg-blue-500/15 text-blue-200')
-                        : 'hover:bg-gray-700/50 text-gray-300',
-                    )}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selected.has(p.player_name)}
-                      onChange={() => togglePlayer(p.player_name)}
-                      className="accent-orange-400 shrink-0"
-                    />
-                    <span className={clsx('font-medium shrink-0 w-6 text-center text-[10px]', POS_COLOR[p.position ?? ''] ?? 'text-gray-400')}>
-                      {p.position ?? '?'}
-                    </span>
-                    <span className="truncate">{p.player_name}</span>
-                  </label>
-                ))}
+              <div className="max-h-64 overflow-y-auto pr-1 space-y-2">
+                {(['FW', 'MF', 'DF'] as const).map((pos) => {
+                  const group = sortByPositionThenName(teamPlayers).filter(
+                    (p) => (p.position ?? '') === pos,
+                  )
+                  if (group.length === 0) return null
+                  const POS_LABEL: Record<string, string> = { FW: 'Attaquants', MF: 'Milieux', DF: 'Défenseurs' }
+                  return (
+                    <div key={pos}>
+                      <p className={clsx('text-[10px] font-semibold uppercase tracking-wide mb-1 px-1', POS_COLOR[pos])}>
+                        {POS_LABEL[pos]}
+                      </p>
+                      <div className="grid grid-cols-2 gap-0.5">
+                        {group.map((p) => (
+                          <label
+                            key={p.player_id}
+                            className={clsx(
+                              'flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-xs transition-colors',
+                              selected.has(p.player_name)
+                                ? (isHome ? 'bg-orange-500/15 text-orange-200' : 'bg-blue-500/15 text-blue-200')
+                                : 'hover:bg-gray-700/50 text-gray-300',
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selected.has(p.player_name)}
+                              onChange={() => togglePlayer(p.player_name)}
+                              className="accent-orange-400 shrink-0"
+                            />
+                            <span className="truncate">{p.player_name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
 
               {/* Action buttons */}
