@@ -144,12 +144,9 @@ class UnibetLVSScraper:
         now = datetime.now(UTC)
 
         for key, val in items.items():
-            if not key.startswith("e"):
+            if not re.match(r"^e\d+$", key):
                 continue
-            try:
-                event_id = int(key[1:])
-            except ValueError:
-                continue
+            event_id = int(key[1:])
             home = val.get("a", "")
             away = val.get("b", "")
             kickoff = _parse_start(val.get("start"))
