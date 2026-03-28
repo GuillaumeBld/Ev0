@@ -22,31 +22,6 @@ RÈGLES:
 - Les minutes/buts/passes doivent être des int"""
 
 
-FBREF_EXTRACTION_PROMPT = """Extrais les statistiques de joueurs de ce HTML FBref.
-
-Pour chaque joueur, extrais:
-- name: nom complet
-- team: équipe
-- position: poste (FW, MF, DF, GK)
-- minutes: minutes jouées (int)
-- goals: buts marqués (int)
-- assists: passes décisives (int)
-- xg: expected goals (float)
-- npxg: non-penalty xG (float)
-- xa: expected assists (float)
-- shots: tirs (int)
-
-Retourne un JSON avec cette structure exacte:
-{
-  "players": [
-    {"name": "...", "team": "...", "position": "...", "minutes": 0, "goals": 0, "assists": 0, "xg": 0.0, "npxg": 0.0, "xa": 0.0, "shots": 0},
-    ...
-  ]
-}
-
-HTML:
-"""
-
 
 UNDERSTAT_EXTRACTION_PROMPT = """Extrais les statistiques de joueurs de ce HTML Understat.
 
@@ -136,58 +111,6 @@ class LLMParser:
             text = json_match.group(0)
 
         return json.loads(text)
-
-    async def parse_fbref_html(self, html: str, league: str) -> list[dict[str, Any]]:
-        """Parse FBref HTML into player stats.
-
-        Args:
-            html: Raw HTML from FBref
-            league: League identifier
-
-        Returns:
-            List of player dicts with stats
-        """
-        # Truncate HTML to fit in context (keep main stats table)
-        # Look for the stats table section
-        table_start = html.find('id="stats_standard"')
-        if table_start == -1:
-            table_start = html.find('id="stats_shooting"')
-        if table_start == -1:
-            table_start = 0
-
-        # Get a window around the table
-        start = max(0, table_start - 1000)
-        end = min(len(html), table_start + 100000)
-        truncated_html = html[start:end]
-
-        prompt = FBREF_EXTRACTION_PROMPT + truncated_html[:80000]
-
-        try:
-            response = await self._call_llm(prompt)
-            data = self._extract_json(response)
-            players = data.get("players", [])
-
-            # Add per-90 calculations
-            for p in players:
-                minutes = p.get("minutes", 0) or 0
-                xg = p.get("xg", 0) or 0
-                xa = p.get("xa", 0) or 0
-                npxg = p.get("npxg", 0) or 0
-
-                if minutes > 0:
-                    p["xg_per_90"] = round((xg / minutes) * 90, 3)
-                    p["xa_per_90"] = round((xa / minutes) * 90, 3)
-                    p["npxg_per_90"] = round((npxg / minutes) * 90, 3)
-                else:
-                    p["xg_per_90"] = 0.0
-                    p["xa_per_90"] = 0.0
-                    p["npxg_per_90"] = 0.0
-
-            return players
-
-        except Exception as e:
-            print(f"LLM parsing error for FBref {league}: {e}")
-            return []
 
     async def parse_understat_html(self, html: str, league: str) -> list[dict[str, Any]]:
         """Parse Understat HTML into player stats.

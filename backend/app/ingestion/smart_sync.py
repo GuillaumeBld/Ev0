@@ -2,12 +2,12 @@
 
 Main Strategy: Firecrawl + LLM + API-Football
 - API-Football for reliable base data (names, teams, basic stats)
-- Firecrawl to scrape FBref/Understat for xG/xA data
+- Firecrawl to scrape Understat for xG/xA data
 - LLM to parse scraped HTML into structured data
 
 Fallback Strategy: Firecrawl + LLM only
 - When API-Football is unavailable
-- Scrape both sources and merge data
+- Scrape Understat and merge data
 """
 
 import asyncio
@@ -167,7 +167,7 @@ async def compute_and_store_averages(session: AsyncSession, player_id: int, leag
         PlayerStats.player_id == player_id,
         PlayerStats.league == league,
         PlayerStats.season == SEASON,
-        PlayerStats.source.in_(["api_football", "fbref", "understat"]),
+        PlayerStats.source.in_(["api_football", "understat"]),
     )
     result = await session.execute(stmt)
     sources = result.scalars().all()
@@ -225,13 +225,12 @@ async def sync_with_main_strategy(
         "league": league,
         "strategy": "main",
         "api_football_players": 0,
-        "fbref_players": 0,
         "understat_players": 0,
         "errors": [],
     }
 
     # 1. Get base data from API-Football
-    print("  1/4 Fetching API-Football data...")
+    print("  1/3 Fetching API-Football data...")
     try:
         api_players = await api_client.get_all_players(league)
         api_teams = await api_client.get_teams(league)
@@ -244,21 +243,8 @@ async def sync_with_main_strategy(
         api_players = []
         api_teams = []
 
-    # 2. Scrape FBref for xG data
-    print("  2/4 Scraping FBref via Firecrawl...")
-    try:
-        fbref_html = await firecrawl.scrape_fbref_players(league)
-        fbref_players = await llm.parse_fbref_html(fbref_html, league)
-        results["fbref_players"] = len(fbref_players)
-        print(f"      Parsed {len(fbref_players)} players from FBref")
-    except Exception as e:
-        error = f"FBref scrape error: {e}"
-        print(f"      ERROR: {error}")
-        results["errors"].append(error)
-        fbref_players = []
-
-    # 3. Scrape Understat for xG data
-    print("  3/4 Scraping Understat via Firecrawl...")
+    # 2. Scrape Understat for xG data
+    print("  2/3 Scraping Understat via Firecrawl...")
     try:
         understat_html = await firecrawl.scrape_understat_league(league)
         understat_players = await llm.parse_understat_html(understat_html, league)
@@ -270,15 +256,14 @@ async def sync_with_main_strategy(
         results["errors"].append(error)
         understat_players = []
 
-    # 4. Store all data
-    print("  4/4 Storing to database...")
+    # 3. Store all data
+    print("  3/3 Storing to database...")
     async with async_session() as session:
         # Store teams from API-Football
         for t in api_teams:
             await upsert_team(session, league, t)
 
         # Create player name index for matching
-        fbref_by_name = {normalize_name(p["name"]): p for p in fbref_players}
         understat_by_name = {normalize_name(p["name"]): p for p in understat_players}
 
         player_ids = []
@@ -300,13 +285,8 @@ async def sync_with_main_strategy(
             # Store API-Football stats
             await store_player_stats(session, player.id, league, "api_football", p)
 
-            # Match and store FBref stats
-            norm = normalize_name(p["name"])
-            if norm in fbref_by_name:
-                fbref_data = fbref_by_name[norm]
-                await store_player_stats(session, player.id, league, "fbref", fbref_data)
-
             # Match and store Understat stats
+            norm = normalize_name(p["name"])
             if norm in understat_by_name:
                 understat_data = understat_by_name[norm]
                 await upsert_player(
@@ -319,22 +299,12 @@ async def sync_with_main_strategy(
                 )
                 await store_player_stats(session, player.id, league, "understat", understat_data)
 
-        # Add any FBref-only players
-        for _norm, p in fbref_by_name.items():
-            existing = normalize_name(p["name"]) in {
-                normalize_name(ap["name"]) for ap in api_players
-            }
-            if not existing:
-                player = await upsert_player(session, league, p)
-                player_ids.append(player.id)
-                await store_player_stats(session, player.id, league, "fbref", p)
-
         # Add any Understat-only players
         for norm, p in understat_by_name.items():
             existing = normalize_name(p["name"]) in {
                 normalize_name(ap["name"]) for ap in api_players
             }
-            if not existing and norm not in fbref_by_name:
+            if not existing:
                 player = await upsert_player(
                     session,
                     league,
@@ -376,26 +346,12 @@ async def sync_with_fallback_strategy(
     results: dict[str, Any] = {
         "league": league,
         "strategy": "fallback",
-        "fbref_players": 0,
         "understat_players": 0,
         "errors": [],
     }
 
-    # 1. Scrape FBref
-    print("  1/3 Scraping FBref via Firecrawl...")
-    try:
-        fbref_html = await firecrawl.scrape_fbref_players(league)
-        fbref_players = await llm.parse_fbref_html(fbref_html, league)
-        results["fbref_players"] = len(fbref_players)
-        print(f"      Parsed {len(fbref_players)} players from FBref")
-    except Exception as e:
-        error = f"FBref scrape error: {e}"
-        print(f"      ERROR: {error}")
-        results["errors"].append(error)
-        fbref_players = []
-
-    # 2. Scrape Understat
-    print("  2/3 Scraping Understat via Firecrawl...")
+    # 1. Scrape Understat
+    print("  1/2 Scraping Understat via Firecrawl...")
     try:
         understat_html = await firecrawl.scrape_understat_league(league)
         understat_players = await llm.parse_understat_html(understat_html, league)
@@ -407,42 +363,25 @@ async def sync_with_fallback_strategy(
         results["errors"].append(error)
         understat_players = []
 
-    # 3. Store data
-    print("  3/3 Storing to database...")
+    # 2. Store data
+    print("  2/2 Storing to database...")
     async with async_session() as session:
-        fbref_by_name = {normalize_name(p["name"]): p for p in fbref_players}
         understat_by_name = {normalize_name(p["name"]): p for p in understat_players}
-
-        all_names = set(fbref_by_name.keys()) | set(understat_by_name.keys())
         player_ids = []
 
-        for norm in all_names:
-            fbref_data = fbref_by_name.get(norm)
-            understat_data = understat_by_name.get(norm)
-
-            # Use whichever source has the name
-            source = fbref_data or understat_data or {}
-            name = source["name"]
-            team = source.get("team", "")
-
+        for norm, understat_data in understat_by_name.items():
             player = await upsert_player(
                 session,
                 league,
                 {
-                    "name": name,
-                    "team": team,
-                    "understat_id": understat_data.get("understat_id") if understat_data else None,
-                    "position": (understat_data or fbref_data or {}).get("position"),
+                    "name": understat_data["name"],
+                    "team": understat_data.get("team", ""),
+                    "understat_id": understat_data.get("understat_id"),
+                    "position": understat_data.get("position"),
                 },
             )
             player_ids.append(player.id)
-
-            if fbref_data:
-                await store_player_stats(session, player.id, league, "fbref", fbref_data)
-
-            if understat_data:
-                await store_player_stats(session, player.id, league, "understat", understat_data)
-
+            await store_player_stats(session, player.id, league, "understat", understat_data)
             await compute_and_store_averages(session, player.id, league)
 
         await session.commit()
@@ -485,7 +424,7 @@ async def smart_sync_league(league: str) -> dict[str, Any]:
 
     # Try main strategy if API-Football available
     if api_client:
-        print("\nUsing MAIN strategy (API-Football + Firecrawl + LLM)")
+        print("\nUsing MAIN strategy (API-Football + Understat via Firecrawl + LLM)")
         try:
             result = await sync_with_main_strategy(league, api_client, firecrawl, llm)
             result["success"] = True
@@ -513,8 +452,8 @@ async def smart_sync_all() -> list[dict[str, Any]]:
     """Smart sync all leagues."""
     print("\n" + "=" * 60)
     print("EV0 - SMART SYNC")
-    print("Main: Firecrawl + LLM + API-Football")
-    print("Fallback: Firecrawl + LLM")
+    print("Main: API-Football + Understat (Firecrawl + LLM)")
+    print("Fallback: Understat via Firecrawl + LLM")
     print("=" * 60)
 
     results = []

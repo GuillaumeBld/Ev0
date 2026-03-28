@@ -22,7 +22,6 @@ dependencies = [
     "selectolax>=0.3.0",
     "apscheduler>=3.10.0",
     "python-dotenv>=1.0.0",
-    "soccerdata>=1.6.0",
     "redis>=5.0.0",
     "slowapi>=0.1.9",
     "greenlet>=3.3.2",
@@ -74,5 +73,5 @@ warn_unused_ignores = false
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
-    "integration: live network tests (Understat, FBref) — excluded by default",
+    "integration: live network tests (Understat, FotMob) — excluded by default",
 ]

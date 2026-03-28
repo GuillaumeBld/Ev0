@@ -104,7 +104,6 @@ class PlayerWithStats(BaseModel):
 
     # Stats by source
     api_football: PlayerStatsResponse | None
-    fbref: PlayerStatsResponse | None
     understat: PlayerStatsResponse | None
     fotmob: PlayerStatsResponse | None
     average: PlayerStatsResponse | None
@@ -229,7 +228,6 @@ async def list_players(
         player_stats = stats_map.get(player.id, {})
 
         api_football = player_stats.get("api_football")
-        fbref = player_stats.get("fbref")
         understat = player_stats.get("understat")
         fotmob = player_stats.get("fotmob")
         average = player_stats.get("average")
@@ -237,7 +235,6 @@ async def list_players(
         # Filter by minutes if specified
         max_minutes = max(
             (api_football.minutes_played if api_football else 0),
-            (fbref.minutes_played if fbref else 0),
             (understat.minutes_played if understat else 0),
             (fotmob.minutes_played if fotmob else 0),
         )
@@ -245,7 +242,7 @@ async def list_players(
             continue
 
         # Compute EV0 values (prefer average, fallback to available source)
-        ev0_source = average or fbref or fotmob or understat or api_football
+        ev0_source = average or fotmob or understat or api_football
 
         response.append(
             {
@@ -256,7 +253,6 @@ async def list_players(
                 "league": player.league,
                 "is_striker": player.is_striker,
                 "api_football": stats_to_response(api_football),
-                "fbref": stats_to_response(fbref),
                 "understat": stats_to_response(understat),
                 "fotmob": stats_to_response(fotmob),
                 "average": stats_to_response(average),
@@ -364,11 +360,10 @@ async def get_player(
     stats_by_source = {s.source: s for s in all_stats}
 
     api_football = stats_by_source.get("api_football")
-    fbref = stats_by_source.get("fbref")
     understat = stats_by_source.get("understat")
     fotmob = stats_by_source.get("fotmob")
     average = stats_by_source.get("average")
-    ev0_source = average or fbref or fotmob or understat or api_football
+    ev0_source = average or fotmob or understat or api_football
 
     return {
         "id": player.id,
@@ -378,7 +373,6 @@ async def get_player(
         "league": player.league,
         "is_striker": player.is_striker,
         "api_football": stats_to_response(api_football),
-        "fbref": stats_to_response(fbref),
         "understat": stats_to_response(understat),
         "fotmob": stats_to_response(fotmob),
         "average": stats_to_response(average),
