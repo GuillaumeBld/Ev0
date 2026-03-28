@@ -181,7 +181,15 @@ async def list_players(
     if league:
         stmt = stmt.where(Player.league == league.lower())
     if team:
-        stmt = stmt.where(Player.team.ilike(f"%{team}%"))
+        # Try to match by canonical team name first, fallback to raw text
+        from app.models.canonical_teams import CanonicalTeam as _CT
+        ct_row = (await session.execute(
+            select(_CT).where(_CT.name_fr.ilike(f"%{team}%"))
+        )).scalars().first()
+        if ct_row:
+            stmt = stmt.where(Player.canonical_team_id == ct_row.id)
+        else:
+            stmt = stmt.where(Player.team.ilike(f"%{team}%"))
     if search:
         stmt = stmt.where(Player.name.ilike(f"%{search}%"))
 
@@ -272,38 +280,46 @@ async def list_teams(
     session: AsyncSession = Depends(get_db),
     league: str | None = Query(None),
 ) -> list[dict[str, Any]]:
-    """List all teams."""
-    stmt = select(Team)
-    if league:
-        stmt = stmt.where(Team.league == league.lower())
-    stmt = stmt.order_by(Team.name)
+    """List all teams using canonical team names (deduplicated, French names)."""
+    from app.models.canonical_teams import CanonicalTeam
 
-    # Single query: teams + player count via LEFT JOIN
+    # Count players per canonical team
     count_subq = (
-        select(Player.team, Player.league, func.count(Player.id).label("cnt"))
-        .group_by(Player.team, Player.league)
+        select(Player.canonical_team_id, func.count(Player.id).label("cnt"))
+        .where(Player.canonical_team_id.isnot(None))
+        .group_by(Player.canonical_team_id)
         .subquery()
     )
-    stmt = stmt.outerjoin(
-        count_subq,
-        (Team.name == count_subq.c.team) & (Team.league == count_subq.c.league),
-    ).add_columns(func.coalesce(count_subq.c.cnt, 0).label("player_count"))
+
+    stmt = (
+        select(CanonicalTeam, func.coalesce(count_subq.c.cnt, 0).label("player_count"))
+        .outerjoin(count_subq, CanonicalTeam.id == count_subq.c.canonical_team_id)
+        .where(func.coalesce(count_subq.c.cnt, 0) > 0)
+        .order_by(CanonicalTeam.name_fr)
+    )
+
+    # Filter by league: keep only canonical teams that have players in the given league
+    if league:
+        league_ct_subq = (
+            select(Player.canonical_team_id)
+            .where(Player.canonical_team_id.isnot(None), Player.league == league.lower())
+            .distinct()
+            .subquery()
+        )
+        stmt = stmt.where(CanonicalTeam.id.in_(select(league_ct_subq)))
 
     result = await session.execute(stmt)
     rows = result.all()
 
-    response = []
-    for team, player_count in rows:
-        response.append(
-            {
-                "id": team.id,
-                "name": team.name,
-                "league": team.league,
-                "player_count": player_count,
-            }
-        )
-
-    return response
+    return [
+        {
+            "id": ct.id,
+            "name": ct.name_fr,
+            "league": league or "all",
+            "player_count": player_count,
+        }
+        for ct, player_count in rows
+    ]
 
 
 @router.get("/sync-status", response_model=SyncStatusResponse)
