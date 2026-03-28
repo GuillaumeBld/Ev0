@@ -392,13 +392,12 @@ def allocate_player(
 
 async def _load_team_players(db: AsyncSession, team: str) -> list[dict[str, Any]]:
     """Load latest player stats (source=average) for a team — includes Model C fields."""
-    from app.ingestion.storage import TEAM_NAME_MAP
+    from app.ingestion.storage import resolve_canonical_team
+    from app.models.canonical_teams import CanonicalTeam
     from app.models.players import Player, PlayerStats
 
-    candidates = {team}
-    for short, canonical in TEAM_NAME_MAP.items():
-        if canonical == team:
-            candidates.add(short)
+    # Prefer canonical_team_id lookup; fall back to text match if not seeded
+    canonical_team_id = await resolve_canonical_team(db, team)
 
     latest_subq = (
         select(PlayerStats.player_id, func.max(PlayerStats.as_of_utc).label("max_date"))
@@ -407,7 +406,7 @@ async def _load_team_players(db: AsyncSession, team: str) -> list[dict[str, Any]
         .subquery()
     )
 
-    res = await db.execute(
+    base_q = (
         select(PlayerStats, Player.name, Player.position)
         .join(Player, Player.id == PlayerStats.player_id)
         .join(
@@ -415,9 +414,21 @@ async def _load_team_players(db: AsyncSession, team: str) -> list[dict[str, Any]
             (PlayerStats.player_id == latest_subq.c.player_id)
             & (PlayerStats.as_of_utc == latest_subq.c.max_date),
         )
-        .where(Player.team.in_(candidates))
         .where(PlayerStats.source == "average")
     )
+
+    if canonical_team_id:
+        base_q = base_q.where(Player.canonical_team_id == canonical_team_id)
+    else:
+        # Fallback: text match (covers teams not yet in canonical_teams)
+        from app.ingestion.storage import TEAM_NAME_MAP
+        candidates = {team}
+        for short, canonical in TEAM_NAME_MAP.items():
+            if canonical == team:
+                candidates.add(short)
+        base_q = base_q.where(Player.team.in_(candidates))
+
+    res = await db.execute(base_q)
 
     players = []
     seen_ids: set[int] = set()

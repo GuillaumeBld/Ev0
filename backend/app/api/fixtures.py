@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
 from app.models.odds import OddsSnapshot
 
@@ -130,6 +131,23 @@ async def list_fixtures(
     result = await db.execute(stmt)
     rows = result.all()
 
+    # Resolve French names for canonical teams
+    ct_ids = {
+        ct_id
+        for f, _ in rows
+        for ct_id in (f.home_canonical_team_id, f.away_canonical_team_id)
+        if ct_id
+    }
+    canonical_names: dict[int, str] = {}
+    if ct_ids:
+        ct_rows = (await db.execute(
+            select(CanonicalTeam).where(CanonicalTeam.id.in_(ct_ids))
+        )).scalars().all()
+        canonical_names = {ct.id: ct.name_fr for ct in ct_rows}
+
+    def _team_name(raw: str, ct_id: int | None) -> str:
+        return canonical_names.get(ct_id, raw) if ct_id else raw
+
     items = [
         FixtureOut(
             id=f.id,
@@ -137,8 +155,8 @@ async def list_fixtures(
             league=f.league,
             season=f.season,
             matchweek=f.matchweek,
-            home_team=f.home_team,
-            away_team=f.away_team,
+            home_team=_team_name(f.home_team, f.home_canonical_team_id),
+            away_team=_team_name(f.away_team, f.away_canonical_team_id),
             kickoff_utc=str(f.kickoff_utc),
             status=f.status,
             home_score=f.home_score,

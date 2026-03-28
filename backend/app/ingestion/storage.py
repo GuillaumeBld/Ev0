@@ -10,12 +10,13 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Fixture, MatchEvent, OddsSnapshot, Player, PlayerStats, Recommendation
+import unicodedata
 
-# Maps FotMob/Understat short names → official names used in the fixtures table.
-# Must be kept in sync with the fixtures ingestion source (FotMob /api/leagues).
+from app.models import Fixture, MatchEvent, OddsSnapshot, Player, PlayerStats, Recommendation
+from app.models.canonical_teams import CanonicalTeam
+
+# Legacy short-name map — kept for backward compat, superseded by canonical_teams
 TEAM_NAME_MAP: dict[str, str] = {
-    # Premier League
     "Bournemouth": "AFC Bournemouth",
     "Brighton": "Brighton & Hove Albion",
     "Brighton and Hove Albion": "Brighton & Hove Albion",
@@ -23,14 +24,41 @@ TEAM_NAME_MAP: dict[str, str] = {
     "West Ham": "West Ham United",
     "Nott'm Forest": "Nottingham Forest",
     "Newcastle": "Newcastle United",
-    # Ligue 1
     "Paris Saint Germain": "Paris Saint-Germain",
     "PSG": "Paris Saint-Germain",
 }
 
+# In-process cache: alias_norm → canonical_team_id
+_alias_cache: dict[str, int] = {}
+_cache_loaded = False
+
+
+def _norm(s: str) -> str:
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower().strip()
+
+
+async def _ensure_alias_cache(session: AsyncSession) -> None:
+    global _cache_loaded
+    if _cache_loaded:
+        return
+    teams = (await session.execute(select(CanonicalTeam))).scalars().all()
+    for ct in teams:
+        _alias_cache[_norm(ct.name_fr)] = ct.id
+        for alias in (ct.aliases or []):
+            _alias_cache[_norm(alias)] = ct.id
+    _cache_loaded = True
+
+
+async def resolve_canonical_team(session: AsyncSession, raw_name: str | None) -> int | None:
+    """Return canonical_team_id for a raw team name, or None if unknown."""
+    if not raw_name:
+        return None
+    await _ensure_alias_cache(session)
+    return _alias_cache.get(_norm(raw_name))
+
 
 def normalize_team_name(team: str | None) -> str | None:
-    """Return the canonical team name, or the input unchanged if not in the map."""
+    """Return the canonical team name via legacy map (sync fallback)."""
     if not team:
         return team
     return TEAM_NAME_MAP.get(team, team)
@@ -42,6 +70,9 @@ async def upsert_fixture(session: AsyncSession, data: dict[str, Any]) -> Fixture
 
     Uses fixture_id (external_id) as the unique key.
     """
+    home_ct_id = await resolve_canonical_team(session, data.get("home_team"))
+    away_ct_id = await resolve_canonical_team(session, data.get("away_team"))
+
     stmt = insert(Fixture).values(
         external_id=data["fixture_id"],
         league=data["league"],
@@ -49,6 +80,8 @@ async def upsert_fixture(session: AsyncSession, data: dict[str, Any]) -> Fixture
         matchweek=data.get("matchweek"),
         home_team=data["home_team"],
         away_team=data["away_team"],
+        home_canonical_team_id=home_ct_id,
+        away_canonical_team_id=away_ct_id,
         kickoff_utc=datetime.fromisoformat(f"{data['date']}T{data.get('time', '00:00')}:00+00:00"),
         home_score=data.get("home_score"),
         away_score=data.get("away_score"),
@@ -77,12 +110,17 @@ async def upsert_fixture(session: AsyncSession, data: dict[str, Any]) -> Fixture
 
 async def upsert_player(session: AsyncSession, data: dict[str, Any]) -> Player:
     """Insert or update a player."""
+    raw_team = data.get("team")
+    team_name = normalize_team_name(raw_team)
+    ct_id = await resolve_canonical_team(session, raw_team)
+
     stmt = insert(Player).values(
         external_id=data.get("player_id", data["player_name"]),
         name=data["player_name"],
         normalized_name=data.get("normalized_name", data["player_name"].lower()),
-        team=normalize_team_name(data.get("team")),
+        team=team_name,
         position=data.get("position"),
+        canonical_team_id=ct_id,
     )
 
     stmt = stmt.on_conflict_do_update(
@@ -91,6 +129,7 @@ async def upsert_player(session: AsyncSession, data: dict[str, Any]) -> Player:
             "name": stmt.excluded.name,
             "team": stmt.excluded.team,
             "position": stmt.excluded.position,
+            "canonical_team_id": stmt.excluded.canonical_team_id,
             "updated_at": datetime.now(UTC),
         },
     )

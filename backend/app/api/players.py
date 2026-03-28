@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.ingestion.understat_scraper import UNDERSTAT_LEAGUES, fetch_understat_league
+from app.models.canonical_teams import CanonicalTeam
 from app.models.players import Player, PlayerStats, Team
 
 router = APIRouter(prefix="/players", tags=["players"])
@@ -192,6 +193,15 @@ async def list_players(
     if not players:
         return []
 
+    # Build canonical team name map (id → name_fr)
+    ct_ids = {p.canonical_team_id for p in players if p.canonical_team_id}
+    canonical_names: dict[int, str] = {}
+    if ct_ids:
+        ct_rows = (await session.execute(
+            select(CanonicalTeam).where(CanonicalTeam.id.in_(ct_ids))
+        )).scalars().all()
+        canonical_names = {ct.id: ct.name_fr for ct in ct_rows}
+
     # Batch-fetch all stats for these players in ONE query (avoid N+1)
     player_ids = [p.id for p in players]
     stats_stmt = select(PlayerStats).where(
@@ -233,7 +243,7 @@ async def list_players(
             {
                 "id": player.id,
                 "name": player.name,
-                "team": player.team,
+                "team": canonical_names.get(player.canonical_team_id) if player.canonical_team_id else player.team,
                 "position": player.position,
                 "league": player.league,
                 "is_striker": player.is_striker,
