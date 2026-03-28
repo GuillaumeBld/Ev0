@@ -272,12 +272,13 @@ async def run(db: AsyncSession) -> None:
                     .values(player_id=keep.id)
                 )
                 # Other FK tables — no unique constraint on player_id alone
-                for Model in (Recommendation, MatchEvent, OddsSnapshot, PlayerMatchMinutes):
+                for Model in (Recommendation, MatchEvent, OddsSnapshot):
                     await db.execute(
                         update(Model)
                         .where(Model.player_id == del_id)  # type: ignore[attr-defined]
                         .values(player_id=keep.id)
                     )
+                # PlayerMatchMinutes has no player_id FK — keyed by player_name, skip
                 # Delete the duplicate player
                 await db.execute(delete(Player).where(Player.id == del_id))
 
