@@ -1,3 +1,6 @@
+# Worktrees
+.worktrees/
+
 # System
 .DS_Store
 *.log
