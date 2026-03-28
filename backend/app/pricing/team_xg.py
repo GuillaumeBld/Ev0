@@ -421,11 +421,14 @@ async def _load_team_players(db: AsyncSession, team: str) -> list[dict[str, Any]
 
     players = []
     seen_ids: set[int] = set()
+    seen_names: set[str] = set()
     for row in res.all():
         ps, name, raw_pos = row[0], row[1], row[2]
-        if ps.player_id in seen_ids:
+        name_key = (name or "").strip().lower()
+        if ps.player_id in seen_ids or name_key in seen_names:
             continue
         seen_ids.add(ps.player_id)
+        seen_names.add(name_key)
         position = _norm_pos(raw_pos)
         if position == "GK":
             continue
