@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Users, ChevronDown, Save, Play } from 'lucide-react'
 import { clsx } from 'clsx'
 import { type PlayerAllocationOut } from '@/lib/api'
@@ -114,12 +114,8 @@ export function LineupPricingWidget({
     })
   }
 
-  const accentClass = isHome
-    ? 'bg-orange-500/10 border-orange-500/20 text-orange-300'
-    : 'bg-blue-500/10 border-blue-500/20 text-blue-300'
-
   return (
-    <div className="mt-2 rounded-xl border border-gray-700 bg-gray-850 overflow-hidden">
+    <div className="mt-2 rounded-xl border border-gray-700 bg-gray-900 overflow-hidden">
       {/* Toggle header */}
       <button
         onClick={() => setOpen((o) => !o)}
@@ -172,43 +168,52 @@ export function LineupPricingWidget({
               <p className="text-xs text-gray-500 mb-2">
                 Sélectionne les titulaires ({selected.size} sélectionnés)
               </p>
-              <div className="max-h-64 overflow-y-auto pr-1 space-y-2">
-                {(['FW', 'MF', 'DF'] as const).map((pos) => {
-                  const group = sortByPositionThenName(teamPlayers).filter(
-                    (p) => (p.position ?? '') === pos,
-                  )
-                  if (group.length === 0) return null
-                  const POS_LABEL: Record<string, string> = { FW: 'Attaquants', MF: 'Milieux', DF: 'Défenseurs' }
-                  return (
-                    <div key={pos}>
-                      <p className={clsx('text-[10px] font-semibold uppercase tracking-wide mb-1 px-1', POS_COLOR[pos])}>
-                        {POS_LABEL[pos]}
-                      </p>
-                      <div className="grid grid-cols-2 gap-0.5">
-                        {group.map((p) => (
-                          <label
-                            key={p.player_id}
-                            className={clsx(
-                              'flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-xs transition-colors',
-                              selected.has(p.player_name)
-                                ? (isHome ? 'bg-orange-500/15 text-orange-200' : 'bg-blue-500/15 text-blue-200')
-                                : 'hover:bg-gray-700/50 text-gray-300',
-                            )}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selected.has(p.player_name)}
-                              onChange={() => togglePlayer(p.player_name)}
-                              className="accent-orange-400 shrink-0"
-                            />
-                            <span className="truncate">{p.player_name}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
+              {(() => {
+                const POS_GROUPS: { key: string; label: string; color: string; filter: (pos: string | null) => boolean }[] = [
+                  { key: 'FW', label: 'Attaquants', color: 'text-orange-400', filter: (p) => p === 'FW' },
+                  { key: 'MF', label: 'Milieux',    color: 'text-blue-400',   filter: (p) => p === 'MF' },
+                  { key: 'DF', label: 'Défenseurs', color: 'text-gray-400',   filter: (p) => p === 'DF' },
+                ]
+                const sorted = sortByPositionThenName(teamPlayers)
+                return (
+                  <div className="max-h-72 overflow-y-auto pr-1 space-y-3">
+                    {POS_GROUPS.map(({ key, label, color, filter }) => {
+                      const group = sorted.filter((p) => filter(p.position))
+                      if (group.length === 0) return null
+                      return (
+                        <div key={key}>
+                          <div className={clsx('flex items-center gap-2 mb-1.5')}>
+                            <span className={clsx('text-xs font-bold uppercase tracking-wider', color)}>{label}</span>
+                            <span className="flex-1 h-px bg-gray-700" />
+                            <span className="text-[10px] text-gray-500">{group.length}</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-0.5">
+                            {group.map((p) => (
+                              <label
+                                key={p.player_id}
+                                className={clsx(
+                                  'flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-xs transition-colors',
+                                  selected.has(p.player_name)
+                                    ? (isHome ? 'bg-orange-500/20 text-orange-200' : 'bg-blue-500/20 text-blue-200')
+                                    : 'hover:bg-gray-700/50 text-gray-300',
+                                )}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selected.has(p.player_name)}
+                                  onChange={() => togglePlayer(p.player_name)}
+                                  className="accent-orange-400 shrink-0"
+                                />
+                                <span className="truncate">{p.player_name}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })()}
 
               {/* Action buttons */}
               <div className="flex items-center gap-2 mt-3 flex-wrap">
