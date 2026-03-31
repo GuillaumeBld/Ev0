@@ -18,13 +18,15 @@ Réactiver `job_sync_fixtures` en utilisant The Odds API comme source de vérit�
 - **Mise à jour des `kickoff_utc` uniquement** — pas de création de fixtures. La DB contient déjà toute la saison (backfill FotMob). Créer des fixtures depuis The Odds API poserait des problèmes de `fotmob_id` manquants.
 - **6 ligues** : ligue_1, premier_league, bundesliga, la_liga, serie_a, champions_league.
 - **Fix `SPORT_KEYS`** : ajouter bundesliga, la_liga, serie_a (bénéfice immédiat sur la collecte de cotes aussi).
+- **Fix `DEFAULT_LEAGUES`** : ajouter `champions_league` pour que le job couvre bien les 6 ligues.
 
 ## Fichiers modifiés
 
 | Fichier | Changement |
 |---------|-----------|
 | `backend/app/ingestion/odds.py` | Étendre `SPORT_KEYS` aux 6 ligues + nouvelle fonction `fetch_events_for_league()` |
-| `backend/app/worker.py` | Réactiver `job_sync_fixtures` avec logique The Odds API |
+| `backend/app/ingestion/fixture_matcher.py` | Ajouter aliases Bundesliga, La Liga, Serie A dans `TEAM_ALIASES` |
+| `backend/app/worker.py` | Réactiver `job_sync_fixtures` + ajouter `champions_league` à `DEFAULT_LEAGUES` + mettre à jour le nom du job scheduler |
 
 ## Design détaillé
 
@@ -43,48 +45,105 @@ SPORT_KEYS = {
 
 ### 2. `odds.py` — `fetch_events_for_league(league)`
 
-Nouvelle fonction async qui appelle `/v4/sports/{sport_key}/events` (sans paramètre `markets` — juste les fixtures, 0 quota consommé pour les cotes).
-
-Retourne `list[dict]` avec `id`, `home_team`, `away_team`, `commence_time`.
+Nouvelle fonction async qui appelle `/v4/sports/{sport_key}/events` (sans paramètre `markets` — juste les fixtures).
 
 ```python
 async def fetch_events_for_league(league: str) -> list[dict]:
     """Fetch upcoming events (fixtures) for a league from The Odds API.
 
-    Uses the /events endpoint — no odds markets, no quota consumption beyond
-    the event list itself.
+    Uses the /events endpoint without odds markets.
+    Returns [] on unknown league or HTTP error.
+    Each dict has keys: id, home_team, away_team, commence_time (ISO 8601 UTC).
     """
 ```
 
-### 3. `worker.py` — `job_sync_fixtures` réactivé
+**Contrat d'erreur :** retourne `[]` (jamais raise) en cas d'erreur HTTP ou de ligue inconnue — cohérent avec les autres fonctions du module.
+
+**Fenêtre temporelle :** l'endpoint `/events` retourne par défaut les événements à venir (pas de paramètre date requis). C'est suffisant car l'objectif est de corriger les kickoffs des prochains matchs.
+
+**Client HTTP :** crée son propre `httpx.AsyncClient` en context manager, comme `fetch_odds_for_league` existant.
+
+**Quota :** l'endpoint `/events` compte comme une requête normale sur le plan actuel (~6 requêtes/jour). Négligeable par rapport au quota mensuel.
+
+### 3. `fixture_matcher.py` — `TEAM_ALIASES` étendu
+
+Ajouter les aliases pour les 3 nouvelles ligues. Exemples clés :
+
+```python
+# Bundesliga
+"fc bayern münchen": "bayern münchen",
+"borussia dortmund": "borussia dortmund",   # déjà exact
+"bayer 04 leverkusen": "bayer leverkusen",
+"rb leipzig": "rb leipzig",
+"eintracht frankfurt": "eintracht frankfurt",
+"vfb stuttgart": "vfb stuttgart",
+"sc freiburg": "freiburg",
+"1. fc union berlin": "union berlin",
+"hamburger sv": "hamburger sv",
+"1. fc köln": "1. fc köln",
+
+# La Liga
+"fc barcelona": "barcelona",
+"real madrid cf": "real madrid",
+"atletico de madrid": "atletico madrid",
+"athletic club": "athletic club",   # pas "athletic bilbao" dans The Odds API
+"real sociedad": "real sociedad",
+"villarreal cf": "villarreal",
+"deportivo alaves": "deportivo alaves",
+
+# Serie A
+"ac milan": "milan",
+"inter milan": "inter",
+"juventus fc": "juventus",
+"ssc napoli": "napoli",
+"as roma": "roma",
+"ss lazio": "lazio",
+"atalanta bc": "atalanta",
+"acf fiorentina": "fiorentina",
+"hellas verona": "hellas verona",
+```
+
+**Note :** les noms dans The Odds API peuvent légèrement différer des noms en DB (ex. "FC Bayern München" vs "Bayern München"). Les aliases ci-dessus couvrent les cas connus — à enrichir depuis les logs `No match for` en production.
+
+### 4. `worker.py` — `job_sync_fixtures` réactivé
 
 ```
-Pour chaque ligue active :
-  1. fetch_events_for_league(league) → list[{home, away, commence_time}]
-  2. Charger les fixtures DB à venir pour cette ligue
-  3. Pour chaque event API :
+Pour chaque ligue dans _get_leagues(user_settings) :
+  1. fetch_events_for_league(league) → list[event]
+  2. Si liste vide → skip (log WARNING si ligue active)
+  3. SELECT fixtures WHERE league = ? AND status != 'finished'
+  4. Pour chaque event :
      a. match_odds_event_to_fixture(event, db_fixtures) → fixture DB
-     b. Si match trouvé ET kickoff_utc diffère → UPDATE
-  4. Commit
-  5. Loguer : N fixtures mises à jour pour <league>
+     b. Si match trouvé ET kickoff_utc diffère → UPDATE kickoff_utc
+  5. Commit
+  6. LOG : "job_sync_fixtures: N kickoffs updated for <league>"
 ```
 
-Gestion d'erreurs : une ligue en erreur n'arrête pas les autres.
+**Fenêtre DB :** `status != 'finished'` (plutôt que `kickoff_utc >= now`) pour couvrir aussi les matchs dont le kickoff placeholder est dans le passé à cause d'une erreur de date.
 
-### 4. Fréquence
+**Gestion d'erreurs :** exception sur une ligue → log ERROR + continue les autres ligues.
 
-`job_sync_fixtures` : **1× par jour à 06:00 UTC** (avant `job_sync_player_stats` à 07:00).
+### 5. `worker.py` — `DEFAULT_LEAGUES` et scheduler
 
-Les horaires de matchs changent rarement — une sync quotidienne est suffisante et préserve le quota API.
+```python
+DEFAULT_LEAGUES = ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a", "champions_league"]
+```
 
-## Quota The Odds API
+Nom du job scheduler : `"Sync fixture kickoffs via The Odds API"` (remplace `"Sync fixtures from FotMob"`).
 
-L'endpoint `/events` ne consomme **pas** de requêtes sur le quota de cotes — il est gratuit hors abonnement. Vérifier dans la doc si ce point est confirmé pour le plan actuel ; sinon, la consommation reste négligeable (6 requêtes/jour).
+### 6. Fréquence
+
+`job_sync_fixtures` : **1× par jour à 06:00 UTC** — avant `job_sync_player_stats` (07:00).
 
 ## Tests
 
-- `test_fetch_events_for_league` : mock HTTP, vérifie retour `list[dict]` avec les bons champs
-- `test_job_sync_fixtures_updates_kickoff` : mock fetch + DB session, vérifie que `kickoff_utc` est mis à jour quand il diffère
-- `test_job_sync_fixtures_no_update_when_same` : vérifie qu'aucun UPDATE n'est émis si le kickoff est déjà correct
-- `test_job_sync_fixtures_skips_unknown_league` : ligue sans `SPORT_KEY` → skip silencieux
-- `test_sport_keys_covers_all_leagues` : assertion que les 6 ligues ont une clé dans `SPORT_KEYS`
+| Test | Description |
+|------|-------------|
+| `test_fetch_events_for_league_returns_list` | Mock HTTP 200, vérifie `list[dict]` avec `home_team`, `away_team`, `commence_time` |
+| `test_fetch_events_for_league_unknown_league_returns_empty` | Ligue sans SPORT_KEY → `[]` |
+| `test_fetch_events_for_league_http_error_returns_empty` | HTTP 403 → `[]` (pas de raise) |
+| `test_job_sync_fixtures_updates_kickoff` | Mock fetch + DB, vérifie UPDATE quand kickoff diffère |
+| `test_job_sync_fixtures_no_update_when_same` | Vérifie qu'aucun UPDATE si kickoff déjà correct |
+| `test_job_sync_fixtures_skips_unmatched_event` | Event sans match DB → skip silencieux |
+| `test_job_sync_fixtures_one_league_error_does_not_block_others` | Erreur sur ligue 1 → ligues 2 et 3 toujours traitées |
+| `test_sport_keys_covers_all_six_leagues` | Assertion que les 6 ligues ont une clé dans `SPORT_KEYS` |
