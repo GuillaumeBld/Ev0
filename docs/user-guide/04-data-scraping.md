@@ -29,7 +29,8 @@ Fréquence : mise à jour quotidienne via `job_sync_player_stats()` (07:00 UTC) 
 
 ### Matchs et événements
 
-- **Fixtures** : FotMob API → table `fixtures`
+- **Fixtures** : FotMob API → table `fixtures` (backfill initial uniquement)
+- **Kickoffs** : The Odds API `/v4/sports/{sport_key}/events` → mise à jour quotidienne de `kickoff_utc` via `job_sync_fixtures` (06:00 UTC). Couvre les 6 ligues (Big 5 + Ligue des Champions). Utilise la même clé `ODDS_API_KEY` que la collecte de cotes.
 - **Match events** (buts, passes décisives) : FotMob API → table `match_events`
 - Backfill initial : script `python -m app.scripts.backfill`
 
