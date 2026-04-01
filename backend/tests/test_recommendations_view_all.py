@@ -1,4 +1,8 @@
 """Tests for view-all pagination in recommendations API."""
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import date, datetime, timezone
+
 from app.api.recommendations import RecommendationsResponse, Recommendation
 
 
@@ -46,11 +50,6 @@ class TestRecommendationsResponsePagination:
         recs = [_make_rec(id=i) for i in range(1, 4)]
         resp = RecommendationsResponse(recommendations=recs, total=3, pages=1)
         assert len(resp.recommendations) == 3
-
-
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
 
 
 class TestGetRecommendationsViewAll:
@@ -121,28 +120,44 @@ class TestGetRecommendationsViewAll:
 
     @pytest.mark.asyncio
     async def test_market_edge_filter_in_view_all(self):
-        """market_type filter — db.execute is called twice (count + items) in view-all mode."""
+        """market_type filter is applied — only matching records are returned."""
         from app.api.recommendations import get_recommendations
         from app.api.recommendations import MarketType
 
         mock_db = AsyncMock()
         count_result = MagicMock()
-        count_result.scalar.return_value = 0
+        count_result.scalar.return_value = 1
         items_result = MagicMock()
-        items_result.all.return_value = []
+        # Only return the goalscorer record; the assist record is excluded by the DB filter.
+        items_result.all.return_value = [
+            (self._make_db_rec(id_=1, market_type="goalscorer"), self._make_db_fix("ext-1")),
+        ]
         mock_db.execute = AsyncMock(side_effect=[count_result, items_result])
 
         response = await get_recommendations(
             db=mock_db, target_date=None, market_type=MarketType.GOALSCORER
         )
+
+        # Two DB calls: count query + items query.
         assert mock_db.execute.call_count == 2
-        assert response.total == 0
+
+        # The items query (2nd execute call) must include a market_type WHERE filter.
+        # Compile the SQLAlchemy Select object to a string to inspect its WHERE clause.
+        from sqlalchemy.dialects import postgresql
+        items_query = mock_db.execute.call_args_list[1].args[0]
+        compiled = str(items_query.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+        assert "market_type" in compiled
+        assert "goalscorer" in compiled
+
+        # Only the goalscorer record is in the response.
+        assert response.total == 1
+        assert len(response.recommendations) == 1
+        assert response.recommendations[0].market_type == "goalscorer"
 
     @pytest.mark.asyncio
     async def test_recommendations_with_date_no_pagination(self):
         """With target_date, endpoint returns pages=1 and page=1 (no pagination)."""
         from app.api.recommendations import get_recommendations
-        from datetime import date
 
         mock_db = AsyncMock()
         with patch("app.api.recommendations.get_recommendations_for_date", new=AsyncMock(return_value=([], None))):
