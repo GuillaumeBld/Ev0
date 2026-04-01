@@ -277,6 +277,7 @@ export default function RecommendationsPage() {
       {isViewAll && totalPages > 1 && (
         <div className="flex items-center justify-center gap-4 mt-6">
           <button
+            aria-label="Page précédente"
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             disabled={page === 1}
             className="px-3 py-1.5 bg-gray-800 text-white rounded-lg disabled:opacity-40 hover:bg-gray-700 transition-colors"
@@ -287,6 +288,7 @@ export default function RecommendationsPage() {
             Page {page} / {totalPages}
           </span>
           <button
+            aria-label="Page suivante"
             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
             disabled={page === totalPages}
             className="px-3 py-1.5 bg-gray-800 text-white rounded-lg disabled:opacity-40 hover:bg-gray-700 transition-colors"
@@ -332,6 +334,7 @@ export default function RecommendationsPage() {
               {isViewAll && expiredTotalPages > 1 && (
                 <div className="flex items-center justify-center gap-4 mt-4">
                   <button
+                    aria-label="Page précédente (expirées)"
                     onClick={() => setExpiredPage((p) => Math.max(1, p - 1))}
                     disabled={expiredPage === 1}
                     className="px-3 py-1.5 bg-gray-800 text-white rounded-lg disabled:opacity-40 hover:bg-gray-700 transition-colors"
@@ -342,6 +345,7 @@ export default function RecommendationsPage() {
                     Page {expiredPage} / {expiredTotalPages}
                   </span>
                   <button
+                    aria-label="Page suivante (expirées)"
                     onClick={() => setExpiredPage((p) => Math.min(expiredTotalPages, p + 1))}
                     disabled={expiredPage === expiredTotalPages}
                     className="px-3 py-1.5 bg-gray-800 text-white rounded-lg disabled:opacity-40 hover:bg-gray-700 transition-colors"
