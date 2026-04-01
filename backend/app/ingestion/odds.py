@@ -21,8 +21,11 @@ ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 
 # Sport keys mapping
 SPORT_KEYS = {
-    "ligue_1": "soccer_france_ligue_one",
-    "premier_league": "soccer_epl",
+    "ligue_1":          "soccer_france_ligue_one",
+    "premier_league":   "soccer_epl",
+    "bundesliga":       "soccer_germany_bundesliga",
+    "la_liga":          "soccer_spain_la_liga",
+    "serie_a":          "soccer_italy_serie_a",
     "champions_league": "soccer_uefa_champs_league",
 }
 
