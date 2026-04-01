@@ -98,7 +98,7 @@ class TestGetRecommendationsViewAll:
         assert len(response.recommendations) == 1
 
     @pytest.mark.asyncio
-    async def test_view_all_pagination_metadata(self):
+    async def test_recommendations_pagination(self):
         """Returns correct total/page/pages metadata."""
         from app.api.recommendations import get_recommendations
 
@@ -120,7 +120,7 @@ class TestGetRecommendationsViewAll:
         assert response.pages == 3
 
     @pytest.mark.asyncio
-    async def test_view_all_market_filter_applied(self):
+    async def test_market_edge_filter_in_view_all(self):
         """market_type filter — db.execute is called twice (count + items) in view-all mode."""
         from app.api.recommendations import get_recommendations
         from app.api.recommendations import MarketType
@@ -139,7 +139,7 @@ class TestGetRecommendationsViewAll:
         assert response.total == 0
 
     @pytest.mark.asyncio
-    async def test_date_mode_returns_pages_one(self):
+    async def test_recommendations_with_date_no_pagination(self):
         """With target_date, endpoint returns pages=1 and page=1 (no pagination)."""
         from app.api.recommendations import get_recommendations
         from datetime import date
@@ -153,7 +153,7 @@ class TestGetRecommendationsViewAll:
         assert response.date == "2026-04-10"
 
     @pytest.mark.asyncio
-    async def test_view_all_no_date_returns_all_active(self):
+    async def test_recommendations_no_date_returns_all(self):
         """Without target_date, returns active (pending/approved) recs ordered ASC by kickoff."""
         from app.api.recommendations import get_recommendations
 
