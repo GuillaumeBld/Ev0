@@ -9,13 +9,23 @@ Entrez une cote et une probabilité estimée → Ev0 calcule l'edge et la mise K
 Utile pour vérifier un pari manuellement avant de le placer.
 
 ## Recommandations (/recommendations)
-Liste des paris à valeur détectés aujourd'hui. Chaque carte affiche :
+Vue consolidée de tous les paris à valeur actifs, triés chronologiquement par heure de match.
+
+**Mode View All (défaut)** : toutes les recommandations actives (statut `pending` ou `approved`) sont affichées, paginées 50 par page. La pagination apparaît en bas quand il y a plus de 50 picks.
+
+**Filtre date (opt-in)** : cliquer "Filtrer par date" pour n'afficher que les picks d'un jour précis. Un badge `12 avr ✕` apparaît — cliquer ✕ pour revenir en View All.
+
+**Filtres marché / edge** : actifs dans les deux modes. Changer le filtre edge ou marché reste en View All si aucune date n'est sélectionnée.
+
+Chaque carte affiche :
 - **Joueur** + marché (buteur / passeur)
 - **Cote** du bookmaker
 - **Fair odds** calculés par Ev0
 - **Edge** en %
 - **Mise Kelly** recommandée
 - **Statut** : pending → approved → placed → won/lost
+
+La section **Expirées** (en bas, repliable) suit la même logique : View All par défaut, filtrée par date si une date est active.
 
 Cliquer sur une carte pour voir les détails (features utilisées, intensité lambda, etc.).
 
