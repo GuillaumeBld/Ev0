@@ -315,3 +315,38 @@ def match_odds_event_to_fixture(
         )
 
     return None
+
+
+def match_event_to_fixture_by_teams(
+    event: dict[str, Any],
+    fixtures: list[Any],
+) -> Any | None:
+    """Match an Odds API event to a DB Fixture using team names only.
+
+    Unlike match_odds_event_to_fixture, this function does NOT apply a date
+    window filter — it is intended for job_sync_fixtures where kickoff_utc
+    in DB may be a placeholder (incorrect date).
+
+    Returns the matched Fixture ORM object, or None.
+    """
+    event_id = event.get("id", "")
+
+    # Fast path: cached odds_api_event_id
+    for fixture in fixtures:
+        if fixture.odds_api_event_id and fixture.odds_api_event_id == event_id:
+            return fixture
+
+    # Team name matching only (no date window)
+    event_home = normalize_team_name(event.get("home_team", ""))
+    event_away = normalize_team_name(event.get("away_team", ""))
+
+    if not event_home or not event_away:
+        return None
+
+    for fixture in fixtures:
+        fix_home = normalize_team_name(fixture.home_team or "")
+        fix_away = normalize_team_name(fixture.away_team or "")
+        if fix_home == event_home and fix_away == event_away:
+            return fixture
+
+    return None

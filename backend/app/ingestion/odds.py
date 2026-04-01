@@ -367,6 +367,29 @@ async def ingest_odds_for_league(
     return snapshots, events
 
 
+async def fetch_events_for_league(league: str) -> list[dict]:
+    """Fetch upcoming fixtures for a league from The Odds API.
+
+    Used by job_sync_fixtures to update kickoff_utc in DB.
+    Returns [] on unknown league or any HTTP error — never raises.
+    Each dict has: id, home_team, away_team, commence_time (ISO 8601 UTC).
+
+    Note: delegates to OddsAPIClient.get_events() which includes Redis caching
+    — intentional reuse rather than a raw httpx.AsyncClient (DRY, avoids
+    duplicate quota consumption when odds snapshot job runs on the same day).
+    """
+    sport_key = SPORT_KEYS.get(league)
+    if not sport_key:
+        logger.warning("fetch_events_for_league: unknown league %s", league)
+        return []
+    client = OddsAPIClient()
+    try:
+        return await client.get_events(sport_key)
+    except Exception as exc:
+        logger.error("fetch_events_for_league %s: %s", league, exc)
+        return []
+
+
 def find_best_odds(snapshots: list[OddsSnapshot]) -> dict[str, OddsSnapshot]:
     """
     Find best odds per player from multiple bookmakers.
