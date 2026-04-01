@@ -306,11 +306,65 @@ async def get_recommendations(
 
 @router.get("/recommendations/expired", response_model=RecommendationsResponse)
 async def get_expired_recommendations(
-    db: AsyncSession = Depends(get_db),
-    target_date: date | None = Query(None, description="Date (default: today)"),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    target_date: Annotated[date | None, Query(description="Date for expired recs (default: view-all)")] = None,
+    page: Annotated[int, Query(ge=1, description="Page number (view-all only)")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200, description="Items per page (view-all only)")] = 50,
 ) -> RecommendationsResponse:
     """Get expired recommendations for a given date (past kickoff)."""
-    effective_date = target_date or date.today()
+    # ── View All mode (no target_date) ─────────────────────────────────
+    if target_date is None:
+        filters = [RecommendationModel.status == "expired"]
+
+        base_query = (
+            select(RecommendationModel, FixtureModel)
+            .join(FixtureModel, RecommendationModel.fixture_id == FixtureModel.id)
+            .where(*filters)
+        )
+
+        count_result = await db.execute(
+            select(func.count()).select_from(base_query.subquery())
+        )
+        total = count_result.scalar() or 0
+
+        result = await db.execute(
+            base_query
+            .order_by(FixtureModel.kickoff_utc.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        rows = result.all()
+
+        recommendations = [
+            Recommendation(
+                id=rec.id,
+                fixture_id=fix.external_id,
+                fixture_name=f"{fix.home_team} vs {fix.away_team}",
+                kickoff_utc=fix.kickoff_utc.isoformat(),
+                player_name=rec.player_name,
+                team="",  # no team column in RecommendationModel; team comes from service layer in date-mode only
+                market_type=rec.market_type,
+                fair_odds=rec.fair_odds,
+                best_bookmaker=rec.best_bookmaker,
+                best_odds=rec.best_odds,
+                edge=rec.edge,
+                classification=rec.classification,
+                confidence=rec.confidence,
+                explanation=rec.explanation or {},
+                status=rec.status,
+            )
+            for rec, fix in rows
+        ]
+        pages_count = max(1, ceil(total / page_size))
+        return RecommendationsResponse(
+            recommendations=recommendations,
+            total=total,
+            page=page,
+            page_size=page_size,
+            pages=pages_count,
+        )
+    # ── Date mode (existing behaviour) ─────────────────────────────────
+    effective_date = target_date
     day_start = datetime.combine(effective_date, datetime.min.time(), tzinfo=UTC)
     day_end = datetime.combine(effective_date, datetime.max.time(), tzinfo=UTC)
 

@@ -200,3 +200,87 @@ class TestGetRecommendationsViewAll:
         assert len(response.recommendations) == 2
         assert response.recommendations[0].fixture_id == "ext-1"
         assert response.recommendations[1].fixture_id == "ext-2"
+
+
+class TestGetExpiredRecommendationsViewAll:
+    def _make_db_rec(self, id_=1):
+        rec = MagicMock()
+        rec.id = id_
+        rec.player_name = "Mbappe"
+        rec.market_type = "goalscorer"
+        rec.fair_odds = 3.5
+        rec.best_bookmaker = "Betclic"
+        rec.best_odds = 4.0
+        rec.edge = 0.14
+        rec.classification = "VALUE"
+        rec.confidence = 0.72
+        rec.explanation = {}
+        rec.status = "expired"
+        return rec
+
+    def _make_db_fix(self, external_id="ext-1"):
+        fix = MagicMock()
+        fix.external_id = external_id
+        fix.home_team = "PSG"
+        fix.away_team = "Lyon"
+        fix.kickoff_utc = datetime(2026, 3, 15, 18, 45, tzinfo=timezone.utc)
+        return fix
+
+    @pytest.mark.asyncio
+    async def test_view_all_expired_no_date_filter(self):
+        """Without target_date, returns all expired recs (paginated)."""
+        from app.api.recommendations import get_expired_recommendations
+
+        mock_db = AsyncMock()
+        count_result = MagicMock()
+        count_result.scalar.return_value = 5
+        items_result = MagicMock()
+        items_result.all.return_value = [
+            (self._make_db_rec(id_=i), self._make_db_fix(f"ext-{i}"))
+            for i in range(1, 6)
+        ]
+        mock_db.execute = AsyncMock(side_effect=[count_result, items_result])
+
+        response = await get_expired_recommendations(db=mock_db, target_date=None)
+
+        assert response.total == 5
+        assert len(response.recommendations) == 5
+        assert response.pages == 1
+
+    @pytest.mark.asyncio
+    async def test_view_all_expired_two_db_queries(self):
+        """View-all expired issues two DB queries (count + items), not one like date mode."""
+        from app.api.recommendations import get_expired_recommendations
+
+        mock_db = AsyncMock()
+        count_result = MagicMock()
+        count_result.scalar.return_value = 2
+        items_result = MagicMock()
+        items_result.all.return_value = [
+            (self._make_db_rec(id_=2), self._make_db_fix("ext-2")),
+            (self._make_db_rec(id_=1), self._make_db_fix("ext-1")),
+        ]
+        mock_db.execute = AsyncMock(side_effect=[count_result, items_result])
+
+        response = await get_expired_recommendations(db=mock_db, target_date=None)
+        assert mock_db.execute.call_count == 2  # count query + items query
+        assert response.total == 2
+        assert len(response.recommendations) == 2
+
+    @pytest.mark.asyncio
+    async def test_date_mode_expired_one_db_query(self):
+        """Date mode expired issues a single DB query (no count needed, no pagination)."""
+        from app.api.recommendations import get_expired_recommendations
+        from datetime import date
+
+        mock_db = AsyncMock()
+        items_result = MagicMock()
+        items_result.all.return_value = []  # empty list — avoids MagicMock iteration error
+        mock_db.execute = AsyncMock(return_value=items_result)
+
+        response = await get_expired_recommendations(
+            db=mock_db, target_date=date(2026, 4, 10)
+        )
+        assert mock_db.execute.call_count == 1  # no count query in date mode
+        assert response.pages == 1
+        assert response.page == 1
