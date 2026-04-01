@@ -113,7 +113,6 @@ async def job_sync_fixtures():
                     if not api_kickoff_raw:
                         continue
                     try:
-                        from datetime import datetime
                         api_kickoff = datetime.fromisoformat(
                             api_kickoff_raw.replace("Z", "+00:00")
                         )
