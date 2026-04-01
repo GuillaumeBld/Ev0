@@ -3,10 +3,13 @@
 import logging
 from datetime import UTC, date, datetime
 from enum import StrEnum
+from math import ceil
+
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -70,22 +73,90 @@ class Recommendation(BaseModel):
 class RecommendationsResponse(BaseModel):
     """Response with list of recommendations."""
 
-    date: str
-    count: int
+    date: str | None = None
+    count: int = 0
     recommendations: list[Recommendation]
     error: str | None = None
+    # Pagination
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    pages: int = 1
 
 
 @router.get("/recommendations", response_model=RecommendationsResponse)
 async def get_recommendations(
-    db: AsyncSession = Depends(get_db),
-    target_date: date | None = Query(None, description="Date for recommendations (default: today)"),
-    market_type: MarketType | None = Query(None, description="Filter by market type"),
-    league: str | None = Query(None, description="Filter by league (ligue_1, premier_league)"),
-    min_edge: float = Query(0.05, description="Minimum edge threshold"),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    target_date: Annotated[date | None, Query(description="Date for recommendations (default: today)")] = None,
+    market_type: Annotated[MarketType | None, Query(description="Filter by market type")] = None,
+    league: Annotated[str | None, Query(description="Filter by league (ligue_1, premier_league)")] = None,
+    min_edge: Annotated[float, Query(description="Minimum edge threshold")] = 0.05,
+    page: Annotated[int, Query(ge=1, description="Page number (view-all only)")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200, description="Items per page (view-all only)")] = 50,
 ) -> RecommendationsResponse:
     """Get betting recommendations for a given date."""
-    effective_date = target_date or date.today()
+    # ── View All mode (no target_date) ─────────────────────────────────
+    if target_date is None:
+        filters = [
+            RecommendationModel.status.in_(["pending", "approved"]),
+            FixtureModel.kickoff_utc >= datetime.now(UTC),
+        ]
+        if market_type:
+            filters.append(RecommendationModel.market_type == market_type.value)
+        if league:
+            filters.append(FixtureModel.league == league)
+        if min_edge > 0:
+            filters.append(RecommendationModel.edge >= min_edge)
+
+        base_query = (
+            select(RecommendationModel, FixtureModel)
+            .join(FixtureModel, RecommendationModel.fixture_id == FixtureModel.id)
+            .where(*filters)
+        )
+
+        count_result = await db.execute(
+            select(func.count()).select_from(base_query.subquery())
+        )
+        total = count_result.scalar() or 0
+
+        result = await db.execute(
+            base_query
+            .order_by(FixtureModel.kickoff_utc.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        rows = result.all()
+
+        recommendations = [
+            Recommendation(
+                id=rec.id,
+                fixture_id=fix.external_id,
+                fixture_name=f"{fix.home_team} vs {fix.away_team}",
+                kickoff_utc=fix.kickoff_utc.isoformat(),
+                player_name=rec.player_name,
+                team="",  # no team column in RecommendationModel; team comes from service layer in date-mode only
+                market_type=rec.market_type,
+                fair_odds=rec.fair_odds,
+                best_bookmaker=rec.best_bookmaker,
+                best_odds=rec.best_odds,
+                edge=rec.edge,
+                classification=rec.classification,
+                confidence=rec.confidence,
+                explanation=rec.explanation or {},
+                status=rec.status,
+            )
+            for rec, fix in rows
+        ]
+        pages_count = max(1, ceil(total / page_size))
+        return RecommendationsResponse(
+            recommendations=recommendations,
+            total=total,
+            page=page,
+            page_size=page_size,
+            pages=pages_count,
+        )
+    # ── Date mode (existing behaviour) ─────────────────────────────────
+    effective_date = target_date
     dt = datetime.combine(effective_date, datetime.min.time(), tzinfo=UTC)
 
     error_msg = None
@@ -226,16 +297,74 @@ async def get_recommendations(
         count=len(recommendations),
         recommendations=recommendations,
         error=error_msg,
+        total=len(recommendations),
+        page=1,
+        page_size=50,
+        pages=1,
     )
 
 
 @router.get("/recommendations/expired", response_model=RecommendationsResponse)
 async def get_expired_recommendations(
-    db: AsyncSession = Depends(get_db),
-    target_date: date | None = Query(None, description="Date (default: today)"),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    target_date: Annotated[date | None, Query(description="Date for expired recs (default: view-all)")] = None,
+    page: Annotated[int, Query(ge=1, description="Page number (view-all only)")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200, description="Items per page (view-all only)")] = 50,
 ) -> RecommendationsResponse:
     """Get expired recommendations for a given date (past kickoff)."""
-    effective_date = target_date or date.today()
+    # ── View All mode (no target_date) ─────────────────────────────────
+    if target_date is None:
+        filters = [RecommendationModel.status == "expired"]
+
+        base_query = (
+            select(RecommendationModel, FixtureModel)
+            .join(FixtureModel, RecommendationModel.fixture_id == FixtureModel.id)
+            .where(*filters)
+        )
+
+        count_result = await db.execute(
+            select(func.count()).select_from(base_query.subquery())
+        )
+        total = count_result.scalar() or 0
+
+        result = await db.execute(
+            base_query
+            .order_by(FixtureModel.kickoff_utc.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        rows = result.all()
+
+        recommendations = [
+            Recommendation(
+                id=rec.id,
+                fixture_id=fix.external_id,
+                fixture_name=f"{fix.home_team} vs {fix.away_team}",
+                kickoff_utc=fix.kickoff_utc.isoformat(),
+                player_name=rec.player_name,
+                team="",  # no team column in RecommendationModel; team comes from service layer in date-mode only
+                market_type=rec.market_type,
+                fair_odds=rec.fair_odds,
+                best_bookmaker=rec.best_bookmaker,
+                best_odds=rec.best_odds,
+                edge=rec.edge,
+                classification=rec.classification,
+                confidence=rec.confidence,
+                explanation=rec.explanation or {},
+                status=rec.status,
+            )
+            for rec, fix in rows
+        ]
+        pages_count = max(1, ceil(total / page_size))
+        return RecommendationsResponse(
+            recommendations=recommendations,
+            total=total,
+            page=page,
+            page_size=page_size,
+            pages=pages_count,
+        )
+    # ── Date mode (existing behaviour) ─────────────────────────────────
+    effective_date = target_date
     day_start = datetime.combine(effective_date, datetime.min.time(), tzinfo=UTC)
     day_end = datetime.combine(effective_date, datetime.max.time(), tzinfo=UTC)
 

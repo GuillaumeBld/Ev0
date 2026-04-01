@@ -121,23 +121,45 @@ export async function priceMatch(request: MatchPriceRequest): Promise<MatchPrice
   return data
 }
 
-// API functions
+// ── Recommendations ─────────────────────────────────────────────
+
+export interface RecommendationsApiResponse {
+  date: string | null
+  count: number
+  recommendations: Recommendation[]
+  error: string | null
+  total: number
+  page: number
+  page_size: number
+  pages: number
+}
+
 export async function getRecommendations(params?: {
   date?: string
   market_type?: string
   min_edge?: number
-}) {
+  page?: number
+  page_size?: number
+}): Promise<RecommendationsApiResponse> {
   const queryParams: Record<string, string | number> = {}
   if (params?.date) queryParams.target_date = params.date
   if (params?.market_type) queryParams.market_type = params.market_type
   if (params?.min_edge != null) queryParams.min_edge = params.min_edge
+  if (params?.page != null) queryParams.page = params.page
+  if (params?.page_size != null) queryParams.page_size = params.page_size
   const { data } = await api.get('/api/v1/recommendations', { params: queryParams })
   return data
 }
 
-export async function getExpiredRecommendations(params?: { date?: string }) {
-  const queryParams: Record<string, string> = {}
+export async function getExpiredRecommendations(params?: {
+  date?: string
+  page?: number
+  page_size?: number
+}): Promise<RecommendationsApiResponse> {
+  const queryParams: Record<string, string | number> = {}
   if (params?.date) queryParams.target_date = params.date
+  if (params?.page != null) queryParams.page = params.page
+  if (params?.page_size != null) queryParams.page_size = params.page_size
   const { data } = await api.get('/api/v1/recommendations/expired', { params: queryParams })
   return data
 }
