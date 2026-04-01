@@ -22,7 +22,8 @@ from app.cache import close_redis
 from app.config import settings
 from app.db import async_session, engine
 from app.ingestion.auto_settle import settle_approved_recommendations
-from app.ingestion.odds import ingest_odds_for_league, normalize_league_key
+from app.ingestion.fixture_matcher import match_event_to_fixture_by_teams
+from app.ingestion.odds import fetch_events_for_league, ingest_odds_for_league, normalize_league_key
 from app.ingestion.storage import (
     store_match_events,
     store_odds_snapshot,
@@ -73,12 +74,70 @@ def _get_leagues(user_settings: dict[str, str]) -> list[str]:
 
 
 async def job_sync_fixtures():
-    """Fixture status updates are handled by job_auto_finish_fixtures (kickoff + 2h rule).
+    """Sync fixture kickoff_utc from The Odds API.
 
-    FotMob /api/leagues returns 404 — this job is intentionally a no-op.
-    New fixtures for future seasons must be seeded manually via the backfill scripts.
+    Fetches upcoming events per league and updates kickoff_utc where it
+    differs from the DB value. Matches by team names only (no date window)
+    to handle placeholder kickoffs.
     """
-    logger.info("job_sync_fixtures: skipped (FotMob API unavailable — see job_auto_finish_fixtures)")
+    logger.info("=== Starting fixture sync ===")
+    user_settings = await _load_user_settings()
+    leagues = _get_leagues(user_settings)
+
+    total_updated = 0
+
+    for league in leagues:
+        try:
+            events = await fetch_events_for_league(league)
+            if not events:
+                logger.info("job_sync_fixtures: no events for %s", league)
+                continue
+
+            async with async_session() as session:
+                from app.models.fixtures import Fixture
+                result = await session.execute(
+                    select(Fixture).where(
+                        Fixture.league == league,
+                        Fixture.status != "finished",
+                    )
+                )
+                db_fixtures = list(result.scalars().all())
+
+                updated = 0
+                for event in events:
+                    fixture = match_event_to_fixture_by_teams(event, db_fixtures)
+                    if not fixture:
+                        continue
+
+                    api_kickoff_raw = event.get("commence_time", "")
+                    if not api_kickoff_raw:
+                        continue
+                    try:
+                        from datetime import datetime
+                        api_kickoff = datetime.fromisoformat(
+                            api_kickoff_raw.replace("Z", "+00:00")
+                        )
+                    except (ValueError, TypeError):
+                        continue
+
+                    if fixture.kickoff_utc != api_kickoff:
+                        fixture.kickoff_utc = api_kickoff
+                        session.add(fixture)
+                        updated += 1
+
+                await session.commit()
+                logger.info(
+                    "job_sync_fixtures: %d kickoffs updated for %s",
+                    updated, league,
+                )
+                total_updated += updated
+
+        except Exception as exc:
+            logger.error(
+                "job_sync_fixtures: error on %s: %s", league, exc, exc_info=True
+            )
+
+    logger.info("=== Fixture sync complete: %d total kickoffs updated ===", total_updated)
 
 
 # ── Job 2: Player Stats Sync ─────────────────────────────────────
@@ -1513,7 +1572,7 @@ def create_scheduler() -> AsyncIOScheduler:
         job_sync_fixtures,
         CronTrigger(hour=6, minute=0),
         id="sync_fixtures",
-        name="Sync fixtures from FotMob",
+        name="Sync fixture kickoffs via The Odds API",
         replace_existing=True,
     )
 
