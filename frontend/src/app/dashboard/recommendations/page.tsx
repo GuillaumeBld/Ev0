@@ -2,9 +2,9 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Filter, RefreshCw, TrendingUp, Calendar, ChevronDown } from 'lucide-react'
+import { Filter, RefreshCw, TrendingUp, Calendar, ChevronDown, X } from 'lucide-react'
 import { RecommendationCard } from '@/components/RecommendationCard'
-import { getRecommendations, getExpiredRecommendations } from '@/lib/api'
+import { getRecommendations, getExpiredRecommendations, Recommendation as ApiRec } from '@/lib/api'
 import { LineupData } from '@/components/lineups/LineupDisplay'
 
 type MarketFilter = 'all' | 'goalscorer' | 'assist'
@@ -21,7 +21,7 @@ function edgeFilterToMinEdge(f: EdgeFilter): number {
   if (f === '5+') return 0.05
   if (f === '10+') return 0.10
   if (f === '15+') return 0.15
-  return 0 // 'all' → envoie min_edge=0 pour ne pas utiliser le défaut 0.05 du backend
+  return 0
 }
 
 function parseOpponent(fixtureName: string, team: string): string {
@@ -32,93 +32,103 @@ function parseOpponent(fixtureName: string, team: string): string {
   return fixtureName
 }
 
-interface ApiRecommendation {
-  id: number
-  fixture_id: string
-  fixture_name: string
-  kickoff_utc: string
-  player_name: string
-  team: string
-  market_type: 'goalscorer' | 'assist'
-  fair_odds: number
-  best_bookmaker: string
-  best_odds: number
-  edge: number
-  classification: string
-  confidence: number
-  explanation: Record<string, any>
-  status?: string
+function formatDateLabel(isoDate: string): string {
+  const d = new Date(isoDate + 'T00:00:00')
+  return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })
 }
+
+// ApiRec.id is string from the API; RecommendationCard expects id: number — cast at mapping site.
+// Re-alias for clarity in query functions below.
+type ApiRecommendation = ApiRec
 
 export default function RecommendationsPage() {
   const [marketFilter, setMarketFilter] = useState<MarketFilter>('all')
   const [edgeFilter, setEdgeFilter] = useState<EdgeFilter>('5+')
-  const [selectedDate, setSelectedDate] = useState<string>('')
+  const [selectedDate, setSelectedDate] = useState<string | null>(null)  // null = View All
+  const [page, setPage] = useState(1)
+  const [expiredPage, setExpiredPage] = useState(1)
   const [expiredOpen, setExpiredOpen] = useState(false)
   const [lineupCache, setLineupCache] = useState<Record<string, FixtureLineupCache>>({})
   const fetchingFixtures = useRef<Set<string>>(new Set())
 
+  // Reset pages when filters change
   useEffect(() => {
-    setSelectedDate(new Date().toISOString().split('T')[0])
-  }, [])
+    setPage(1)
+    setExpiredPage(1)
+  }, [selectedDate, marketFilter, edgeFilter])
+
+  const isViewAll = selectedDate === null
 
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['recommendations', selectedDate, marketFilter, edgeFilter],
-    enabled: !!selectedDate,
+    queryKey: ['recommendations', selectedDate, marketFilter, edgeFilter, page],
     refetchInterval: 10_000,
     queryFn: async () => {
       const minEdge = edgeFilterToMinEdge(edgeFilter)
       const response = await getRecommendations({
-        date: selectedDate,
+        date: selectedDate ?? undefined,
         market_type: marketFilter !== 'all' ? marketFilter : undefined,
         min_edge: minEdge,
+        ...(isViewAll ? { page, page_size: 50 } : {}),
       })
 
       const recs: ApiRecommendation[] = response.recommendations || []
-      return recs.map((rec) => ({
-        id: rec.id,
-        fixtureId: String(rec.fixture_id),
-        player: rec.player_name,
-        team: rec.team,
-        opponent: parseOpponent(rec.fixture_name, rec.team),
-        market: rec.market_type,
-        fairOdds: rec.fair_odds,
-        bestOdds: rec.best_odds,
-        bookmaker: rec.best_bookmaker,
-        edge: rec.edge,
-        confidence: rec.confidence,
-        kickoff: rec.kickoff_utc,
-        explanation: rec.explanation,
-        status: (rec.status as 'pending' | 'approved' | 'rejected') ?? 'pending',
-      }))
+      return {
+        recs: recs.map((rec) => ({
+          id: Number(rec.id),
+          fixtureId: String(rec.fixture_id),
+          player: rec.player_name,
+          team: rec.team,
+          opponent: parseOpponent(rec.fixture_name, rec.team),
+          market: rec.market_type,
+          fairOdds: rec.fair_odds,
+          bestOdds: rec.best_odds,
+          bookmaker: rec.best_bookmaker,
+          edge: rec.edge,
+          confidence: rec.confidence,
+          kickoff: rec.kickoff_utc,
+          explanation: rec.explanation,
+          status: (rec.status as 'pending' | 'approved' | 'rejected') ?? 'pending',
+        })),
+        total: response.total,
+        pages: response.pages,
+      }
     },
   })
 
   const { data: expiredData } = useQuery({
-    queryKey: ['recommendations-expired', selectedDate],
-    enabled: !!selectedDate,
+    queryKey: ['recommendations-expired', selectedDate, expiredPage],
+    refetchInterval: 10_000,
     queryFn: async () => {
-      const response = await getExpiredRecommendations({ date: selectedDate })
+      const response = await getExpiredRecommendations({
+        date: selectedDate ?? undefined,
+        ...(isViewAll ? { page: expiredPage, page_size: 50 } : {}),
+      })
       const recs: ApiRecommendation[] = response.recommendations || []
-      return recs.map((rec) => ({
-        id: rec.id,
-        player: rec.player_name,
-        team: rec.team,
-        opponent: parseOpponent(rec.fixture_name, rec.team),
-        market: rec.market_type,
-        fairOdds: rec.fair_odds,
-        bestOdds: rec.best_odds,
-        bookmaker: rec.best_bookmaker,
-        edge: rec.edge,
-        confidence: rec.confidence,
-        kickoff: rec.kickoff_utc,
-        explanation: rec.explanation,
-      }))
+      return {
+        recs: recs.map((rec) => ({
+          id: Number(rec.id),
+          player: rec.player_name,
+          team: rec.team,
+          opponent: parseOpponent(rec.fixture_name, rec.team),
+          market: rec.market_type,
+          fairOdds: rec.fair_odds,
+          bestOdds: rec.best_odds,
+          bookmaker: rec.best_bookmaker,
+          edge: rec.edge,
+          confidence: rec.confidence,
+          kickoff: rec.kickoff_utc,
+          explanation: rec.explanation,
+        })),
+        total: response.total,
+        pages: response.pages,
+      }
     },
   })
 
-  const filteredRecs = data || []
-  const expiredRecs = expiredData || []
+  const filteredRecs = data?.recs || []
+  const totalPages = data?.pages || 1
+  const expiredRecs = expiredData?.recs || []
+  const expiredTotalPages = expiredData?.pages || 1
 
   // Fetch lineups for each unique fixture in recommendations (non-fatal, cached)
   useEffect(() => {
@@ -142,7 +152,9 @@ export default function RecommendationsPage() {
         <div>
           <h1 className="text-2xl font-bold text-white">Recommandations</h1>
           <p className="text-gray-400 mt-1">
-            {filteredRecs.length} picks disponibles
+            {isViewAll
+              ? `${data?.total ?? 0} picks disponibles`
+              : `${filteredRecs.length} picks disponibles`}
           </p>
         </div>
         <button
@@ -156,16 +168,31 @@ export default function RecommendationsPage() {
 
       {/* Filters */}
       <div className="flex flex-wrap gap-4 mb-6">
-        {/* Date picker */}
-        <div className="flex items-center gap-2 bg-gray-800 rounded-lg px-4 py-2">
-          <Calendar className="w-4 h-4 text-gray-400" />
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            className="bg-transparent text-white outline-none"
-          />
-        </div>
+        {/* Date filter — opt-in toggle */}
+        {selectedDate ? (
+          <div className="flex items-center gap-2 bg-brand-700 rounded-lg px-4 py-2">
+            <Calendar className="w-4 h-4 text-brand-200" />
+            <span className="text-white text-sm">{formatDateLabel(selectedDate)}</span>
+            <button
+              onClick={() => setSelectedDate(null)}
+              className="text-brand-200 hover:text-white ml-1"
+              aria-label="Supprimer le filtre date"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ) : (
+          <div className="relative flex items-center gap-2 bg-gray-800 hover:bg-gray-700 rounded-lg px-4 py-2 cursor-pointer transition-colors">
+            <Calendar className="w-4 h-4 text-gray-400" />
+            <span className="text-gray-400 text-sm">Filtrer par date</span>
+            <input
+              type="date"
+              onChange={(e) => { if (e.target.value) setSelectedDate(e.target.value) }}
+              className="absolute inset-0 opacity-0 cursor-pointer w-full"
+              aria-label="Filtrer par date"
+            />
+          </div>
+        )}
 
         {/* Market filter */}
         <div className="flex items-center gap-1 bg-gray-800 rounded-lg p-1">
@@ -246,6 +273,29 @@ export default function RecommendationsPage() {
         </div>
       )}
 
+      {/* Pagination — active recs (view all only) */}
+      {isViewAll && totalPages > 1 && (
+        <div className="flex items-center justify-center gap-4 mt-6">
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page === 1}
+            className="px-3 py-1.5 bg-gray-800 text-white rounded-lg disabled:opacity-40 hover:bg-gray-700 transition-colors"
+          >
+            ←
+          </button>
+          <span className="text-gray-400 text-sm">
+            Page {page} / {totalPages}
+          </span>
+          <button
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page === totalPages}
+            className="px-3 py-1.5 bg-gray-800 text-white rounded-lg disabled:opacity-40 hover:bg-gray-700 transition-colors"
+          >
+            →
+          </button>
+        </div>
+      )}
+
       {/* Section Expirées */}
       <div className="mt-8">
         <button
@@ -253,23 +303,54 @@ export default function RecommendationsPage() {
           className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors mb-4"
         >
           <ChevronDown className={`w-4 h-4 transition-transform ${expiredOpen ? 'rotate-180' : ''}`} />
-          <span className="text-sm font-medium">Expirées ({expiredRecs.length})</span>
+          <span className="text-sm font-medium">
+            Expirées ({isViewAll ? (expiredData?.total ?? 0) : expiredRecs.length})
+          </span>
         </button>
 
         {expiredOpen && (
           expiredRecs.length === 0 ? (
-            <p className="text-sm text-gray-500 italic">Aucune recommandation expirée pour cette date.</p>
+            <p className="text-sm text-gray-500 italic">
+              {isViewAll
+                ? 'Aucune recommandation expirée.'
+                : 'Aucune recommandation expirée pour cette date.'}
+            </p>
           ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 opacity-50">
-              {expiredRecs.map((rec) => (
-                <div key={rec.id} className="relative">
-                  <div className="absolute top-3 right-3 z-10 px-2 py-0.5 bg-gray-600 text-gray-300 text-xs rounded">
-                    Expiré
+            <>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 opacity-50">
+                {expiredRecs.map((rec) => (
+                  <div key={rec.id} className="relative">
+                    <div className="absolute top-3 right-3 z-10 px-2 py-0.5 bg-gray-600 text-gray-300 text-xs rounded">
+                      Expiré
+                    </div>
+                    <RecommendationCard recommendation={rec} />
                   </div>
-                  <RecommendationCard recommendation={rec} />
+                ))}
+              </div>
+
+              {/* Pagination — expired (view all only) */}
+              {isViewAll && expiredTotalPages > 1 && (
+                <div className="flex items-center justify-center gap-4 mt-4">
+                  <button
+                    onClick={() => setExpiredPage((p) => Math.max(1, p - 1))}
+                    disabled={expiredPage === 1}
+                    className="px-3 py-1.5 bg-gray-800 text-white rounded-lg disabled:opacity-40 hover:bg-gray-700 transition-colors"
+                  >
+                    ←
+                  </button>
+                  <span className="text-gray-400 text-sm">
+                    Page {expiredPage} / {expiredTotalPages}
+                  </span>
+                  <button
+                    onClick={() => setExpiredPage((p) => Math.min(expiredTotalPages, p + 1))}
+                    disabled={expiredPage === expiredTotalPages}
+                    className="px-3 py-1.5 bg-gray-800 text-white rounded-lg disabled:opacity-40 hover:bg-gray-700 transition-colors"
+                  >
+                    →
+                  </button>
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           )
         )}
       </div>
