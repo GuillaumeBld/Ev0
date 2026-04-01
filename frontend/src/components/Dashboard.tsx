@@ -24,7 +24,8 @@ export function Dashboard({ user }: DashboardProps) {
   const { data: recsData, isLoading } = useQuery({
     queryKey: ['dashboard-recommendations'],
     queryFn: async () => {
-      const response = await getRecommendations({ min_edge: 0.05 })
+      const today = new Date().toISOString().split('T')[0]
+      const response = await getRecommendations({ date: today, min_edge: 0.05 })
       const recs = (response.recommendations || []).map((rec: any) => ({
         id: rec.id,
         player: rec.player_name,
