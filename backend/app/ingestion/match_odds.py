@@ -133,87 +133,60 @@ async def ingest_match_odds_for_league(
     session: AsyncSession,
     api_key: str | None = None,
 ) -> tuple[list[MatchOddsRow], list[dict]]:
-    """Fetch and parse match-level odds for upcoming fixtures in a league.
+    """Fetch and parse match-level odds for a league using a single batch call.
 
-    Queries the fixtures table for fixtures in the next 7 days whose
-    odds_api_event_id is set, then fetches odds from The Odds API for each.
+    Uses the /sports/{sport}/odds batch endpoint (1 API credit per league)
+    rather than the per-event endpoint to avoid quota exhaustion.
 
     Args:
         league: League identifier (e.g. 'ligue_1').
-        session: SQLAlchemy async session for DB queries.
+        session: SQLAlchemy async session (unused — kept for API compatibility).
         api_key: Optional Odds API key override.
 
     Returns:
         (rows, errors) — rows ready for DB insert, list of error messages.
     """
-    from app.models.fixtures import Fixture
-
     client = OddsAPIClient(api_key)
     sport_key = SPORT_KEYS.get(league)
     if not sport_key:
         logger.warning("ingest_match_odds_for_league: unknown league %s", league)
         return [], []
 
-    now = datetime.now(UTC)
-    window_end = now + timedelta(days=7)
+    client._check_quota()
 
-    result = await session.execute(
-        select(Fixture).where(
-            Fixture.league == league,
-            Fixture.kickoff_utc >= now,
-            Fixture.kickoff_utc <= window_end,
-            Fixture.odds_api_event_id.isnot(None),
+    snapshot_utc = datetime.now(UTC)
+    async with httpx.AsyncClient() as http:
+        response = await http.get(
+            f"{ODDS_API_BASE}/sports/{sport_key}/odds",
+            params={
+                "apiKey": client.api_key,
+                "markets": MATCH_MARKET_KEYS,
+                "regions": "eu,uk",
+                "oddsFormat": "decimal",
+            },
+            timeout=30.0,
         )
-    )
-    fixtures = list(result.scalars().all())
+
+    client._update_quota(response)
+
+    if response.status_code != 200:
+        msg = f"Match odds batch fetch failed for {league}: HTTP {response.status_code} — {response.text[:200]}"
+        logger.warning(msg)
+        return [], [{"league": league, "error": msg}]
+
+    events = response.json()
+    if not isinstance(events, list):
+        logger.warning("Unexpected response format for %s match odds: %s", league, events)
+        return [], []
 
     all_rows: list[MatchOddsRow] = []
     errors: list[dict] = []
 
-    async with httpx.AsyncClient() as http:
-        for fixture in fixtures:
-            event_id = fixture.odds_api_event_id
-            if not event_id:
-                continue
-            try:
-                # Respect quota guard before each call
-                client._check_quota()
-
-                snapshot_utc = datetime.now(UTC)
-                response = await http.get(
-                    f"{ODDS_API_BASE}/sports/{sport_key}/events/{event_id}/odds",
-                    params={
-                        "apiKey": client.api_key,
-                        "markets": MATCH_MARKET_KEYS,
-                        "regions": "eu,uk",
-                        "bookmakers": ",".join(MATCH_BOOKMAKERS),
-                    },
-                    timeout=30.0,
-                )
-
-                # Update quota counter from response headers
-                client._update_quota(response)
-
-                if response.status_code != 200:
-                    msg = f"Match odds fetch failed for {event_id}: HTTP {response.status_code}"
-                    logger.warning(msg)
-                    errors.append({"fixture_id": fixture.id, "error": msg})
-                    continue
-
-                data = response.json()
-                full_event = {
-                    "id": event_id,
-                    "home_team": fixture.home_team,
-                    "away_team": fixture.away_team,
-                    "bookmakers": data.get("bookmakers", []),
-                }
-                parsed = parse_match_odds_event(full_event, snapshot_utc=snapshot_utc)
-                all_rows.extend(parsed)
-            except QuotaExhaustedError:
-                raise
-            except Exception as exc:
-                msg = f"Error fetching match odds for event {event_id}: {exc}"
-                logger.warning(msg)
-                errors.append({"fixture_id": fixture.id, "error": msg})
+    for event in events:
+        try:
+            parsed = parse_match_odds_event(event, snapshot_utc=snapshot_utc)
+            all_rows.extend(parsed)
+        except Exception as exc:
+            errors.append({"event_id": event.get("id"), "error": str(exc)})
 
     return all_rows, errors

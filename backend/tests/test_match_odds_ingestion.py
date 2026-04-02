@@ -127,38 +127,33 @@ def test_parse_match_odds_totals_missing_under_returns_no_rows():
 
 @pytest.mark.asyncio
 async def test_ingest_match_odds_returns_rows_with_event_id():
-    """ingest_match_odds_for_league must return MatchOddsRow with event_id."""
+    """ingest_match_odds_for_league (batch endpoint) must return MatchOddsRow with event_id."""
     from app.ingestion.match_odds import ingest_match_odds_for_league
 
-    fake_response_data = {
-        "bookmakers": [
-            {
-                "key": "betfair",
-                "markets": [
-                    {
-                        "key": "totals",
-                        "outcomes": [
-                            {"name": "Over", "point": 2.5, "price": 1.85},
-                            {"name": "Under", "point": 2.5, "price": 2.00},
-                        ],
-                    }
-                ],
-            }
-        ]
-    }
+    # Batch endpoint returns a list of events
+    fake_response_data = [
+        {
+            "id": "evt_42",
+            "home_team": "PSG",
+            "away_team": "Lyon",
+            "bookmakers": [
+                {
+                    "key": "betfair",
+                    "markets": [
+                        {
+                            "key": "totals",
+                            "outcomes": [
+                                {"name": "Over", "point": 2.5, "price": 1.85},
+                                {"name": "Under", "point": 2.5, "price": 2.00},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
 
-    # Build a fake fixture object
-    fake_fixture = MagicMock()
-    fake_fixture.id = 1
-    fake_fixture.odds_api_event_id = "evt_42"
-    fake_fixture.home_team = "PSG"
-    fake_fixture.away_team = "Lyon"
-
-    # Mock the DB session to return our fake fixture
     mock_session = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.scalars.return_value.all.return_value = [fake_fixture]
-    mock_session.execute = AsyncMock(return_value=mock_result)
 
     mock_resp = MagicMock()
     mock_resp.status_code = 200
