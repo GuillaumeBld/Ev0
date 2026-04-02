@@ -25,6 +25,9 @@ def solve_lambda_t(p_over_2_5: float) -> float:
     P(total >= 3) = 1 - e^(-lambda_t)(1 + lambda_t + lambda_t^2/2)
     Uses scipy brentq on [0.1, 10].
     Raises ValueError if no root found.
+
+    Requires: p_over_2_5 achievable by a Poisson rate in [0.1, 10],
+    i.e. approximately (0.00016, 0.997). Values outside this range raise ValueError.
     """
     def f(lam):
         return 1 - math.exp(-lam) * (1 + lam + lam**2 / 2) - p_over_2_5
@@ -46,7 +49,9 @@ def solve_lambda_home(lambda_t: float, p_btts: float) -> tuple[float, float]:
     if lo >= mid:
         raise ValueError(f"lambda_t={lambda_t} too small for BTTS solve")
 
-    # The BTTS function peaks at lh=lambda_t/2; roots exist on [lo, mid] and [mid, hi].
+    # The BTTS function g(lh) = (1-e^{-lh})*(1-e^{-(lt-lh)}) is symmetric about lt/2,
+    # so g(lo) = g(hi) always -- brentq([lo, hi]) would always fail. Instead bracket
+    # [lo, mid] where g is strictly increasing; the second root is recovered via symmetry.
     # Bracket check: f(lo) must be negative and f(mid) must be positive.
     if f(lo) >= 0 or f(mid) <= 0:
         raise ValueError("No root in BTTS bracket -- degenerate case")
