@@ -11,7 +11,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.odds import ODDS_API_BASE, SPORT_KEYS, OddsAPIClient
+from app.ingestion.odds import ODDS_API_BASE, SPORT_KEYS, OddsAPIClient, QuotaExhaustedError
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,10 @@ class MatchOddsRow:
     snapshot_utc: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
-def parse_match_odds_event(event: dict[str, Any]) -> list[MatchOddsRow]:
+def parse_match_odds_event(
+    event: dict[str, Any],
+    snapshot_utc: datetime | None = None,
+) -> list[MatchOddsRow]:
     """Parse a single The Odds API event dict into flat outcome rows.
 
     Returns:
@@ -43,8 +46,10 @@ def parse_match_odds_event(event: dict[str, Any]) -> list[MatchOddsRow]:
         For totals, only includes the 2.5-point line, and only when both
         over_2.5 and under_2.5 are present.
     """
+    ts = snapshot_utc if snapshot_utc is not None else datetime.now(UTC)
     event_id = event.get("id", "")
     home_team = event.get("home_team", "")
+    away_team = event.get("away_team", "")
     rows: list[MatchOddsRow] = []
 
     for bm in event.get("bookmakers", []):
@@ -65,14 +70,18 @@ def parse_match_odds_event(event: dict[str, Any]) -> list[MatchOddsRow]:
                         outcome = "draw"
                     elif name == home_team:
                         outcome = "home"
-                    else:
+                    elif name == away_team:
                         outcome = "away"
+                    else:
+                        logger.debug("Unknown h2h outcome: %s", name)
+                        continue
                     rows.append(MatchOddsRow(
                         event_id=event_id,
                         bookmaker=bm_key,
                         market_type="h2h",
                         outcome=outcome,
                         odds=float(price),
+                        snapshot_utc=ts,
                     ))
 
             elif mkey == "totals":
@@ -97,6 +106,7 @@ def parse_match_odds_event(event: dict[str, Any]) -> list[MatchOddsRow]:
                             market_type="totals",
                             outcome=outcome_key,
                             odds=odds_val,
+                            snapshot_utc=ts,
                         ))
 
             elif mkey == "both_teams_to_score":
@@ -111,6 +121,7 @@ def parse_match_odds_event(event: dict[str, Any]) -> list[MatchOddsRow]:
                         market_type="btts",
                         outcome=name,
                         odds=float(price),
+                        snapshot_utc=ts,
                     ))
 
     return rows
@@ -167,6 +178,7 @@ async def ingest_match_odds_for_league(
                 # Respect quota guard before each call
                 client._check_quota()
 
+                snapshot_utc = datetime.now(UTC)
                 response = await http.get(
                     f"{ODDS_API_BASE}/sports/{sport_key}/events/{event_id}/odds",
                     params={
@@ -194,8 +206,10 @@ async def ingest_match_odds_for_league(
                     "away_team": fixture.away_team,
                     "bookmakers": data.get("bookmakers", []),
                 }
-                parsed = parse_match_odds_event(full_event)
+                parsed = parse_match_odds_event(full_event, snapshot_utc=snapshot_utc)
                 all_rows.extend(parsed)
+            except QuotaExhaustedError:
+                raise
             except Exception as exc:
                 msg = f"Error fetching match odds for event {event_id}: {exc}"
                 logger.warning(msg)
