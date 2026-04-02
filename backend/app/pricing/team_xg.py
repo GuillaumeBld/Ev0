@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.pricing.assist import calculate_creation_multiplier
 from app.pricing.goalscorer import calculate_quality_multiplier
+from app.services.market_xg import MarketXgResult, MarketXgService
 
 # ── Constants ─────────────────────────────────────────────────────
 
@@ -520,8 +521,6 @@ async def load_match_pricing(
     away_lineup_players with xG redistributed among those starters only.
     The main home_players / away_players always contains the full squad.
     """
-    from app.services.market_xg import MarketXgResult, MarketXgService
-
     home_team = fixture.home_team
     away_team = fixture.away_team
 

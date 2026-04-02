@@ -57,7 +57,7 @@ class TestMarketXgIntegration:
             xg_source="market_implied",
         )
 
-        with patch("app.services.market_xg.MarketXgService") as MockService:
+        with patch("app.pricing.team_xg.MarketXgService") as MockService:
             instance = MockService.return_value
             instance.compute = AsyncMock(return_value=market_result)
 
@@ -80,7 +80,7 @@ class TestMarketXgIntegration:
             xg_source="market_implied",
         )
 
-        with patch("app.services.market_xg.MarketXgService") as MockService:
+        with patch("app.pricing.team_xg.MarketXgService") as MockService:
             instance = MockService.return_value
             instance.compute = AsyncMock(return_value=market_result)
 
@@ -100,7 +100,7 @@ class TestMarketXgIntegration:
         fixture = _make_fixture()
         db = _make_db_session()
 
-        with patch("app.services.market_xg.MarketXgService") as MockService:
+        with patch("app.pricing.team_xg.MarketXgService") as MockService:
             instance = MockService.return_value
             instance.compute = AsyncMock()
 
