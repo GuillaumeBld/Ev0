@@ -79,6 +79,23 @@ async def test_match_odds_rows_upserted_into_db():
     # session.execute should have been called (for fixture lookup + insert)
     assert len(executed_stmts) >= 2, "Expected at least fixture lookup + INSERT statement"
 
+    # At least one statement should be an INSERT into match_odds_snapshots
+    insert_stmts = [
+        s for s in executed_stmts
+        if hasattr(s, "table") and getattr(s.table, "name", None) == "match_odds_snapshots"
+    ]
+    assert len(insert_stmts) >= 1, (
+        f"Expected an INSERT into match_odds_snapshots, got stmts: {executed_stmts}"
+    )
+
+    # The INSERT values must reference fixture_id=42
+    insert_stmt = insert_stmts[0]
+    # Verify fixture_id=42 via the VALUES clause in the statement's string representation
+    stmt_str = str(insert_stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "42" in stmt_str, (
+        f"Expected fixture_id=42 in INSERT VALUES, got: {stmt_str}"
+    )
+
     # session.commit should have been called
     mock_session.commit.assert_called()
 

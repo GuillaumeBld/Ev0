@@ -24,7 +24,7 @@ from app.db import async_session, engine
 from app.ingestion.auto_settle import settle_approved_recommendations
 from app.ingestion.fixture_matcher import match_event_to_fixture_by_teams
 from app.ingestion.match_odds import ingest_match_odds_for_league
-from app.ingestion.odds import fetch_events_for_league, ingest_odds_for_league, normalize_league_key
+from app.ingestion.odds import QuotaExhaustedError, fetch_events_for_league, ingest_odds_for_league, normalize_league_key
 from app.ingestion.storage import (
     store_match_events,
     store_odds_snapshot,
@@ -623,11 +623,19 @@ async def job_snapshot_odds():
                         Fixture.odds_api_event_id.in_(event_ids)
                     )
                 )
-                fixtures_by_event_id = {
-                    f.odds_api_event_id: f.id
-                    for f in result.scalars().all()
-                    if f.odds_api_event_id
-                }
+                seen: dict[str, int] = {}
+                for f in result.scalars().all():
+                    if not f.odds_api_event_id:
+                        continue
+                    if f.odds_api_event_id in seen:
+                        logger.warning(
+                            "Duplicate odds_api_event_id %s (fixtures %d and %d) — skipping both",
+                            f.odds_api_event_id, seen[f.odds_api_event_id], f.id,
+                        )
+                        seen[f.odds_api_event_id] = -1  # sentinel: skip
+                    else:
+                        seen[f.odds_api_event_id] = f.id
+                fixtures_by_event_id = {k: v for k, v in seen.items() if v != -1}
 
                 # Build insert values, skipping rows without a matched fixture
                 insert_values = []
@@ -664,6 +672,12 @@ async def job_snapshot_odds():
                     league, len(insert_values), skipped, len(match_errors),
                 )
 
+        except QuotaExhaustedError:
+            logger.warning(
+                "Odds API quota exhausted while ingesting match odds for %s — stopping league loop",
+                league,
+            )
+            break
         except Exception as exc:
             logger.error(
                 "Error ingesting match odds for %s: %s", league, exc, exc_info=True
