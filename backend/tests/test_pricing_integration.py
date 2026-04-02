@@ -60,7 +60,7 @@ class TestLoadMatchPricingMarketImplied:
         )
 
         with patch(
-            "app.services.market_xg.MarketXgService",
+            "app.pricing.team_xg.MarketXgService",
         ) as MockService:
             instance = MockService.return_value
             instance.compute = AsyncMock(return_value=market_result)
@@ -85,7 +85,7 @@ class TestLoadMatchPricingMarketImplied:
         )
 
         with patch(
-            "app.services.market_xg.MarketXgService",
+            "app.pricing.team_xg.MarketXgService",
         ) as MockService:
             instance = MockService.return_value
             instance.compute = AsyncMock(return_value=market_result)
@@ -106,7 +106,7 @@ class TestLoadMatchPricingMarketImplied:
         )
 
         with patch(
-            "app.services.market_xg.MarketXgService",
+            "app.pricing.team_xg.MarketXgService",
         ) as MockService:
             instance = MockService.return_value
             instance.compute = AsyncMock(return_value=market_result)
@@ -133,7 +133,7 @@ class TestLoadMatchPricingOverrides:
         db = _make_db_session()
 
         with patch(
-            "app.services.market_xg.MarketXgService",
+            "app.pricing.team_xg.MarketXgService",
         ) as MockService:
             instance = MockService.return_value
             instance.compute = AsyncMock()
@@ -166,7 +166,7 @@ class TestLoadMatchPricingOverrides:
         )
 
         with patch(
-            "app.services.market_xg.MarketXgService",
+            "app.pricing.team_xg.MarketXgService",
         ) as MockService:
             instance = MockService.return_value
             instance.compute = AsyncMock(return_value=market_result)
@@ -199,7 +199,7 @@ class TestLoadMatchPricingOverrides:
         )
 
         with patch(
-            "app.services.market_xg.MarketXgService",
+            "app.pricing.team_xg.MarketXgService",
         ) as MockService:
             instance = MockService.return_value
             instance.compute = AsyncMock(return_value=market_result)
@@ -233,7 +233,7 @@ class TestLoadMatchPricingFixtureId:
         )
 
         with patch(
-            "app.services.market_xg.MarketXgService",
+            "app.pricing.team_xg.MarketXgService",
         ) as MockService:
             instance = MockService.return_value
             instance.compute = AsyncMock(return_value=market_result)
