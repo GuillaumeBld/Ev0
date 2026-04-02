@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, timedelta
 from typing import Literal
 
 from scipy.optimize import brentq
@@ -122,7 +122,7 @@ def _preferred_bookmaker(available: set[str]) -> str | None:
     for bm in ("betfair", "pinnacle"):
         if bm in available:
             return bm
-    return next(iter(available), None)
+    return next(iter(sorted(available)), None)
 
 
 # ---------------------------------------------------------------------------
@@ -150,34 +150,41 @@ async def get_dixon_coles_fallback(
         logger.warning("get_dixon_coles_fallback: fixture %s not found", fixture_id)
         return MarketXgResult(xg_home=1.3, xg_away=1.0, xg_source="dixon_coles")
 
-    team_stats = await compute_team_stats(session)
-    home_ts = team_stats.get(fixture.home_team)
-    away_ts = team_stats.get(fixture.away_team)
+    try:
+        team_stats = await compute_team_stats(session)
+        home_ts = team_stats.get(fixture.home_team)
+        away_ts = team_stats.get(fixture.away_team)
 
-    all_ts = list(team_stats.values())
-    league_avg_xg = (
-        sum(ts.attack_xg_per_match for ts in all_ts) / len(all_ts) if all_ts else 1.2
-    )
-    xga_values = [ts.defense_xga_per_match for ts in all_ts if ts.defense_xga_per_match > 0]
-    league_avg_xga = sum(xga_values) / len(xga_values) if xga_values else league_avg_xg
-
-    if home_ts:
-        home_xg = estimate_team_match_xg(
-            home_ts.attack_xg_per_match,
-            away_ts.defense_xga_per_match if away_ts else league_avg_xga,
-            league_avg_xg, league_avg_xga, is_home=True,
+        all_ts = list(team_stats.values())
+        league_avg_xg = (
+            sum(ts.attack_xg_per_match for ts in all_ts) / len(all_ts) if all_ts else 1.2
         )
-    else:
-        home_xg = league_avg_xg * HOME_ADVANTAGE
+        xga_values = [ts.defense_xga_per_match for ts in all_ts if ts.defense_xga_per_match > 0]
+        league_avg_xga = sum(xga_values) / len(xga_values) if xga_values else league_avg_xg
 
-    if away_ts:
-        away_xg = estimate_team_match_xg(
-            away_ts.attack_xg_per_match,
-            home_ts.defense_xga_per_match if home_ts else league_avg_xga,
-            league_avg_xg, league_avg_xga, is_home=False,
+        if home_ts:
+            home_xg = estimate_team_match_xg(
+                home_ts.attack_xg_per_match,
+                away_ts.defense_xga_per_match if away_ts else league_avg_xga,
+                league_avg_xg, league_avg_xga, is_home=True,
+            )
+        else:
+            home_xg = league_avg_xg * HOME_ADVANTAGE
+
+        if away_ts:
+            away_xg = estimate_team_match_xg(
+                away_ts.attack_xg_per_match,
+                home_ts.defense_xga_per_match if home_ts else league_avg_xga,
+                league_avg_xg, league_avg_xga, is_home=False,
+            )
+        else:
+            away_xg = league_avg_xg
+    except Exception:
+        logger.warning(
+            "get_dixon_coles_fallback: compute_team_stats failed for fixture %s → sentinel",
+            fixture_id,
         )
-    else:
-        away_xg = league_avg_xg
+        return MarketXgResult(xg_home=1.3, xg_away=1.0, xg_source="dixon_coles")
 
     return MarketXgResult(
         xg_home=round(home_xg, 3),
@@ -231,7 +238,18 @@ class MarketXgService:
         freshest_snapshot_utc = freshest_row
 
         # Staleness check: reject snapshots more than 24 h BEFORE kickoff
-        staleness = fixture.kickoff_utc - freshest_snapshot_utc
+        # Ensure freshest_snapshot_utc is timezone-aware before subtraction.
+        if freshest_snapshot_utc.tzinfo is None:
+            freshest_snapshot_utc = freshest_snapshot_utc.replace(tzinfo=UTC)
+
+        try:
+            staleness = fixture.kickoff_utc - freshest_snapshot_utc
+        except (TypeError, AttributeError):
+            logger.warning(
+                "MarketXgService.compute: datetime tz mismatch for fixture %s → fallback",
+                fixture_id,
+            )
+            return await get_dixon_coles_fallback(fixture_id, session)
         if staleness > _STALENESS_LIMIT:
             logger.info(
                 "MarketXgService.compute: snapshot for fixture %s is stale "
