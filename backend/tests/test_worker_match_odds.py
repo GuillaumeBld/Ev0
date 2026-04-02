@@ -141,13 +141,21 @@ async def test_match_odds_errors_logged_but_job_continues():
          patch("app.worker._load_user_settings", new=AsyncMock(return_value={})), \
          patch("app.worker.ingest_odds_for_league", new=AsyncMock(return_value=([], []))), \
          patch("app.worker.ingest_match_odds_for_league", new=AsyncMock(return_value=([], errors))), \
-         patch("app.worker.async_session", return_value=mock_session_ctx):
+         patch("app.worker.async_session", return_value=mock_session_ctx), \
+         patch("app.worker.logger") as mock_logger:
 
         mock_settings.odds_api_key = "test_key"
 
         from app.worker import job_snapshot_odds
         # Should not raise even with errors
         await job_snapshot_odds()
+
+    # logger.warning must have been called with the error count
+    warning_calls = mock_logger.warning.call_args_list
+    assert any(
+        len(call.args) >= 3 and call.args[2] == len(errors)
+        for call in warning_calls
+    ), f"Expected logger.warning with error count {len(errors)}, got: {warning_calls}"
 
 
 @pytest.mark.asyncio
