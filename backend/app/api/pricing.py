@@ -117,6 +117,7 @@ class MatchPriceResponse(BaseModel):
     away_team: str
     home_match_xg: float
     away_match_xg: float
+    xg_source: str = "dixon_coles"
     home_players: list[PlayerAllocationOut]
     away_players: list[PlayerAllocationOut]
     # Populated only when starters were supplied in the request
@@ -184,6 +185,7 @@ async def price_match(
         away_team=pricing.away_team,
         home_match_xg=pricing.home_match_xg,
         away_match_xg=pricing.away_match_xg,
+        xg_source=pricing.xg_source,
         home_players=_to_out(pricing.home_players),
         away_players=_to_out(pricing.away_players),
         home_lineup_players=_to_out(pricing.home_lineup_players) if pricing.home_lineup_players else None,

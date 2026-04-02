@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.pricing.assist import calculate_creation_multiplier
 from app.pricing.goalscorer import calculate_quality_multiplier
+from app.services.market_xg import MarketXgResult, MarketXgService
 
 # ── Constants ─────────────────────────────────────────────────────
 
@@ -142,6 +143,7 @@ class MatchPricingResult:
     away_team: str
     home_match_xg: float
     away_match_xg: float
+    xg_source: str = "dixon_coles"
     home_players: list[PlayerAllocation] = field(default_factory=list)
     away_players: list[PlayerAllocation] = field(default_factory=list)
     # Optional redistributed pricing when caller supplies a starter list
@@ -393,7 +395,6 @@ def allocate_player(
 async def _load_team_players(db: AsyncSession, team: str) -> list[dict[str, Any]]:
     """Load latest player stats (source=average) for a team — includes Model C fields."""
     from app.ingestion.storage import resolve_canonical_team
-    from app.models.canonical_teams import CanonicalTeam
     from app.models.players import Player, PlayerStats
 
     # Prefer canonical_team_id lookup; fall back to text match if not seeded
@@ -520,40 +521,22 @@ async def load_match_pricing(
     away_lineup_players with xG redistributed among those starters only.
     The main home_players / away_players always contains the full squad.
     """
-    team_stats = await compute_team_stats(db)
     home_team = fixture.home_team
     away_team = fixture.away_team
-    home_ts = team_stats.get(home_team)
-    away_ts = team_stats.get(away_team)
 
-    all_ts = list(team_stats.values())
-    league_avg_xg = (
-        sum(ts.attack_xg_per_match for ts in all_ts) / len(all_ts) if all_ts else 1.2
-    )
-    xga_values = [ts.defense_xga_per_match for ts in all_ts if ts.defense_xga_per_match > 0]
-    league_avg_xga = sum(xga_values) / len(xga_values) if xga_values else league_avg_xg
-
-    if home_xg_override is not None:
+    if home_xg_override is not None and away_xg_override is not None:
         home_match_xg = home_xg_override
-    elif home_ts:
-        home_match_xg = estimate_team_match_xg(
-            home_ts.attack_xg_per_match,
-            away_ts.defense_xga_per_match if away_ts else league_avg_xga,
-            league_avg_xg, league_avg_xga, is_home=True,
-        )
-    else:
-        home_match_xg = league_avg_xg * HOME_ADVANTAGE
-
-    if away_xg_override is not None:
         away_match_xg = away_xg_override
-    elif away_ts:
-        away_match_xg = estimate_team_match_xg(
-            away_ts.attack_xg_per_match,
-            home_ts.defense_xga_per_match if home_ts else league_avg_xga,
-            league_avg_xg, league_avg_xga, is_home=False,
-        )
+        xg_source = "override"
     else:
-        away_match_xg = league_avg_xg
+        market_result: MarketXgResult = await MarketXgService().compute(fixture.id, db)
+        xg_source = market_result.xg_source
+
+        home_match_xg = home_xg_override if home_xg_override is not None else market_result.xg_home
+        away_match_xg = away_xg_override if away_xg_override is not None else market_result.xg_away
+
+        if home_xg_override is not None or away_xg_override is not None:
+            xg_source = "override"
 
     home_players_db = await _load_team_players(db, home_team)
     away_players_db = await _load_team_players(db, away_team)
@@ -592,6 +575,7 @@ async def load_match_pricing(
         away_team=away_team,
         home_match_xg=round(home_match_xg, 3),
         away_match_xg=round(away_match_xg, 3),
+        xg_source=xg_source,
         home_players=home_allocs,
         away_players=away_allocs,
         home_lineup_players=home_lineup or None,

@@ -40,6 +40,17 @@ stake = bankroll × kelly_fraction × kelly_multiplier
 
 Le `kelly_multiplier` est entre 0.25 et 1.0 pour limiter la variance.
 
+## xG au niveau du match : odds de marché vs Dixon-Coles
+
+Avant d'allouer le xG aux joueurs, Ev0 estime les espérances de buts des deux équipes (`home_match_xg`, `away_match_xg`). Depuis la version market-implied-xG, cette estimation suit un ordre de priorité :
+
+1. **Market-implied** (source : `market_implied`) — Ev0 charge le dernier snapshot d'odds bookmaker (Betfair > Pinnacle) pour la rencontre et résout λ_h + λ_a en inversant conjointement les marchés Over 2.5, BTTS et H2H via un système d'équations Poisson. C'est la méthode la plus précise car elle incorpore l'information agrégée du marché.
+2. **Market-implied flagged** (source : `market_implied_flagged`) — Même pipeline, mais la cross-validation détecte une erreur > 8 % sur l'un des marchés. La valeur est utilisée mais signalée.
+3. **Dixon-Coles** (source : `dixon_coles`) — Fallback activé quand aucun snapshot n'est disponible, que le snapshot est périmé (> 24 h avant le coup d'envoi), ou que les solveurs échouent.
+4. **Override** (source : `override`) — L'appelant de l'API passe `home_xg_override` et/ou `away_xg_override`; ces valeurs sont utilisées directement.
+
+Le champ `xg_source` est exposé dans la réponse de l'endpoint `POST /price/match` pour permettre à l'interface de signaler la provenance des cotes fair calculées.
+
 ## Sources de probabilité
 
 | Signal | Module | Source |
