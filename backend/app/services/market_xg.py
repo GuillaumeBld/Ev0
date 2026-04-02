@@ -2,11 +2,14 @@
 
 Pipeline:
   1. Load freshest MatchOddsSnapshot for the fixture.
-  2. Devig totals + btts markets (betfair preferred, pinnacle fallback).
-  3. Solve λt from Over-2.5 probability, then λh from BTTS.
-  4. Use H2H market to disambiguate the two symmetric λh solutions.
-  5. Cross-validate; flag if error > 8%.
+  2. Devig totals + h2h markets (betfair preferred, pinnacle fallback).
+  3. Solve λt from Over-2.5 probability.
+  4. Solve λh directly from H2H P(home win) via Poisson inversion (brentq).
+  5. Cross-validate λh/λa against H2H; flag if error > 8%.
   6. Fall back to Dixon-Coles when data is missing / solvers fail.
+
+Note: BTTS market is not available for soccer via The Odds API batch endpoint.
+The legacy BTTS solvers (solve_lambda_home, cross_validate) are kept for tests.
 """
 
 from __future__ import annotations
@@ -105,6 +108,64 @@ def cross_validate(lambda_h: float, lambda_a: float,
         return False, f"Over 2.5 cross-validation error {over_err:.3f} > 0.08"
     if btts_err > 0.08:
         return False, f"BTTS cross-validation error {btts_err:.3f} > 0.08"
+    return True, None
+
+
+def _poisson_home_win(lambda_h: float, lambda_a: float, max_k: int = 20) -> float:
+    """P(home score > away score) under independent Poisson(λh), Poisson(λa)."""
+    total = 0.0
+    for h in range(1, max_k + 1):
+        ph = math.exp(-lambda_h) * lambda_h**h / math.factorial(h)
+        for a in range(h):
+            total += ph * math.exp(-lambda_a) * lambda_a**a / math.factorial(a)
+    return total
+
+
+def solve_lambda_home_from_h2h(lambda_t: float, p_home_win: float) -> float:
+    """Solve λh from P(home win) given λt, using Poisson inversion (brentq).
+
+    With λa = λt − λh, finds λh ∈ [0.05, λt−0.05] such that
+    P_Poisson(home win | λh, λt−λh) = p_home_win.
+
+    Raises ValueError if bracket has no sign change (degenerate case).
+    """
+    lo, hi = 0.05, lambda_t - 0.05
+    if lo >= hi:
+        raise ValueError(f"lambda_t={lambda_t} too small for H2H solve")
+
+    def f(lh: float) -> float:
+        return _poisson_home_win(lh, lambda_t - lh) - p_home_win
+
+    f_lo, f_hi = f(lo), f(hi)
+    if f_lo * f_hi > 0:
+        raise ValueError(
+            f"H2H solver: no sign change (f({lo:.2f})={f_lo:.3f}, f({hi:.2f})={f_hi:.3f})"
+        )
+    return brentq(f, lo, hi)
+
+
+def cross_validate_h2h(
+    lambda_h: float,
+    lambda_a: float,
+    p_over_2_5_true: float,
+    p_home_win_true: float,
+) -> tuple[bool, str | None]:
+    """Cross-validate (λh, λa) against Over-2.5 and H2H market probabilities.
+
+    Returns (ok, reason). Threshold: 8% absolute error on any market.
+    """
+    lambda_t = lambda_h + lambda_a
+    pred_over = 1 - math.exp(-lambda_t) * (1 + lambda_t + lambda_t**2 / 2)
+    pred_home_win = _poisson_home_win(lambda_h, lambda_a)
+
+    over_err = abs(pred_over - p_over_2_5_true)
+    if over_err > 0.08:
+        return False, f"Over 2.5 cross-validation error {over_err:.3f} > 0.08"
+
+    h2h_err = abs(pred_home_win - p_home_win_true)
+    if h2h_err > 0.08:
+        return False, f"H2H cross-validation error {h2h_err:.3f} > 0.08"
+
     return True, None
 
 
@@ -208,7 +269,7 @@ class MarketXgService:
         - fixture not found
         - no odds snapshot available
         - snapshot is stale (>24 h before kickoff)
-        - required markets (totals, btts) are missing
+        - required markets (totals + h2h) are missing
         - solvers raise ValueError
         """
         from app.models.fixtures import Fixture
@@ -276,9 +337,9 @@ class MarketXgService:
             ] = row.odds
 
         # 4. Check minimum required markets
-        if "totals" not in markets or "btts" not in markets:
+        if "totals" not in markets or "h2h" not in markets:
             logger.info(
-                "MarketXgService.compute: missing totals or btts for fixture %s → fallback",
+                "MarketXgService.compute: missing totals or h2h for fixture %s → fallback",
                 fixture_id,
             )
             return await get_dixon_coles_fallback(fixture_id, session)
@@ -299,45 +360,26 @@ class MarketXgService:
             return await get_dixon_coles_fallback(fixture_id, session)
         p_over_2_5, _ = multiplicative_devig([over_odds, under_odds])
 
-        # --- btts ---
-        btts_bm = _preferred_bookmaker(set(markets["btts"].keys()))
-        if btts_bm is None:
+        # --- h2h ---
+        h2h_bm = _preferred_bookmaker(set(markets["h2h"].keys()))
+        if h2h_bm is None:
             return await get_dixon_coles_fallback(fixture_id, session)
-        btts_outcomes = markets["btts"][btts_bm]
-        yes_odds = btts_outcomes.get("yes")
-        no_odds = btts_outcomes.get("no")
-        if yes_odds is None or no_odds is None:
+        h2h_outcomes = markets["h2h"][h2h_bm]
+        home_odds = h2h_outcomes.get("home")
+        draw_odds = h2h_outcomes.get("draw")
+        away_odds = h2h_outcomes.get("away")
+        if home_odds is None or draw_odds is None or away_odds is None:
             logger.info(
-                "MarketXgService.compute: missing btts yes/no odds for fixture %s → fallback",
+                "MarketXgService.compute: missing h2h outcomes for fixture %s → fallback",
                 fixture_id,
             )
             return await get_dixon_coles_fallback(fixture_id, session)
-        p_btts, _ = multiplicative_devig([yes_odds, no_odds])
+        p_home_win, _, p_away_win = multiplicative_devig([home_odds, draw_odds, away_odds])
 
-        # --- h2h (optional — used only for λh disambiguation) ---
-        p_home_win: float | None = None
-        p_away_win: float | None = None
-        if "h2h" in markets:
-            h2h_bm = _preferred_bookmaker(set(markets["h2h"].keys()))
-            if h2h_bm:
-                h2h_outcomes = markets["h2h"][h2h_bm]
-                home_odds = h2h_outcomes.get("home")
-                draw_odds = h2h_outcomes.get("draw")
-                away_odds = h2h_outcomes.get("away")
-                if home_odds and draw_odds and away_odds:
-                    p_home_win, _, p_away_win = multiplicative_devig(
-                        [home_odds, draw_odds, away_odds]
-                    )
-
-        # 6. Solve λt and λh, λa
+        # 6. Solve λt then λh via H2H Poisson inversion
         try:
             lambda_t = solve_lambda_t(p_over_2_5)
-            lh1, lh2 = solve_lambda_home(lambda_t, p_btts)
-            if p_home_win is not None and p_away_win is not None:
-                lambda_h = select_lambda_home(lh1, lh2, p_home_win, p_away_win)
-            else:
-                # No H2H — default to midpoint (λt / 2)
-                lambda_h = lambda_t / 2
+            lambda_h = solve_lambda_home_from_h2h(lambda_t, p_home_win)
             lambda_a = lambda_t - lambda_h
         except ValueError as exc:
             logger.info(
@@ -351,8 +393,8 @@ class MarketXgService:
         lambda_h = max(0.05, lambda_h)
         lambda_a = max(0.05, lambda_a)
 
-        # 8. Cross-validate
-        ok, reason = cross_validate(lambda_h, lambda_a, p_over_2_5, p_btts)
+        # 8. Cross-validate against Over-2.5 and H2H
+        ok, reason = cross_validate_h2h(lambda_h, lambda_a, p_over_2_5, p_home_win)
         xg_source: Literal["market_implied", "market_implied_flagged"] = (
             "market_implied" if ok else "market_implied_flagged"
         )

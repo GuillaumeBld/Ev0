@@ -1,4 +1,4 @@
-"""Match-level odds ingestion (h2h / totals / btts) from The Odds API."""
+"""Match-level odds ingestion (h2h / totals) from The Odds API."""
 
 from __future__ import annotations
 
@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 MATCH_BOOKMAKERS = {"betfair", "pinnacle"}
 
 # Markets to fetch for market-implied xG
-MATCH_MARKET_KEYS = "h2h,totals,both_teams_to_score"
+# Note: btts/both_teams_to_score is not supported in batch soccer requests by The Odds API
+MATCH_MARKET_KEYS = "h2h,totals"
 
 
 @dataclass
