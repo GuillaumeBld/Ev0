@@ -23,12 +23,14 @@ from app.config import settings
 from app.db import async_session, engine
 from app.ingestion.auto_settle import settle_approved_recommendations
 from app.ingestion.fixture_matcher import match_event_to_fixture_by_teams
+from app.ingestion.match_odds import ingest_match_odds_for_league
 from app.ingestion.odds import fetch_events_for_league, ingest_odds_for_league, normalize_league_key
 from app.ingestion.storage import (
     store_match_events,
     store_odds_snapshot,
     store_recommendation,
 )
+from app.models.match_odds import MatchOddsSnapshot
 from app.models.settings import UserSettings
 
 logging.basicConfig(
@@ -591,6 +593,81 @@ async def job_snapshot_odds():
                 logger.error(
                     "Error snapshotting %s %s odds: %s", league, market, exc, exc_info=True
                 )
+
+    # ── Match-level odds (h2h / totals / btts) ──────────────────────────────
+    logger.info("--- Starting match-level odds ingestion ---")
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from app.models.fixtures import Fixture
+
+    for league in leagues:
+        try:
+            async with async_session() as session:
+                match_rows, match_errors = await ingest_match_odds_for_league(
+                    league, session, api_key=settings.odds_api_key
+                )
+
+                if match_errors:
+                    logger.warning(
+                        "Match odds errors for %s: %d error(s)", league, len(match_errors)
+                    )
+
+                if not match_rows:
+                    logger.info("No match odds rows for %s", league)
+                    continue
+
+                # Build event_id → fixture_id mapping via odds_api_event_id
+                event_ids = list({r.event_id for r in match_rows})
+                result = await session.execute(
+                    select(Fixture).where(
+                        Fixture.odds_api_event_id.in_(event_ids)
+                    )
+                )
+                fixtures_by_event_id = {
+                    f.odds_api_event_id: f.id
+                    for f in result.scalars().all()
+                    if f.odds_api_event_id
+                }
+
+                # Build insert values, skipping rows without a matched fixture
+                insert_values = []
+                skipped = 0
+                for row in match_rows:
+                    fixture_id = fixtures_by_event_id.get(row.event_id)
+                    if fixture_id is None:
+                        skipped += 1
+                        continue
+                    insert_values.append({
+                        "fixture_id": fixture_id,
+                        "bookmaker": row.bookmaker,
+                        "market_type": row.market_type,
+                        "outcome": row.outcome,
+                        "odds": row.odds,
+                        "snapshot_utc": row.snapshot_utc,
+                    })
+
+                if not insert_values:
+                    logger.info(
+                        "No match odds rows could be matched to fixtures for %s "
+                        "(%d skipped, %d total)",
+                        league, skipped, len(match_rows),
+                    )
+                    continue
+
+                stmt = pg_insert(MatchOddsSnapshot).values(insert_values)
+                stmt = stmt.on_conflict_do_nothing(constraint="uq_match_odds_snapshot")
+                await session.execute(stmt)
+                await session.commit()
+
+                logger.info(
+                    "Match odds for %s: inserted %d rows (%d skipped, %d errors)",
+                    league, len(insert_values), skipped, len(match_errors),
+                )
+
+        except Exception as exc:
+            logger.error(
+                "Error ingesting match odds for %s: %s", league, exc, exc_info=True
+            )
 
     logger.info("=== Odds snapshot complete ===")
 
