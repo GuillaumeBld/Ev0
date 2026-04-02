@@ -5,7 +5,8 @@ Revises: 014
 Create Date: 2026-04-02
 """
 
-import sqlalchemy as sa  # noqa: I001
+import sqlalchemy as sa
+
 from alembic import op
 
 revision = "015"
