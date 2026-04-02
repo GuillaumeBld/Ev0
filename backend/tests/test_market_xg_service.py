@@ -371,11 +371,11 @@ class TestMarketXgServiceCrossValidationFlag:
         svc = MarketXgService()
         result = await svc.compute(1, session)
 
-        # The solver will derive λh from BTTS, but cross_validate will catch
-        # the mismatch between the resulting lambdas and the original over2.5 prob.
-        # If the mismatch is >8%, result should be flagged.
-        # If somehow not >8% (unlikely with such different λ), accept market_implied too.
-        assert result.xg_source in ("market_implied", "market_implied_flagged")
+        # The solver derives λh from BTTS (lh1≈lh2≈0.4, λt≈2.4 from over odds).
+        # cross_validate predicts P(BTTS) ≈ (1-e^-1.2)^2 ≈ 0.533 but p_btts ≈ 0.12
+        # → absolute error ≈ 0.41 >> 0.08 threshold → must flag.
+        assert result.xg_source == "market_implied_flagged"
+        assert result.flagged_reason is not None
 
 
 class TestMarketXgServiceFixtureNotFound:
