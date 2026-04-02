@@ -7,6 +7,7 @@ from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
 from app.models.lineups import TeamLineup, TeamLineupPlayer  # noqa: F401
 from app.models.match_events import MatchEvent
+from app.models.match_odds import MatchOddsSnapshot
 from app.models.odds import OddsSnapshot
 from app.models.player_match_minutes import PlayerMatchMinutes
 from app.models.players import DataSource, Player, PlayerStats, Team
@@ -21,6 +22,7 @@ __all__ = [
     "DataSource",
     "Fixture",
     "MatchEvent",
+    "MatchOddsSnapshot",
     "OddsSnapshot",
     "Player",
     "PlayerMatchMinutes",
