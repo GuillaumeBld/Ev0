@@ -2,13 +2,13 @@
 
 Pipeline:
   1. Load freshest MatchOddsSnapshot for the fixture.
-  2. Devig totals + h2h markets (betfair preferred, pinnacle fallback).
-  3. Solve λt from Over-2.5 probability.
-  4. Solve λh directly from H2H P(home win) via Poisson inversion (brentq).
-  5. Cross-validate λh/λa against H2H; flag if error > 8%.
-  6. Fall back to Dixon-Coles when data is missing / solvers fail.
+  2. Devig totals + h2h markets (oddsportal preferred, betfair, pinnacle fallback).
+  3. If BTTS market available: solve via 4-constraint L-BFGS-B (_fit_lambdas).
+     Otherwise: solve λt from Over-2.5, then λh from H2H via brentq (2-constraint).
+  4. Flag result if fit_residual > FIT_RESIDUAL_FLAG_THRESHOLD.
+  5. Return None (not a Dixon-Coles fallback) when data missing / solvers fail.
 
-Note: BTTS market is not available for soccer via The Odds API batch endpoint.
+Note: BTTS market may not be available for all fixtures.
 The legacy BTTS solvers (solve_lambda_home, cross_validate) are kept for tests.
 """
 
@@ -16,15 +16,28 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
-from datetime import UTC, timedelta
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Literal
 
-from scipy.optimize import brentq
+from scipy.optimize import brentq, minimize
+from scipy.stats import poisson as _poisson_dist
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
+
+MAX_SNAPSHOT_AGE = timedelta(hours=3)
+FIT_RESIDUAL_FLAG_THRESHOLD = 0.06
+
+
+# ---------------------------------------------------------------------------
+# Result type
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -32,7 +45,18 @@ class MarketXgResult:
     xg_home: float
     xg_away: float
     xg_source: Literal["market_implied", "market_implied_flagged", "dixon_coles"]
-    flagged_reason: str | None = None
+    data_source: str = ""          # "oddsportal" | "betclic" | "unibet" | ...
+    fallback_used: bool = False
+    fit_residual: float = 0.0
+    flagged: bool = False          # fit_residual > FIT_RESIDUAL_FLAG_THRESHOLD
+    as_of_utc: datetime | None = None
+    input_snapshot_ids: list[int] = field(default_factory=list)
+    flagged_reason: str | None = None   # kept for backward-compat
+
+
+# ---------------------------------------------------------------------------
+# Legacy devig helper (kept for existing tests)
+# ---------------------------------------------------------------------------
 
 
 def multiplicative_devig(odds_list: list[float]) -> list[float]:
@@ -40,6 +64,11 @@ def multiplicative_devig(odds_list: list[float]) -> list[float]:
     implied = [1.0 / o for o in odds_list]
     total = sum(implied)
     return [p / total for p in implied]
+
+
+# ---------------------------------------------------------------------------
+# Legacy single-market solvers (kept for existing tests)
+# ---------------------------------------------------------------------------
 
 
 def solve_lambda_t(p_over_2_5: float) -> float:
@@ -173,21 +202,97 @@ def cross_validate_h2h(
 # Bookmaker preference helpers
 # ---------------------------------------------------------------------------
 
-_BOOKMAKER_PRIORITY = {"betfair": 0, "pinnacle": 1}
-
-_STALENESS_LIMIT = timedelta(hours=24)
+_BOOKMAKER_PRIORITY = ["oddsportal", "betfair", "pinnacle", "betclic", "unibet"]
 
 
 def _preferred_bookmaker(available: set[str]) -> str | None:
-    """Return betfair if available, then pinnacle, else any."""
-    for bm in ("betfair", "pinnacle"):
+    """Return preferred bookmaker from priority list, or any available."""
+    if not available:
+        return None
+    for bm in _BOOKMAKER_PRIORITY:
         if bm in available:
             return bm
-    return next(iter(sorted(available)), None)
+    return next(iter(available))
 
 
 # ---------------------------------------------------------------------------
-# Dixon-Coles fallback (module-level helper)
+# 4-constraint Poisson solver (L-BFGS-B) for Task 11
+# ---------------------------------------------------------------------------
+
+
+def _p_poisson_home_win(lh: float, la: float, max_goals: int = 10) -> float:
+    """P(Home > Away) under Poisson(lh) vs Poisson(la)."""
+    total = 0.0
+    for h in range(1, max_goals + 1):
+        ph = _poisson_dist.pmf(h, lh)
+        for a in range(0, h):
+            total += ph * _poisson_dist.pmf(a, la)
+    return total
+
+
+def _p_poisson_draw(lh: float, la: float, max_goals: int = 10) -> float:
+    """P(Home == Away) under Poisson."""
+    return float(sum(_poisson_dist.pmf(k, lh) * _poisson_dist.pmf(k, la) for k in range(max_goals + 1)))
+
+
+def _p_poisson_over_2_5(lt: float) -> float:
+    """P(Total > 2.5) = 1 - e^{-lt}(1 + lt + lt^2/2)."""
+    return 1.0 - math.exp(-lt) * (1.0 + lt + lt ** 2 / 2.0)
+
+
+def _p_poisson_btts(lh: float, la: float) -> float:
+    """P(Both teams score) = (1 - e^{-lh})(1 - e^{-la})."""
+    return (1.0 - math.exp(-lh)) * (1.0 - math.exp(-la))
+
+
+def _solve_lambda_t_approx(p_over_2_5: float) -> float:
+    """Rough brentq estimate of total lambda — used as warm start for _fit_lambdas."""
+    def eq(lt: float) -> float:
+        return _p_poisson_over_2_5(lt) - p_over_2_5
+    try:
+        return float(brentq(eq, 0.05, 15.0))
+    except ValueError:
+        return 2.5
+
+
+def _fit_lambdas(
+    p_home_win: float,
+    p_draw: float,
+    p_over_2_5: float,
+    p_btts_yes: float,
+) -> tuple[float, float, float]:
+    """
+    Fit (lambda_home, lambda_away) to 4 market probabilities via L-BFGS-B.
+
+    Returns (lambda_home, lambda_away, fit_residual).
+    fit_residual is the sum of squared deviations across all 4 constraints.
+    Flag result if fit_residual > FIT_RESIDUAL_FLAG_THRESHOLD (0.06).
+    """
+    def objective(x: list[float]) -> float:
+        lh, la = x
+        r1 = (_p_poisson_home_win(lh, la) - p_home_win) ** 2
+        r2 = (_p_poisson_draw(lh, la) - p_draw) ** 2
+        r3 = (_p_poisson_over_2_5(lh + la) - p_over_2_5) ** 2
+        r4 = (_p_poisson_btts(lh, la) - p_btts_yes) ** 2
+        return r1 + r2 + r3 + r4
+
+    lt_init = _solve_lambda_t_approx(p_over_2_5)
+    lh_init = min(max(lt_init * 0.55, 0.3), 4.0)
+    la_init = min(max(lt_init * 0.45, 0.3), 4.0)
+
+    result = minimize(
+        objective,
+        x0=[lh_init, la_init],
+        bounds=[(0.05, 4.5), (0.05, 4.5)],
+        method="L-BFGS-B",
+        options={"maxiter": 500, "ftol": 1e-12},
+    )
+    lh, la = float(result.x[0]), float(result.x[1])
+    return lh, la, float(result.fun)
+
+
+# ---------------------------------------------------------------------------
+# Dixon-Coles fallback (module-level helper — kept for backward compat)
 # ---------------------------------------------------------------------------
 
 
@@ -262,15 +367,17 @@ async def get_dixon_coles_fallback(
 class MarketXgService:
     """Derive match-level xG from bookmaker odds snapshots."""
 
-    async def compute(self, fixture_id: int, session: AsyncSession) -> MarketXgResult:
+    async def compute(self, fixture_id: int, session: AsyncSession) -> MarketXgResult | None:
         """Compute market-implied xG for a fixture.
 
-        Falls back to Dixon-Coles if:
-        - fixture not found
+        Returns None if:
         - no odds snapshot available
-        - snapshot is stale (>24 h before kickoff)
+        - snapshot is stale (> MAX_SNAPSHOT_AGE = 3 h from now)
         - required markets (totals + h2h) are missing
         - solvers raise ValueError
+
+        Uses 4-constraint L-BFGS-B solver when BTTS market available,
+        otherwise falls back to 2-constraint brentq solver.
         """
         from app.models.fixtures import Fixture
         from app.models.match_odds import MatchOddsSnapshot
@@ -279,7 +386,7 @@ class MarketXgService:
         fixture = await session.get(Fixture, fixture_id)
         if fixture is None:
             logger.warning("MarketXgService.compute: fixture %s not found", fixture_id)
-            return await get_dixon_coles_fallback(fixture_id, session)
+            return None
 
         # 2. Find freshest snapshot_utc for this fixture
         freshest_result = await session.execute(
@@ -291,34 +398,27 @@ class MarketXgService:
         freshest_row = freshest_result.scalar_one_or_none()
         if freshest_row is None:
             logger.info(
-                "MarketXgService.compute: no odds snapshot for fixture %s → fallback",
+                "MarketXgService.compute: no odds snapshot for fixture %s → None",
                 fixture_id,
             )
-            return await get_dixon_coles_fallback(fixture_id, session)
+            return None
 
         freshest_snapshot_utc = freshest_row
 
-        # Staleness check: reject snapshots more than 24 h BEFORE kickoff
         # Ensure freshest_snapshot_utc is timezone-aware before subtraction.
         if freshest_snapshot_utc.tzinfo is None:
             freshest_snapshot_utc = freshest_snapshot_utc.replace(tzinfo=UTC)
 
-        try:
-            staleness = fixture.kickoff_utc - freshest_snapshot_utc
-        except (TypeError, AttributeError):
+        # Staleness check: reject snapshots older than MAX_SNAPSHOT_AGE (3 h from now)
+        now = datetime.now(timezone.utc)
+        snapshot_age = now - freshest_snapshot_utc
+        if snapshot_age > MAX_SNAPSHOT_AGE:
             logger.warning(
-                "MarketXgService.compute: datetime tz mismatch for fixture %s → fallback",
+                "market_xg: stale snapshot for fixture %s (age=%s)",
                 fixture_id,
+                snapshot_age,
             )
-            return await get_dixon_coles_fallback(fixture_id, session)
-        if staleness > _STALENESS_LIMIT:
-            logger.info(
-                "MarketXgService.compute: snapshot for fixture %s is stale "
-                "(gap=%.1f h) → fallback",
-                fixture_id,
-                staleness.total_seconds() / 3600,
-            )
-            return await get_dixon_coles_fallback(fixture_id, session)
+            return None
 
         # 3. Load all rows for the freshest snapshot_utc
         rows_result = await session.execute(
@@ -331,72 +431,115 @@ class MarketXgService:
         # Group by market_type → bookmaker → outcome → odds
         # Structure: markets[market_type][bookmaker][outcome] = odds
         markets: dict[str, dict[str, dict[str, float]]] = {}
+        snapshot_ids: list[int] = []
+        snapshot_source: str = "unknown"
+        snapshot_fallback_used: bool = False
         for row in rows:
             markets.setdefault(row.market_type, {}).setdefault(row.bookmaker, {})[
                 row.outcome
             ] = row.odds
+            if hasattr(row, "id") and row.id is not None:
+                snapshot_ids.append(row.id)
+            if hasattr(row, "source") and row.source:
+                snapshot_source = row.source
+            if hasattr(row, "fallback_used") and row.fallback_used:
+                snapshot_fallback_used = True
 
         # 4. Check minimum required markets
         if "totals" not in markets or "h2h" not in markets:
             logger.info(
-                "MarketXgService.compute: missing totals or h2h for fixture %s → fallback",
+                "MarketXgService.compute: missing totals or h2h for fixture %s → None",
                 fixture_id,
             )
-            return await get_dixon_coles_fallback(fixture_id, session)
+            return None
 
         # 5. Devig each market using preferred bookmaker
         # --- totals ---
         totals_bm = _preferred_bookmaker(set(markets["totals"].keys()))
         if totals_bm is None:
-            return await get_dixon_coles_fallback(fixture_id, session)
+            return None
         totals_outcomes = markets["totals"][totals_bm]
         over_odds = totals_outcomes.get("over_2.5")
         under_odds = totals_outcomes.get("under_2.5")
         if over_odds is None or under_odds is None:
             logger.info(
-                "MarketXgService.compute: missing over/under odds for fixture %s → fallback",
+                "MarketXgService.compute: missing over/under odds for fixture %s → None",
                 fixture_id,
             )
-            return await get_dixon_coles_fallback(fixture_id, session)
+            return None
         p_over_2_5, _ = multiplicative_devig([over_odds, under_odds])
 
         # --- h2h ---
         h2h_bm = _preferred_bookmaker(set(markets["h2h"].keys()))
         if h2h_bm is None:
-            return await get_dixon_coles_fallback(fixture_id, session)
+            return None
         h2h_outcomes = markets["h2h"][h2h_bm]
         home_odds = h2h_outcomes.get("home")
         draw_odds = h2h_outcomes.get("draw")
         away_odds = h2h_outcomes.get("away")
         if home_odds is None or draw_odds is None or away_odds is None:
             logger.info(
-                "MarketXgService.compute: missing h2h outcomes for fixture %s → fallback",
+                "MarketXgService.compute: missing h2h outcomes for fixture %s → None",
                 fixture_id,
             )
-            return await get_dixon_coles_fallback(fixture_id, session)
-        p_home_win, _, p_away_win = multiplicative_devig([home_odds, draw_odds, away_odds])
+            return None
+        h2h_clean = multiplicative_devig([home_odds, draw_odds, away_odds])
+        p_home_win, p_draw_val, p_away_win = h2h_clean
 
-        # 6. Solve λt then λh via H2H Poisson inversion
-        try:
-            lambda_t = solve_lambda_t(p_over_2_5)
-            lambda_h = solve_lambda_home_from_h2h(lambda_t, p_home_win)
-            lambda_a = lambda_t - lambda_h
-        except ValueError as exc:
-            logger.info(
-                "MarketXgService.compute: solver failed for fixture %s (%s) → fallback",
-                fixture_id,
-                exc,
-            )
-            return await get_dixon_coles_fallback(fixture_id, session)
+        # Determine preferred bookmaker name (for data_source)
+        data_source = _preferred_bookmaker(
+            set(markets.get("h2h", {}).keys()) | set(markets.get("totals", {}).keys())
+        ) or "unknown"
+
+        # --- btts (optional) ---
+        p_btts_yes: float | None = None
+        if "btts" in markets:
+            btts_bm = _preferred_bookmaker(set(markets["btts"].keys()))
+            if btts_bm is not None:
+                btts_outcomes = markets["btts"][btts_bm]
+                yes_odds = btts_outcomes.get("yes")
+                no_odds = btts_outcomes.get("no")
+                if yes_odds is not None and no_odds is not None:
+                    btts_clean = multiplicative_devig([yes_odds, no_odds])
+                    p_btts_yes = btts_clean[0]
+
+        # 6. Solve λh, λa
+        lambda_h: float
+        lambda_a: float
+        fit_residual: float
+
+        if p_btts_yes is not None:
+            # 4-constraint L-BFGS-B solver (uses BTTS + Over2.5 + H2H home win + draw)
+            try:
+                lambda_h, lambda_a, fit_residual = _fit_lambdas(
+                    p_home_win, p_draw_val, p_over_2_5, p_btts_yes
+                )
+            except Exception as exc:
+                logger.warning("market_xg: solver failed for fixture %s: %s", fixture_id, exc)
+                return None
+        else:
+            # 2-constraint solver: brentq on Over-2.5 then H2H
+            try:
+                lambda_t = solve_lambda_t(p_over_2_5)
+                lambda_h = solve_lambda_home_from_h2h(lambda_t, p_home_win)
+                lambda_a = lambda_t - lambda_h
+                # Compute residual for cross-validation
+                ok, reason = cross_validate_h2h(lambda_h, lambda_a, p_over_2_5, p_home_win)
+                fit_residual = 0.0 if ok else FIT_RESIDUAL_FLAG_THRESHOLD + 0.01
+            except ValueError as exc:
+                logger.warning(
+                    "market_xg: solver failed for fixture %s: %s", fixture_id, exc
+                )
+                return None
 
         # 7. Clamp
         lambda_h = max(0.05, lambda_h)
         lambda_a = max(0.05, lambda_a)
 
-        # 8. Cross-validate against Over-2.5 and H2H
-        ok, reason = cross_validate_h2h(lambda_h, lambda_a, p_over_2_5, p_home_win)
+        # 8. Flag
+        flagged = fit_residual > FIT_RESIDUAL_FLAG_THRESHOLD
         xg_source: Literal["market_implied", "market_implied_flagged"] = (
-            "market_implied" if ok else "market_implied_flagged"
+            "market_implied_flagged" if flagged else "market_implied"
         )
 
         # 9. Return result
@@ -404,5 +547,11 @@ class MarketXgService:
             xg_home=round(lambda_h, 3),
             xg_away=round(lambda_a, 3),
             xg_source=xg_source,
-            flagged_reason=reason,
+            data_source=snapshot_source if snapshot_source != "unknown" else data_source,
+            fallback_used=snapshot_fallback_used,
+            fit_residual=fit_residual,
+            flagged=flagged,
+            as_of_utc=freshest_snapshot_utc,
+            input_snapshot_ids=snapshot_ids,
+            flagged_reason=None,
         )
