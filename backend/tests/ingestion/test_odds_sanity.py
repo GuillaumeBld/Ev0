@@ -2,8 +2,6 @@
 
 import math
 
-import pytest
-
 from app.ingestion.odds_sanity import compute_clean_probs, validate_market
 
 
