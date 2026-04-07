@@ -54,6 +54,7 @@ class Recommendation(Base, TimestampMixin):
     generated_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     decided_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     settled_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    xg_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     __table_args__ = (
         UniqueConstraint(
