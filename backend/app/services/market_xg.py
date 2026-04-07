@@ -44,7 +44,7 @@ FIT_RESIDUAL_FLAG_THRESHOLD = 0.06
 class MarketXgResult:
     xg_home: float
     xg_away: float
-    xg_source: Literal["market_implied", "market_implied_flagged", "dixon_coles"]
+    xg_source: Literal["market_implied", "market_implied_flagged"]
     data_source: str = ""          # "oddsportal" | "betclic" | "unibet" | ...
     fallback_used: bool = False
     fit_residual: float = 0.0
@@ -289,74 +289,6 @@ def _fit_lambdas(
     )
     lh, la = float(result.x[0]), float(result.x[1])
     return lh, la, float(result.fun)
-
-
-# ---------------------------------------------------------------------------
-# Dixon-Coles fallback (module-level helper — kept for backward compat)
-# ---------------------------------------------------------------------------
-
-
-async def get_dixon_coles_fallback(
-    fixture_id: int, session: AsyncSession
-) -> MarketXgResult:
-    """Call the Dixon-Coles estimator and wrap result as MarketXgResult.
-
-    Returns a result with xg_source='dixon_coles' using compute_team_stats
-    and estimate_team_match_xg from the pricing engine.
-    """
-    from app.models.fixtures import Fixture
-    from app.pricing.team_xg import (
-        HOME_ADVANTAGE,
-        compute_team_stats,
-        estimate_team_match_xg,
-    )
-
-    fixture = await session.get(Fixture, fixture_id)
-    if fixture is None:
-        logger.warning("get_dixon_coles_fallback: fixture %s not found", fixture_id)
-        return MarketXgResult(xg_home=1.3, xg_away=1.0, xg_source="dixon_coles")
-
-    try:
-        team_stats = await compute_team_stats(session)
-        home_ts = team_stats.get(fixture.home_team)
-        away_ts = team_stats.get(fixture.away_team)
-
-        all_ts = list(team_stats.values())
-        league_avg_xg = (
-            sum(ts.attack_xg_per_match for ts in all_ts) / len(all_ts) if all_ts else 1.2
-        )
-        xga_values = [ts.defense_xga_per_match for ts in all_ts if ts.defense_xga_per_match > 0]
-        league_avg_xga = sum(xga_values) / len(xga_values) if xga_values else league_avg_xg
-
-        if home_ts:
-            home_xg = estimate_team_match_xg(
-                home_ts.attack_xg_per_match,
-                away_ts.defense_xga_per_match if away_ts else league_avg_xga,
-                league_avg_xg, league_avg_xga, is_home=True,
-            )
-        else:
-            home_xg = league_avg_xg * HOME_ADVANTAGE
-
-        if away_ts:
-            away_xg = estimate_team_match_xg(
-                away_ts.attack_xg_per_match,
-                home_ts.defense_xga_per_match if home_ts else league_avg_xga,
-                league_avg_xg, league_avg_xga, is_home=False,
-            )
-        else:
-            away_xg = league_avg_xg
-    except Exception:
-        logger.warning(
-            "get_dixon_coles_fallback: compute_team_stats failed for fixture %s → sentinel",
-            fixture_id,
-        )
-        return MarketXgResult(xg_home=1.3, xg_away=1.0, xg_source="dixon_coles")
-
-    return MarketXgResult(
-        xg_home=round(home_xg, 3),
-        xg_away=round(away_xg, 3),
-        xg_source="dixon_coles",
-    )
 
 
 # ---------------------------------------------------------------------------
