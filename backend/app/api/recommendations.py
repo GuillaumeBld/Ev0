@@ -225,6 +225,7 @@ async def get_recommendations(
                         confidence=rec.get("confidence", 0.5),
                         explanation=expl,
                         generated_utc=now,
+                        xg_source=rec.get("xg_source"),
                     )
                     new_db_recs.append((rec, db_rec))
 

@@ -19,12 +19,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-from app.db import async_session
-from app.models.poll_state import OddsPortalPollState
-
-
 async def seed(csv_path: Path, dry_run: bool) -> None:
     rows = []
     with csv_path.open(newline="") as f:
@@ -52,6 +46,12 @@ async def seed(csv_path: Path, dry_run: bool) -> None:
         for r in rows:
             print(f"  fixture={r['fixture_id']} op={r['oddsportal_url']}")
         return
+
+    # Only import DB-related modules when actually connecting
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from app.db import async_session
+    from app.models.poll_state import OddsPortalPollState
 
     async with async_session() as session:
         stmt = pg_insert(OddsPortalPollState).values(rows)
