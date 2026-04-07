@@ -22,6 +22,31 @@ interface Recommendation {
   explanation?: Record<string, any>
   status?: 'pending' | 'approved' | 'rejected'
   lineup?: LineupData | null
+  xg_source?: string | null
+}
+
+function XgSourceBadge({ source }: { source: string | null | undefined }) {
+  if (!source) {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">
+        xG · indisponible
+      </span>
+    );
+  }
+  const isOddsPortal = source === "oddsportal";
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+        isOddsPortal
+          ? "bg-green-100 text-green-700"
+          : "bg-orange-100 text-orange-700"
+      }`}
+    >
+      {isOddsPortal
+        ? "xG · OddsPortal"
+        : `xG · ${source.charAt(0).toUpperCase() + source.slice(1)} (fallback)`}
+    </span>
+  );
 }
 
 interface RecommendationCardProps {
@@ -75,7 +100,7 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
       <div className="p-4 sm:p-5">
         <div className="flex items-start justify-between">
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className={clsx(
                 'px-2 py-0.5 rounded text-xs font-medium',
                 rec.market === 'goalscorer'
@@ -84,6 +109,7 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
               )}>
                 {rec.market === 'goalscorer' ? 'Buteur' : 'Passeur'}
               </span>
+              <XgSourceBadge source={rec.xg_source} />
               <span className="text-xs text-gray-500">{timeStr}</span>
             </div>
             <h3 className="text-lg font-semibold text-white mt-1">

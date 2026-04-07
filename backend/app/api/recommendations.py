@@ -68,6 +68,7 @@ class Recommendation(BaseModel):
     confidence: float
     explanation: dict
     status: RecommendationStatus = RecommendationStatus.PENDING
+    xg_source: str | None = None
 
 
 class RecommendationsResponse(BaseModel):
@@ -144,6 +145,7 @@ async def get_recommendations(
                 confidence=rec.confidence,
                 explanation=rec.explanation or {},
                 status=rec.status,
+                xg_source=rec.xg_source,
             )
             for rec, fix in rows
         ]
@@ -289,6 +291,7 @@ async def get_recommendations(
                 confidence=rec.get("confidence", 0.5),
                 explanation=rec.get("explanation", {}),
                 status=status_map.get(db_id, RecommendationStatus.PENDING),
+                xg_source=rec.get("xg_source"),
             )
         )
 
@@ -352,6 +355,7 @@ async def get_expired_recommendations(
                 confidence=rec.confidence,
                 explanation=rec.explanation or {},
                 status=rec.status,
+                xg_source=rec.xg_source,
             )
             for rec, fix in rows
         ]
@@ -397,6 +401,7 @@ async def get_expired_recommendations(
             confidence=rec.confidence,
             explanation=rec.explanation or {},
             status=rec.status,
+            xg_source=rec.xg_source,
         )
         for rec, fix in rows
     ]

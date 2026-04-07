@@ -68,6 +68,7 @@ class TestGetRecommendationsViewAll:
         rec.confidence = 0.72
         rec.explanation = {}
         rec.status = status
+        rec.xg_source = None
         return rec
 
     def _make_db_fix(self, external_id="ext-1"):
@@ -216,6 +217,7 @@ class TestGetExpiredRecommendationsViewAll:
         rec.confidence = 0.72
         rec.explanation = {}
         rec.status = "expired"
+        rec.xg_source = None
         return rec
 
     def _make_db_fix(self, external_id="ext-1"):
