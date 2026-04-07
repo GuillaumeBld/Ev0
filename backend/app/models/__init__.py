@@ -9,10 +9,12 @@ from app.models.lineups import TeamLineup, TeamLineupPlayer  # noqa: F401
 from app.models.match_events import MatchEvent
 from app.models.match_odds import MatchOddsSnapshot
 from app.models.odds import OddsSnapshot
+from app.models.poll_state import OddsPortalPollState
 from app.models.player_match_minutes import PlayerMatchMinutes
 from app.models.players import DataSource, Player, PlayerStats, Team
 from app.models.recommendations import Recommendation
 from app.models.settings import UserSettings
+from app.models.team_xg import TeamXgEstimate
 
 __all__ = [
     "AutopilotDecision",
@@ -23,6 +25,7 @@ __all__ = [
     "Fixture",
     "MatchEvent",
     "MatchOddsSnapshot",
+    "OddsPortalPollState",
     "OddsSnapshot",
     "Player",
     "PlayerMatchMinutes",
@@ -31,5 +34,6 @@ __all__ = [
     "Team",
     "TeamLineup",
     "TeamLineupPlayer",
+    "TeamXgEstimate",
     "UserSettings",
 ]
