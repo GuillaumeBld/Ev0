@@ -12,6 +12,7 @@ To discover actual IDs: fetch /betoffers.json for a live match and inspect
 the marketTypeId field in the response.
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -42,7 +43,12 @@ async def _fetch_betoffers(event_id: int, client: httpx.AsyncClient) -> list[dic
     params = {"lang": "fr_FR", "market": "FR", "includeParticipants": "true"}
     resp = await client.get(url, params=params, headers=_HEADERS, timeout=10.0)
     resp.raise_for_status()
-    return resp.json().get("betOffers", [])
+    try:
+        data = resp.json()
+    except json.JSONDecodeError:
+        logger.warning("unibet_match: non-JSON response for event %s (status=%s)", event_id, resp.status_code)
+        return []
+    return data.get("betOffers", [])
 
 
 def _extract_market_outcomes(betoffers: list[dict], market_type_id: int) -> list[dict]:

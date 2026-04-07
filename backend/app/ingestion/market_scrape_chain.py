@@ -149,7 +149,7 @@ async def store_scrape_result(
     result: ScrapeResult,
     fixture_id: int,
     session: AsyncSession,
-) -> list[int]:
+) -> int:
     """
     Write up to 7 MatchOddsSnapshot rows (3 h2h + 2 totals + 2 btts) atomically.
 
@@ -187,11 +187,11 @@ async def store_scrape_result(
             )
 
     if not rows:
-        return []
+        return 0
 
     stmt = pg_insert(MatchOddsSnapshot).values(rows).on_conflict_do_nothing(
         constraint="uq_match_odds_snapshot"
     )
     result_proxy = await session.execute(stmt)
     await session.commit()
-    return list(range(result_proxy.rowcount or 0))
+    return result_proxy.rowcount or 0
