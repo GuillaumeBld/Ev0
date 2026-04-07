@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -22,6 +22,10 @@ class MatchOddsSnapshot(Base, TimestampMixin):
     outcome: Mapped[str] = mapped_column(String(50))
     odds: Mapped[float] = mapped_column(Float)
     snapshot_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    parse_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    fallback_used: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
 
     fixture = relationship("Fixture")
 
