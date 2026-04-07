@@ -40,16 +40,44 @@ stake = bankroll × kelly_fraction × kelly_multiplier
 
 Le `kelly_multiplier` est entre 0.25 et 1.0 pour limiter la variance.
 
-## xG au niveau du match : odds de marché vs Dixon-Coles
+## xG au niveau du match : solveur Poisson market-implied
 
-Avant d'allouer le xG aux joueurs, Ev0 estime les espérances de buts des deux équipes (`home_match_xg`, `away_match_xg`). Depuis la version market-implied-xG, cette estimation suit un ordre de priorité :
+Avant d'allouer le xG aux joueurs, Ev0 estime les espérances de buts des deux équipes (`λ_home`, `λ_away`) via un solveur Poisson à 3 contraintes (L-BFGS-B). Dixon-Coles a été supprimé — le modèle ne fonctionne désormais que si des odds de marché récents sont disponibles.
 
-1. **Market-implied** (source : `market_implied`) — Ev0 charge le dernier snapshot d'odds bookmaker (Betfair > Pinnacle) pour la rencontre et résout λ_h + λ_a en inversant conjointement les marchés Over 2.5, BTTS et H2H via un système d'équations Poisson. C'est la méthode la plus précise car elle incorpore l'information agrégée du marché.
-2. **Market-implied flagged** (source : `market_implied_flagged`) — Même pipeline, mais la cross-validation détecte une erreur > 8 % sur l'un des marchés. La valeur est utilisée mais signalée.
-3. **Dixon-Coles** (source : `dixon_coles`) — Fallback activé quand aucun snapshot n'est disponible, que le snapshot est périmé (> 24 h avant le coup d'envoi), ou que les solveurs échouent.
-4. **Override** (source : `override`) — L'appelant de l'API passe `home_xg_override` et/ou `away_xg_override`; ces valeurs sont utilisées directement.
+### Pipeline de collecte d'odds
 
-Le champ `xg_source` est exposé dans la réponse de l'endpoint `POST /price/match` pour permettre à l'interface de signaler la provenance des cotes fair calculées.
+Le worker scrape les odds toutes les 15 secondes via une chaîne de fallback :
+
+1. **OddsPortal** (Playwright) — source primaire ; CSS selectors à vérifier sur site en production
+2. **Betclic** (HTTP, `__NEXT_DATA__` SSR JSON) — 1er fallback si OddsPortal échoue
+3. **Unibet** (HTTP, LVS/kambicdn API) — 2e fallback
+
+3 marchés sont collectés par scrape : **H2H** (1×2), **Over/Under 2.5**, **BTTS**. Chaque snapshot est stocké dans `match_odds_snapshots` avec les colonnes `source`, `source_url`, `parse_version`, `fallback_used`.
+
+Le planning de scrape est géré par un token-bucket adaptatif (`MarketScrapeScheduler`) :
+- Intervalles : >24h→120min, 6-24h→60min, 2-6h→20min, 30min-2h→7min, 5-30min→3min, ≤5min→stop
+- RPM dynamique : 1.0 (idle), 2.0 (quelques matches), 3.0 (file chargée), jusqu'à 5.0 (pression pre-KO)
+- Backoff automatique (÷2, gel 20min) sur erreur persistante ; récupération progressive (+0.25 toutes les 10min)
+
+### Solveur Poisson
+
+Après chaque scrape réussi, le service `MarketXgService` dé-viguise les cotes, puis minimise :
+
+```
+residual = Σ (P_poisson(i) - p_market(i))²  pour i ∈ {home_win, draw, over_2.5, btts}
+```
+
+avec les bornes λ ∈ [0.05, 4.5] et warm start via `brentq` sur Over 2.5.
+
+Si BTTS n'est pas disponible, le solveur se replie sur 2 contraintes (H2H + O/U).
+
+### Sources et staleness
+
+- Un snapshot est considéré **périmé** après **3 h** (absolu, indépendamment du coup d'envoi)
+- Si aucun snapshot récent n'est disponible, `compute()` retourne `None` → la recommandation est ignorée
+- `xg_source` dans la réponse API indique la source d'odds : `"oddsportal"`, `"betclic"` ou `"unibet"`
+- `flagged=True` si le résiduel du solveur dépasse 0.06 (marchés contradictoires)
+- Le badge frontend est vert (OddsPortal) ou orange (fallback Betclic/Unibet)
 
 ## Sources de probabilité
 
