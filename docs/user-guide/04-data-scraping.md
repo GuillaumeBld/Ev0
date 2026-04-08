@@ -34,6 +34,17 @@ Fréquence : mise à jour quotidienne via `job_sync_player_stats()` (07:00 UTC) 
 - **Match events** (buts, passes décisives) : FotMob API → table `match_events`
 - Backfill initial : script `python -m app.scripts.backfill`
 
+### Cotes de marché (solveur Poisson)
+
+OddsPortal est la source primaire pour le solveur Poisson (MarketXgService). La chaîne de fallback est : OddsPortal → Betclic → Unibet. Ces cotes alimentent `oddsportal_poll_state` et `match_odds_snapshots`, distinctes des OddsSnapshot bookmakers ci-dessus.
+
+**Seeding automatique (`job_discover_oddsportal_urls`)** — tourne chaque jour à 08:00 UTC :
+1. Scrape les pages listing OddsPortal pour les 6 ligues (Big 5 + Ligue des Champions) via Playwright
+2. Mappe chaque match découvert vers une fixture DB (fenêtre ±30min, fuzzy matching + alias DB)
+3. Upsert dans `oddsportal_poll_state` pour que le `MarketScrapeScheduler` puisse scraper les cotes
+
+**Apprentissage des alias** : à chaque match confirmé, le nom OddsPortal non encore connu est ajouté à `canonical_teams.aliases` pour accélérer les run suivants.
+
 ## Limitations du scraping
 
 - **Unibet LVS** : API non documentée, node IDs des compétitions peuvent changer si Unibet restructure son catalogue
