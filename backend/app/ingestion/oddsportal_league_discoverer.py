@@ -165,17 +165,26 @@ def _parse_kickoff(date_str: str, time_str: str) -> datetime | None:
 async def discover_all_leagues(browser: Browser) -> list[OddsPortalMatchItem]:
     """Scrape all configured leagues. Each league gets its own page.
 
+    A browser context with timezone_id="Europe/Paris" is used so that
+    OddsPortal always displays times in CET/CEST regardless of the host
+    system timezone (Docker containers default to UTC).
+
     Leagues that fail are skipped — the rest are returned.
     """
     all_items: list[OddsPortalMatchItem] = []
 
-    for league in ODDSPORTAL_LEAGUE_URLS:
-        page = await browser.new_page()
-        try:
-            items = await discover_league(league, page)
-            all_items.extend(items)
-        finally:
-            await page.close()
+    # Force Paris timezone so OddsPortal's JS clock renders in CET/CEST
+    context = await browser.new_context(timezone_id="Europe/Paris")
+    try:
+        for league in ODDSPORTAL_LEAGUE_URLS:
+            page = await context.new_page()
+            try:
+                items = await discover_league(league, page)
+                all_items.extend(items)
+            finally:
+                await page.close()
+    finally:
+        await context.close()
 
     logger.info("discoverer: total=%d items across all leagues", len(all_items))
     return all_items
