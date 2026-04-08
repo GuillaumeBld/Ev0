@@ -31,8 +31,8 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" className="bg-[#07090f]">
-      <body className={`${dmSans.variable} ${ibmPlexMono.variable} font-sans bg-[#07090f] text-white antialiased`}>
+    <html lang="en" className="bg-[#16181d]">
+      <body className={`${dmSans.variable} ${ibmPlexMono.variable} font-sans bg-[#16181d] text-white antialiased`}>
         <Providers>{children}</Providers>
       </body>
     </html>

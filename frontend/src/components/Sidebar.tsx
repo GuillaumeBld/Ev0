@@ -73,7 +73,7 @@ export function Sidebar({ user, open, onClose }: SidebarProps) {
 
       {/* Sidebar */}
       <div className={clsx(
-        'flex flex-col bg-[#07090f] border-r border-white/[0.05]',
+        'flex flex-col bg-[#13151a] border-r border-white/[0.05]',
         'hidden md:flex w-56',
         open && '!fixed inset-y-0 left-0 !flex w-56 z-50 md:!relative md:z-auto'
       )}>
