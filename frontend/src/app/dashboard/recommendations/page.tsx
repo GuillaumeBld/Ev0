@@ -181,7 +181,7 @@ export default function RecommendationsPage() {
             </button>
           </div>
         ) : (
-          <div className="relative flex items-center gap-2 bg-[#1c1e24] border border-white/[0.07] hover:border-white/15 rounded-full px-3 py-1.5 cursor-pointer transition-colors">
+          <div className="relative flex items-center gap-2 bg-[#282b34] border border-white/[0.07] hover:border-white/15 rounded-full px-3 py-1.5 cursor-pointer transition-colors">
             <Calendar className="w-3.5 h-3.5 text-slate-600" />
             <span className="text-slate-600 text-xs">Filtrer par date</span>
             <input
@@ -194,7 +194,7 @@ export default function RecommendationsPage() {
         )}
 
         {/* Market filter */}
-        <div className="flex items-center gap-0.5 bg-[#1c1e24] border border-white/[0.06] rounded-full p-0.5">
+        <div className="flex items-center gap-0.5 bg-[#282b34] border border-white/[0.06] rounded-full p-0.5">
           {(['all', 'goalscorer', 'assist'] as const).map((m) => (
             <button
               key={m}
@@ -212,7 +212,7 @@ export default function RecommendationsPage() {
         </div>
 
         {/* Edge filter */}
-        <div className="flex items-center gap-0.5 bg-[#1c1e24] border border-white/[0.06] rounded-full p-0.5">
+        <div className="flex items-center gap-0.5 bg-[#282b34] border border-white/[0.06] rounded-full p-0.5">
           <TrendingUp className="w-3 h-3 text-slate-700 ml-2" />
           {(['all', '5+', '10+', '15+'] as const).map((e) => (
             <button
@@ -251,7 +251,7 @@ export default function RecommendationsPage() {
       {isLoading ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="bg-[#1c1e24] border border-white/[0.05] rounded-xl h-48 animate-pulse" />
+            <div key={i} className="bg-[#282b34] border border-white/[0.05] rounded-xl h-48 animate-pulse" />
           ))}
         </div>
       ) : filteredRecs.length > 0 ? (
@@ -268,7 +268,7 @@ export default function RecommendationsPage() {
           })}
         </div>
       ) : (
-        <div className="bg-[#1c1e24] border border-white/[0.06] rounded-xl p-12 text-center">
+        <div className="bg-[#282b34] border border-white/[0.06] rounded-xl p-12 text-center">
           <Filter className="w-7 h-7 text-slate-700 mx-auto mb-3" />
           <p className="text-slate-600 text-sm">Aucune recommandation ne correspond aux filtres</p>
         </div>
@@ -281,7 +281,7 @@ export default function RecommendationsPage() {
             aria-label="Page précédente"
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             disabled={page === 1}
-            className="px-3 py-1.5 bg-[#1c1e24] border border-white/[0.07] text-slate-400 rounded-lg disabled:opacity-30 hover:border-white/15 hover:text-white transition-all text-sm"
+            className="px-3 py-1.5 bg-[#282b34] border border-white/[0.07] text-slate-400 rounded-lg disabled:opacity-30 hover:border-white/15 hover:text-white transition-all text-sm"
           >
             ←
           </button>
@@ -292,7 +292,7 @@ export default function RecommendationsPage() {
             aria-label="Page suivante"
             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
             disabled={page === totalPages}
-            className="px-3 py-1.5 bg-[#1c1e24] border border-white/[0.07] text-slate-400 rounded-lg disabled:opacity-30 hover:border-white/15 hover:text-white transition-all text-sm"
+            className="px-3 py-1.5 bg-[#282b34] border border-white/[0.07] text-slate-400 rounded-lg disabled:opacity-30 hover:border-white/15 hover:text-white transition-all text-sm"
           >
             →
           </button>
@@ -337,7 +337,7 @@ export default function RecommendationsPage() {
                     aria-label="Page précédente (expirées)"
                     onClick={() => setExpiredPage((p) => Math.max(1, p - 1))}
                     disabled={expiredPage === 1}
-                    className="px-3 py-1.5 bg-[#1c1e24] border border-white/[0.07] text-slate-400 rounded-lg disabled:opacity-30 hover:border-white/15 hover:text-white transition-all text-sm"
+                    className="px-3 py-1.5 bg-[#282b34] border border-white/[0.07] text-slate-400 rounded-lg disabled:opacity-30 hover:border-white/15 hover:text-white transition-all text-sm"
                   >
                     ←
                   </button>
@@ -348,7 +348,7 @@ export default function RecommendationsPage() {
                     aria-label="Page suivante (expirées)"
                     onClick={() => setExpiredPage((p) => Math.min(expiredTotalPages, p + 1))}
                     disabled={expiredPage === expiredTotalPages}
-                    className="px-3 py-1.5 bg-[#1c1e24] border border-white/[0.07] text-slate-400 rounded-lg disabled:opacity-30 hover:border-white/15 hover:text-white transition-all text-sm"
+                    className="px-3 py-1.5 bg-[#282b34] border border-white/[0.07] text-slate-400 rounded-lg disabled:opacity-30 hover:border-white/15 hover:text-white transition-all text-sm"
                   >
                     →
                   </button>

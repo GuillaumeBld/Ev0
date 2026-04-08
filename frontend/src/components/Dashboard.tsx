@@ -127,7 +127,7 @@ export function Dashboard({ user }: DashboardProps) {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {/* P&L Trend */}
             {breakdown.pnl_trend.length > 0 && (
-              <div className="bg-[#1c1e24] border border-white/[0.06] rounded-xl p-5">
+              <div className="bg-[#282b34] border border-white/[0.06] rounded-xl p-5">
                 <h3 className="text-[10px] font-semibold text-slate-600 uppercase tracking-[0.12em] mb-5">Courbe P&L</h3>
                 <PnlChart data={breakdown.pnl_trend} />
               </div>
@@ -136,13 +136,13 @@ export function Dashboard({ user }: DashboardProps) {
             {/* Breakdown Tables */}
             <div className="space-y-4">
               {breakdown.by_market.length > 0 && (
-                <div className="bg-[#1c1e24] border border-white/[0.06] rounded-xl p-5">
+                <div className="bg-[#282b34] border border-white/[0.06] rounded-xl p-5">
                   <h3 className="text-[10px] font-semibold text-slate-600 uppercase tracking-[0.12em] mb-4">Par marché</h3>
                   <BreakdownTable items={breakdown.by_market} />
                 </div>
               )}
               {breakdown.by_league.length > 0 && (
-                <div className="bg-[#1c1e24] border border-white/[0.06] rounded-xl p-5">
+                <div className="bg-[#282b34] border border-white/[0.06] rounded-xl p-5">
                   <h3 className="text-[10px] font-semibold text-slate-600 uppercase tracking-[0.12em] mb-4">Par ligue</h3>
                   <BreakdownTable items={breakdown.by_league} />
                 </div>
@@ -160,7 +160,7 @@ export function Dashboard({ user }: DashboardProps) {
         {isLoading ? (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {[1, 2].map((i) => (
-              <div key={i} className="bg-[#1c1e24] border border-white/[0.06] rounded-xl h-48 animate-pulse" />
+              <div key={i} className="bg-[#282b34] border border-white/[0.06] rounded-xl h-48 animate-pulse" />
             ))}
           </div>
         ) : recommendations.length > 0 ? (
@@ -170,7 +170,7 @@ export function Dashboard({ user }: DashboardProps) {
             ))}
           </div>
         ) : (
-          <div className="bg-[#1c1e24] border border-white/[0.06] rounded-xl p-12 text-center">
+          <div className="bg-[#282b34] border border-white/[0.06] rounded-xl p-12 text-center">
             <AlertCircle className="w-8 h-8 text-slate-700 mx-auto mb-3" />
             <p className="text-slate-600 text-sm">
               Pas de recommandations pour le moment.
@@ -249,7 +249,7 @@ function StatCard({ title, value, subtitle, icon: Icon, color, rawValue }: StatC
   }[color]
 
   return (
-    <div className="ev0-stat-card ev0-card-enter bg-[#1c1e24] border border-white/[0.06] rounded-xl p-5">
+    <div className="ev0-stat-card ev0-card-enter bg-[#282b34] border border-white/[0.06] rounded-xl p-5">
       <div className="flex items-start justify-between">
         <div className="min-w-0">
           <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-[0.14em]">{title}</p>

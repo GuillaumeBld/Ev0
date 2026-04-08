@@ -13,7 +13,7 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
-    <div className="flex h-screen bg-[#16181d]">
+    <div className="flex h-screen bg-[#21232b]">
       <Sidebar
         user={user}
         open={sidebarOpen}
@@ -22,7 +22,7 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
 
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Mobile top bar */}
-        <div className="flex items-center h-14 px-4 bg-[#14161b] border-b border-white/[0.06] md:hidden">
+        <div className="flex items-center h-14 px-4 bg-[#1e2028] border-b border-white/[0.06] md:hidden">
           <button
             onClick={() => setSidebarOpen(true)}
             className="p-2 text-slate-500 hover:text-white transition-colors -ml-2"

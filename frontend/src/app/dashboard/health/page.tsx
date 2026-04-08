@@ -110,7 +110,7 @@ export default function HealthPage() {
           <Database className="w-3 h-3" />
           Qualité des Données
         </h2>
-        <div className="bg-[#1c1e24] border border-white/[0.06] rounded-xl overflow-hidden">
+        <div className="bg-[#282b34] border border-white/[0.06] rounded-xl overflow-hidden">
           <table className="w-full">
             <thead>
               <tr className="border-b border-white/[0.06]">
@@ -175,7 +175,7 @@ export default function HealthPage() {
           <Clock className="w-3 h-3" />
           Événements Récents
         </h2>
-        <div className="bg-[#1c1e24] border border-white/[0.06] rounded-xl p-6">
+        <div className="bg-[#282b34] border border-white/[0.06] rounded-xl p-6">
           <p className="text-sm text-gray-700 text-center py-4">
             Aucun événement récent
           </p>
@@ -231,7 +231,7 @@ function ServiceCard({ service }: { service: ServiceHealth }) {
   return (
     <div className={clsx(
       'health-service-card group relative rounded-xl p-4',
-      'bg-[#1c1e24] border border-white/[0.06] border-l-2',
+      'bg-[#282b34] border border-white/[0.06] border-l-2',
       config.border,
     )}>
       <div className="flex items-center justify-between mb-3">

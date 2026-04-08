@@ -116,7 +116,7 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
 
   return (
     <div className={clsx(
-      'ev0-rec-card ev0-card-enter bg-[#1c1e24] border border-white/[0.06] border-l-2 rounded-xl overflow-hidden transition-all',
+      'ev0-rec-card ev0-card-enter bg-[#282b34] border border-white/[0.06] border-l-2 rounded-xl overflow-hidden transition-all',
       edgeBorderColor,
       status === 'rejected' && 'opacity-40 grayscale',
     )}>
@@ -155,7 +155,7 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
 
         {/* Odds comparison */}
         <div className="mt-4 flex items-center gap-3">
-          <div className="flex-1 bg-[#20222a] border border-white/[0.05] rounded-lg p-3">
+          <div className="flex-1 bg-[#2e3140] border border-white/[0.05] rounded-lg p-3">
             <div className="text-[10px] text-slate-600 uppercase tracking-widest mb-1">Fair Odds</div>
             <div className="text-lg font-mono font-semibold text-slate-300 tabular-nums">
               {rec.fairOdds.toFixed(2)}
