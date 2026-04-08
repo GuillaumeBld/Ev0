@@ -212,6 +212,3 @@ class TestMarketXgResult:
         assert r.xg_source == "market_implied_flagged"
         assert r.flagged_reason == "some reason"
 
-    def test_dixon_coles_variant(self):
-        r = MarketXgResult(xg_home=1.0, xg_away=1.0, xg_source="dixon_coles")
-        assert r.xg_source == "dixon_coles"

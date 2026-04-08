@@ -52,6 +52,7 @@ export interface Recommendation {
   explanation: Record<string, any>
   status?: string
   error?: string | null
+  xg_source?: string | null
 }
 
 export interface PriceRequest {

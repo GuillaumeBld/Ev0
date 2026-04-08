@@ -32,6 +32,7 @@ from app.ingestion.storage import (
 )
 from app.models.match_odds import MatchOddsSnapshot
 from app.models.settings import UserSettings
+from app.services.market_scrape_scheduler import MarketScrapeScheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +43,9 @@ logger = logging.getLogger(__name__)
 # Defaults (used when no user settings exist)
 DEFAULT_LEAGUES = ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a", "champions_league"]
 CURRENT_SEASON = "2025-2026"
+
+# Module-level scheduler instance for the OddsPortal market scrape tick
+_market_scheduler = MarketScrapeScheduler()
 
 
 async def _load_user_settings() -> dict[str, str]:
@@ -1650,6 +1654,18 @@ async def job_autopilot_reoptimize():
         logger.exception("job_autopilot_reoptimize failed")
 
 
+# ── Job: OddsPortal Scheduler Tick ───────────────────────────────
+
+
+async def job_oddsportal_scheduler_tick() -> None:
+    """Token-bucket tick — fires scrape chains for due fixtures."""
+    async with async_session() as session:
+        try:
+            await _market_scheduler.tick(session)
+        except Exception as exc:
+            logger.error("job_oddsportal_scheduler_tick error: %s", exc, exc_info=True)
+
+
 # ── Scheduler Setup ───────────────────────────────────────────────
 
 
@@ -1778,6 +1794,16 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
         max_instances=1,
         coalesce=True,
+    )
+
+    # OddsPortal scrape scheduler tick: every 15 seconds
+    scheduler.add_job(
+        job_oddsportal_scheduler_tick,
+        IntervalTrigger(seconds=15, jitter=2),
+        id="job_oddsportal_scheduler_tick",
+        name="OddsPortal token-bucket tick: fires scrape chains for due fixtures",
+        replace_existing=True,
+        max_instances=1,
     )
 
     return scheduler

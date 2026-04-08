@@ -95,14 +95,14 @@ class TestLoadMatchPricingMarketImplied:
         assert result.xg_source == "market_implied_flagged"
 
     @pytest.mark.asyncio
-    async def test_dixon_coles_fallback_propagated(self):
+    async def test_market_implied_second_propagated(self):
         fixture = _make_fixture()
         db = _make_db_session()
 
         market_result = MarketXgResult(
             xg_home=1.30,
             xg_away=1.00,
-            xg_source="dixon_coles",
+            xg_source="market_implied",
         )
 
         with patch(
@@ -113,7 +113,7 @@ class TestLoadMatchPricingMarketImplied:
 
             result = await load_match_pricing(db, fixture)
 
-        assert result.xg_source == "dixon_coles"
+        assert result.xg_source == "market_implied"
         assert result.home_match_xg == pytest.approx(1.30, abs=0.001)
         assert result.away_match_xg == pytest.approx(1.00, abs=0.001)
 
@@ -229,7 +229,7 @@ class TestLoadMatchPricingFixtureId:
         db = _make_db_session()
 
         market_result = MarketXgResult(
-            xg_home=1.0, xg_away=1.0, xg_source="dixon_coles"
+            xg_home=1.0, xg_away=1.0, xg_source="market_implied"
         )
 
         with patch(

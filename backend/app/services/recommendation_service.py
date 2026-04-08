@@ -18,11 +18,8 @@ from app.ingestion.odds import normalize_selection_name
 from app.ingestion.player_stats import calculate_form_factor
 from app.models.players import Player, PlayerStats
 from app.pricing.goalscorer import calculate_edge
-from app.pricing.team_xg import (
-    PENS_PER_MATCH,
-    compute_team_stats,
-    estimate_team_match_xg,
-)
+from app.pricing.team_xg import PENS_PER_MATCH
+from app.services.market_xg import MarketXgService
 from app.strategy.selector import RecommendationFilter, select_bets
 
 logger = logging.getLogger(__name__)
@@ -74,24 +71,19 @@ async def generate_recommendations(
     odds_data: dict[str, list[dict[str, Any]]],  # fixture_id -> odds list
     filter_config: RecommendationFilter | None = None,
     team_strengths: dict[str, dict[str, float]] | None = None,  # team -> strengths
-    team_ev0_stats: dict[str, Any] | None = None,  # Top-Down data
+    team_ev0_stats: dict[str, Any] | None = None,  # Top-Down data (unused, kept for compat)
+    fixture_xg: dict[str, tuple[float, float, str]] | None = None,  # ext_id -> (xg_home, xg_away, xg_source)
 ) -> list[dict[str, Any]]:
-    """Generate betting recommendations for upcoming fixtures (Top-Down pipeline)."""
+    """Generate betting recommendations for upcoming fixtures.
+
+    fixture_xg maps external fixture id → (xg_home, xg_away, xg_source) from MarketXgService.
+    Fixtures without an entry in fixture_xg are skipped (no market data).
+    """
     all_recommendations = []
     _matched = 0
     _unmatched = 0
     _skipped_position = 0
     _unmatched_names: list[str] = []
-
-    # League averages from team_ev0_stats (computed from DB) or team_strengths fallback
-    if team_ev0_stats:
-        league_avg_xg = team_ev0_stats.get("league_avg_xg", 1.2)
-        league_avg_xga = team_ev0_stats.get("league_avg_xga", 1.2)
-        team_full_stats = team_ev0_stats.get("teams", {})
-    else:
-        league_avg_xg = 1.2
-        league_avg_xga = 1.2
-        team_full_stats = {}
 
     # Build normalized index for player matching
     normalized_index: dict[str, dict] = {}
@@ -106,23 +98,14 @@ async def generate_recommendations(
         kickoff = fixture.get("kickoff_utc")
         league = fixture.get("league")
 
-        # Top-Down: estimate match xG for each team
-        home_ts = team_full_stats.get(home_team, {})
-        away_ts = team_full_stats.get(away_team, {})
-        home_match_xg = estimate_team_match_xg(
-            attack_xg=home_ts.get("attack_xg_per_match", league_avg_xg),
-            opponent_xga=away_ts.get("defense_xga_per_match", league_avg_xga),
-            league_avg_xg=league_avg_xg,
-            league_avg_xga=league_avg_xga,
-            is_home=True,
-        )
-        away_match_xg = estimate_team_match_xg(
-            attack_xg=away_ts.get("attack_xg_per_match", league_avg_xg),
-            opponent_xga=home_ts.get("defense_xga_per_match", league_avg_xga),
-            league_avg_xg=league_avg_xg,
-            league_avg_xga=league_avg_xga,
-            is_home=False,
-        )
+        # Market-implied xG from MarketXgService (pre-computed per fixture)
+        if fixture_xg is None or fixture_id not in fixture_xg:
+            logger.warning(
+                "rec_service: no market xG for fixture %s — skipping (no market data)",
+                fixture_id,
+            )
+            continue
+        home_match_xg, away_match_xg, xg_source = fixture_xg[fixture_id]
 
         fixture_odds = odds_data.get(fixture_id, [])
 
@@ -162,20 +145,16 @@ async def generate_recommendations(
                 _unmatched += 1
                 continue
 
-            # Lambda: player's historical xG rate adjusted for fixture difficulty
+            # Lambda: player's historical xG rate scaled by market-implied team xG.
+            # Market xG is already fixture-specific — no fixture_strength adjustment needed.
             team_match_xg = home_match_xg if team == home_team else away_match_xg
             expected_minutes = stats.get("expected_minutes", 75.0)
             mins_ratio = expected_minutes / 90.0
 
-            # Fixture strength: ratio of this match's expected xG to team's season average.
-            # Caps the adjustment at [0.6, 1.5] to avoid extreme under/over-estimation.
-            team_season_xg = team_full_stats.get(team, {}).get("attack_xg_per_match", league_avg_xg)
-            fixture_strength = max(0.6, min(1.5, team_match_xg / max(team_season_xg, 0.3)))
-
             if market_type == "goalscorer":
-                lambda_val = max(0.001, _xg_per_90 * mins_ratio * fixture_strength)
+                lambda_val = max(0.001, _xg_per_90 * mins_ratio)
             else:  # assist
-                lambda_val = max(0.001, _xa_per_90 * mins_ratio * fixture_strength)
+                lambda_val = max(0.001, _xa_per_90 * mins_ratio)
 
             probability = 1 - math.exp(-lambda_val)
             probability = probability * CALIBRATION_SCALE
@@ -228,10 +207,11 @@ async def generate_recommendations(
                 "edge": edge,
                 "classification": classification,
                 "confidence": confidence,
+                "xg_source": xg_source,
                 "explanation": {
-                    "model": "bottom_up_fixture_adj",
+                    "model": "market_implied_xg",
+                    "xg_source": xg_source,
                     "team_match_xg": round(team_match_xg, 3),
-                    "fixture_strength": round(fixture_strength, 3),
                     "expected_minutes": expected_minutes,
                     "lambda": round(lambda_val, 4),
                 },
@@ -647,27 +627,20 @@ async def get_recommendations_for_date(
         if existing is None or (matches > (existing.get("matches_played") or 0)):
             player_stats[player_name] = entry
 
-    # Step 5: Compute Top-Down team stats
-    ev0_team_stats = await compute_team_stats(db)
-
-    all_ts = list(ev0_team_stats.values())
-    league_avg_xg = (
-        sum(ts.attack_xg_per_match for ts in all_ts) / len(all_ts) if all_ts else 1.2
-    )
-    xga_vals = [ts.defense_xga_per_match for ts in all_ts if ts.defense_xga_per_match > 0]
-    league_avg_xga = sum(xga_vals) / len(xga_vals) if xga_vals else league_avg_xg
-
-    team_ev0_stats: dict[str, Any] = {
-        "league_avg_xg": league_avg_xg,
-        "league_avg_xga": league_avg_xga,
-        "teams": {
-            name: {
-                "attack_xg_per_match": ts.attack_xg_per_match,
-                "defense_xga_per_match": ts.defense_xga_per_match,
-            }
-            for name, ts in ev0_team_stats.items()
-        },
-    }
+    # Step 5: Compute market-implied xG per fixture via MarketXgService
+    _market_xg_svc = MarketXgService()
+    fixture_xg: dict[str, tuple[float, float, str]] = {}
+    for f in db_fixtures:
+        market_xg = await _market_xg_svc.compute(f.id, db)
+        if market_xg is None:
+            logger.warning(
+                "rec_service: no market xG for fixture %s (%s vs %s) — will skip",
+                f.id,
+                f.home_team,
+                f.away_team,
+            )
+            continue
+        fixture_xg[f.external_id] = (market_xg.xg_home, market_xg.xg_away, market_xg.data_source)
 
     # Legacy team_strengths (still used for confidence scoring)
     team_strengths = await _compute_team_strengths(db)
@@ -690,7 +663,7 @@ async def get_recommendations_for_date(
         odds_data,
         filter_config,
         team_strengths,
-        team_ev0_stats,
+        fixture_xg=fixture_xg,
     )
 
     # 4. Add unique IDs
