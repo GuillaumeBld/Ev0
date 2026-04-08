@@ -60,7 +60,8 @@ async def discover_league(
     Returns [] on any error — caller continues with other leagues.
     """
     url = ODDSPORTAL_LEAGUE_URLS[league]
-    cutoff = datetime.now(timezone.utc) + timedelta(days=_DISCOVERY_WINDOW_DAYS)
+    now = datetime.now(timezone.utc)
+    cutoff = now + timedelta(days=_DISCOVERY_WINDOW_DAYS)
 
     try:
         await page.goto(url, wait_until="networkidle", timeout=_NAV_TIMEOUT_MS)
@@ -101,7 +102,7 @@ async def discover_league(
                     logger.debug("discoverer: no kickoff time for %s vs %s", home_raw, away_raw)
                     continue
 
-                if kickoff_utc > cutoff:
+                if kickoff_utc < now or kickoff_utc > cutoff:
                     continue
 
                 items.append(OddsPortalMatchItem(
