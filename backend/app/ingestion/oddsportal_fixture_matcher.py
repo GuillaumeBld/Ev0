@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text as sql_text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -206,12 +206,15 @@ async def match_items_to_fixtures(
                         g_item.league, g_item.home_raw, g_item.away_raw, fix.home_team, fix.away_team, score,
                     )
 
-    # Persist new aliases
+    # Persist new aliases (raw SQL to avoid SQLAlchemy type coercion on text[])
     for ct_id, aliases in new_aliases.items():
         await session.execute(
-            update(CanonicalTeam)
-            .where(CanonicalTeam.id == ct_id)
-            .values(aliases=func.array_cat(func.coalesce(CanonicalTeam.aliases, "{}"), aliases))
+            sql_text(
+                "UPDATE canonical_teams "
+                "SET aliases = COALESCE(aliases, ARRAY[]::text[]) || :new_aliases "
+                "WHERE id = :ct_id"
+            ),
+            {"new_aliases": aliases, "ct_id": ct_id},
         )
 
     # Upsert poll_state
