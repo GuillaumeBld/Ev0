@@ -151,3 +151,29 @@ class TestMatchItemsToFixtures:
         item = _make_item("PSG", "Lyon", league="ligue_1")  # league différente
         results = await match_items_to_fixtures([item], session)
         assert results == []
+
+
+class TestAliasLearning:
+    @pytest.mark.asyncio
+    async def test_new_alias_collected(self):
+        """Un nom OddsPortal inconnu doit être ajouté aux alias de son CanonicalTeam."""
+        ct = MagicMock()
+        ct.id = 99
+        ct.name_fr = "Paris Saint-Germain"
+        ct.aliases = ["paris-saint-germain", "psg"]
+
+        fixture = _make_fixture("Paris Saint-Germain", "Lyon", league="ligue_1", fid=10)
+        session = _make_session(canonical_teams=[ct], fixtures=[fixture])
+
+        # "Paris SG" n'est pas dans les aliases connus
+        item = _make_item("Paris SG", "Lyon", league="ligue_1",
+                          url="https://op.com/psg-lyon/")
+        results = await match_items_to_fixtures([item], session)
+
+        # Le match doit réussir (via fuzzy ou TEAM_ALIASES)
+        assert len(results) == 1
+        assert results[0][0] == 10
+
+        # Vérifier que session.execute a été appelé pour l'UPDATE des alias
+        # (au moins 3 appels : select CT, select Fixture, puis update CT et/ou insert poll_state)
+        assert session.execute.call_count >= 3

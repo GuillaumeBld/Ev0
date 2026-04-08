@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 _MATCH_WINDOW = timedelta(minutes=30)
 _CONFLICT_WINDOW = timedelta(minutes=5)
 _DISCOVERY_WINDOW_DAYS = 8
+_KICKOFF_LOOKBACK = timedelta(hours=2)  # catch matches already in progress at discovery time
 SCORE_THRESHOLD = 75.0
 
 
@@ -135,7 +136,7 @@ async def match_items_to_fixtures(
     fixtures = (await session.execute(
         select(Fixture).where(
             Fixture.league.in_(leagues),
-            Fixture.kickoff_utc >= now - timedelta(hours=2),
+            Fixture.kickoff_utc >= now - _KICKOFF_LOOKBACK,
             Fixture.kickoff_utc <= now + timedelta(days=_DISCOVERY_WINDOW_DAYS),
         )
     )).scalars().all()
@@ -180,9 +181,10 @@ async def match_items_to_fixtures(
                 results.append((best_fix.id, group_items[0].match_url))
                 _collect_aliases(group_items[0], best_fix, alias_index, new_aliases)
             else:
+                fix_desc = f"{best_fix.home_team} vs {best_fix.away_team}" if best_fix else "no_candidate"
                 logger.warning(
-                    "low_score league=%s %s vs %s score=%.1f",
-                    item.league, item.home_raw, item.away_raw, best_score,
+                    "low_score league=%s item='%s vs %s' best_fixture='%s' score=%.1f",
+                    item.league, item.home_raw, item.away_raw, fix_desc, best_score,
                 )
         else:
             score_matrix = np.zeros((len(group_items), len(candidates)))
@@ -200,8 +202,8 @@ async def match_items_to_fixtures(
                     _collect_aliases(git, fix, alias_index, new_aliases)
                 else:
                     logger.warning(
-                        "low_score_assignment league=%s %s vs %s score=%.1f",
-                        git.league, git.home_raw, git.away_raw, score,
+                        "low_score_assignment league=%s item='%s vs %s' fixture='%s vs %s' score=%.1f",
+                        git.league, git.home_raw, git.away_raw, fix.home_team, fix.away_team, score,
                     )
 
     # Persist new aliases
