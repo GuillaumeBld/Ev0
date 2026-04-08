@@ -10,3 +10,55 @@ body {
   min-height: 100dvh;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
+
+/* ── Health page animations ─────────────────────────────────────── */
+
+@keyframes health-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.4; transform: scale(0.75); }
+}
+
+@keyframes health-spin-once {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.health-dot-pulse {
+  animation: health-pulse 2s ease-in-out infinite;
+}
+
+.health-service-card {
+  transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+}
+.health-service-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.health-table-row:hover {
+  background-color: rgba(255, 255, 255, 0.015);
+}
+
+.health-refresh-btn {
+  position: relative;
+  overflow: hidden;
+}
+.health-refresh-btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  background: radial-gradient(circle at center, rgba(255,255,255,0.04) 0%, transparent 70%);
+  transition: opacity 200ms ease;
+}
+.health-refresh-btn:hover::after {
+  opacity: 1;
+}
+.health-refresh-btn:active {
+  transform: scale(0.97);
+}
+.health-refresh-btn:hover .health-refresh-icon {
+  animation: health-spin-once 600ms ease-in-out;
+}
