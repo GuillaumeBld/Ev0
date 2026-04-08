@@ -1666,6 +1666,30 @@ async def job_oddsportal_scheduler_tick() -> None:
             logger.error("job_oddsportal_scheduler_tick error: %s", exc, exc_info=True)
 
 
+# ── Job: OddsPortal URL Auto-Discovery ───────────────────────────
+
+
+async def job_discover_oddsportal_urls() -> None:
+    """Daily discovery — scrapes OddsPortal league listings and seeds oddsportal_poll_state."""
+    from playwright.async_api import async_playwright
+
+    from app.ingestion.oddsportal_fixture_matcher import match_items_to_fixtures
+    from app.ingestion.oddsportal_league_discoverer import discover_all_leagues
+
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
+            try:
+                items = await discover_all_leagues(browser)
+            finally:
+                await browser.close()
+        async with async_session() as session:
+            results = await match_items_to_fixtures(items, session)
+        logger.info("job_discover_oddsportal_urls: seeded %d fixtures", len(results))
+    except Exception as exc:
+        logger.error("job_discover_oddsportal_urls error: %s", exc, exc_info=True)
+
+
 # ── Scheduler Setup ───────────────────────────────────────────────
 
 
@@ -1802,6 +1826,16 @@ def create_scheduler() -> AsyncIOScheduler:
         IntervalTrigger(seconds=15, jitter=2),
         id="job_oddsportal_scheduler_tick",
         name="OddsPortal token-bucket tick: fires scrape chains for due fixtures",
+        replace_existing=True,
+        max_instances=1,
+    )
+
+    # OddsPortal URL auto-discovery: daily at 08:00 UTC
+    scheduler.add_job(
+        job_discover_oddsportal_urls,
+        CronTrigger(hour=8, minute=0),
+        id="job_discover_oddsportal_urls",
+        name="OddsPortal URL auto-discovery: seeds oddsportal_poll_state from league listings",
         replace_existing=True,
         max_instances=1,
     )
