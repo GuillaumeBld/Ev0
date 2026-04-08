@@ -83,7 +83,7 @@ function TeamTable({
             placeholder="override"
             value={xgOverride}
             onChange={(e) => onXgOverride(e.target.value)}
-            className="w-20 text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white placeholder-gray-500 focus:outline-none focus:border-orange-500"
+            className="w-20 text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white placeholder-ev-t3 focus:outline-none focus:border-orange-500"
           />
         </div>
       </div>
@@ -115,7 +115,7 @@ function TeamTable({
                     'border-b border-gray-700/50 cursor-pointer transition-colors',
                     isPenTaker
                       ? 'bg-amber-500/10 hover:bg-amber-500/15'
-                      : 'hover:bg-gray-700/40',
+                      : 'hover:bg-ev-surface2',
                   )}
                   title="Cliquer pour désigner comme tireur de penalty"
                 >

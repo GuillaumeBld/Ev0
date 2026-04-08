@@ -80,7 +80,7 @@ export default function BacktestPage() {
         <button
           onClick={handleRunBacktest}
           disabled={isRunning}
-          className="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-gray-600 text-white rounded-lg transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-ev-surface2 text-white rounded-lg transition-colors"
         >
           <Play className="w-4 h-4" />
           {isRunning ? 'En cours...' : 'Lancer Backtest'}

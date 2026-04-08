@@ -34,7 +34,7 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-900 px-4">
+    <div className="min-h-screen flex items-center justify-center bg-ev-bg px-4">
       <div className="max-w-md w-full space-y-8 p-8 bg-gray-800 rounded-xl shadow-2xl">
         <div>
           <h1 className="text-4xl font-bold text-center text-white">
@@ -62,7 +62,7 @@ export default function LoginPage() {
                 name="username"
                 type="text"
                 required
-                className="mt-1 w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
+                className="mt-1 w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-ev-t3 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
                 placeholder="Enter username"
               />
             </div>
@@ -76,7 +76,7 @@ export default function LoginPage() {
                 name="password"
                 type="password"
                 required
-                className="mt-1 w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
+                className="mt-1 w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-ev-t3 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
                 placeholder="Enter password"
               />
             </div>
@@ -85,7 +85,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3 px-4 bg-brand-600 hover:bg-brand-700 disabled:bg-gray-600 text-white font-medium rounded-lg transition-colors"
+            className="w-full py-3 px-4 bg-brand-600 hover:bg-brand-700 disabled:bg-ev-surface2 text-white font-medium rounded-lg transition-colors"
           >
             {loading ? 'Signing in...' : 'Sign in'}
           </button>

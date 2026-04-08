@@ -184,7 +184,7 @@ export default function MatchesPage() {
       <div>
         <button
           onClick={() => setFinishedOpen(!finishedOpen)}
-          className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors mb-4"
+          className="flex items-center gap-2 text-gray-400 hover:text-ev-t1 transition-colors mb-4"
         >
           <ChevronDown className={`w-4 h-4 transition-transform ${finishedOpen ? 'rotate-180' : ''}`} />
           <span className="text-sm font-medium">Matchs terminés</span>
@@ -219,7 +219,7 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
   return (
     <div className="bg-gray-800 rounded-xl overflow-hidden">
       <div
-        className="p-4 cursor-pointer hover:bg-gray-750 transition-colors"
+        className="p-4 cursor-pointer hover:bg-ev-surface2 transition-colors"
         onClick={() => router.push(`/dashboard/calculator?match=${match.id}`)}
       >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -279,7 +279,7 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
           <div className="mt-4 pt-4 border-t border-gray-700">
             <button
               onClick={(e) => { e.stopPropagation(); setExpanded(!expanded) }}
-              className="text-sm text-gray-400 hover:text-white transition-colors"
+              className="text-sm text-gray-400 hover:text-ev-t1 transition-colors"
             >
               {expanded ? 'Masquer les cotes' : 'Voir les cotes'}
             </button>
@@ -287,7 +287,7 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
             {expanded && (
               <div className="mt-3 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
                 {match.odds.map((odd, i) => (
-                  <div key={i} className="bg-gray-700/50 rounded-lg p-2">
+                  <div key={i} className="bg-ev-surface2 rounded-lg p-2">
                     <p className="text-sm text-white font-medium">{odd.player}</p>
                     <div className="flex items-center justify-between mt-1">
                       <span className={clsx(
@@ -470,7 +470,7 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
         </div>
 
         <div className="flex justify-end gap-3 mt-6">
-          <button onClick={onCancel} className="px-4 py-2 text-gray-400 hover:text-white transition-colors">
+          <button onClick={onCancel} className="px-4 py-2 text-gray-400 hover:text-ev-t1 transition-colors">
             Annuler
           </button>
           <button

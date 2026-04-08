@@ -15,8 +15,8 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
           "inline-flex items-center justify-center rounded-lg font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 focus:ring-offset-gray-900 disabled:opacity-50 disabled:pointer-events-none",
           {
             "bg-brand-600 text-white hover:bg-brand-700": variant === "default",
-            "border border-gray-600 text-gray-300 hover:bg-gray-700 hover:text-white bg-transparent": variant === "outline",
-            "text-gray-300 hover:bg-gray-700 hover:text-white bg-transparent": variant === "ghost",
+            "border border-gray-600 text-gray-300 hover:bg-ev-surface2 hover:text-ev-t1 bg-transparent": variant === "outline",
+            "text-gray-300 hover:bg-ev-surface2 hover:text-ev-t1 bg-transparent": variant === "ghost",
           },
           {
             "px-3 py-1.5 text-sm": size === "sm",

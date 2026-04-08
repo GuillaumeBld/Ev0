@@ -76,7 +76,7 @@ export default async function DocsPage({ searchParams }: PageProps) {
       </div>
 
       {/* Live system status strip */}
-      <div className="bg-gray-800/60 border border-gray-700 rounded-lg px-4 py-3">
+      <div className="bg-ev-surface border border-gray-700 rounded-lg px-4 py-3">
         <p className="text-xs text-gray-500 mb-2 uppercase tracking-wide">Statut système en direct</p>
         <Suspense fallback={<span className="text-xs text-gray-500">Chargement...</span>}>
           <LiveSystemStatus />
@@ -97,7 +97,7 @@ export default async function DocsPage({ searchParams }: PageProps) {
                     className={`block px-3 py-2 rounded-lg text-sm transition-colors ${
                       isActive
                         ? 'bg-blue-600 text-white font-medium'
-                        : 'text-gray-400 hover:bg-gray-800 hover:text-white'
+                        : 'text-gray-400 hover:bg-ev-surface2 hover:text-ev-t1'
                     }`}
                   >
                     {section.label}

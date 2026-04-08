@@ -112,7 +112,7 @@ export default function HistoryPage() {
             {stats.total} paris · {stats.won}W / {stats.lost}L
           </p>
         </div>
-        <button className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors">
+        <button className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-ev-surface2 text-white rounded-lg transition-colors">
           <Download className="w-4 h-4" />
           Export CSV
         </button>
@@ -134,7 +134,7 @@ export default function HistoryPage() {
             onClick={() => setActiveTab(tab)}
             className={clsx(
               'px-4 py-2 rounded-md text-sm font-medium transition-colors',
-              activeTab === tab ? 'bg-brand-600 text-white' : 'text-gray-400 hover:text-white'
+              activeTab === tab ? 'bg-brand-600 text-white' : 'text-gray-400 hover:text-ev-t1'
             )}
           >
             {tab === 'approved' ? 'Approuvés' : 'AutoFlat'}
@@ -166,7 +166,7 @@ export default function HistoryPage() {
                 'px-3 py-1.5 rounded-lg text-sm transition-colors',
                 statusFilter === status
                   ? 'bg-brand-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:text-white'
+                  : 'bg-gray-800 text-gray-400 hover:text-ev-t1'
               )}
             >
               {status === 'all' ? 'Tous' : status === 'running' ? 'Running' : status === 'won' ? 'Gagnés' : 'Perdus'}
@@ -218,7 +218,7 @@ export default function HistoryPage() {
                 </tr>
               ) : (
                 filteredBets.map((bet) => (
-                  <tr key={bet.id} className="border-b border-gray-700/50 hover:bg-gray-700/30">
+                  <tr key={bet.id} className="border-b border-gray-700/50 hover:bg-ev-surface2">
                     <td className="px-4 py-3 text-sm text-gray-300">
                       {new Date(bet.date).toLocaleDateString('fr-FR')}
                     </td>
@@ -357,7 +357,7 @@ function SortButton({
           setDir('desc')
         }
       }}
-      className="flex items-center gap-1 hover:text-white transition-colors"
+      className="flex items-center gap-1 hover:text-ev-t1 transition-colors"
     >
       {children}
       {isActive && (dir === 'desc' ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />)}

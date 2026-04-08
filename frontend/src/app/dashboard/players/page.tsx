@@ -265,7 +265,7 @@ export default function PlayersPage() {
             placeholder="Rechercher..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500"
+            className="w-full pl-10 pr-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-ev-t3 focus:outline-none focus:ring-2 focus:ring-brand-500"
           />
         </div>
 
@@ -315,7 +315,7 @@ export default function PlayersPage() {
           />
           <button
             onClick={() => fetchPlayers()}
-            className="p-2.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-white"
+            className="p-2.5 bg-gray-700 hover:bg-ev-surface2 rounded-lg text-white"
           >
             <Filter className="w-4 h-4" />
           </button>
@@ -372,7 +372,7 @@ export default function PlayersPage() {
             <thead>
               <tr className="border-b border-gray-700">
                 <th
-                  className="px-4 py-3 text-left text-sm font-medium text-gray-400 cursor-pointer hover:text-white"
+                  className="px-4 py-3 text-left text-sm font-medium text-gray-400 cursor-pointer hover:text-ev-t1"
                   onClick={() => handleSort('name')}
                 >
                   <div className="flex items-center gap-1">
@@ -380,7 +380,7 @@ export default function PlayersPage() {
                   </div>
                 </th>
                 <th
-                  className="px-4 py-3 text-left text-sm font-medium text-gray-400 cursor-pointer hover:text-white"
+                  className="px-4 py-3 text-left text-sm font-medium text-gray-400 cursor-pointer hover:text-ev-t1"
                   onClick={() => handleSort('team')}
                 >
                   <div className="flex items-center gap-1">
@@ -389,7 +389,7 @@ export default function PlayersPage() {
                 </th>
                 <th className="px-4 py-3 text-center text-sm font-medium text-gray-400 hidden md:table-cell">Pos</th>
                 <th
-                  className="px-4 py-3 text-right text-sm font-medium text-gray-400 cursor-pointer hover:text-white"
+                  className="px-4 py-3 text-right text-sm font-medium text-gray-400 cursor-pointer hover:text-ev-t1"
                   onClick={() => handleSort('minutes')}
                 >
                   <div className="flex items-center justify-end gap-1">
@@ -399,7 +399,7 @@ export default function PlayersPage() {
                 <th className="px-4 py-3 text-right text-sm font-medium text-gray-400 hidden md:table-cell">Buts</th>
                 <th className="px-4 py-3 text-right text-sm font-medium text-gray-400 hidden md:table-cell">xG</th>
                 <th
-                  className="px-4 py-3 text-right text-sm font-medium text-gray-400 cursor-pointer hover:text-white"
+                  className="px-4 py-3 text-right text-sm font-medium text-gray-400 cursor-pointer hover:text-ev-t1"
                   onClick={() => handleSort('xg_per_90')}
                 >
                   <div className="flex items-center justify-end gap-1">
@@ -409,7 +409,7 @@ export default function PlayersPage() {
                 <th className="px-4 py-3 text-right text-sm font-medium text-gray-400 hidden md:table-cell">PD</th>
                 <th className="px-4 py-3 text-right text-sm font-medium text-gray-400 hidden md:table-cell">xA</th>
                 <th
-                  className="px-4 py-3 text-right text-sm font-medium text-gray-400 cursor-pointer hover:text-white"
+                  className="px-4 py-3 text-right text-sm font-medium text-gray-400 cursor-pointer hover:text-ev-t1"
                   onClick={() => handleSort('xa_per_90')}
                 >
                   <div className="flex items-center justify-end gap-1">
@@ -431,8 +431,8 @@ export default function PlayersPage() {
                     <tr
                       key={player.id}
                       className={clsx(
-                        "border-b border-gray-700/50 hover:bg-gray-700/30 cursor-pointer transition-colors",
-                        isExpanded && "bg-gray-700/20"
+                        "border-b border-gray-700/50 hover:bg-ev-surface2 cursor-pointer transition-colors",
+                        isExpanded && "bg-ev-surface2"
                       )}
                       onClick={() => setExpandedPlayer(isExpanded ? null : player.id)}
                     >
@@ -459,7 +459,7 @@ export default function PlayersPage() {
                                 setTogglingStriker(prev => { const s = new Set(prev); s.delete(player.id); return s })
                               }
                             }}
-                            className={`p-1 rounded transition-colors hover:bg-gray-700 disabled:opacity-40 ${
+                            className={`p-1 rounded transition-colors hover:bg-ev-surface2 disabled:opacity-40 ${
                               player.is_striker ? 'text-orange-500' : 'text-gray-500'
                             }`}
                           >
@@ -582,7 +582,7 @@ export default function PlayersPage() {
 
                           {/* Différences FotMob vs Understat */}
                           {player.fotmob && player.understat && (
-                            <div className="mt-4 p-3 bg-gray-800/50 rounded-lg">
+                            <div className="mt-4 p-3 bg-ev-surface rounded-lg">
                               <span className="text-sm text-gray-400">Écart FotMob - Understat: </span>
                               <span className={clsx("text-sm font-medium", xgDiff?.color || 'text-gray-400')}>
                                 xG/90 {xgDiff && xgDiff.diff > 0 ? '+' : ''}{xgDiff?.diff.toFixed(3) || '0'}

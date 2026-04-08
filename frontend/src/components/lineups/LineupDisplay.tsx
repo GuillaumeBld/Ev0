@@ -19,7 +19,7 @@ export type LineupData = {
 const BADGE_CONFIG = {
   official:        { label: "Officielle",     className: "bg-green-600 text-white hover:bg-green-600" },
   probable_manual: { label: "Probable",        className: "bg-orange-500 text-white hover:bg-orange-500" },
-  last_known:      { label: "Dernière compo",  className: "bg-gray-500 text-white hover:bg-gray-500" },
+  last_known:      { label: "Dernière compo",  className: "bg-gray-500 text-white hover:bg-ev-surface2" },
 }
 
 const POSITION_ORDER = ["GK", "DEF", "MID", "FWD"] as const

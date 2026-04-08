@@ -121,7 +121,7 @@ export function LineupPricingWidget({
         onClick={() => setOpen((o) => !o)}
         className={clsx(
           'w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium transition-colors',
-          open ? 'bg-gray-700/60' : 'hover:bg-gray-700/40',
+          open ? 'bg-ev-surface2' : 'hover:bg-ev-surface2',
         )}
       >
         <span className="flex items-center gap-2 text-gray-300">
@@ -143,7 +143,7 @@ export function LineupPricingWidget({
                   'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
                   mode === m
                     ? (isHome ? 'bg-orange-500/20 border-orange-500/40 text-orange-300' : 'bg-blue-500/20 border-blue-500/40 text-blue-300')
-                    : 'bg-gray-700/50 border-gray-600 text-gray-400 hover:text-white',
+                    : 'bg-ev-surface2 border-gray-600 text-gray-400 hover:text-ev-t1',
                 )}
               >
                 {m === 'probable' ? 'Compo probable' : 'Compo officielle'}
@@ -155,7 +155,7 @@ export function LineupPricingWidget({
                 'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
                 mode === 'derniere'
                   ? 'bg-gray-500/30 border-gray-400/40 text-gray-200'
-                  : 'bg-gray-700/50 border-gray-600 text-gray-400 hover:text-white',
+                  : 'bg-ev-surface2 border-gray-600 text-gray-400 hover:text-ev-t1',
               )}
             >
               Dernière compo
@@ -195,7 +195,7 @@ export function LineupPricingWidget({
                                   'flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-xs transition-colors',
                                   selected.has(p.player_name)
                                     ? (isHome ? 'bg-orange-500/20 text-orange-200' : 'bg-blue-500/20 text-blue-200')
-                                    : 'hover:bg-gray-700/50 text-gray-300',
+                                    : 'hover:bg-ev-surface2 text-gray-300',
                                 )}
                               >
                                 <input
@@ -228,7 +228,7 @@ export function LineupPricingWidget({
                 <button
                   onClick={handleSave}
                   disabled={selected.size < 5 || saving}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-600 hover:bg-gray-500 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors"
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-600 hover:bg-ev-surface2 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors"
                 >
                   <Save className="w-3 h-3" />
                   {saving ? 'Sauvegarde…' : 'Sauvegarder'}
@@ -259,7 +259,7 @@ export function LineupPricingWidget({
                   </thead>
                   <tbody>
                     {lineupPlayers.map((p) => (
-                      <tr key={p.player_id} className="border-b border-gray-700/50 hover:bg-gray-700/20">
+                      <tr key={p.player_id} className="border-b border-gray-700/50 hover:bg-ev-surface2">
                         <td className="px-3 py-1.5">
                           <span className={clsx('font-medium', p.is_pen_taker ? 'text-amber-200' : 'text-white')}>
                             {p.is_pen_taker && <span className="text-amber-400 text-[10px] mr-1">⬡P</span>}
