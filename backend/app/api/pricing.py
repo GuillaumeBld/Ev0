@@ -155,6 +155,8 @@ async def price_match(
         home_starters=request.home_starters,
         away_starters=request.away_starters,
     )
+    if pricing is None:
+        raise HTTPException(status_code=503, detail="No market odds available for this fixture")
 
     def _to_out(allocs: list) -> list[PlayerAllocationOut]:
         return [

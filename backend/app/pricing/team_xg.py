@@ -529,7 +529,9 @@ async def load_match_pricing(
         away_match_xg = away_xg_override
         xg_source = "override"
     else:
-        market_result: MarketXgResult = await MarketXgService().compute(fixture.id, db)
+        market_result: MarketXgResult | None = await MarketXgService().compute(fixture.id, db)
+        if market_result is None:
+            return None
         xg_source = market_result.xg_source
 
         home_match_xg = home_xg_override if home_xg_override is not None else market_result.xg_home
