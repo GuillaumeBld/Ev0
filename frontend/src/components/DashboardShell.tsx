@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Menu, Zap } from 'lucide-react'
+import { Menu } from 'lucide-react'
 import { Sidebar } from './Sidebar'
 
 interface DashboardShellProps {
@@ -13,7 +13,7 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
-    <div className="flex h-screen bg-gray-900">
+    <div className="flex h-screen bg-[#07090f]">
       <Sidebar
         user={user}
         open={sidebarOpen}
@@ -22,17 +22,14 @@ export function DashboardShell({ user, children }: DashboardShellProps) {
 
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Mobile top bar */}
-        <div className="flex items-center h-14 px-4 bg-gray-800 border-b border-gray-700 md:hidden">
+        <div className="flex items-center h-14 px-4 bg-[#0a0d15] border-b border-white/[0.06] md:hidden">
           <button
             onClick={() => setSidebarOpen(true)}
-            className="p-2 text-gray-400 hover:text-white -ml-2"
+            className="p-2 text-slate-500 hover:text-white transition-colors -ml-2"
           >
-            <Menu className="w-6 h-6" />
+            <Menu className="w-5 h-5" />
           </button>
-          <div className="flex items-center ml-3">
-            <Zap className="w-6 h-6 text-brand-500" />
-            <span className="ml-1.5 text-lg font-bold text-white">Ev0</span>
-          </div>
+          <span className="ml-3 text-base font-bold tracking-tight text-white">Ev0</span>
         </div>
 
         <main className="flex-1 overflow-auto">

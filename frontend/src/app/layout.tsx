@@ -1,9 +1,18 @@
 import type { Metadata } from 'next'
-import { Inter } from 'next/font/google'
+import { DM_Sans, IBM_Plex_Mono } from 'next/font/google'
 import './globals.css'
 import { Providers } from './providers'
 
-const inter = Inter({ subsets: ['latin'] })
+const dmSans = DM_Sans({
+  subsets: ['latin'],
+  variable: '--font-dm-sans',
+})
+
+const ibmPlexMono = IBM_Plex_Mono({
+  subsets: ['latin'],
+  weight: ['400', '500', '600'],
+  variable: '--font-ibm-plex-mono',
+})
 
 export const metadata: Metadata = {
   title: 'Ev0 - Prematch Value Engine',
@@ -22,8 +31,8 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" className="bg-gray-900">
-      <body className={`${inter.className} bg-gray-900 text-white`}>
+    <html lang="en" className="bg-[#07090f]">
+      <body className={`${dmSans.variable} ${ibmPlexMono.variable} font-sans bg-[#07090f] text-white antialiased`}>
         <Providers>{children}</Providers>
       </body>
     </html>
