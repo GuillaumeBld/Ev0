@@ -168,10 +168,10 @@ async def match_items_to_fixtures(
         ]
 
         if not candidates:
-            for git in group_items:
+            for g_item in group_items:
                 logger.warning(
                     "no_candidates league=%s %s vs %s @ %s",
-                    git.league, git.home_raw, git.away_raw, git.kickoff_utc,
+                    g_item.league, g_item.home_raw, g_item.away_raw, g_item.kickoff_utc,
                 )
             continue
 
@@ -188,22 +188,22 @@ async def match_items_to_fixtures(
                 )
         else:
             score_matrix = np.zeros((len(group_items), len(candidates)))
-            for gi, git in enumerate(group_items):
+            for gi, g_item in enumerate(group_items):
                 for ci, cand in enumerate(candidates):
-                    score_matrix[gi, ci] = _pair_score(git, cand, alias_index)
+                    score_matrix[gi, ci] = _pair_score(g_item, cand, alias_index)
 
             row_ind, col_ind = linear_sum_assignment(-score_matrix)
             for gi, ci in zip(row_ind, col_ind):
                 score = score_matrix[gi, ci]
-                git = group_items[gi]
+                g_item = group_items[gi]
                 fix = candidates[ci]
                 if score >= SCORE_THRESHOLD:
-                    results.append((fix.id, git.match_url))
-                    _collect_aliases(git, fix, alias_index, new_aliases)
+                    results.append((fix.id, g_item.match_url))
+                    _collect_aliases(g_item, fix, alias_index, new_aliases)
                 else:
                     logger.warning(
                         "low_score_assignment league=%s item='%s vs %s' fixture='%s vs %s' score=%.1f",
-                        git.league, git.home_raw, git.away_raw, fix.home_team, fix.away_team, score,
+                        g_item.league, g_item.home_raw, g_item.away_raw, fix.home_team, fix.away_team, score,
                     )
 
     # Persist new aliases
@@ -211,7 +211,7 @@ async def match_items_to_fixtures(
         await session.execute(
             update(CanonicalTeam)
             .where(CanonicalTeam.id == ct_id)
-            .values(aliases=func.array_cat(CanonicalTeam.aliases, aliases))
+            .values(aliases=func.array_cat(func.coalesce(CanonicalTeam.aliases, "{}"), aliases))
         )
 
     # Upsert poll_state
