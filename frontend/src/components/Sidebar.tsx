@@ -73,12 +73,12 @@ export function Sidebar({ user, open, onClose }: SidebarProps) {
 
       {/* Sidebar */}
       <div className={clsx(
-        'flex flex-col bg-[#1c1e26] border-r border-white/[0.05]',
+        'flex flex-col bg-ev-sidebar border-r border-ev-bd2',
         'hidden md:flex w-56',
         open && '!fixed inset-y-0 left-0 !flex w-56 z-50 md:!relative md:z-auto'
       )}>
         {/* Logo + mobile close */}
-        <div className="flex items-center justify-between h-14 px-5 border-b border-white/[0.05]">
+        <div className="flex items-center justify-between h-14 px-5 border-b border-ev-bd2">
           <div className="flex items-center gap-2">
             <Zap className="w-4 h-4 text-emerald-500" strokeWidth={2.5} />
             <span className="text-base font-bold tracking-tight text-white">Ev0</span>
@@ -86,7 +86,7 @@ export function Sidebar({ user, open, onClose }: SidebarProps) {
           {onClose && (
             <button
               onClick={onClose}
-              className="p-1 text-slate-600 hover:text-white transition-colors md:hidden"
+              className="p-1 text-ev-t4 hover:text-ev-t1 transition-colors md:hidden"
             >
               <X className="w-4 h-4" />
             </button>
@@ -98,7 +98,7 @@ export function Sidebar({ user, open, onClose }: SidebarProps) {
           {navGroups.map((group, gi) => (
             <div key={gi} className={gi > 0 ? 'pt-4' : ''}>
               {group.label && (
-                <p className="px-3 mb-1.5 text-[9px] font-semibold text-slate-700 uppercase tracking-[0.18em]">
+                <p className="px-3 mb-1.5 text-[9px] font-semibold text-ev-t5 uppercase tracking-[0.18em]">
                   {group.label}
                 </p>
               )}
@@ -112,8 +112,8 @@ export function Sidebar({ user, open, onClose }: SidebarProps) {
                     className={clsx(
                       'ev0-nav-item flex items-center gap-3 px-3 py-2 rounded-lg text-sm border-l-2',
                       isActive
-                        ? 'border-l-emerald-500 bg-white/[0.04] text-white font-medium'
-                        : 'border-l-transparent text-slate-500 hover:text-slate-200 hover:bg-white/[0.025]'
+                        ? 'border-l-emerald-500 bg-[var(--ev-hover)] text-white font-medium'
+                        : 'border-l-transparent text-ev-t3 hover:text-ev-t2 hover:bg-[var(--ev-hover)]'
                     )}
                   >
                     <item.icon className="w-4 h-4 shrink-0" strokeWidth={isActive ? 2 : 1.75} />
@@ -126,15 +126,15 @@ export function Sidebar({ user, open, onClose }: SidebarProps) {
         </nav>
 
         {/* User */}
-        <div className="p-3 border-t border-white/[0.05]">
+        <div className="p-3 border-t border-ev-bd2">
           <div className="flex items-center justify-between px-2 py-1.5">
             <div className="min-w-0">
-              <p className="text-xs font-medium text-slate-300 truncate">{user?.name}</p>
-              <p className="text-[10px] text-slate-600 truncate mt-0.5">{user?.email}</p>
+              <p className="text-xs font-medium text-ev-t2 truncate">{user?.name}</p>
+              <p className="text-[10px] text-ev-t4 truncate mt-0.5">{user?.email}</p>
             </div>
             <button
               onClick={() => signOut({ callbackUrl: '/login' })}
-              className="p-1.5 text-slate-600 hover:text-rose-400 transition-colors rounded-md hover:bg-rose-500/10"
+              className="p-1.5 text-ev-t4 hover:text-rose-400 transition-colors rounded-md hover:bg-rose-500/10"
               title="Se déconnecter"
             >
               <LogOut className="w-3.5 h-3.5" />

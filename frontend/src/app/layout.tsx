@@ -2,6 +2,8 @@ import type { Metadata } from 'next'
 import { DM_Sans, IBM_Plex_Mono } from 'next/font/google'
 import './globals.css'
 import { Providers } from './providers'
+import { ThemeProvider } from '@/lib/theme'
+import { ThemeToggle } from '@/components/ThemeToggle'
 
 const dmSans = DM_Sans({
   subsets: ['latin'],
@@ -31,9 +33,18 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" className="bg-[#21232b]">
-      <body className={`${dmSans.variable} ${ibmPlexMono.variable} font-sans bg-[#21232b] text-white antialiased`}>
-        <Providers>{children}</Providers>
+    <html lang="en">
+      {/* Anti-flash: apply saved theme before first paint */}
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: `try{if(localStorage.getItem('ev0-theme')==='light')document.documentElement.classList.add('light')}catch(e){}` }} />
+      </head>
+      <body className={`${dmSans.variable} ${ibmPlexMono.variable} font-sans antialiased`}>
+        <Providers>
+          <ThemeProvider>
+            {children}
+            <ThemeToggle />
+          </ThemeProvider>
+        </Providers>
       </body>
     </html>
   )

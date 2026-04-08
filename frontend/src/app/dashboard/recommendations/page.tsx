@@ -150,7 +150,7 @@ export default function RecommendationsPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">Recommandations</h1>
-          <p className="text-slate-600 mt-1 text-sm">
+          <p className="text-ev-t4 mt-1 text-sm">
             {isViewAll
               ? `${data?.total ?? 0} picks disponibles`
               : `${filteredRecs.length} picks disponibles`}
@@ -158,7 +158,7 @@ export default function RecommendationsPage() {
         </div>
         <button
           onClick={() => refetch()}
-          className="health-refresh-btn flex items-center gap-2 px-4 py-2 bg-transparent border border-white/[0.08] hover:border-white/20 text-slate-500 hover:text-slate-200 rounded-lg transition-all duration-200 text-sm font-medium"
+          className="health-refresh-btn flex items-center gap-2 px-4 py-2 bg-transparent border border-ev-bd hover:border-ev-bd text-ev-t3 hover:text-ev-t2 rounded-lg transition-all duration-200 text-sm font-medium"
         >
           <RefreshCw className="health-refresh-icon w-3.5 h-3.5" />
           Actualiser
@@ -181,9 +181,9 @@ export default function RecommendationsPage() {
             </button>
           </div>
         ) : (
-          <div className="relative flex items-center gap-2 bg-[#282b34] border border-white/[0.07] hover:border-white/15 rounded-full px-3 py-1.5 cursor-pointer transition-colors">
-            <Calendar className="w-3.5 h-3.5 text-slate-600" />
-            <span className="text-slate-600 text-xs">Filtrer par date</span>
+          <div className="relative flex items-center gap-2 bg-ev-surface border border-ev-bd hover:border-ev-bd rounded-full px-3 py-1.5 cursor-pointer transition-colors">
+            <Calendar className="w-3.5 h-3.5 text-ev-t4" />
+            <span className="text-ev-t4 text-xs">Filtrer par date</span>
             <input
               type="date"
               onChange={(e) => { if (e.target.value) setSelectedDate(e.target.value) }}
@@ -194,7 +194,7 @@ export default function RecommendationsPage() {
         )}
 
         {/* Market filter */}
-        <div className="flex items-center gap-0.5 bg-[#282b34] border border-white/[0.06] rounded-full p-0.5">
+        <div className="flex items-center gap-0.5 bg-ev-surface border border-ev-bd rounded-full p-0.5">
           {(['all', 'goalscorer', 'assist'] as const).map((m) => (
             <button
               key={m}
@@ -203,7 +203,7 @@ export default function RecommendationsPage() {
                 'px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-150',
                 marketFilter === m
                   ? 'bg-white/[0.08] text-white'
-                  : 'text-slate-600 hover:text-slate-300'
+                  : 'text-ev-t4 hover:text-ev-t2'
               )}
             >
               {m === 'all' ? 'Tous' : m === 'goalscorer' ? 'Buteur' : 'Passeur'}
@@ -212,8 +212,8 @@ export default function RecommendationsPage() {
         </div>
 
         {/* Edge filter */}
-        <div className="flex items-center gap-0.5 bg-[#282b34] border border-white/[0.06] rounded-full p-0.5">
-          <TrendingUp className="w-3 h-3 text-slate-700 ml-2" />
+        <div className="flex items-center gap-0.5 bg-ev-surface border border-ev-bd rounded-full p-0.5">
+          <TrendingUp className="w-3 h-3 text-ev-t5 ml-2" />
           {(['all', '5+', '10+', '15+'] as const).map((e) => (
             <button
               key={e}
@@ -222,7 +222,7 @@ export default function RecommendationsPage() {
                 'px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-150',
                 edgeFilter === e
                   ? 'bg-emerald-500/[0.12] text-emerald-400'
-                  : 'text-slate-600 hover:text-slate-300'
+                  : 'text-ev-t4 hover:text-ev-t2'
               )}
             >
               {e === 'all' ? 'Tous' : `${e}%`}
@@ -251,7 +251,7 @@ export default function RecommendationsPage() {
       {isLoading ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="bg-[#282b34] border border-white/[0.05] rounded-xl h-48 animate-pulse" />
+            <div key={i} className="bg-ev-surface border border-ev-bd2 rounded-xl h-48 animate-pulse" />
           ))}
         </div>
       ) : filteredRecs.length > 0 ? (
@@ -268,9 +268,9 @@ export default function RecommendationsPage() {
           })}
         </div>
       ) : (
-        <div className="bg-[#282b34] border border-white/[0.06] rounded-xl p-12 text-center">
-          <Filter className="w-7 h-7 text-slate-700 mx-auto mb-3" />
-          <p className="text-slate-600 text-sm">Aucune recommandation ne correspond aux filtres</p>
+        <div className="bg-ev-surface border border-ev-bd rounded-xl p-12 text-center">
+          <Filter className="w-7 h-7 text-ev-t5 mx-auto mb-3" />
+          <p className="text-ev-t4 text-sm">Aucune recommandation ne correspond aux filtres</p>
         </div>
       )}
 
@@ -281,18 +281,18 @@ export default function RecommendationsPage() {
             aria-label="Page précédente"
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             disabled={page === 1}
-            className="px-3 py-1.5 bg-[#282b34] border border-white/[0.07] text-slate-400 rounded-lg disabled:opacity-30 hover:border-white/15 hover:text-white transition-all text-sm"
+            className="px-3 py-1.5 bg-ev-surface border border-ev-bd text-ev-t3 rounded-lg disabled:opacity-30 hover:border-ev-bd hover:text-ev-t1 transition-all text-sm"
           >
             ←
           </button>
-          <span className="text-slate-600 text-xs font-mono">
+          <span className="text-ev-t4 text-xs font-mono">
             {page} / {totalPages}
           </span>
           <button
             aria-label="Page suivante"
             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
             disabled={page === totalPages}
-            className="px-3 py-1.5 bg-[#282b34] border border-white/[0.07] text-slate-400 rounded-lg disabled:opacity-30 hover:border-white/15 hover:text-white transition-all text-sm"
+            className="px-3 py-1.5 bg-ev-surface border border-ev-bd text-ev-t3 rounded-lg disabled:opacity-30 hover:border-ev-bd hover:text-ev-t1 transition-all text-sm"
           >
             →
           </button>
@@ -303,7 +303,7 @@ export default function RecommendationsPage() {
       <div className="mt-10">
         <button
           onClick={() => setExpiredOpen(!expiredOpen)}
-          className="flex items-center gap-2 text-slate-600 hover:text-slate-400 transition-colors mb-4"
+          className="flex items-center gap-2 text-ev-t4 hover:text-ev-t3 transition-colors mb-4"
         >
           <ChevronDown className={clsx('w-3.5 h-3.5 transition-transform duration-200', expiredOpen && 'rotate-180')} />
           <span className="text-[10px] font-semibold uppercase tracking-[0.14em]">
@@ -313,7 +313,7 @@ export default function RecommendationsPage() {
 
         {expiredOpen && (
           expiredRecs.length === 0 ? (
-            <p className="text-xs text-slate-700 italic">
+            <p className="text-xs text-ev-t5 italic">
               {isViewAll
                 ? 'Aucune recommandation expirée.'
                 : 'Aucune recommandation expirée pour cette date.'}
@@ -323,7 +323,7 @@ export default function RecommendationsPage() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 opacity-50">
                 {expiredRecs.map((rec) => (
                   <div key={rec.id} className="relative">
-                    <div className="absolute top-3 right-3 z-10 px-2 py-0.5 bg-white/[0.04] border border-white/[0.06] text-slate-500 text-[10px] font-medium rounded-full uppercase tracking-wider">
+                    <div className="absolute top-3 right-3 z-10 px-2 py-0.5 bg-[var(--ev-hover)] border border-ev-bd text-ev-t3 text-[10px] font-medium rounded-full uppercase tracking-wider">
                       Expiré
                     </div>
                     <RecommendationCard recommendation={rec} />
@@ -337,18 +337,18 @@ export default function RecommendationsPage() {
                     aria-label="Page précédente (expirées)"
                     onClick={() => setExpiredPage((p) => Math.max(1, p - 1))}
                     disabled={expiredPage === 1}
-                    className="px-3 py-1.5 bg-[#282b34] border border-white/[0.07] text-slate-400 rounded-lg disabled:opacity-30 hover:border-white/15 hover:text-white transition-all text-sm"
+                    className="px-3 py-1.5 bg-ev-surface border border-ev-bd text-ev-t3 rounded-lg disabled:opacity-30 hover:border-ev-bd hover:text-ev-t1 transition-all text-sm"
                   >
                     ←
                   </button>
-                  <span className="text-slate-600 text-xs font-mono">
+                  <span className="text-ev-t4 text-xs font-mono">
                     {expiredPage} / {expiredTotalPages}
                   </span>
                   <button
                     aria-label="Page suivante (expirées)"
                     onClick={() => setExpiredPage((p) => Math.min(expiredTotalPages, p + 1))}
                     disabled={expiredPage === expiredTotalPages}
-                    className="px-3 py-1.5 bg-[#282b34] border border-white/[0.07] text-slate-400 rounded-lg disabled:opacity-30 hover:border-white/15 hover:text-white transition-all text-sm"
+                    className="px-3 py-1.5 bg-ev-surface border border-ev-bd text-ev-t3 rounded-lg disabled:opacity-30 hover:border-ev-bd hover:text-ev-t1 transition-all text-sm"
                   >
                     →
                   </button>

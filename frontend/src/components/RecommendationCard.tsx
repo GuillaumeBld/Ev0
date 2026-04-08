@@ -28,7 +28,7 @@ interface Recommendation {
 function XgSourceBadge({ source }: { source: string | null | undefined }) {
   if (!source) {
     return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-white/[0.04] text-slate-600 border border-white/[0.06]">
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[var(--ev-hover)] text-ev-t4 border border-ev-bd">
         xG · indisponible
       </span>
     )
@@ -107,7 +107,7 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
   const confidenceColor =
     rec.confidence >= 0.7 ? 'text-amber-400' :
     rec.confidence >= 0.5 ? 'text-emerald-400' :
-    'text-slate-600'
+    'text-ev-t4'
 
   const confidenceBgColor =
     rec.confidence >= 0.7 ? 'bg-amber-500' :
@@ -116,7 +116,7 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
 
   return (
     <div className={clsx(
-      'ev0-rec-card ev0-card-enter bg-[#282b34] border border-white/[0.06] border-l-2 rounded-xl overflow-hidden transition-all',
+      'ev0-rec-card ev0-card-enter bg-ev-surface border border-ev-bd border-l-2 rounded-xl overflow-hidden transition-all',
       edgeBorderColor,
       status === 'rejected' && 'opacity-40 grayscale',
     )}>
@@ -134,13 +134,13 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
                 {rec.market === 'goalscorer' ? 'Buteur' : 'Passeur'}
               </span>
               <XgSourceBadge source={rec.xg_source} />
-              <span className="text-[10px] text-slate-700 font-mono">{timeStr}</span>
+              <span className="text-[10px] text-ev-t5 font-mono">{timeStr}</span>
             </div>
             <h3 className="text-base font-semibold text-white mt-2 leading-tight">
               {rec.player}
             </h3>
-            <p className="text-xs text-slate-600 mt-0.5">
-              {rec.team} <span className="text-slate-700">vs</span> {rec.opponent}
+            <p className="text-xs text-ev-t4 mt-0.5">
+              {rec.team} <span className="text-ev-t5">vs</span> {rec.opponent}
             </p>
           </div>
 
@@ -149,19 +149,19 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
             <div className={clsx('text-2xl font-mono font-bold tabular-nums leading-none', edgeColor)}>
               +{edgePercent}%
             </div>
-            <div className="text-[10px] text-slate-700 mt-1 uppercase tracking-widest">edge</div>
+            <div className="text-[10px] text-ev-t5 mt-1 uppercase tracking-widest">edge</div>
           </div>
         </div>
 
         {/* Odds comparison */}
         <div className="mt-4 flex items-center gap-3">
-          <div className="flex-1 bg-[#2e3140] border border-white/[0.05] rounded-lg p-3">
-            <div className="text-[10px] text-slate-600 uppercase tracking-widest mb-1">Fair Odds</div>
-            <div className="text-lg font-mono font-semibold text-slate-300 tabular-nums">
+          <div className="flex-1 bg-ev-surface2 border border-ev-bd2 rounded-lg p-3">
+            <div className="text-[10px] text-ev-t4 uppercase tracking-widest mb-1">Fair Odds</div>
+            <div className="text-lg font-mono font-semibold text-ev-t2 tabular-nums">
               {rec.fairOdds.toFixed(2)}
             </div>
           </div>
-          <div className="text-slate-700 text-xs">→</div>
+          <div className="text-ev-t5 text-xs">→</div>
           <div className="flex-1 bg-emerald-500/[0.06] border border-emerald-500/20 rounded-lg p-3">
             <div className="text-[10px] text-emerald-600 uppercase tracking-widest mb-1">{rec.bookmaker}</div>
             <div className="text-lg font-mono font-semibold text-emerald-400 tabular-nums">
@@ -173,7 +173,7 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
         {/* Confidence bar */}
         <div className="mt-4">
           <div className="flex justify-between items-center mb-2">
-            <span className="text-[10px] text-slate-600 uppercase tracking-widest">Confiance</span>
+            <span className="text-[10px] text-ev-t4 uppercase tracking-widest">Confiance</span>
             <span className={clsx('text-xs font-mono font-medium', confidenceColor)}>{confidencePercent}%</span>
           </div>
           <div className="h-px bg-white/[0.06] rounded-full overflow-hidden">
@@ -202,7 +202,7 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
             <button
               onClick={handleReject}
               disabled={mutation.isPending}
-              className="ev0-btn-reject flex-1 flex items-center justify-center gap-1.5 py-2 bg-transparent hover:bg-rose-500/[0.08] disabled:opacity-40 text-slate-500 hover:text-rose-400 border border-white/[0.07] hover:border-rose-500/25 rounded-full text-sm font-medium transition-all duration-200"
+              className="ev0-btn-reject flex-1 flex items-center justify-center gap-1.5 py-2 bg-transparent hover:bg-rose-500/[0.08] disabled:opacity-40 text-ev-t3 hover:text-rose-400 border border-ev-bd hover:border-rose-500/25 rounded-full text-sm font-medium transition-all duration-200"
             >
               {mutation.isPending ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -224,13 +224,13 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
           <div className="mt-4 flex items-center justify-between">
             <span className={clsx(
               'text-xs font-medium uppercase tracking-widest',
-              status === 'approved' ? 'text-emerald-500' : 'text-slate-600'
+              status === 'approved' ? 'text-emerald-500' : 'text-ev-t4'
             )}>
               {status === 'approved' ? 'Approuvé' : 'Rejeté'}
             </span>
             <button
               onClick={handleCancel}
-              className="text-[11px] text-slate-600 hover:text-slate-400 transition-colors"
+              className="text-[11px] text-ev-t4 hover:text-ev-t3 transition-colors"
             >
               Annuler
             </button>
@@ -241,7 +241,7 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
       {/* Expand toggle */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full px-5 py-2.5 flex items-center justify-center gap-1.5 text-[11px] text-slate-700 hover:text-slate-400 border-t border-white/[0.04] hover:bg-white/[0.015] transition-colors"
+        className="w-full px-5 py-2.5 flex items-center justify-center gap-1.5 text-[11px] text-ev-t5 hover:text-ev-t3 border-t border-ev-bd2 hover:bg-[var(--ev-hover)] transition-colors"
       >
         {expanded ? (
           <>Moins de détails <ChevronUp className="w-3 h-3" /></>
@@ -252,14 +252,14 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
 
       {/* Expanded details */}
       {expanded && (
-        <div className="px-5 pb-5 border-t border-white/[0.04] pt-4 space-y-4">
+        <div className="px-5 pb-5 border-t border-ev-bd2 pt-4 space-y-4">
           {rec.lineup && (
             <div>
-              <p className="text-[10px] font-semibold text-slate-600 mb-2 uppercase tracking-[0.14em]">Compo {rec.team}</p>
+              <p className="text-[10px] font-semibold text-ev-t4 mb-2 uppercase tracking-[0.14em]">Compo {rec.team}</p>
               <LineupDisplay lineup={rec.lineup} />
             </div>
           )}
-          <div className="text-xs text-slate-600 space-y-2">
+          <div className="text-xs text-ev-t4 space-y-2">
             {rec.explanation?.inputs ? (() => {
               const inputs = rec.explanation.inputs
               const calc = rec.explanation.calculation || {}
@@ -267,22 +267,22 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
               return (
                 <>
                   <p>
-                    <strong className="text-slate-400 font-medium">Calcul:</strong>{' '}
+                    <strong className="text-ev-t3 font-medium">Calcul:</strong>{' '}
                     {calc.formula || 'Poisson based on xG/90, opponent and form adjustments'}
                   </p>
                   <p>
-                    <strong className="text-slate-400 font-medium">Inputs:</strong>{' '}
+                    <strong className="text-ev-t3 font-medium">Inputs:</strong>{' '}
                     {isGoalscorer
                       ? `xG/90 = ${inputs.xg_per_90?.toFixed(2) ?? '—'}, mins attendues = ${inputs.expected_minutes?.toFixed(0) ?? '—'}, forme = ${inputs.form_factor?.toFixed(2) ?? '—'}`
                       : `xA/90 = ${inputs.xa_per_90?.toFixed(2) ?? '—'}, mins attendues = ${inputs.expected_minutes?.toFixed(0) ?? '—'}, forme = ${inputs.form_factor?.toFixed(2) ?? '—'}`
                     }
                   </p>
                   <p>
-                    <strong className="text-slate-400 font-medium">Lambda:</strong>{' '}
+                    <strong className="text-ev-t3 font-medium">Lambda:</strong>{' '}
                     {calc.adjusted_lambda?.toFixed(3) ?? '—'} &rarr; {isGoalscorer ? 'P(score)' : 'P(assist)'} = {rec.fairOdds > 0 ? `${(100 / rec.fairOdds).toFixed(1)}%` : '—'}
                   </p>
                   {rec.explanation.interpretation && (
-                    <p className="italic text-slate-700">{rec.explanation.interpretation}</p>
+                    <p className="italic text-ev-t5">{rec.explanation.interpretation}</p>
                   )}
                 </>
               )

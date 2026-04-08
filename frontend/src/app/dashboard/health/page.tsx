@@ -84,7 +84,7 @@ export default function HealthPage() {
         </div>
         <button
           onClick={() => refetch()}
-          className="health-refresh-btn flex items-center gap-2 px-4 py-2 bg-transparent border border-white/[0.08] hover:border-white/20 text-gray-500 hover:text-gray-200 rounded-lg transition-all duration-200 text-sm font-medium"
+          className="health-refresh-btn flex items-center gap-2 px-4 py-2 bg-transparent border border-ev-bd hover:border-ev-bd text-ev-t3 hover:text-ev-t1 rounded-lg transition-all duration-200 text-sm font-medium"
         >
           <RefreshCw className="health-refresh-icon w-3.5 h-3.5" />
           Rafraîchir
@@ -93,7 +93,7 @@ export default function HealthPage() {
 
       {/* Services Status */}
       <div className="mb-10">
-        <h2 className="text-[10px] font-semibold text-gray-600 uppercase tracking-[0.15em] mb-4 flex items-center gap-2">
+        <h2 className="text-[10px] font-semibold text-ev-t4 uppercase tracking-[0.15em] mb-4 flex items-center gap-2">
           <Server className="w-3 h-3" />
           Services
         </h2>
@@ -106,36 +106,36 @@ export default function HealthPage() {
 
       {/* Data Quality */}
       <div className="mb-10">
-        <h2 className="text-[10px] font-semibold text-gray-600 uppercase tracking-[0.15em] mb-4 flex items-center gap-2">
+        <h2 className="text-[10px] font-semibold text-ev-t4 uppercase tracking-[0.15em] mb-4 flex items-center gap-2">
           <Database className="w-3 h-3" />
           Qualité des Données
         </h2>
-        <div className="bg-[#282b34] border border-white/[0.06] rounded-xl overflow-hidden">
+        <div className="bg-ev-surface border border-ev-bd rounded-xl overflow-hidden">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-white/[0.06]">
-                <th className="px-5 py-3.5 text-left text-[10px] font-semibold text-gray-600 uppercase tracking-[0.12em]">Source</th>
-                <th className="px-5 py-3.5 text-left text-[10px] font-semibold text-gray-600 uppercase tracking-[0.12em]">Dernier Sync</th>
-                <th className="px-5 py-3.5 text-right text-[10px] font-semibold text-gray-600 uppercase tracking-[0.12em]">Records</th>
-                <th className="px-5 py-3.5 text-center text-[10px] font-semibold text-gray-600 uppercase tracking-[0.12em]">Fraîcheur</th>
-                <th className="px-5 py-3.5 text-left text-[10px] font-semibold text-gray-600 uppercase tracking-[0.12em]">Problèmes</th>
+              <tr className="border-b border-ev-bd">
+                <th className="px-5 py-3.5 text-left text-[10px] font-semibold text-ev-t4 uppercase tracking-[0.12em]">Source</th>
+                <th className="px-5 py-3.5 text-left text-[10px] font-semibold text-ev-t4 uppercase tracking-[0.12em]">Dernier Sync</th>
+                <th className="px-5 py-3.5 text-right text-[10px] font-semibold text-ev-t4 uppercase tracking-[0.12em]">Records</th>
+                <th className="px-5 py-3.5 text-center text-[10px] font-semibold text-ev-t4 uppercase tracking-[0.12em]">Fraîcheur</th>
+                <th className="px-5 py-3.5 text-left text-[10px] font-semibold text-ev-t4 uppercase tracking-[0.12em]">Problèmes</th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={5} className="px-5 py-12 text-center text-gray-700 text-sm">
+                  <td colSpan={5} className="px-5 py-12 text-center text-ev-t5 text-sm">
                     Chargement...
                   </td>
                 </tr>
               ) : data?.dataQuality && data.dataQuality.length > 0 ? (
                 data.dataQuality.map((dq) => (
                   <tr key={dq.source} className="health-table-row border-b border-white/[0.03] transition-colors duration-150">
-                    <td className="px-5 py-3.5 text-sm text-gray-200 font-medium">{dq.source}</td>
-                    <td className="px-5 py-3.5 text-xs text-gray-600 font-mono tabular-nums">
+                    <td className="px-5 py-3.5 text-sm text-ev-t1 font-medium">{dq.source}</td>
+                    <td className="px-5 py-3.5 text-xs text-ev-t4 font-mono tabular-nums">
                       {dq.lastSync ? formatSyncTime(dq.lastSync) : 'Jamais'}
                     </td>
-                    <td className="px-5 py-3.5 text-sm text-right text-gray-400 font-mono tabular-nums">
+                    <td className="px-5 py-3.5 text-sm text-right text-ev-t3 font-mono tabular-nums">
                       {dq.recordCount.toLocaleString()}
                     </td>
                     <td className="px-5 py-3.5 text-center">
@@ -159,7 +159,7 @@ export default function HealthPage() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={5} className="px-5 py-12 text-center text-gray-700 text-sm">
+                  <td colSpan={5} className="px-5 py-12 text-center text-ev-t5 text-sm">
                     Aucune donnée disponible
                   </td>
                 </tr>
@@ -171,12 +171,12 @@ export default function HealthPage() {
 
       {/* Recent Events */}
       <div>
-        <h2 className="text-[10px] font-semibold text-gray-600 uppercase tracking-[0.15em] mb-4 flex items-center gap-2">
+        <h2 className="text-[10px] font-semibold text-ev-t4 uppercase tracking-[0.15em] mb-4 flex items-center gap-2">
           <Clock className="w-3 h-3" />
           Événements Récents
         </h2>
-        <div className="bg-[#282b34] border border-white/[0.06] rounded-xl p-6">
-          <p className="text-sm text-gray-700 text-center py-4">
+        <div className="bg-ev-surface border border-ev-bd rounded-xl p-6">
+          <p className="text-sm text-ev-t5 text-center py-4">
             Aucun événement récent
           </p>
         </div>
@@ -231,11 +231,11 @@ function ServiceCard({ service }: { service: ServiceHealth }) {
   return (
     <div className={clsx(
       'health-service-card group relative rounded-xl p-4',
-      'bg-[#282b34] border border-white/[0.06] border-l-2',
+      'bg-ev-surface border border-ev-bd border-l-2',
       config.border,
     )}>
       <div className="flex items-center justify-between mb-3">
-        <span className="text-sm font-semibold text-gray-200">{service.name}</span>
+        <span className="text-sm font-semibold text-ev-t1">{service.name}</span>
         <div className="flex items-center gap-2">
           <span className={clsx('w-1.5 h-1.5 rounded-full', config.dot)} />
           <Icon className={clsx('w-4 h-4', config.color)} />
@@ -243,12 +243,12 @@ function ServiceCard({ service }: { service: ServiceHealth }) {
       </div>
       <div className="space-y-0.5">
         {service.latency && (
-          <p className="text-xs font-mono text-gray-600">
-            Latence: <span className="text-gray-400">{service.latency}ms</span>
+          <p className="text-xs font-mono text-ev-t4">
+            Latence: <span className="text-ev-t3">{service.latency}ms</span>
           </p>
         )}
-        <p className="text-xs font-mono text-gray-700">
-          Vérifié: <span className="text-gray-600">{service.lastCheck}</span>
+        <p className="text-xs font-mono text-ev-t5">
+          Vérifié: <span className="text-ev-t4">{service.lastCheck}</span>
         </p>
       </div>
     </div>
