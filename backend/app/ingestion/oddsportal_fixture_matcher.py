@@ -34,7 +34,7 @@ _MATCH_WINDOW = timedelta(minutes=30)
 _CONFLICT_WINDOW = timedelta(minutes=5)
 _DISCOVERY_WINDOW_DAYS = 8
 _KICKOFF_LOOKBACK = timedelta(hours=2)  # catch matches already in progress at discovery time
-SCORE_THRESHOLD = 75.0
+SCORE_THRESHOLD = 70.0
 
 
 def _token_sort_ratio(s1: str, s2: str) -> float:
