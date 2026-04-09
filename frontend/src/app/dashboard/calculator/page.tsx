@@ -6,6 +6,7 @@ import { Calculator, RefreshCw, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
 import { getFixtures, priceMatch, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
 import { LineupPricingWidget } from '@/components/calculator/LineupPricingWidget'
+import { XgBadge } from '@/components/XgBadge'
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ const POS_COLOR: Record<string, string> = {
 interface TeamTableProps {
   teamName: string
   matchXg: number
+  xgSource?: string | null
   players: PlayerAllocationOut[]
   xgOverride: string
   onXgOverride: (v: string) => void
@@ -43,6 +45,7 @@ interface TeamTableProps {
 function TeamTable({
   teamName,
   matchXg,
+  xgSource,
   players,
   xgOverride,
   onXgOverride,
@@ -75,6 +78,9 @@ function TeamTable({
           )}>
             {matchXg.toFixed(2)}
           </span>
+          {(xgSource === 'bzzoiro' || xgSource === 'model') && (
+            <XgBadge source={xgSource} />
+          )}
           <input
             type="number"
             step="0.05"
@@ -399,6 +405,7 @@ function CalculatorInner() {
             <TeamTable
               teamName={pricing.home_team}
               matchXg={pricing.home_match_xg}
+              xgSource={pricing.xg_source}
               players={pricing.home_players}
               xgOverride={homeXgOverride}
               onXgOverride={setHomeXgOverride}
@@ -421,6 +428,7 @@ function CalculatorInner() {
             <TeamTable
               teamName={pricing.away_team}
               matchXg={pricing.away_match_xg}
+              xgSource={pricing.xg_source}
               players={pricing.away_players}
               xgOverride={awayXgOverride}
               onXgOverride={setAwayXgOverride}

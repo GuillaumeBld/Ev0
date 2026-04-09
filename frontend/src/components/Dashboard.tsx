@@ -39,6 +39,7 @@ export function Dashboard({ user }: DashboardProps) {
         confidence: rec.confidence,
         kickoff: rec.kickoff_utc,
         explanation: rec.explanation,
+        xg_source: rec.xg_source,
       }))
       return recs
     },

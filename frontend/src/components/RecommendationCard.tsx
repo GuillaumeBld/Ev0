@@ -6,6 +6,7 @@ import { ChevronDown, ChevronUp, Check, X, Loader2 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { patchRecommendation } from '@/lib/api'
 import { LineupDisplay, LineupData } from '@/components/lineups/LineupDisplay'
+import { XgBadge } from './XgBadge'
 
 interface Recommendation {
   id: number
@@ -26,6 +27,10 @@ interface Recommendation {
 }
 
 function XgSourceBadge({ source }: { source: string | null | undefined }) {
+  // New sources (bzzoiro / model) — delegate to XgBadge
+  if (source === 'bzzoiro' || source === 'model') {
+    return <XgBadge source={source} />
+  }
   if (!source) {
     return (
       <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[var(--ev-hover)] text-ev-t4 border border-ev-bd">
@@ -33,6 +38,7 @@ function XgSourceBadge({ source }: { source: string | null | undefined }) {
       </span>
     )
   }
+  // Legacy sources (oddsportal, understat, etc.)
   const isOddsPortal = source === 'oddsportal'
   return (
     <span
