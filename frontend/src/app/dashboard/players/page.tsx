@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
 import { RefreshCw, Search, Filter, ChevronDown, ChevronUp, User, AlertCircle } from 'lucide-react'
 import { clsx } from 'clsx'
 import { PlayerSummary, PlayerDetail } from '@/lib/api'
@@ -358,9 +358,8 @@ export default function PlayersPage() {
                 {filteredAndSorted.map((player) => {
                   const isExpanded = expandedId === player.player_api_id
                   return (
-                    <>
+                    <Fragment key={player.player_api_id}>
                       <tr
-                        key={player.player_api_id}
                         className={clsx(
                           'border-b border-gray-700/50 hover:bg-gray-700/40 cursor-pointer transition-colors',
                           isExpanded && 'bg-gray-700/40'
@@ -588,7 +587,7 @@ export default function PlayersPage() {
                           </td>
                         </tr>
                       )}
-                    </>
+                    </Fragment>
                   )
                 })}
               </tbody>
