@@ -31,7 +31,6 @@ Sources:
 import math
 from typing import Any, TypedDict
 
-
 # ── Multiplier weights ─────────────────────────────────────────────
 
 # Standard weights for creation multiplier (position-agnostic, must sum to 1.0)
@@ -282,6 +281,39 @@ def _interpret_assist_probability(prob: float) -> str:
         return "Occasional assists — secondary creative role"
     else:
         return "Rarely assists — defensive or limited creative duties"
+
+
+# ── Bzzoiro creation multiplier ──────────────────────────────────
+
+# New creation multiplier weights for bzz_player_season_stats fields
+# Formula: key_pass_per_90 × 0.40 + xa_per_90 × 0.40 + accurate_cross_per_90 × 0.20
+BZZ_CREATION_WEIGHTS = {
+    "key_pass_per_90":       0.40,
+    "xa_per_90":             0.40,
+    "accurate_cross_per_90": 0.20,
+}
+
+
+def calculate_creation_multiplier_bzz(
+    stats: dict[str, Any],
+) -> float:
+    """
+    Compute creation score from bzz_player_season_stats fields.
+
+    Formula:
+        creation = key_pass_per_90 × 0.40 + xa_per_90 × 0.40 + accurate_cross_per_90 × 0.20
+
+    Args:
+        stats: Player dict with keys key_pass_per_90, xa_per_90, accurate_cross_per_90.
+
+    Returns:
+        Raw creation score (not clamped — caller may clamp if needed).
+    """
+    return (
+        (stats.get("key_pass_per_90") or 0) * BZZ_CREATION_WEIGHTS["key_pass_per_90"]
+        + (stats.get("xa_per_90") or 0) * BZZ_CREATION_WEIGHTS["xa_per_90"]
+        + (stats.get("accurate_cross_per_90") or 0) * BZZ_CREATION_WEIGHTS["accurate_cross_per_90"]
+    )
 
 
 # ── Edge & margin helpers ─────────────────────────────────────────

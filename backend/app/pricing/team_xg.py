@@ -8,8 +8,10 @@ Three-stage pipeline (unchanged structure, updated player allocation):
 Changes from original (FBref → Understat + Sofascore):
   - Goalscorer λ now applies quality_multiplier (SOT + TAP + xGChain) from Model C
   - Assist λ now applies creation_multiplier (BCC + xGChain + Crosses + TB) from Model C
-  - _load_team_players fetches new Sofascore fields from PlayerStats
-  - conversion_rate computed from Understat npxG (unchanged logic)
+  - _load_team_players now reads from bzz_player_season_stats (joined to bzz_players)
+  - Bzzoiro quality formula: shot_accuracy × 0.35 + xg_per_shot × 0.35 + rating × 0.30
+  - Bzzoiro creation formula: key_pass_per_90 × 0.40 + xa_per_90 × 0.40 + accurate_cross_per_90 × 0.20
+  - conversion_rate computed from expected_goals (bzzoiro) (unchanged logic)
 """
 
 from __future__ import annotations
@@ -21,8 +23,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.pricing.assist import calculate_creation_multiplier
-from app.pricing.goalscorer import calculate_quality_multiplier
+from app.pricing.assist import calculate_creation_multiplier, calculate_creation_multiplier_bzz
+from app.pricing.goalscorer import calculate_quality_multiplier, calculate_quality_multiplier_bzz
 from app.services.market_xg import MarketXgResult, MarketXgService
 
 # ── Constants ─────────────────────────────────────────────────────
@@ -31,6 +33,8 @@ HOME_ADVANTAGE = 1.22
 SHRINKAGE_N = 30.0
 PENS_PER_MATCH = 0.10
 PEN_CONVERSION = 0.78
+CLAMP_MULTIPLIER_MIN = 0.5
+CLAMP_MULTIPLIER_MAX = 2.0
 
 POSITION_NPXG_PRIORS: dict[str, float] = {
     "FW": 0.25, "MF": 0.08, "DF": 0.02, "GK": 0.00,
@@ -110,6 +114,15 @@ class PlayerShare:
     bcc_per_90: float = 0.0
     accurate_crosses_per_90: float = 0.0
     through_balls_per_90: float = 0.0
+    # Bzzoiro-specific stats (from bzz_player_season_stats)
+    shot_accuracy: float = 0.0
+    xg_per_shot: float = 0.0
+    rating: float = 0.0          # avg_rating normalized to 0-1
+    key_pass_per_90: float = 0.0
+    accurate_cross_per_90: float = 0.0
+    form_xg_5: float = 0.0
+    finishing_delta: float = 0.0
+    has_bzz_stats: bool = False  # True when loaded from bzz_player_season_stats
 
 
 @dataclass
@@ -293,6 +306,15 @@ def compute_player_shares(
             bcc_per_90=p.get("bcc_per_90", 0.0) or 0.0,
             accurate_crosses_per_90=p.get("accurate_crosses_per_90", 0.0) or 0.0,
             through_balls_per_90=p.get("through_balls_per_90", 0.0) or 0.0,
+            # Bzzoiro-specific stats
+            shot_accuracy=p.get("shot_accuracy", 0.0) or 0.0,
+            xg_per_shot=p.get("xg_per_shot", 0.0) or 0.0,
+            rating=p.get("rating", 0.0) or 0.0,
+            key_pass_per_90=p.get("key_pass_per_90", 0.0) or 0.0,
+            accurate_cross_per_90=p.get("accurate_cross_per_90", 0.0) or 0.0,
+            form_xg_5=p.get("form_xg_5", 0.0) or 0.0,
+            finishing_delta=p.get("finishing_delta", 0.0) or 0.0,
+            has_bzz_stats=p.get("has_bzz_stats", False),
         ))
     return shares
 
@@ -334,12 +356,21 @@ def allocate_player(
     mins_ratio = share.expected_minutes / 90.0
 
     # ── Goalscorer ────────────────────────────────────────────────
-    q_mult, _ = calculate_quality_multiplier(
-        sot_per_90=share.sot_per_90,
-        touches_attack_pen_per_90=share.tap_per_90,
-        xgchain_per_90=share.xgchain_per_90,
-        league_averages=league_avg_goalscorer or LEAGUE_AVG_GOALSCORER,
-    )
+    if share.has_bzz_stats:
+        # Bzzoiro quality formula: shot_accuracy × 0.35 + xg_per_shot × 0.35 + rating × 0.30
+        raw_q = calculate_quality_multiplier_bzz({
+            "shot_accuracy": share.shot_accuracy,
+            "xg_per_shot": share.xg_per_shot,
+            "rating": share.rating,
+        })
+        q_mult = max(CLAMP_MULTIPLIER_MIN, min(raw_q, CLAMP_MULTIPLIER_MAX))
+    else:
+        q_mult, _ = calculate_quality_multiplier(
+            sot_per_90=share.sot_per_90,
+            touches_attack_pen_per_90=share.tap_per_90,
+            xgchain_per_90=share.xgchain_per_90,
+            league_averages=league_avg_goalscorer or LEAGUE_AVG_GOALSCORER,
+        )
 
     lambda_open_play = (
         team_match_xg
@@ -355,14 +386,23 @@ def allocate_player(
     fair_odds_goal = round(1 / prob_goal, 2) if prob_goal > 0 else 9999.0
 
     # ── Assist ────────────────────────────────────────────────────
-    c_mult, _ = calculate_creation_multiplier(
-        bcc_per_90=share.bcc_per_90,
-        xgchain_per_90=share.xgchain_per_90,
-        accurate_crosses_per_90=share.accurate_crosses_per_90,
-        through_balls_per_90=share.through_balls_per_90,
-        position=share.position,
-        league_averages=league_avg_assist or LEAGUE_AVG_ASSIST,
-    )
+    if share.has_bzz_stats:
+        # Bzzoiro creation formula: key_pass_per_90 × 0.40 + xa_per_90 × 0.40 + accurate_cross_per_90 × 0.20
+        raw_c = calculate_creation_multiplier_bzz({
+            "key_pass_per_90": share.key_pass_per_90,
+            "xa_per_90": share.xa_per_90,
+            "accurate_cross_per_90": share.accurate_cross_per_90,
+        })
+        c_mult = max(CLAMP_MULTIPLIER_MIN, min(raw_c, CLAMP_MULTIPLIER_MAX))
+    else:
+        c_mult, _ = calculate_creation_multiplier(
+            bcc_per_90=share.bcc_per_90,
+            xgchain_per_90=share.xgchain_per_90,
+            accurate_crosses_per_90=share.accurate_crosses_per_90,
+            through_balls_per_90=share.through_balls_per_90,
+            position=share.position,
+            league_averages=league_avg_assist or LEAGUE_AVG_ASSIST,
+        )
 
     lambda_assist = max(0.001, team_match_xg * share.xa_share * mins_ratio * c_mult)
     prob_assist = 1 - math.exp(-lambda_assist)
@@ -392,78 +432,121 @@ def allocate_player(
 
 # ── DB helpers ────────────────────────────────────────────────────
 
-async def _load_team_players(db: AsyncSession, team: str) -> list[dict[str, Any]]:
-    """Load latest player stats (source=average) for a team — includes Model C fields."""
-    from app.ingestion.storage import resolve_canonical_team
-    from app.models.players import Player, PlayerStats
+async def _load_team_players(
+    db: AsyncSession,
+    team: str,
+    league: str | None = None,
+) -> list[dict[str, Any]]:
+    """Load player season stats from bzz_player_season_stats for a team.
 
-    # Prefer canonical_team_id lookup; fall back to text match if not seeded
-    canonical_team_id = await resolve_canonical_team(db, team)
+    1. Find BzzTeam by case-insensitive partial name match.
+    2. Query BzzPlayerSeasonStat joined to BzzPlayer where current_team_api_id matches.
+    3. Return player dicts compatible with compute_player_shares.
 
+    Falls back to [] if no BzzTeam found for the team name.
+    """
+    from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat, BzzTeam
+
+    # Find team by case-insensitive partial match
+    team_res = await db.execute(
+        select(BzzTeam).where(
+            func.lower(BzzTeam.name).contains(func.lower(team))
+        )
+    )
+    bzz_team = team_res.scalar_one_or_none()
+
+    if bzz_team is None:
+        return []
+
+    # Query season stats joined to player — pick the most recent season per player
     latest_subq = (
-        select(PlayerStats.player_id, func.max(PlayerStats.as_of_utc).label("max_date"))
-        .where(PlayerStats.source == "average")
-        .group_by(PlayerStats.player_id)
+        select(
+            BzzPlayerSeasonStat.player_api_id,
+            func.max(BzzPlayerSeasonStat.season).label("max_season"),
+        )
+        .join(BzzPlayer, BzzPlayer.api_id == BzzPlayerSeasonStat.player_api_id)
+        .where(BzzPlayer.current_team_api_id == bzz_team.api_id)
+        .group_by(BzzPlayerSeasonStat.player_api_id)
         .subquery()
     )
 
-    base_q = (
-        select(PlayerStats, Player.name, Player.position)
-        .join(Player, Player.id == PlayerStats.player_id)
+    stats_q = (
+        select(BzzPlayerSeasonStat, BzzPlayer)
+        .join(BzzPlayer, BzzPlayer.api_id == BzzPlayerSeasonStat.player_api_id)
         .join(
             latest_subq,
-            (PlayerStats.player_id == latest_subq.c.player_id)
-            & (PlayerStats.as_of_utc == latest_subq.c.max_date),
+            (BzzPlayerSeasonStat.player_api_id == latest_subq.c.player_api_id)
+            & (BzzPlayerSeasonStat.season == latest_subq.c.max_season),
         )
-        .where(PlayerStats.source == "average")
+        .where(BzzPlayer.current_team_api_id == bzz_team.api_id)
     )
 
-    if canonical_team_id:
-        base_q = base_q.where(Player.canonical_team_id == canonical_team_id)
-    else:
-        # Fallback: text match (covers teams not yet in canonical_teams)
-        from app.ingestion.storage import TEAM_NAME_MAP
-        candidates = {team}
-        for short, canonical in TEAM_NAME_MAP.items():
-            if canonical == team:
-                candidates.add(short)
-        base_q = base_q.where(Player.team.in_(candidates))
-
-    res = await db.execute(base_q)
+    res = await db.execute(stats_q)
 
     players = []
     seen_ids: set[int] = set()
     seen_names: set[str] = set()
     for row in res.all():
-        ps, name, raw_pos = row[0], row[1], row[2]
+        stat, player = row[0], row[1]
+        name = player.name
         name_key = (name or "").strip().lower()
-        if ps.player_id in seen_ids or name_key in seen_names:
+        if player.api_id in seen_ids or name_key in seen_names:
             continue
-        seen_ids.add(ps.player_id)
+        seen_ids.add(player.api_id)
         seen_names.add(name_key)
+
+        # Map bzz position (G/D/M/F) to pricing engine format (GK/DF/MF/FW)
+        bzz_pos = player.position
+        if bzz_pos == "G":
+            raw_pos = "GK"
+        elif bzz_pos == "D":
+            raw_pos = "DF"
+        elif bzz_pos == "M":
+            raw_pos = "MF"
+        elif bzz_pos == "F":
+            raw_pos = "FW"
+        else:
+            raw_pos = bzz_pos
         position = _norm_pos(raw_pos)
         if position == "GK":
             continue
+
+        xg_total = stat.expected_goals or 0.0
+        goals_total = stat.goals or 0
+        finishing_delta = goals_total - xg_total
+
         players.append({
-            "player_id": ps.player_id,
+            "player_id": player.api_id,
             "player_name": name,
+            "name": name,
             "position": position,
-            "matches_played": ps.matches_played or 0,
-            "minutes_played": ps.minutes_played or 0,
-            # Understat
-            "goals": ps.goals or 0,
-            "xg": ps.xg or 0.0,
-            "npxg": ps.npxg or 0.0,
-            "xa": ps.xa or 0.0,
-            "npxg_per_90": ps.npxg_per_90 or 0.0,
-            "xa_per_90": ps.xa_per_90 or 0.0,
-            "xgchain_per_90": ps.xgchain_per_90 or 0.0,
-            # Sofascore
-            "shots_on_target_per_90": ps.shots_on_target_per_90 or 0.0,
-            "touches_attack_pen_area_per_90": ps.touches_attack_pen_area_per_90 or 0.0,
-            "bcc_per_90": ps.bcc_per_90 or 0.0,
-            "accurate_crosses_per_90": ps.accurate_crosses_per_90 or 0.0,
-            "through_balls_per_90": ps.through_balls_per_90 or 0.0,
+            "matches_played": stat.matches_played or 0,
+            "minutes_played": stat.minutes_played or 0,
+            # Shared numeric fields (mapped to existing compute_player_shares keys)
+            "goals": goals_total,
+            "xg": xg_total,
+            "npxg": xg_total,  # no penalty split in bzz — use total xG
+            "xa": stat.expected_assists or 0.0,
+            "npxg_per_90": stat.xg_per_90 or 0.0,
+            "xa_per_90": stat.xa_per_90 or 0.0,
+            "xgchain_per_90": 0.0,  # not available in bzz
+            # Bzzoiro-specific quality/creation fields
+            "xg_per_90": stat.xg_per_90 or 0.0,
+            "shot_accuracy": stat.shot_accuracy or 0.0,
+            "xg_per_shot": stat.xg_per_shot or 0.0,
+            "rating": (stat.avg_rating or 0.0) / 10.0,  # normalize to 0-1
+            "key_pass_per_90": stat.key_pass_per_90 or 0.0,
+            "accurate_cross_per_90": stat.accurate_cross_per_90 or 0.0,
+            "form_xg_5": stat.form_xg_5 or 0.0,
+            "finishing_delta": finishing_delta,
+            # Sofascore fields — not available from bzz; default to 0
+            "shots_on_target_per_90": stat.shots_on_target_per_90 or 0.0,
+            "touches_attack_pen_area_per_90": 0.0,
+            "bcc_per_90": 0.0,
+            "accurate_crosses_per_90": stat.accurate_cross_per_90 or 0.0,
+            "through_balls_per_90": 0.0,
+            # Flag to indicate bzz-sourced stats (triggers new multiplier formulas)
+            "has_bzz_stats": True,
         })
     return players
 
