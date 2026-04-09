@@ -2,7 +2,7 @@
 
 import csv
 import io
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -176,7 +176,7 @@ async def export_players_csv(
     writer.writerows(rows)
     buf.seek(0)
 
-    filename = f"ev0_players_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = f"ev0_players_{datetime.now(tz=UTC).strftime('%Y%m%d_%H%M%S')}.csv"
     return StreamingResponse(
         iter([buf.getvalue()]),
         media_type="text/csv",
