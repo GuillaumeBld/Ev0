@@ -6,19 +6,46 @@ import pytest
 from app.ingestion.bzzoiro.sync_predictions import sync_predictions
 
 
+def _make_session(event_ids: list[int]) -> MagicMock:
+    """Return a mock session whose first execute() returns the given event IDs.
+
+    Subsequent execute() calls (the upsert statements) return a plain mock so
+    that ``await session.execute(stmt)`` succeeds.
+    """
+    # Build a fake result for the event-ID query
+    event_result = MagicMock()
+    event_result.fetchall.return_value = [(eid,) for eid in event_ids]
+
+    upsert_result = MagicMock()
+
+    call_count = {"n": 0}
+
+    async def execute_side_effect(stmt, *args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return event_result
+        return upsert_result
+
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=execute_side_effect)
+    session.commit = AsyncMock()
+    return session
+
+
 @pytest.mark.asyncio
 async def test_sync_predictions_empty():
     client = MagicMock()
     client.get_all = AsyncMock(return_value=[])
 
-    session = MagicMock()
-    session.execute = AsyncMock()
-    session.commit = AsyncMock()
+    # No upcoming events in DB — but no prediction rows either
+    session = _make_session([])
 
     count = await sync_predictions(session, client)
     assert count == 0
     client.get_all.assert_called_once_with("/api/predictions/")
-    session.execute.assert_not_called()
+    # Only the event-ID query should have been executed (no upsert rows)
+    assert session.execute.call_count == 1
+    session.commit.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -79,12 +106,12 @@ async def test_sync_predictions_basic():
     client = MagicMock()
     client.get_all = AsyncMock(return_value=prediction_rows)
 
-    session = MagicMock()
-    session.execute = AsyncMock()
-    session.commit = AsyncMock()
+    # Simulate both events being in the upcoming window
+    session = _make_session([1001, 1002])
 
     count = await sync_predictions(session, client)
     assert count == 2
     client.get_all.assert_called_once_with("/api/predictions/")
-    assert session.execute.call_count == 2
+    # 1 event-ID query + 2 upserts
+    assert session.execute.call_count == 3
     session.commit.assert_called_once()

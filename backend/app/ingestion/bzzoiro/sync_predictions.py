@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.bzzoiro.client import BzzoiroClient
-from app.models.bzzoiro import BzzPrediction
+from app.models.bzzoiro import BzzEvent, BzzPrediction
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +21,29 @@ async def sync_predictions(
 ) -> int:
     """Fetch all predictions from Bzzoiro and upsert into bzz_predictions.
 
+    Only predictions for events within the next ``days_forward`` hours are
+    upserted.  If no upcoming events exist in the DB yet (initial sync), the
+    filter is skipped so that all predictions are persisted.
+
     Args:
         session: SQLAlchemy async session.
         client: Authenticated BzzoiroClient.
-        days_forward: Unused — kept for API compatibility. The endpoint returns
-            all available predictions; filtering by date is not supported.
+        days_forward: Number of hours ahead to consider for the event window.
 
     Returns:
         Number of predictions upserted.
     """
     now = datetime.now(UTC)
+    cutoff = now + timedelta(hours=days_forward)
+
+    event_result = await session.execute(
+        select(BzzEvent.api_id).where(
+            BzzEvent.event_date >= now,
+            BzzEvent.event_date <= cutoff,
+        )
+    )
+    upcoming_event_ids = {row[0] for row in event_result.fetchall()}
+
     rows = await client.get_all("/api/predictions/")
     count = 0
     for row in rows:
@@ -37,6 +51,9 @@ async def sync_predictions(
         event_api_id = event.get("api_id")
         if event_api_id is None:
             logger.warning("Prediction row missing event.api_id — skipping: %r", row)
+            continue
+
+        if upcoming_event_ids and event_api_id not in upcoming_event_ids:
             continue
 
         created_at_raw = row.get("created_at")
