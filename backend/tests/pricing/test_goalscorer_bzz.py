@@ -13,9 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.pricing.goalscorer import calculate_quality_multiplier
-from app.pricing.assist import calculate_creation_multiplier
-
+from app.pricing.assist import calculate_creation_multiplier, calculate_creation_multiplier_bzz
+from app.pricing.goalscorer import calculate_quality_multiplier, calculate_quality_multiplier_bzz
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -80,6 +79,9 @@ def _make_bzz_season_stat(
     stat.form_xg_5 = form_xg_5
     stat.expected_goals = expected_goals
     stat.goals = goals
+    stat.matches_played = 10
+    stat.starts = 8
+    stat.shots_on_target_per_90 = 0.0
     return stat
 
 
@@ -179,6 +181,9 @@ class TestLoadTeamPlayersBasic:
         assert p2["xa_per_90"] == 0.25
         assert abs(p2["finishing_delta"] - 0.4) < 1e-6  # goals(2) - xG(1.6)
 
+        assert p1["has_bzz_stats"] is True
+        assert p2["has_bzz_stats"] is True
+
 
 # ---------------------------------------------------------------------------
 # Tests for quality multiplier formula (goalscorer.py)
@@ -196,32 +201,20 @@ class TestQualityMultiplierFormula:
         expected = 0.5 * 0.35 + 0.2 * 0.35 + 0.8 * 0.30
         # expected = 0.175 + 0.070 + 0.240 = 0.485
 
-        quality = (
-            (stats.get("shot_accuracy") or 0) * 0.35
-            + (stats.get("xg_per_shot") or 0) * 0.35
-            + (stats.get("rating") or 0) * 0.30
-        )
-        assert abs(quality - expected) < 1e-9
+        result = calculate_quality_multiplier_bzz(stats)
+        assert abs(result - expected) < 1e-9
 
     def test_quality_multiplier_formula_zeros(self):
         """Quality score with all-zero stats returns 0."""
         stats = {"shot_accuracy": 0.0, "xg_per_shot": 0.0, "rating": 0.0}
-        quality = (
-            (stats.get("shot_accuracy") or 0) * 0.35
-            + (stats.get("xg_per_shot") or 0) * 0.35
-            + (stats.get("rating") or 0) * 0.30
-        )
-        assert quality == 0.0
+        result = calculate_quality_multiplier_bzz(stats)
+        assert result == 0.0
 
     def test_quality_multiplier_formula_missing_keys(self):
         """Missing keys default to 0 via `or 0`."""
         stats: dict = {}
-        quality = (
-            (stats.get("shot_accuracy") or 0) * 0.35
-            + (stats.get("xg_per_shot") or 0) * 0.35
-            + (stats.get("rating") or 0) * 0.30
-        )
-        assert quality == 0.0
+        result = calculate_quality_multiplier_bzz(stats)
+        assert result == 0.0
 
     def test_calculate_quality_multiplier_still_works(self):
         """The existing calculate_quality_multiplier function in goalscorer.py still works."""
@@ -255,32 +248,20 @@ class TestCreationMultiplierFormula:
         expected = 1.5 * 0.40 + 0.25 * 0.40 + 0.8 * 0.20
         # expected = 0.60 + 0.10 + 0.16 = 0.86
 
-        creation = (
-            (stats.get("key_pass_per_90") or 0) * 0.40
-            + (stats.get("xa_per_90") or 0) * 0.40
-            + (stats.get("accurate_cross_per_90") or 0) * 0.20
-        )
-        assert abs(creation - expected) < 1e-9
+        result = calculate_creation_multiplier_bzz(stats)
+        assert abs(result - expected) < 1e-9
 
     def test_creation_multiplier_formula_zeros(self):
         """Creation score with all-zero stats returns 0."""
         stats = {"key_pass_per_90": 0.0, "xa_per_90": 0.0, "accurate_cross_per_90": 0.0}
-        creation = (
-            (stats.get("key_pass_per_90") or 0) * 0.40
-            + (stats.get("xa_per_90") or 0) * 0.40
-            + (stats.get("accurate_cross_per_90") or 0) * 0.20
-        )
-        assert creation == 0.0
+        result = calculate_creation_multiplier_bzz(stats)
+        assert result == 0.0
 
     def test_creation_multiplier_formula_missing_keys(self):
         """Missing keys default to 0 via `or 0`."""
         stats: dict = {}
-        creation = (
-            (stats.get("key_pass_per_90") or 0) * 0.40
-            + (stats.get("xa_per_90") or 0) * 0.40
-            + (stats.get("accurate_cross_per_90") or 0) * 0.20
-        )
-        assert creation == 0.0
+        result = calculate_creation_multiplier_bzz(stats)
+        assert result == 0.0
 
     def test_calculate_creation_multiplier_still_works(self):
         """The existing calculate_creation_multiplier function in assist.py still works."""
