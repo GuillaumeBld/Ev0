@@ -40,7 +40,7 @@ async def sync_players(session: AsyncSession, client: BzzoiroClient) -> int:
             "position": row.get("position"),
             "market_value": row.get("market_value"),
             "current_team_api_id": team.get("api_id"),
-            "national_team_api_id": nat_team.get("api_id") if nat_team else None,
+            "national_team_api_id": nat_team.get("api_id"),
             "synced_at": now,
         }
         stmt = pg_insert(BzzPlayer).values(**values).on_conflict_do_update(

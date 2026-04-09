@@ -28,7 +28,8 @@ class BzzoiroClient:
             await self._client.aclose()
 
     async def get_page(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        assert self._client, "Use BzzoiroClient as async context manager"
+        if not self._client:
+            raise RuntimeError("Use BzzoiroClient as async context manager")
         response = await self._client.get(path, params=params or {})
         response.raise_for_status()
         return response.json()
