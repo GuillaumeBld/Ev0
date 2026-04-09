@@ -111,6 +111,7 @@ export interface MatchPriceResponse {
   away_team: string
   home_match_xg: number
   away_match_xg: number
+  xg_source?: string | null
   home_players: PlayerAllocationOut[]
   away_players: PlayerAllocationOut[]
   home_lineup_players: PlayerAllocationOut[] | null
@@ -460,6 +461,18 @@ export async function depositBankroll(amount: number, notes?: string): Promise<B
 
 export async function withdrawBankroll(amount: number, notes?: string): Promise<BankrollTransaction> {
   const { data } = await api.post('/api/v1/bankroll/withdraw', { amount, notes })
+  return data
+}
+
+// ── xG source config ────────────────────────────────────────────
+
+export async function getXgSource(): Promise<{ mode: 'bzzoiro' | 'model' }> {
+  const { data } = await api.get('/api/config/xg-source')
+  return data
+}
+
+export async function setXgSource(mode: 'bzzoiro' | 'model'): Promise<{ mode: 'bzzoiro' | 'model' }> {
+  const { data } = await api.patch('/api/config/xg-source', { mode })
   return data
 }
 

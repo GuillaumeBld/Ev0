@@ -12,6 +12,7 @@ from app.api import (
     autopilot,
     backtest,
     bankroll,
+    config as config_api,
     fixtures,
     health,
     history,
@@ -72,3 +73,4 @@ app.include_router(bankroll.router, prefix="/api/v1", tags=["bankroll"])
 app.include_router(settings_api.router, prefix="/api/v1", tags=["settings"])
 app.include_router(autopilot.router, prefix="/api/v1", tags=["autopilot"])
 app.include_router(lineups_api.router, prefix="/api/v1", tags=["lineups"])
+app.include_router(config_api.router, prefix="/api", tags=["config"])

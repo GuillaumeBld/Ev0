@@ -12,6 +12,10 @@ const nextConfig = {
         destination: `${process.env.BACKEND_URL || 'http://backend:8000'}/api/v1/:path*`,
       },
       {
+        source: '/api/config/:path*',
+        destination: `${process.env.BACKEND_URL || 'http://backend:8000'}/api/config/:path*`,
+      },
+      {
         source: '/health',
         destination: `${process.env.BACKEND_URL || 'http://backend:8000'}/health`,
       },

@@ -15,24 +15,40 @@ Les cotes sont stockées dans `OddsSnapshot` avec timestamp.
 
 **Note Unibet** : Le site Unibet.fr a fusionné avec PSEL en mars 2026 (Kambi abandonné). Le nouveau site tourne sur la plateforme LVS (Lineup7/SportEase). Le scraper (`unibet_lvs_scraper.py`) s'authentifie via token anonyme, sans compte ni Playwright requis. Couvre le Big 5 + Ligue des Champions, marchés buteur et passeur décisif.
 
-### Statistiques joueurs (Modèle C)
+### Statistiques joueurs — Source primaire : Bzzoiro API
 
-| Source | Données | Méthode |
-|--------|---------|---------|
-| Understat | npxG, xA, xGChain, xGBuildup, goals, assists, minutes | API JSON non officielle |
-| Sofascore | SOT, TAP, BCC, accurate crosses, through balls, key passes, rating | API JSON non officielle |
-| FotMob | Fixtures, match events, lineups | API non officielle |
+Depuis l'intégration Bzzoiro, toutes les statistiques joueurs sont alimentées par l'**API Bzzoiro** (source officielle). Six jobs de synchronisation tournent quotidiennement :
 
-Fréquence : mise à jour quotidienne via `job_sync_player_stats()` (07:00 UTC) + `job_sync_sofascore_stats()` (07:15 UTC).
+| Job | Table(s) alimentée(s) | Fréquence |
+|-----|-----------------------|-----------|
+| `job_sync_bzzoiro_reference` | `bzz_leagues`, `bzz_teams` | 06:00 UTC |
+| `job_sync_bzzoiro_players` | `bzz_players` | 06:05 UTC |
+| `job_sync_bzzoiro_events` | `bzz_events` (fixtures enrichis) | 06:10 UTC |
+| `job_sync_bzzoiro_player_stats` | `bzz_player_match_stats` (métriques par match) | 06:20 UTC |
+| `job_sync_bzzoiro_predictions` | `bzz_predictions` (xG prédits par Bzzoiro) | 06:30 UTC |
+| `job_aggregate_season_stats` | `bzz_player_season_stats` (agrégats saison) | 04:00 UTC |
 
-**Note** : Sofascore est bloqué sur le VPS (Cloudflare 403). Si le job Sofascore échoue, les données peuvent être importées manuellement depuis une machine locale.
+**Métriques collectées par match** (dans `bzz_player_match_stats`) :
+- Minutes jouées, buts, passes décisives, tirs, tirs cadrés
+- xG (expected goals), xA (expected assists), rating
+- Passes clés (`key_passes`), centres précis (`accurate_crosses`)
+- Métriques dérivées calculées à l'ingestion : `xg_per_shot`, `shot_accuracy`, `key_pass_per_90`, `xa_per_90`, `accurate_cross_per_90`
+
+### Sources de secours (fallback uniquement)
+
+Understat et Sofascore sont désormais relégués au rang de **sources de secours** — ils ne sont plus utilisés dans le pipeline principal. Ils peuvent être réactivés manuellement si l'API Bzzoiro est indisponible.
+
+| Source | Données | Statut |
+|--------|---------|--------|
+| Understat | npxG, xA, xGChain — données historiques | Fallback uniquement |
+| Sofascore | SOT, rating, passes clés — bloqué sur VPS (Cloudflare 403) | Fallback uniquement |
+| FotMob | Fixtures, match events, lineups | Backfill initial uniquement |
 
 ### Matchs et événements
 
-- **Fixtures** : FotMob API → table `fixtures` (backfill initial uniquement)
-- **Kickoffs** : The Odds API `/v4/sports/{sport_key}/events` → mise à jour quotidienne de `kickoff_utc` via `job_sync_fixtures` (06:00 UTC). Couvre les 6 ligues (Big 5 + Ligue des Champions). Utilise la même clé `ODDS_API_KEY` que la collecte de cotes.
-- **Match events** (buts, passes décisives) : FotMob API → table `match_events`
-- Backfill initial : script `python -m app.scripts.backfill`
+- **Fixtures** : FotMob API → table `fixtures` (backfill initial) + Bzzoiro `bzz_events` (sync continue)
+- **Kickoffs** : The Odds API `/v4/sports/{sport_key}/events` → mise à jour quotidienne de `kickoff_utc` via `job_sync_fixtures` (06:00 UTC). Couvre les 6 ligues (Big 5 + Ligue des Champions).
+- **Match events** (buts, passes décisives) : Bzzoiro `bzz_player_match_stats` → table `match_events` (via ingestion)
 
 ### Cotes de marché (solveur Poisson)
 
@@ -50,7 +66,7 @@ OddsPortal est la source primaire pour le solveur Poisson (MarketXgService). La 
 - **Unibet LVS** : API non documentée, node IDs des compétitions peuvent changer si Unibet restructure son catalogue
 - **Betclic gRPC** : API non documentée, susceptible de casser si Betclic change son protocole
 - **Parions Sport** : retourne parfois 404 (protection anti-bot connue)
-- **Sofascore** : bloqué sur VPS (Cloudflare) — import manuel nécessaire depuis une machine locale
+- **Bzzoiro** : données disponibles uniquement après la première exécution des jobs de sync (voir `05-limitations.md`)
 - **Compositions** : non disponibles avant ~1h du match → incertitude sur les minutes attendues
 
 ## Données non scrappées (calcul interne)

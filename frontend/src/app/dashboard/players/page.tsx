@@ -1,219 +1,235 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
-import { RefreshCw, Search, Filter, ChevronDown, ChevronUp, Database, TrendingUp, AlertCircle, Crosshair } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
+import { RefreshCw, Search, Filter, ChevronDown, ChevronUp, User, AlertCircle } from 'lucide-react'
 import { clsx } from 'clsx'
+import { PlayerSummary, PlayerDetail } from '@/lib/api'
+import { PlayerMatchChart } from '@/components/PlayerMatchChart'
 
-interface PlayerStats {
-  source: string
-  minutes: number
-  goals: number
-  assists: number
-  xg: number
-  xa: number
-  npxg: number
-  xg_per_90: number | null
-  xa_per_90: number | null
-  npxg_per_90: number | null
-  shots: number
-  key_passes: number
-  as_of: string | null
+type SortField = 'name' | 'team' | 'xg_per_90' | 'xa_per_90' | 'avg_rating' | 'shots_on_target_per_90' | 'form_xg_5' | 'minutes_played'
+type PositionFilter = '' | 'G' | 'D' | 'M' | 'F'
+
+function fmt(v: number | null | undefined, decimals = 2): string {
+  if (v === null || v === undefined) return '—'
+  return v.toFixed(decimals)
 }
 
-interface Player {
-  id: number
-  name: string
-  team: string | null
-  position: string | null
-  league: string | null
-  fotmob: PlayerStats | null
-  understat: PlayerStats | null
-  average: PlayerStats | null
-  ev0_xg_per_90: number
-  ev0_xa_per_90: number
-  ev0_npxg_per_90: number
-  is_striker: boolean
+function positionColor(pos: string | null | undefined): string {
+  switch (pos) {
+    case 'F': return 'bg-red-500/20 text-red-400'
+    case 'M': return 'bg-green-500/20 text-green-400'
+    case 'D': return 'bg-blue-500/20 text-blue-400'
+    case 'G': return 'bg-yellow-500/20 text-yellow-400'
+    default:   return 'bg-gray-500/20 text-gray-400'
+  }
 }
 
-interface SyncStatus {
-  ligue_1_players: number
-  ligue_1_teams: number
-  premier_league_players: number
-  premier_league_teams: number
-  bundesliga_players: number
-  bundesliga_teams: number
-  la_liga_players: number
-  la_liga_teams: number
-  serie_a_players: number
-  serie_a_teams: number
-  last_sync: string | null
+function FormBar({ value }: { value: number | null }) {
+  if (value === null) return <span className="text-gray-600 text-xs">—</span>
+  const pct = Math.min(value / 0.8, 1) * 100
+  const color = value >= 0.5 ? 'bg-green-500' : value >= 0.25 ? 'bg-yellow-500' : 'bg-red-500'
+  return (
+    <div className="flex items-center gap-1.5">
+      <div className="w-16 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+        <div className={clsx('h-full rounded-full', color)} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-xs text-gray-400 font-mono">{value.toFixed(2)}</span>
+    </div>
+  )
 }
-
-type SortField = 'name' | 'team' | 'xg_per_90' | 'xa_per_90' | 'minutes'
-type SourceFilter = 'average' | 'fotmob' | 'understat'
 
 export default function PlayersPage() {
-  const [players, setPlayers] = useState<Player[]>([])
+  const [players, setPlayers] = useState<PlayerSummary[]>([])
   const [loading, setLoading] = useState(true)
-  const [syncing, setSyncing] = useState(false)
-  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+
+  // Filters
   const [search, setSearch] = useState('')
-  const [leagueFilter, setLeagueFilter] = useState<string>('')
-  const [sourceView, setSourceView] = useState<SourceFilter>('average')
+  const [positionFilter, setPositionFilter] = useState<PositionFilter>('')
+  const [minMinutes, setMinMinutes] = useState(0)
+  const [minMinutesInput, setMinMinutesInput] = useState('0')
+
+  // Sort
   const [sortField, setSortField] = useState<SortField>('xg_per_90')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
-  const [teamFilter, setTeamFilter] = useState<string>('')
-  const [teams, setTeams] = useState<string[]>([])
-  const [minMinutes, setMinMinutes] = useState(0)
-  const [expandedPlayer, setExpandedPlayer] = useState<number | null>(null)
-  const [fetchError, setFetchError] = useState<string | null>(null)
-  const [togglingStriker, setTogglingStriker] = useState<Set<number>>(new Set())
 
-  const fetchTeams = useCallback(async (league: string) => {
-    try {
-      const params = new URLSearchParams({ limit: '100' })
-      if (league) params.set('league', league)
-      const res = await fetch(`/api/v1/players/teams?${params}`)
-      if (res.ok) {
-        const data: { name: string; league: string }[] = await res.json()
-        setTeams(data.filter(t => !t.name.includes(',')).map(t => t.name))
-      }
-    } catch { /* ignore */ }
-  }, [])
-
-  useEffect(() => {
-    setTeamFilter('')
-    fetchTeams(leagueFilter)
-  }, [leagueFilter, fetchTeams])
+  // Detail drill-down
+  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [playerDetail, setPlayerDetail] = useState<PlayerDetail | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
 
   const fetchPlayers = useCallback(async () => {
     setLoading(true)
     setFetchError(null)
     try {
-      const params = new URLSearchParams()
-      if (leagueFilter) params.set('league', leagueFilter)
-      if (teamFilter) params.set('team', teamFilter)
-      if (search) params.set('search', search)
-      params.set('min_minutes', minMinutes.toString())
-      params.set('limit', '500')
+      const params = new URLSearchParams({
+        season: '2025-2026',
+        limit: '100',
+        sort_by: 'xg_per_90',
+        sort_order: 'desc',
+      })
+      if (minMinutes > 0) params.set('min_minutes', minMinutes.toString())
 
-      const url = `/api/v1/players?${params}`
-      const res = await fetch(url)
+      const res = await fetch(`/api/v1/players?${params}`)
       if (res.ok) {
-        const data = await res.json()
+        const data: PlayerSummary[] = await res.json()
         setPlayers(data)
-        setFetchError(null)
       } else {
         const text = await res.text()
         setFetchError(`HTTP ${res.status}: ${text.slice(0, 200)}`)
       }
-    } catch (err: any) {
-      console.error('Failed to fetch players:', err)
-      setFetchError(`Fetch error: ${err.message}`)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setFetchError(`Fetch error: ${msg}`)
     } finally {
       setLoading(false)
     }
-  }, [leagueFilter, teamFilter, search, minMinutes])
-
-  const fetchSyncStatus = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/v1/players/sync-status`)
-      if (res.ok) {
-        const data = await res.json()
-        setSyncStatus(data)
-      }
-    } catch (err) {
-      console.error('Failed to fetch sync status:', err)
-    }
-  }, [])
+  }, [minMinutes])
 
   useEffect(() => {
     fetchPlayers()
-    fetchSyncStatus()
-  }, [fetchPlayers, fetchSyncStatus])
+  }, [fetchPlayers])
 
-  const triggerSync = async () => {
-    setSyncing(true)
+  const fetchDetail = useCallback(async (id: number) => {
+    setDetailLoading(true)
+    setDetailError(null)
+    setPlayerDetail(null)
     try {
-      await fetch('/api/v1/players/sync?strategy=direct', { method: 'POST' })
-      const interval = setInterval(async () => {
-        await fetchSyncStatus()
-      }, 5000)
-      setTimeout(() => {
-        clearInterval(interval)
-        setSyncing(false)
-        fetchPlayers()
-        fetchSyncStatus()
-      }, 60000)
-    } catch (err) {
-      console.error('Sync failed:', err)
-      setSyncing(false)
+      const res = await fetch(`/api/v1/players/${id}?season=2025-2026`)
+      if (res.ok) {
+        const data: PlayerDetail = await res.json()
+        setPlayerDetail(data)
+      } else {
+        setDetailError(`HTTP ${res.status}`)
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setDetailError(`Fetch error: ${msg}`)
+    } finally {
+      setDetailLoading(false)
+    }
+  }, [])
+
+  const handleRowClick = (id: number) => {
+    if (expandedId === id) {
+      setExpandedId(null)
+      setPlayerDetail(null)
+    } else {
+      setExpandedId(id)
+      fetchDetail(id)
     }
   }
-
-  const getStatsForSource = (player: Player, source: SourceFilter): PlayerStats | null => {
-    switch (source) {
-      case 'fotmob': return player.fotmob
-      case 'understat': return player.understat
-      case 'average': return player.average
-    }
-  }
-
-  const sortedPlayers = [...players].sort((a, b) => {
-    let aVal: number | string = 0
-    let bVal: number | string = 0
-
-    const aStats = getStatsForSource(a, sourceView)
-    const bStats = getStatsForSource(b, sourceView)
-
-    switch (sortField) {
-      case 'name':
-        aVal = a.name
-        bVal = b.name
-        break
-      case 'team':
-        aVal = a.team || ''
-        bVal = b.team || ''
-        break
-      case 'xg_per_90':
-        aVal = aStats?.xg_per_90 || 0
-        bVal = bStats?.xg_per_90 || 0
-        break
-      case 'xa_per_90':
-        aVal = aStats?.xa_per_90 || 0
-        bVal = bStats?.xa_per_90 || 0
-        break
-      case 'minutes':
-        aVal = aStats?.minutes || 0
-        bVal = bStats?.minutes || 0
-        break
-    }
-
-    if (typeof aVal === 'string') {
-      return sortDir === 'asc' ? aVal.localeCompare(bVal as string) : (bVal as string).localeCompare(aVal)
-    }
-    return sortDir === 'asc' ? aVal - (bVal as number) : (bVal as number) - aVal
-  })
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
-      setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
     } else {
       setSortField(field)
       setSortDir('desc')
     }
   }
 
+  const filteredAndSorted = useMemo(() => {
+    let result = [...players]
+
+    // Client-side filters
+    if (search.trim()) {
+      const q = search.toLowerCase()
+      result = result.filter(
+        (p) =>
+          p.name.toLowerCase().includes(q) ||
+          (p.short_name?.toLowerCase().includes(q) ?? false) ||
+          (p.team_name?.toLowerCase().includes(q) ?? false)
+      )
+    }
+    if (positionFilter) {
+      result = result.filter((p) => p.position === positionFilter)
+    }
+
+    // Sort
+    result.sort((a, b) => {
+      let aVal: number | string = 0
+      let bVal: number | string = 0
+
+      switch (sortField) {
+        case 'name':
+          aVal = a.name
+          bVal = b.name
+          break
+        case 'team':
+          aVal = a.team_name ?? ''
+          bVal = b.team_name ?? ''
+          break
+        case 'xg_per_90':
+          aVal = a.xg_per_90 ?? -1
+          bVal = b.xg_per_90 ?? -1
+          break
+        case 'xa_per_90':
+          aVal = a.xa_per_90 ?? -1
+          bVal = b.xa_per_90 ?? -1
+          break
+        case 'avg_rating':
+          aVal = a.avg_rating ?? -1
+          bVal = b.avg_rating ?? -1
+          break
+        case 'shots_on_target_per_90':
+          aVal = a.shots_on_target_per_90 ?? -1
+          bVal = b.shots_on_target_per_90 ?? -1
+          break
+        case 'form_xg_5':
+          aVal = a.form_xg_5 ?? -1
+          bVal = b.form_xg_5 ?? -1
+          break
+        case 'minutes_played':
+          aVal = a.minutes_played ?? 0
+          bVal = b.minutes_played ?? 0
+          break
+      }
+
+      if (typeof aVal === 'string') {
+        return sortDir === 'asc' ? aVal.localeCompare(bVal as string) : (bVal as string).localeCompare(aVal)
+      }
+      return sortDir === 'asc' ? (aVal as number) - (bVal as number) : (bVal as number) - (aVal as number)
+    })
+
+    return result
+  }, [players, search, positionFilter, sortField, sortDir])
+
   const SortIcon = ({ field }: { field: SortField }) => {
-    if (sortField !== field) return null
-    return sortDir === 'asc' ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />
+    if (sortField !== field) return <ChevronDown className="w-3 h-3 text-gray-600" />
+    return sortDir === 'asc' ? <ChevronUp className="w-4 h-4 text-brand-400" /> : <ChevronDown className="w-4 h-4 text-brand-400" />
   }
 
-  const formatDiff = (fotmob: number | null, understat: number | null): { diff: number; color: string } | null => {
-    if (fotmob === null || understat === null) return null
-    const diff = fotmob - understat
-    const color = Math.abs(diff) < 0.05 ? 'text-gray-400' : diff > 0 ? 'text-green-400' : 'text-red-400'
-    return { diff, color }
+  const SortTh = ({
+    field,
+    label,
+    className,
+  }: {
+    field: SortField
+    label: string
+    className?: string
+  }) => (
+    <th
+      className={clsx(
+        'px-3 py-3 text-sm font-medium text-gray-400 cursor-pointer hover:text-white select-none whitespace-nowrap',
+        className
+      )}
+      onClick={() => handleSort(field)}
+    >
+      <div className={clsx('flex items-center gap-1', className?.includes('text-right') ? 'justify-end' : '')}>
+        {label} <SortIcon field={field} />
+      </div>
+    </th>
+  )
+
+  const positions: PositionFilter[] = ['', 'G', 'D', 'M', 'F']
+  const positionLabels: Record<PositionFilter, string> = {
+    '': 'Tous',
+    G: 'G',
+    D: 'D',
+    M: 'M',
+    F: 'F',
   }
 
   return (
@@ -222,125 +238,86 @@ export default function PlayersPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white">Joueurs</h1>
-          <p className="text-gray-400 mt-1">
-            {syncStatus && (
-              <>
-                {[
-                  ['L1', syncStatus.ligue_1_players],
-                  ['PL', syncStatus.premier_league_players],
-                  ['BL', syncStatus.bundesliga_players],
-                  ['LL', syncStatus.la_liga_players],
-                  ['SA', syncStatus.serie_a_players],
-                ].map(([label, count]) => `${label}: ${count}`).join(' • ')}
-                {syncStatus.last_sync && (
-                  <span className="ml-2 text-gray-500">
-                    (màj: {new Date(syncStatus.last_sync).toLocaleDateString('fr-FR')})
-                  </span>
-                )}
-              </>
-            )}
+          <p className="text-gray-400 mt-1 text-sm">
+            {players.length} joueurs — Bzzoiro · 2025-2026
           </p>
         </div>
         <button
-          onClick={triggerSync}
-          disabled={syncing}
+          onClick={() => fetchPlayers()}
+          disabled={loading}
           className={clsx(
-            "flex items-center gap-2 px-4 py-2 rounded-lg transition-colors",
-            syncing
-              ? "bg-gray-700 text-gray-400 cursor-not-allowed"
-              : "bg-brand-600 hover:bg-brand-700 text-white"
+            'flex items-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm',
+            loading
+              ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
+              : 'bg-brand-600 hover:bg-brand-700 text-white'
           )}
         >
-          <RefreshCw className={clsx("w-4 h-4", syncing && "animate-spin")} />
-          {syncing ? 'Sync en cours...' : 'Sync joueurs'}
+          <RefreshCw className={clsx('w-4 h-4', loading && 'animate-spin')} />
+          {loading ? 'Chargement...' : 'Actualiser'}
         </button>
       </div>
 
       {/* Filters */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+      <div className="flex flex-wrap gap-3 mb-5">
+        {/* Search */}
+        <div className="relative flex-1 min-w-48">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
             type="text"
-            placeholder="Rechercher..."
+            placeholder="Rechercher un joueur..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-ev-t3 focus:outline-none focus:ring-2 focus:ring-brand-500"
+            className="w-full pl-9 pr-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
           />
         </div>
 
-        <select
-          value={leagueFilter}
-          onChange={(e) => setLeagueFilter(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-brand-500"
-        >
-          <option value="">Toutes les ligues</option>
-          <option value="ligue_1">Ligue 1</option>
-          <option value="premier_league">Premier League</option>
-          <option value="bundesliga">Bundesliga</option>
-          <option value="la_liga">La Liga</option>
-          <option value="serie_a">Serie A</option>
-        </select>
-
-        <select
-          value={teamFilter}
-          onChange={(e) => setTeamFilter(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-brand-500"
-        >
-          <option value="">Toutes les équipes</option>
-          {teams.map(t => (
-            <option key={t} value={t}>{t}</option>
+        {/* Position filter */}
+        <div className="flex rounded-lg overflow-hidden border border-gray-700">
+          {positions.map((pos) => (
+            <button
+              key={pos || 'all'}
+              onClick={() => setPositionFilter(pos)}
+              className={clsx(
+                'px-3 py-2 text-sm font-medium transition-colors',
+                positionFilter === pos
+                  ? 'bg-brand-600 text-white'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'
+              )}
+            >
+              {positionLabels[pos]}
+            </button>
           ))}
-        </select>
+        </div>
 
-        <select
-          value={sourceView}
-          onChange={(e) => setSourceView(e.target.value as SourceFilter)}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-brand-500"
-        >
-          <option value="average">📊 Moyenne (FotMob + Understat)</option>
-          <option value="fotmob">⚽ FotMob uniquement</option>
-          <option value="understat">📉 Understat uniquement</option>
-        </select>
-
+        {/* Min minutes */}
         <div className="flex items-center gap-2">
           <span className="text-gray-400 text-sm whitespace-nowrap">Min. mins:</span>
           <input
             type="number"
-            value={minMinutes}
-            onChange={(e) => setMinMinutes(Number(e.target.value))}
-            className="w-24 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white text-center focus:outline-none focus:ring-2 focus:ring-brand-500"
+            value={minMinutesInput}
+            onChange={(e) => setMinMinutesInput(e.target.value)}
+            onBlur={() => setMinMinutes(Number(minMinutesInput) || 0)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') setMinMinutes(Number(minMinutesInput) || 0)
+            }}
+            className="w-20 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm text-center focus:outline-none focus:ring-2 focus:ring-brand-500"
             step={90}
             min={0}
           />
           <button
             onClick={() => fetchPlayers()}
-            className="p-2.5 bg-gray-700 hover:bg-ev-surface2 rounded-lg text-white"
+            className="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white transition-colors"
+            title="Appliquer filtre"
           >
             <Filter className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      {/* Source Legend */}
-      <div className="flex items-center gap-6 mb-4 text-sm">
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded bg-blue-500" />
-          <span className="text-gray-400">FotMob</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded bg-purple-500" />
-          <span className="text-gray-400">Understat</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded bg-green-500" />
-          <span className="text-gray-400">Moyenne EV0</span>
-        </div>
-      </div>
-
-      {/* Debug info */}
+      {/* Error */}
       {fetchError && (
-        <div className="bg-red-900/50 border border-red-500 rounded-lg p-4 mb-4">
+        <div className="bg-red-900/50 border border-red-500 rounded-lg p-4 mb-4 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
           <p className="text-red-300 text-sm font-mono">{fetchError}</p>
         </div>
       )}
@@ -350,264 +327,278 @@ export default function PlayersPage() {
         <div className="flex items-center justify-center py-20">
           <RefreshCw className="w-8 h-8 text-brand-500 animate-spin" />
         </div>
-      ) : players.length === 0 ? (
+      ) : filteredAndSorted.length === 0 ? (
         <div className="bg-gray-800 rounded-xl p-12 text-center">
-          <Database className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+          <User className="w-12 h-12 text-gray-600 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-white mb-2">Aucun joueur</h3>
-          <p className="text-gray-400 mb-4">
-            Lancez une synchronisation pour importer les joueurs de FotMob et Understat.
+          <p className="text-gray-400 text-sm">
+            {players.length === 0
+              ? 'Les données Bzzoiro ne sont pas encore disponibles. Vérifiez la synchronisation.'
+              : 'Aucun joueur ne correspond aux filtres.'}
           </p>
-          <button
-            onClick={triggerSync}
-            disabled={syncing}
-            className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg"
-          >
-            Lancer la sync
-          </button>
         </div>
       ) : (
         <div className="bg-gray-800 rounded-xl overflow-hidden">
           <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-700">
-                <th
-                  className="px-4 py-3 text-left text-sm font-medium text-gray-400 cursor-pointer hover:text-ev-t1"
-                  onClick={() => handleSort('name')}
-                >
-                  <div className="flex items-center gap-1">
-                    Joueur <SortIcon field="name" />
-                  </div>
-                </th>
-                <th
-                  className="px-4 py-3 text-left text-sm font-medium text-gray-400 cursor-pointer hover:text-ev-t1"
-                  onClick={() => handleSort('team')}
-                >
-                  <div className="flex items-center gap-1">
-                    Équipe <SortIcon field="team" />
-                  </div>
-                </th>
-                <th className="px-4 py-3 text-center text-sm font-medium text-gray-400 hidden md:table-cell">Pos</th>
-                <th
-                  className="px-4 py-3 text-right text-sm font-medium text-gray-400 cursor-pointer hover:text-ev-t1"
-                  onClick={() => handleSort('minutes')}
-                >
-                  <div className="flex items-center justify-end gap-1">
-                    Mins <SortIcon field="minutes" />
-                  </div>
-                </th>
-                <th className="px-4 py-3 text-right text-sm font-medium text-gray-400 hidden md:table-cell">Buts</th>
-                <th className="px-4 py-3 text-right text-sm font-medium text-gray-400 hidden md:table-cell">xG</th>
-                <th
-                  className="px-4 py-3 text-right text-sm font-medium text-gray-400 cursor-pointer hover:text-ev-t1"
-                  onClick={() => handleSort('xg_per_90')}
-                >
-                  <div className="flex items-center justify-end gap-1">
-                    xG/90 <SortIcon field="xg_per_90" />
-                  </div>
-                </th>
-                <th className="px-4 py-3 text-right text-sm font-medium text-gray-400 hidden md:table-cell">PD</th>
-                <th className="px-4 py-3 text-right text-sm font-medium text-gray-400 hidden md:table-cell">xA</th>
-                <th
-                  className="px-4 py-3 text-right text-sm font-medium text-gray-400 cursor-pointer hover:text-ev-t1"
-                  onClick={() => handleSort('xa_per_90')}
-                >
-                  <div className="flex items-center justify-end gap-1">
-                    xA/90 <SortIcon field="xa_per_90" />
-                  </div>
-                </th>
-                <th className="px-4 py-3 text-center text-sm font-medium text-gray-400 hidden md:table-cell">Δ Source</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedPlayers.map((player) => {
-                const stats = getStatsForSource(player, sourceView)
-                const isExpanded = expandedPlayer === player.id
-                const xgDiff = formatDiff(player.fotmob?.xg_per_90 ?? null, player.understat?.xg_per_90 ?? null)
-                const xaDiff = formatDiff(player.fotmob?.xa_per_90 ?? null, player.understat?.xa_per_90 ?? null)
-
-                return (
-                  <>
-                    <tr
-                      key={player.id}
-                      className={clsx(
-                        "border-b border-gray-700/50 hover:bg-ev-surface2 cursor-pointer transition-colors",
-                        isExpanded && "bg-ev-surface2"
-                      )}
-                      onClick={() => setExpandedPlayer(isExpanded ? null : player.id)}
-                    >
-                      <td className="px-4 py-3 text-sm text-white font-medium">
-                        <div className="flex items-center gap-2">
-                          <button
-                            title={player.is_striker ? "Retirer statut BU" : "Marquer comme avant-centre (BU)"}
-                            disabled={togglingStriker.has(player.id)}
-                            onClick={async (e) => {
-                              e.stopPropagation()
-                              if (togglingStriker.has(player.id)) return
-                              setTogglingStriker(prev => new Set(prev).add(player.id))
-                              try {
-                                const res = await fetch(`/api/v1/players/${player.id}/striker`, { method: 'PATCH' })
-                                if (res.ok) {
-                                  const updated = await res.json()
-                                  setPlayers(prev => prev.map(p => p.id === player.id ? { ...p, is_striker: updated.is_striker } : p))
-                                } else {
-                                  setFetchError(`Impossible de modifier le statut BU (HTTP ${res.status})`)
-                                }
-                              } catch {
-                                setFetchError("Impossible de modifier le statut BU")
-                              } finally {
-                                setTogglingStriker(prev => { const s = new Set(prev); s.delete(player.id); return s })
-                              }
-                            }}
-                            className={`p-1 rounded transition-colors hover:bg-ev-surface2 disabled:opacity-40 ${
-                              player.is_striker ? 'text-orange-500' : 'text-gray-500'
-                            }`}
-                          >
-                            <Crosshair size={14} />
-                          </button>
-                          {player.name}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-300">{player.team || '-'}</td>
-                      <td className="px-4 py-3 text-center hidden md:table-cell">
-                        <span className={clsx(
-                          'px-2 py-0.5 rounded text-xs font-medium',
-                          player.position?.includes('F') ? 'bg-red-500/20 text-red-400' :
-                          player.position?.includes('M') ? 'bg-green-500/20 text-green-400' :
-                          player.position?.includes('D') ? 'bg-blue-500/20 text-blue-400' :
-                          'bg-yellow-500/20 text-yellow-400'
-                        )}>
-                          {player.position || '?'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-right text-gray-300">{stats?.minutes || 0}</td>
-                      <td className="px-4 py-3 text-sm text-right text-white font-medium hidden md:table-cell">{stats?.goals || 0}</td>
-                      <td className="px-4 py-3 text-sm text-right text-gray-300 hidden md:table-cell">{(stats?.xg || 0).toFixed(1)}</td>
-                      <td className="px-4 py-3 text-sm text-right text-green-400 font-medium">
-                        {(stats?.xg_per_90 || 0).toFixed(2)}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-right text-white font-medium hidden md:table-cell">{stats?.assists || 0}</td>
-                      <td className="px-4 py-3 text-sm text-right text-gray-300 hidden md:table-cell">{(stats?.xa || 0).toFixed(1)}</td>
-                      <td className="px-4 py-3 text-sm text-right text-blue-400 font-medium">
-                        {(stats?.xa_per_90 || 0).toFixed(2)}
-                      </td>
-                      <td className="px-4 py-3 text-center hidden md:table-cell">
-                        {player.fotmob && player.understat ? (
-                          <div className="flex items-center justify-center gap-1">
-                            {xgDiff && Math.abs(xgDiff.diff) >= 0.05 && (
-                              <span className={clsx("text-xs", xgDiff.color)} title="Δ xG/90">
-                                {xgDiff.diff > 0 ? '+' : ''}{xgDiff.diff.toFixed(2)}
-                              </span>
-                            )}
-                            {(!xgDiff || Math.abs(xgDiff.diff) < 0.05) && (
-                              <span className="text-xs text-gray-500">≈</span>
-                            )}
-                          </div>
-                        ) : (
-                          <span title="Source unique"><AlertCircle className="w-4 h-4 text-yellow-500 mx-auto" /></span>
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-gray-700">
+                  <SortTh field="name" label="Joueur" className="text-left pl-4" />
+                  <SortTh field="team" label="Équipe" className="text-left" />
+                  <th className="px-3 py-3 text-center text-sm font-medium text-gray-400 hidden md:table-cell">Pos</th>
+                  <SortTh field="xg_per_90" label="xG/90" className="text-right hidden sm:table-cell" />
+                  <SortTh field="xa_per_90" label="xA/90" className="text-right hidden sm:table-cell" />
+                  <SortTh field="avg_rating" label="Rating" className="text-right hidden md:table-cell" />
+                  <SortTh field="shots_on_target_per_90" label="SoT/90" className="text-right hidden md:table-cell" />
+                  <SortTh field="form_xg_5" label="Forme (5)" className="text-right hidden lg:table-cell" />
+                  <SortTh field="minutes_played" label="Mins" className="text-right" />
+                </tr>
+              </thead>
+              <tbody>
+                {filteredAndSorted.map((player) => {
+                  const isExpanded = expandedId === player.player_api_id
+                  return (
+                    <Fragment key={player.player_api_id}>
+                      <tr
+                        className={clsx(
+                          'border-b border-gray-700/50 hover:bg-gray-700/40 cursor-pointer transition-colors',
+                          isExpanded && 'bg-gray-700/40'
                         )}
-                      </td>
-                    </tr>
-                    {isExpanded && (
-                      <tr className="bg-gray-900/50">
-                        <td colSpan={11} className="px-4 py-4">
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            {/* FotMob */}
-                            <div className="bg-blue-500/10 rounded-lg p-4 border border-blue-500/30">
-                              <div className="flex items-center gap-2 mb-3">
-                                <div className="w-3 h-3 rounded bg-blue-500" />
-                                <span className="text-sm font-medium text-blue-400">FotMob</span>
-                              </div>
-                              {player.fotmob ? (
-                                <div className="grid grid-cols-2 gap-2 text-sm">
-                                  <div><span className="text-gray-400">Mins:</span> <span className="text-white">{player.fotmob.minutes}</span></div>
-                                  <div><span className="text-gray-400">Buts:</span> <span className="text-white">{player.fotmob.goals}</span></div>
-                                  <div><span className="text-gray-400">xG:</span> <span className="text-white">{player.fotmob.xg.toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">xG/90:</span> <span className="text-green-400 font-medium">{(player.fotmob.xg_per_90 || 0).toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">PD:</span> <span className="text-white">{player.fotmob.assists}</span></div>
-                                  <div><span className="text-gray-400">xA:</span> <span className="text-white">{player.fotmob.xa.toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">xA/90:</span> <span className="text-blue-400 font-medium">{(player.fotmob.xa_per_90 || 0).toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">Tirs:</span> <span className="text-white">{player.fotmob.shots}</span></div>
-                                </div>
-                              ) : (
-                                <p className="text-gray-500 text-sm">Données non disponibles</p>
-                              )}
-                            </div>
-
-                            {/* Understat */}
-                            <div className="bg-purple-500/10 rounded-lg p-4 border border-purple-500/30">
-                              <div className="flex items-center gap-2 mb-3">
-                                <div className="w-3 h-3 rounded bg-purple-500" />
-                                <span className="text-sm font-medium text-purple-400">Understat</span>
-                              </div>
-                              {player.understat ? (
-                                <div className="grid grid-cols-2 gap-2 text-sm">
-                                  <div><span className="text-gray-400">Mins:</span> <span className="text-white">{player.understat.minutes}</span></div>
-                                  <div><span className="text-gray-400">Buts:</span> <span className="text-white">{player.understat.goals}</span></div>
-                                  <div><span className="text-gray-400">xG:</span> <span className="text-white">{player.understat.xg.toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">xG/90:</span> <span className="text-green-400 font-medium">{(player.understat.xg_per_90 || 0).toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">PD:</span> <span className="text-white">{player.understat.assists}</span></div>
-                                  <div><span className="text-gray-400">xA:</span> <span className="text-white">{player.understat.xa.toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">xA/90:</span> <span className="text-blue-400 font-medium">{(player.understat.xa_per_90 || 0).toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">npxG/90:</span> <span className="text-white">{(player.understat.npxg_per_90 || 0).toFixed(2)}</span></div>
-                                </div>
-                              ) : (
-                                <p className="text-gray-500 text-sm">Données non disponibles</p>
-                              )}
-                            </div>
-
-                            {/* Average / EV0 */}
-                            <div className="bg-green-500/10 rounded-lg p-4 border border-green-500/30">
-                              <div className="flex items-center gap-2 mb-3">
-                                <div className="w-3 h-3 rounded bg-green-500" />
-                                <span className="text-sm font-medium text-green-400">Moyenne EV0</span>
-                                <TrendingUp className="w-4 h-4 text-green-400" />
-                              </div>
-                              {player.average ? (
-                                <div className="grid grid-cols-2 gap-2 text-sm">
-                                  <div><span className="text-gray-400">Mins:</span> <span className="text-white">{player.average.minutes}</span></div>
-                                  <div><span className="text-gray-400">Buts:</span> <span className="text-white">{player.average.goals}</span></div>
-                                  <div><span className="text-gray-400">xG:</span> <span className="text-white">{player.average.xg.toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">xG/90:</span> <span className="text-green-400 font-bold">{player.ev0_xg_per_90.toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">PD:</span> <span className="text-white">{player.average.assists}</span></div>
-                                  <div><span className="text-gray-400">xA:</span> <span className="text-white">{player.average.xa.toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">xA/90:</span> <span className="text-blue-400 font-bold">{player.ev0_xa_per_90.toFixed(2)}</span></div>
-                                  <div><span className="text-gray-400">npxG/90:</span> <span className="text-white font-bold">{player.ev0_npxg_per_90.toFixed(2)}</span></div>
-                                </div>
-                              ) : (
-                                <p className="text-gray-500 text-sm">En attente de données des deux sources</p>
+                        onClick={() => handleRowClick(player.player_api_id)}
+                      >
+                        {/* Name */}
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            {isExpanded ? (
+                              <ChevronUp className="w-3.5 h-3.5 text-brand-400 shrink-0" />
+                            ) : (
+                              <ChevronDown className="w-3.5 h-3.5 text-gray-600 shrink-0" />
+                            )}
+                            <div>
+                              <p className="text-sm font-medium text-white leading-tight">{player.name}</p>
+                              {player.nationality && (
+                                <p className="text-xs text-gray-500 leading-tight">{player.nationality}</p>
                               )}
                             </div>
                           </div>
+                        </td>
 
-                          {/* Différences FotMob vs Understat */}
-                          {player.fotmob && player.understat && (
-                            <div className="mt-4 p-3 bg-ev-surface rounded-lg">
-                              <span className="text-sm text-gray-400">Écart FotMob - Understat: </span>
-                              <span className={clsx("text-sm font-medium", xgDiff?.color || 'text-gray-400')}>
-                                xG/90 {xgDiff && xgDiff.diff > 0 ? '+' : ''}{xgDiff?.diff.toFixed(3) || '0'}
-                              </span>
-                              <span className="text-gray-600 mx-2">|</span>
-                              <span className={clsx("text-sm font-medium", xaDiff?.color || 'text-gray-400')}>
-                                xA/90 {xaDiff && xaDiff.diff > 0 ? '+' : ''}{xaDiff?.diff.toFixed(3) || '0'}
-                              </span>
-                            </div>
-                          )}
+                        {/* Team */}
+                        <td className="px-3 py-3 text-sm text-gray-300 max-w-[120px] truncate">
+                          {player.team_name ?? '—'}
+                        </td>
+
+                        {/* Position */}
+                        <td className="px-3 py-3 text-center hidden md:table-cell">
+                          <span className={clsx('px-2 py-0.5 rounded text-xs font-medium', positionColor(player.position))}>
+                            {player.position ?? '?'}
+                          </span>
+                        </td>
+
+                        {/* xG/90 */}
+                        <td className="px-3 py-3 text-right hidden sm:table-cell">
+                          <span className="text-sm font-mono text-green-400 font-medium">{fmt(player.xg_per_90)}</span>
+                        </td>
+
+                        {/* xA/90 */}
+                        <td className="px-3 py-3 text-right hidden sm:table-cell">
+                          <span className="text-sm font-mono text-blue-400">{fmt(player.xa_per_90)}</span>
+                        </td>
+
+                        {/* Rating */}
+                        <td className="px-3 py-3 text-right hidden md:table-cell">
+                          <span className={clsx(
+                            'text-sm font-mono',
+                            player.avg_rating !== null
+                              ? player.avg_rating >= 7.5 ? 'text-amber-400 font-semibold'
+                              : player.avg_rating >= 7.0 ? 'text-yellow-400'
+                              : 'text-gray-300'
+                              : 'text-gray-600'
+                          )}>
+                            {fmt(player.avg_rating, 1)}
+                          </span>
+                        </td>
+
+                        {/* SoT/90 */}
+                        <td className="px-3 py-3 text-right hidden md:table-cell">
+                          <span className="text-sm font-mono text-gray-300">{fmt(player.shots_on_target_per_90)}</span>
+                        </td>
+
+                        {/* Form (last 5) */}
+                        <td className="px-3 py-3 text-right hidden lg:table-cell">
+                          <FormBar value={player.form_xg_5} />
+                        </td>
+
+                        {/* Minutes */}
+                        <td className="px-3 py-3 text-right">
+                          <span className="text-sm font-mono text-gray-400">{player.minutes_played ?? 0}</span>
                         </td>
                       </tr>
-                    )}
-                  </>
-                )
-              })}
-            </tbody>
-          </table>
+
+                      {/* Expanded detail row */}
+                      {isExpanded && (
+                        <tr key={`${player.player_api_id}-detail`} className="bg-gray-900/60">
+                          <td colSpan={9} className="px-4 py-5">
+                            {detailLoading ? (
+                              <div className="flex items-center justify-center py-6">
+                                <RefreshCw className="w-5 h-5 text-brand-500 animate-spin" />
+                              </div>
+                            ) : detailError ? (
+                              <div className="flex items-center gap-2 text-red-400 text-sm">
+                                <AlertCircle className="w-4 h-4" />
+                                {detailError}
+                              </div>
+                            ) : playerDetail && playerDetail.player_api_id === player.player_api_id ? (
+                              <div className="space-y-5">
+                                {/* Player info header */}
+                                <div className="flex flex-wrap gap-4 items-center">
+                                  <div>
+                                    <h3 className="text-base font-semibold text-white">{playerDetail.name}</h3>
+                                    <p className="text-xs text-gray-400">
+                                      {playerDetail.team_name ?? '?'}
+                                      {playerDetail.position && <span> · {playerDetail.position}</span>}
+                                      {playerDetail.nationality && <span> · {playerDetail.nationality}</span>}
+                                      {playerDetail.date_of_birth && (
+                                        <span> · Né {new Date(playerDetail.date_of_birth).getFullYear()}</span>
+                                      )}
+                                      {playerDetail.height && <span> · {playerDetail.height} cm</span>}
+                                      {playerDetail.jersey_number && <span> · #{playerDetail.jersey_number}</span>}
+                                    </p>
+                                  </div>
+                                  {playerDetail.market_value && (
+                                    <div className="ml-auto">
+                                      <span className="text-xs text-gray-500">Valeur marchande</span>
+                                      <p className="text-sm font-semibold text-white">
+                                        {playerDetail.market_value >= 1_000_000
+                                          ? `${(playerDetail.market_value / 1_000_000).toFixed(1)}M €`
+                                          : `${(playerDetail.market_value / 1_000).toFixed(0)}K €`}
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Season stats grid */}
+                                {playerDetail.season_stats && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                                      Stats saison 2025-2026
+                                    </p>
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                                      {[
+                                        { label: 'xG/90', value: fmt(playerDetail.season_stats.xg_per_90), color: 'text-green-400' },
+                                        { label: 'xA/90', value: fmt(playerDetail.season_stats.xa_per_90), color: 'text-blue-400' },
+                                        { label: 'Rating', value: fmt(playerDetail.season_stats.avg_rating, 1), color: 'text-amber-400' },
+                                        { label: 'SoT/90', value: fmt(playerDetail.season_stats.shots_on_target_per_90), color: 'text-purple-400' },
+                                        { label: 'Key pass/90', value: fmt(playerDetail.season_stats.key_pass_per_90), color: 'text-indigo-400' },
+                                        { label: 'Buts', value: String(playerDetail.season_stats.goals ?? '—'), color: 'text-white' },
+                                        { label: 'Passes D.', value: String(playerDetail.season_stats.goal_assist ?? '—'), color: 'text-white' },
+                                        { label: 'Tirs', value: String(playerDetail.season_stats.total_shots ?? '—'), color: 'text-white' },
+                                        { label: 'xG total', value: fmt(playerDetail.season_stats.expected_goals), color: 'text-gray-300' },
+                                        { label: 'xA total', value: fmt(playerDetail.season_stats.expected_assists), color: 'text-gray-300' },
+                                        { label: 'Matchs', value: String(playerDetail.season_stats.matches_played ?? '—'), color: 'text-gray-300' },
+                                        { label: 'Minutes', value: String(playerDetail.season_stats.minutes_played ?? '—'), color: 'text-gray-300' },
+                                      ].map(({ label, value, color }) => (
+                                        <div key={label} className="bg-gray-800 rounded-lg px-3 py-2.5">
+                                          <p className="text-xs text-gray-500 mb-1">{label}</p>
+                                          <p className={clsx('text-sm font-semibold font-mono', color)}>{value}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Match-by-match chart */}
+                                {playerDetail.recent_matches.length > 0 && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                                      Match par match (derniers {playerDetail.recent_matches.length} matchs)
+                                    </p>
+                                    <PlayerMatchChart matches={playerDetail.recent_matches} metric="xg" />
+                                  </div>
+                                )}
+
+                                {/* Recent matches table */}
+                                {playerDetail.recent_matches.length > 0 && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                                      Détail matchs récents
+                                    </p>
+                                    <div className="overflow-x-auto">
+                                      <table className="w-full text-xs">
+                                        <thead>
+                                          <tr className="border-b border-gray-700">
+                                            <th className="text-left py-2 px-2 text-gray-500 font-medium">Date</th>
+                                            <th className="text-left py-2 px-2 text-gray-500 font-medium">Adversaire</th>
+                                            <th className="text-right py-2 px-2 text-gray-500 font-medium">Mins</th>
+                                            <th className="text-right py-2 px-2 text-gray-500 font-medium">Buts</th>
+                                            <th className="text-right py-2 px-2 text-gray-500 font-medium">PD</th>
+                                            <th className="text-right py-2 px-2 text-gray-500 font-medium">xG</th>
+                                            <th className="text-right py-2 px-2 text-gray-500 font-medium">SoT</th>
+                                            <th className="text-right py-2 px-2 text-gray-500 font-medium">KP</th>
+                                            <th className="text-right py-2 px-2 text-gray-500 font-medium">Rating</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {playerDetail.recent_matches.slice(0, 10).map((m) => (
+                                            <tr
+                                              key={m.event_api_id}
+                                              className="border-b border-gray-700/30 hover:bg-gray-700/20 transition-colors"
+                                            >
+                                              <td className="py-1.5 px-2 text-gray-400 font-mono">
+                                                {m.event_date
+                                                  ? new Date(m.event_date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })
+                                                  : '—'}
+                                              </td>
+                                              <td className="py-1.5 px-2 text-gray-300">
+                                                <span className="text-gray-500">{m.is_home ? 'vs ' : '@ '}</span>
+                                                {m.opponent ?? '—'}
+                                              </td>
+                                              <td className="py-1.5 px-2 text-right text-gray-400 font-mono">{m.minutes_played ?? '—'}</td>
+                                              <td className={clsx('py-1.5 px-2 text-right font-mono font-semibold', (m.goals ?? 0) > 0 ? 'text-green-400' : 'text-gray-400')}>
+                                                {m.goals ?? 0}
+                                              </td>
+                                              <td className={clsx('py-1.5 px-2 text-right font-mono', (m.goal_assist ?? 0) > 0 ? 'text-blue-400' : 'text-gray-400')}>
+                                                {m.goal_assist ?? 0}
+                                              </td>
+                                              <td className="py-1.5 px-2 text-right font-mono text-green-400">
+                                                {fmt(m.expected_goals)}
+                                              </td>
+                                              <td className="py-1.5 px-2 text-right font-mono text-gray-300">{m.shots_on_target ?? 0}</td>
+                                              <td className="py-1.5 px-2 text-right font-mono text-gray-300">{m.key_pass ?? 0}</td>
+                                              <td className={clsx(
+                                                'py-1.5 px-2 text-right font-mono',
+                                                m.rating !== null
+                                                  ? m.rating >= 7.5 ? 'text-amber-400 font-semibold'
+                                                  : m.rating >= 7.0 ? 'text-yellow-400'
+                                                  : 'text-gray-300'
+                                                  : 'text-gray-600'
+                                              )}>
+                                                {fmt(m.rating, 1)}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ) : null}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
 
-      {/* Stats Summary */}
+      {/* Footer */}
       <div className="mt-4 text-sm text-gray-500 text-right">
-        Affichage: {sortedPlayers.length} joueurs | Source: {sourceView === 'average' ? 'Moyenne' : sourceView === 'fotmob' ? 'FotMob' : 'Understat'}
+        Affichage: {filteredAndSorted.length} / {players.length} joueurs
       </div>
     </div>
   )

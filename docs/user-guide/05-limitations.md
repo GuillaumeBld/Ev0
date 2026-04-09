@@ -1,5 +1,15 @@
 # Limitations connues
 
+## Données Bzzoiro — disponibilité après déploiement
+
+L'API Bzzoiro est la source primaire de statistiques joueurs. Après un nouveau déploiement ou une réinitialisation de la base de données :
+
+- Les tables `bzz_players`, `bzz_events`, `bzz_player_match_stats` sont **vides jusqu'à la première exécution** des jobs de sync (planifiés à 06:05–06:30 UTC)
+- Les **agrégats saison** (`bzz_player_season_stats`) ne sont disponibles qu'après l'exécution de `job_aggregate_season_stats` (planifié à 04:00 UTC chaque nuit)
+- Pendant cette fenêtre, la page Joueurs affichera une liste vide et les recommandations ne pourront pas calculer les multiplicateurs qualité/création
+
+**Solution** : forcer les jobs manuellement via le worker ou attendre la prochaine exécution planifiée.
+
 ## Quota API odds
 
 L'API d'odds tierce (RapidAPI ou similaire) a un quota mensuel limité. Quand le quota est épuisé :
