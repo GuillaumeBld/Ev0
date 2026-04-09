@@ -1,5 +1,5 @@
 """Tests for aggregate module."""
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -18,6 +18,18 @@ def _make_result(rows):
     result = MagicMock()
     result.fetchall.return_value = rows
     return result
+
+
+def _make_form_row(player_api_id: int, expected_goals, rating, goals, goal_assist, rn: int = 1):
+    """Create a mock form row with named attribute access (matches bulk window query columns)."""
+    row = MagicMock()
+    row.player_api_id = player_api_id
+    row.expected_goals = expected_goals
+    row.rating = rating
+    row.goals = goals
+    row.goal_assist = goal_assist
+    row.rn = rn
+    return row
 
 
 @pytest.mark.asyncio
@@ -127,42 +139,32 @@ async def test_aggregate_season_stats_basic():
         avg_minutes_per_match=85.0,
     )
 
-    # Form rows for each player (last 5 matches — only 1 or 3 available)
-    player1_form_rows = [
-        MagicMock(**{"__getitem__": lambda self, i: [0.6, 7.5, 1, 0][i]}),
-        MagicMock(**{"__getitem__": lambda self, i: [0.5, 7.0, 0, 1][i]}),
-        MagicMock(**{"__getitem__": lambda self, i: [0.7, 7.1, 1, 0][i]}),
-    ]
-    # Use simple tuples for form rows — they support indexing
-    player1_form_rows = [
-        (0.6, 7.5, 1, 0),
-        (0.5, 7.0, 0, 1),
-        (0.7, 7.1, 1, 0),
-    ]
-    player2_form_rows = [
-        (0.3, 6.8, 0, 1),
+    # Form rows for both players combined (bulk window query returns all players at once)
+    # player_api_id, expected_goals, rating, goals, goal_assist, rn
+    bulk_form_rows = [
+        _make_form_row(101, 0.6, 7.5, 1, 0, rn=1),
+        _make_form_row(101, 0.5, 7.0, 0, 1, rn=2),
+        _make_form_row(101, 0.7, 7.1, 1, 0, rn=3),
+        _make_form_row(102, 0.3, 6.8, 0, 1, rn=1),
     ]
 
-    # We need to mock session.execute to return different values per call:
+    # Call pattern with bulk form query:
     # call 0: aggregation query → 2 player rows
-    # call 1: form query for player 101
-    # call 2: upsert for player 101 (execute called but no fetchall needed)
-    # call 3: form query for player 102
-    # call 4: upsert for player 102
+    # call 1: bulk form window query → all players' last-5 rows
+    # call 2: upsert for player 101
+    # call 3: upsert for player 102
 
     agg_result = _make_result([player1_agg, player2_agg])
-    form_result_1 = _make_result(player1_form_rows)
+    bulk_form_result = _make_result(bulk_form_rows)
     upsert_result_1 = MagicMock()
-    form_result_2 = _make_result(player2_form_rows)
     upsert_result_2 = MagicMock()
 
     session = MagicMock()
     session.execute = AsyncMock(
         side_effect=[
             agg_result,
-            form_result_1,
+            bulk_form_result,
             upsert_result_1,
-            form_result_2,
             upsert_result_2,
         ]
     )
@@ -171,8 +173,8 @@ async def test_aggregate_season_stats_basic():
     count = await aggregate_season_stats(session, league_api_id=100, season="2025-2026")
 
     assert count == 2
-    # 5 execute calls: 1 agg + 2*(form + upsert)
-    assert session.execute.call_count == 5
+    # 4 execute calls: 1 agg + 1 bulk-form + 2 upserts
+    assert session.execute.call_count == 4
     session.commit.assert_called_once()
 
 
@@ -222,19 +224,19 @@ async def test_aggregate_season_stats_per90_computed():
         avg_minutes_per_match=90.0,
     )
 
+    # Bulk form rows for player 201 (named attribute access required)
+    bulk_form_rows = [
+        _make_form_row(201, 0.9, 7.5, 1, 0, rn=1),
+        _make_form_row(201, 0.9, 7.5, 1, 0, rn=2),
+    ]
+
     agg_result = _make_result([player_agg])
-    form_result = _make_result([(0.9, 7.5, 1, 0), (0.9, 7.5, 1, 0)])
+    bulk_form_result = _make_result(bulk_form_rows)
     upsert_result = MagicMock()
 
-    # Capture the values passed to the upsert
-    captured_values = {}
-
-    async def capture_execute(stmt):
-        # Try to get values from the insert stmt if possible
-        return upsert_result
-
     session = MagicMock()
-    session.execute = AsyncMock(side_effect=[agg_result, form_result, upsert_result])
+    # Call pattern: 1 agg + 1 bulk-form + 1 upsert
+    session.execute = AsyncMock(side_effect=[agg_result, bulk_form_result, upsert_result])
     session.commit = AsyncMock()
 
     count = await aggregate_season_stats(session, league_api_id=200, season="2025-2026")
@@ -296,21 +298,21 @@ async def test_aggregate_all_leagues():
         )
 
     league1_agg = _make_result([make_player_agg(301)])
-    league1_form = _make_result([(0.8, 7.0, 1, 0)])
+    league1_form = _make_result([_make_form_row(301, 0.8, 7.0, 1, 0, rn=1)])
     league1_upsert = MagicMock()
     league2_agg = _make_result([make_player_agg(302)])
-    league2_form = _make_result([(0.5, 6.5, 0, 1)])
+    league2_form = _make_result([_make_form_row(302, 0.5, 6.5, 0, 1, rn=1)])
     league2_upsert = MagicMock()
 
     session.execute = AsyncMock(
         side_effect=[
-            leagues_result,      # aggregate_all_leagues distinct leagues query
-            league1_agg,         # league 100 aggregation
-            league1_form,        # league 100 form for player 301
-            league1_upsert,      # league 100 upsert for player 301
-            league2_agg,         # league 200 aggregation
-            league2_form,        # league 200 form for player 302
-            league2_upsert,      # league 200 upsert for player 302
+            leagues_result,   # aggregate_all_leagues distinct leagues query
+            league1_agg,      # league 100 aggregation
+            league1_form,     # league 100 bulk form (all players)
+            league1_upsert,   # league 100 upsert for player 301
+            league2_agg,      # league 200 aggregation
+            league2_form,     # league 200 bulk form (all players)
+            league2_upsert,   # league 200 upsert for player 302
         ]
     )
     session.commit = AsyncMock()

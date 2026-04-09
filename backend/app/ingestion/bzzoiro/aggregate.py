@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -89,6 +90,36 @@ async def aggregate_season_stats(session: AsyncSession, league_api_id: int, seas
     if not rows:
         return 0
 
+    # Step 2: Bulk window query — last 5 matches per player (single query, no N+1)
+    rn_col = func.row_number().over(
+        partition_by=BzzPlayerMatchStat.player_api_id,
+        order_by=BzzEvent.event_date.desc(),
+    ).label("rn")
+
+    ranked_stmt = (
+        select(
+            BzzPlayerMatchStat.player_api_id,
+            BzzPlayerMatchStat.expected_goals,
+            BzzPlayerMatchStat.rating,
+            BzzPlayerMatchStat.goals,
+            BzzPlayerMatchStat.goal_assist,
+            rn_col,
+        )
+        .join(BzzEvent, BzzPlayerMatchStat.event_api_id == BzzEvent.api_id)
+        .where(
+            BzzEvent.league_api_id == league_api_id,
+            BzzEvent.status == "finished",
+        )
+        .subquery()
+    )
+
+    last5_stmt = select(ranked_stmt).where(ranked_stmt.c.rn <= 5)
+    last5_rows = (await session.execute(last5_stmt)).fetchall()
+
+    form_by_player: dict[int, list] = defaultdict(list)
+    for r in last5_rows:
+        form_by_player[r.player_api_id].append(r)
+
     count = 0
     now = datetime.now(UTC)
 
@@ -117,25 +148,8 @@ async def aggregate_season_stats(session: AsyncSession, league_api_id: int, seas
         if avg_rating is not None:
             avg_rating = float(avg_rating)
 
-        # Step 3: Form stats — last 5 matches per player
-        form_stmt = (
-            select(
-                BzzPlayerMatchStat.expected_goals,
-                BzzPlayerMatchStat.rating,
-                BzzPlayerMatchStat.goals,
-                BzzPlayerMatchStat.goal_assist,
-            )
-            .join(BzzEvent, BzzPlayerMatchStat.event_api_id == BzzEvent.api_id)
-            .where(
-                BzzPlayerMatchStat.player_api_id == player_api_id,
-                BzzEvent.league_api_id == league_api_id,
-                BzzEvent.status == "finished",
-            )
-            .order_by(BzzEvent.event_date.desc())
-            .limit(5)
-        )
-        form_result = await session.execute(form_stmt)
-        form_rows = form_result.fetchall()
+        # Step 3: Form stats — look up from pre-fetched bulk form data
+        form_rows = form_by_player[player_api_id]
 
         form_xg_5: float | None = None
         form_rating_5: float | None = None
@@ -144,10 +158,10 @@ async def aggregate_season_stats(session: AsyncSession, league_api_id: int, seas
         rating_trend: float | None = None
 
         if form_rows:
-            xg_vals = [r[0] for r in form_rows if r[0] is not None]
-            rating_vals = [r[1] for r in form_rows if r[1] is not None]
-            goals_vals = [r[2] for r in form_rows if r[2] is not None]
-            assist_vals = [r[3] for r in form_rows if r[3] is not None]
+            xg_vals = [r.expected_goals for r in form_rows if r.expected_goals is not None]
+            rating_vals = [r.rating for r in form_rows if r.rating is not None]
+            goals_vals = [r.goals for r in form_rows if r.goals is not None]
+            assist_vals = [r.goal_assist for r in form_rows if r.goal_assist is not None]
 
             form_xg_5 = sum(xg_vals) if xg_vals else None
             form_rating_5 = sum(rating_vals) / len(rating_vals) if rating_vals else None
@@ -240,7 +254,7 @@ async def aggregate_season_stats(session: AsyncSession, league_api_id: int, seas
     return count
 
 
-async def aggregate_all_leagues(session: AsyncSession) -> int:
+async def aggregate_all_leagues(session: AsyncSession, season: str = "2025-2026") -> int:
     """Aggregate season stats for all leagues with finished matches.
 
     Returns total count of rows upserted across all leagues.
@@ -255,7 +269,7 @@ async def aggregate_all_leagues(session: AsyncSession) -> int:
 
     total = 0
     for league_api_id in league_ids:
-        total += await aggregate_season_stats(session, league_api_id, season="2025-2026")
+        total += await aggregate_season_stats(session, league_api_id, season=season)
 
     logger.info("Aggregated season stats for %d leagues, %d total rows", len(league_ids), total)
     return total
