@@ -1,4 +1,4 @@
-"""Player stats API endpoints."""
+"""Player stats API endpoints — powered by Bzzoiro tables."""
 
 import csv
 import io
@@ -8,15 +8,18 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import asc, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.ingestion.understat_scraper import UNDERSTAT_LEAGUES, fetch_understat_league
-from app.models.canonical_teams import CanonicalTeam
-from app.models.players import Player, PlayerStats, Team
+from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzPlayerMatchStat, BzzPlayerSeasonStat, BzzTeam
 
 router = APIRouter(prefix="/players", tags=["players"])
+
+# ---------------------------------------------------------------------------
+# Response models
+# ---------------------------------------------------------------------------
 
 CSV_FIELDS = [
     "name",
@@ -36,6 +39,113 @@ CSV_FIELDS = [
     "xa_per_90",
     "npxg_per_90",
 ]
+
+_SORTABLE_COLUMNS: dict[str, Any] = {
+    "xg_per_90": BzzPlayerSeasonStat.xg_per_90,
+    "xa_per_90": BzzPlayerSeasonStat.xa_per_90,
+    "avg_rating": BzzPlayerSeasonStat.avg_rating,
+    "shots_on_target_per_90": BzzPlayerSeasonStat.shots_on_target_per_90,
+    "form_xg_5": BzzPlayerSeasonStat.form_xg_5,
+    "matches_played": BzzPlayerSeasonStat.matches_played,
+    "minutes_played": BzzPlayerSeasonStat.minutes_played,
+    "expected_goals": BzzPlayerSeasonStat.expected_goals,
+    "expected_assists": BzzPlayerSeasonStat.expected_assists,
+}
+
+
+class PlayerSummary(BaseModel):
+    """Player summary for list endpoint."""
+
+    player_api_id: int
+    name: str
+    short_name: str | None
+    position: str | None
+    team_name: str | None
+    nationality: str | None
+    xg_per_90: float | None
+    xa_per_90: float | None
+    avg_rating: float | None
+    shots_on_target_per_90: float | None
+    form_xg_5: float | None
+    matches_played: int | None
+    minutes_played: int | None
+    season: str
+
+
+class RecentMatch(BaseModel):
+    """Single match entry in player detail."""
+
+    event_api_id: int
+    event_date: datetime | None
+    opponent: str | None
+    is_home: bool | None
+    minutes_played: int | None
+    goals: int | None
+    goal_assist: int | None
+    expected_goals: float | None
+    rating: float | None
+    shots_on_target: int | None
+    key_pass: int | None
+
+
+class SeasonStatsOut(BaseModel):
+    """All fields from bzz_player_season_stats."""
+
+    season: str
+    league_api_id: int | None
+    matches_played: int | None
+    minutes_played: int | None
+    starts: int | None
+    goals: int | None
+    goal_assist: int | None
+    total_shots: int | None
+    shots_on_target: int | None
+    key_pass: int | None
+    expected_goals: float | None
+    expected_assists: float | None
+    xg_per_90: float | None
+    xa_per_90: float | None
+    shots_per_90: float | None
+    shots_on_target_per_90: float | None
+    key_pass_per_90: float | None
+    avg_rating: float | None
+    form_xg_5: float | None
+    form_rating_5: float | None
+    form_goals_5: int | None
+    form_assists_5: int | None
+    rating_trend: float | None
+    shot_accuracy: float | None
+    xg_per_shot: float | None
+    finishing_delta: float | None
+    xa_delta: float | None
+    pass_completion: float | None
+    duel_win_rate: float | None
+    aerial_win_rate: float | None
+    tackle_success_rate: float | None
+    avg_minutes_per_match: float | None
+    starts_pct: float | None
+
+
+class PlayerDetail(BaseModel):
+    """Full player detail."""
+
+    player_api_id: int
+    name: str
+    short_name: str | None
+    position: str | None
+    date_of_birth: Any | None
+    nationality: str | None
+    height: int | None
+    jersey_number: int | None
+    market_value: int | None
+    team_name: str | None
+    season_stats: SeasonStatsOut | None
+    recent_matches: list[RecentMatch]
+
+
+# ---------------------------------------------------------------------------
+# Legacy export endpoint — kept for backwards compatibility
+# ---------------------------------------------------------------------------
 
 
 @router.get("/export", summary="Export player stats as CSV")
@@ -60,7 +170,6 @@ async def export_players_csv(
             p["league"] = lg
             rows.append(p)
 
-    # Build CSV in memory
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=CSV_FIELDS, extrasaction="ignore")
     writer.writeheader()
@@ -75,355 +184,206 @@ async def export_players_csv(
     )
 
 
-class PlayerStatsResponse(BaseModel):
-    """Player stats from a specific source."""
-
-    source: str
-    minutes: int
-    goals: int
-    assists: int
-    xg: float
-    xa: float
-    npxg: float
-    xg_per_90: float | None
-    xa_per_90: float | None
-    npxg_per_90: float | None
-    shots: int
-    key_passes: int
-    as_of: datetime | None
+# ---------------------------------------------------------------------------
+# GET /players/  — list
+# ---------------------------------------------------------------------------
 
 
-class PlayerWithStats(BaseModel):
-    """Player with stats from all sources."""
-
-    id: int
-    name: str
-    team: str | None
-    position: str | None
-    league: str | None
-
-    # Stats by source
-    api_football: PlayerStatsResponse | None
-    understat: PlayerStatsResponse | None
-    fotmob: PlayerStatsResponse | None
-    average: PlayerStatsResponse | None
-
-    is_striker: bool
-
-    # Computed EV0 values (using average or best available)
-    ev0_xg_per_90: float
-    ev0_xa_per_90: float
-    ev0_npxg_per_90: float
-
-
-class TeamResponse(BaseModel):
-    """Team info."""
-
-    id: int
-    name: str
-    league: str
-    player_count: int
-
-
-class SyncStatusResponse(BaseModel):
-    """Sync status."""
-
-    ligue_1_players: int
-    ligue_1_teams: int
-    premier_league_players: int
-    premier_league_teams: int
-    bundesliga_players: int
-    bundesliga_teams: int
-    la_liga_players: int
-    la_liga_teams: int
-    serie_a_players: int
-    serie_a_teams: int
-    last_sync: datetime | None
-
-
-def stats_to_response(stats: PlayerStats | None) -> PlayerStatsResponse | None:
-    """Convert PlayerStats to response model."""
-    if not stats:
-        return None
-    return PlayerStatsResponse(
-        source=stats.source,
-        minutes=stats.minutes_played,
-        goals=stats.goals,
-        assists=stats.assists,
-        xg=stats.xg,
-        xa=stats.xa,
-        npxg=stats.npxg,
-        xg_per_90=stats.xg_per_90,
-        xa_per_90=stats.xa_per_90,
-        npxg_per_90=stats.npxg_per_90,
-        shots=stats.shots,
-        key_passes=stats.key_passes,
-        as_of=stats.as_of_utc,
-    )
-
-
-@router.get("", response_model=list[PlayerWithStats])
+@router.get("", response_model=list[PlayerSummary])
 async def list_players(
     session: AsyncSession = Depends(get_db),
-    league: str | None = Query(None, description="Filter by league (ligue_1, premier_league)"),
-    team: str | None = Query(None, description="Filter by team name"),
-    search: str | None = Query(None, description="Search by player name"),
+    league_api_id: int | None = Query(None, description="Filter by league API id"),
+    team_api_id: int | None = Query(None, description="Filter by team API id"),
+    position: str | None = Query(None, description="Filter by position: G/D/M/F"),
     min_minutes: int = Query(0, description="Minimum minutes played"),
-    limit: int = Query(100, le=500),
+    season: str = Query("2025-2026"),
+    sort_by: str = Query("xg_per_90"),
+    sort_order: str = Query("desc"),
+    limit: int = Query(50, le=500),
     offset: int = Query(0),
 ) -> list[dict[str, Any]]:
-    """List players with stats from all sources."""
+    """List players with season stats from Bzzoiro tables."""
 
-    # Build query
-    stmt = select(Player)
-
-    if league:
-        stmt = stmt.where(Player.league == league.lower())
-    if team:
-        # Try to match by canonical team name first, fallback to raw text
-        from app.models.canonical_teams import CanonicalTeam as _CT
-        ct_row = (await session.execute(
-            select(_CT).where(_CT.name_fr.ilike(f"%{team}%"))
-        )).scalars().first()
-        if ct_row:
-            stmt = stmt.where(Player.canonical_team_id == ct_row.id)
-        else:
-            stmt = stmt.where(Player.team.ilike(f"%{team}%"))
-    if search:
-        stmt = stmt.where(Player.name.ilike(f"%{search}%"))
-
-    stmt = stmt.order_by(Player.name).offset(offset).limit(limit)
-
-    result = await session.execute(stmt)
-    players = result.scalars().all()
-
-    if not players:
-        return []
-
-    # Build canonical team name map (id → name_fr)
-    ct_ids = {p.canonical_team_id for p in players if p.canonical_team_id}
-    canonical_names: dict[int, str] = {}
-    if ct_ids:
-        ct_rows = (await session.execute(
-            select(CanonicalTeam).where(CanonicalTeam.id.in_(ct_ids))
-        )).scalars().all()
-        canonical_names = {ct.id: ct.name_fr for ct in ct_rows}
-
-    # Batch-fetch all stats for these players in ONE query (avoid N+1)
-    player_ids = [p.id for p in players]
-    stats_stmt = select(PlayerStats).where(
-        PlayerStats.player_id.in_(player_ids),
-        PlayerStats.season == "2025-2026",
-    )
-    stats_result = await session.execute(stats_stmt)
-    all_stats = stats_result.scalars().all()
-
-    # Group stats by player_id and source
-    stats_map: dict[int, dict[str, PlayerStats]] = {}
-    for s in all_stats:
-        stats_map.setdefault(s.player_id, {})[s.source] = s
-
-    response = []
-    for player in players:
-        player_stats = stats_map.get(player.id, {})
-
-        api_football = player_stats.get("api_football")
-        understat = player_stats.get("understat")
-        fotmob = player_stats.get("fotmob")
-        average = player_stats.get("average")
-
-        # Filter by minutes if specified
-        max_minutes = max(
-            (api_football.minutes_played if api_football else 0),
-            (understat.minutes_played if understat else 0),
-            (fotmob.minutes_played if fotmob else 0),
-        )
-        if max_minutes < min_minutes:
-            continue
-
-        # Compute EV0 values (prefer average, fallback to available source)
-        ev0_source = average or fotmob or understat or api_football
-
-        response.append(
-            {
-                "id": player.id,
-                "name": player.name,
-                "team": canonical_names.get(player.canonical_team_id) if player.canonical_team_id else player.team,
-                "position": player.position,
-                "league": player.league,
-                "is_striker": player.is_striker,
-                "api_football": stats_to_response(api_football),
-                "understat": stats_to_response(understat),
-                "fotmob": stats_to_response(fotmob),
-                "average": stats_to_response(average),
-                "ev0_xg_per_90": ev0_source.xg_per_90
-                if ev0_source and ev0_source.xg_per_90
-                else 0.0,
-                "ev0_xa_per_90": ev0_source.xa_per_90
-                if ev0_source and ev0_source.xa_per_90
-                else 0.0,
-                "ev0_npxg_per_90": ev0_source.npxg_per_90
-                if ev0_source and ev0_source.npxg_per_90
-                else 0.0,
-            }
-        )
-
-    return response
-
-
-@router.get("/teams", response_model=list[TeamResponse])
-async def list_teams(
-    session: AsyncSession = Depends(get_db),
-    league: str | None = Query(None),
-) -> list[dict[str, Any]]:
-    """List all teams using canonical team names (deduplicated, French names)."""
-    from app.models.canonical_teams import CanonicalTeam
-
-    # Count players per canonical team
-    count_subq = (
-        select(Player.canonical_team_id, func.count(Player.id).label("cnt"))
-        .where(Player.canonical_team_id.isnot(None))
-        .group_by(Player.canonical_team_id)
-        .subquery()
-    )
+    sort_col = _SORTABLE_COLUMNS.get(sort_by, BzzPlayerSeasonStat.xg_per_90)
+    order_fn = desc if sort_order.lower() == "desc" else asc
 
     stmt = (
-        select(CanonicalTeam, func.coalesce(count_subq.c.cnt, 0).label("player_count"))
-        .outerjoin(count_subq, CanonicalTeam.id == count_subq.c.canonical_team_id)
-        .where(func.coalesce(count_subq.c.cnt, 0) > 0)
-        .order_by(CanonicalTeam.name_fr)
+        select(
+            BzzPlayer,
+            BzzPlayerSeasonStat,
+            BzzTeam.name.label("team_name"),
+        )
+        .join(BzzPlayerSeasonStat, BzzPlayerSeasonStat.player_api_id == BzzPlayer.api_id)
+        .outerjoin(BzzTeam, BzzTeam.api_id == BzzPlayer.current_team_api_id)
+        .where(BzzPlayerSeasonStat.season == season)
     )
 
-    # Filter by league: keep only canonical teams that have players in the given league
-    if league:
-        league_ct_subq = (
-            select(Player.canonical_team_id)
-            .where(Player.canonical_team_id.isnot(None), Player.league == league.lower())
-            .distinct()
-            .subquery()
+    if league_api_id is not None:
+        stmt = stmt.where(BzzPlayerSeasonStat.league_api_id == league_api_id)
+    if team_api_id is not None:
+        stmt = stmt.where(BzzPlayer.current_team_api_id == team_api_id)
+    if position is not None:
+        stmt = stmt.where(BzzPlayer.position == position.upper())
+    if min_minutes > 0:
+        stmt = stmt.where(
+            BzzPlayerSeasonStat.minutes_played >= min_minutes,
         )
-        stmt = stmt.where(CanonicalTeam.id.in_(select(league_ct_subq)))
+
+    stmt = stmt.order_by(order_fn(sort_col).nulls_last()).limit(limit).offset(offset)
 
     result = await session.execute(stmt)
     rows = result.all()
 
     return [
         {
-            "id": ct.id,
-            "name": ct.name_fr,
-            "league": league or "all",
-            "player_count": player_count,
+            "player_api_id": player.api_id,
+            "name": player.name,
+            "short_name": player.short_name,
+            "position": player.position,
+            "team_name": team_name,
+            "nationality": player.nationality,
+            "xg_per_90": stats.xg_per_90,
+            "xa_per_90": stats.xa_per_90,
+            "avg_rating": stats.avg_rating,
+            "shots_on_target_per_90": stats.shots_on_target_per_90,
+            "form_xg_5": stats.form_xg_5,
+            "matches_played": stats.matches_played,
+            "minutes_played": stats.minutes_played,
+            "season": stats.season,
         }
-        for ct, player_count in rows
+        for player, stats, team_name in rows
     ]
 
 
-@router.get("/sync-status", response_model=SyncStatusResponse)
-async def get_sync_status(
-    session: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """Get sync status."""
-
-    counts: dict[str, int] = {}
-    for league in ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a"]:
-        p = await session.execute(select(func.count(Player.id)).where(Player.league == league))
-        t = await session.execute(select(func.count(Team.id)).where(Team.league == league))
-        counts[f"{league}_players"] = p.scalar() or 0
-        counts[f"{league}_teams"] = t.scalar() or 0
-
-    last_sync = await session.execute(select(func.max(PlayerStats.as_of_utc)))
-
-    return {**counts, "last_sync": last_sync.scalar()}
+# ---------------------------------------------------------------------------
+# GET /players/{player_api_id}  — detail
+# ---------------------------------------------------------------------------
 
 
-@router.get("/{player_id}", response_model=PlayerWithStats)
+@router.get("/{player_api_id}", response_model=PlayerDetail)
 async def get_player(
-    player_id: int,
+    player_api_id: int,
     session: AsyncSession = Depends(get_db),
+    season: str = Query("2025-2026"),
 ) -> dict[str, Any]:
-    """Get a single player with all stats."""
-    stmt = select(Player).where(Player.id == player_id)
-    result = await session.execute(stmt)
-    player = result.scalar_one_or_none()
+    """Get a single player with season stats and recent matches."""
 
-    if not player:
-        raise HTTPException(status_code=404, detail="Player not found")
-
-    # Get stats
-    stats_stmt = select(PlayerStats).where(
-        PlayerStats.player_id == player.id,
-        PlayerStats.season == "2025-2026",
+    # 1. Fetch player
+    player_result = await session.execute(
+        select(BzzPlayer, BzzTeam.name.label("team_name"))
+        .outerjoin(BzzTeam, BzzTeam.api_id == BzzPlayer.current_team_api_id)
+        .where(BzzPlayer.api_id == player_api_id)
     )
-    stats_result = await session.execute(stats_stmt)
-    all_stats = stats_result.scalars().all()
-
-    stats_by_source = {s.source: s for s in all_stats}
-
-    api_football = stats_by_source.get("api_football")
-    understat = stats_by_source.get("understat")
-    fotmob = stats_by_source.get("fotmob")
-    average = stats_by_source.get("average")
-    ev0_source = average or fotmob or understat or api_football
-
-    return {
-        "id": player.id,
-        "name": player.name,
-        "team": player.team,
-        "position": player.position,
-        "league": player.league,
-        "is_striker": player.is_striker,
-        "api_football": stats_to_response(api_football),
-        "understat": stats_to_response(understat),
-        "fotmob": stats_to_response(fotmob),
-        "average": stats_to_response(average),
-        "ev0_xg_per_90": ev0_source.xg_per_90 if ev0_source and ev0_source.xg_per_90 else 0.0,
-        "ev0_xa_per_90": ev0_source.xa_per_90 if ev0_source and ev0_source.xa_per_90 else 0.0,
-        "ev0_npxg_per_90": ev0_source.npxg_per_90 if ev0_source and ev0_source.npxg_per_90 else 0.0,
-    }
-
-
-class PlayerStrikerOut(BaseModel):
-    id: int
-    is_striker: bool
-
-
-@router.patch("/{player_id}/striker", response_model=PlayerStrikerOut)
-async def toggle_striker(player_id: int, session: AsyncSession = Depends(get_db)):
-    """Toggle le flag is_striker du joueur."""
-    player = await session.get(Player, player_id)
-    if player is None:
+    row = player_result.first()
+    if row is None:
         raise HTTPException(status_code=404, detail="Player not found")
-    new_value = not player.is_striker
-    player.is_striker = new_value
-    await session.commit()
-    return PlayerStrikerOut(id=player_id, is_striker=new_value)
 
+    player, team_name = row
 
-@router.post("/sync")
-async def trigger_sync(
-    strategy: str = Query(
-        "direct", description="Sync strategy: direct (Understat API), or smart (Firecrawl+LLM)"
-    ),
-):
-    """Trigger a player stats sync.
+    # 2. Season stats
+    stats_result = await session.execute(
+        select(BzzPlayerSeasonStat).where(
+            BzzPlayerSeasonStat.player_api_id == player_api_id,
+            BzzPlayerSeasonStat.season == season,
+        )
+    )
+    season_stat = stats_result.scalars().first()
 
-    Strategies:
-    - direct: Uses Understat API directly (no API keys needed, fast)
-    - smart: Uses Firecrawl + LLM + API-Football (requires API keys)
-    """
-    import asyncio
+    season_stats_out: SeasonStatsOut | None = None
+    if season_stat is not None:
+        season_stats_out = SeasonStatsOut(
+            season=season_stat.season,
+            league_api_id=season_stat.league_api_id,
+            matches_played=season_stat.matches_played,
+            minutes_played=season_stat.minutes_played,
+            starts=season_stat.starts,
+            goals=season_stat.goals,
+            goal_assist=season_stat.goal_assist,
+            total_shots=season_stat.total_shots,
+            shots_on_target=season_stat.shots_on_target,
+            key_pass=season_stat.key_pass,
+            expected_goals=season_stat.expected_goals,
+            expected_assists=season_stat.expected_assists,
+            xg_per_90=season_stat.xg_per_90,
+            xa_per_90=season_stat.xa_per_90,
+            shots_per_90=season_stat.shots_per_90,
+            shots_on_target_per_90=season_stat.shots_on_target_per_90,
+            key_pass_per_90=season_stat.key_pass_per_90,
+            avg_rating=season_stat.avg_rating,
+            form_xg_5=season_stat.form_xg_5,
+            form_rating_5=season_stat.form_rating_5,
+            form_goals_5=season_stat.form_goals_5,
+            form_assists_5=season_stat.form_assists_5,
+            rating_trend=season_stat.rating_trend,
+            shot_accuracy=season_stat.shot_accuracy,
+            xg_per_shot=season_stat.xg_per_shot,
+            finishing_delta=season_stat.finishing_delta,
+            xa_delta=season_stat.xa_delta,
+            pass_completion=season_stat.pass_completion,
+            duel_win_rate=season_stat.duel_win_rate,
+            aerial_win_rate=season_stat.aerial_win_rate,
+            tackle_success_rate=season_stat.tackle_success_rate,
+            avg_minutes_per_match=season_stat.avg_minutes_per_match,
+            starts_pct=season_stat.starts_pct,
+        )
 
-    if strategy == "smart":
-        from app.ingestion.smart_sync import smart_sync_all
+    # 3. Recent matches (last 10) — join to BzzEvent for date and teams
+    home_team_alias = BzzTeam.__table__.alias("ht")
+    away_team_alias = BzzTeam.__table__.alias("at_")
 
-        asyncio.create_task(smart_sync_all())
-    else:
-        from app.ingestion.sync_all_players import sync_all
+    recent_result = await session.execute(
+        select(
+            BzzPlayerMatchStat,
+            BzzEvent.event_date,
+            BzzEvent.home_team_api_id,
+            BzzEvent.away_team_api_id,
+            home_team_alias.c.name.label("home_team_name"),
+            away_team_alias.c.name.label("away_team_name"),
+        )
+        .join(BzzEvent, BzzEvent.api_id == BzzPlayerMatchStat.event_api_id)
+        .outerjoin(home_team_alias, home_team_alias.c.api_id == BzzEvent.home_team_api_id)
+        .outerjoin(away_team_alias, away_team_alias.c.api_id == BzzEvent.away_team_api_id)
+        .where(BzzPlayerMatchStat.player_api_id == player_api_id)
+        .order_by(desc(BzzEvent.event_date))
+        .limit(10)
+    )
+    recent_rows = recent_result.all()
 
-        asyncio.create_task(sync_all())
+    recent_matches: list[RecentMatch] = []
+    for ms, event_date, home_api_id, _away_api_id, home_name, away_name in recent_rows:
+        is_home = ms.is_home
+        if is_home is None and ms.team_api_id is not None:
+            is_home = ms.team_api_id == home_api_id
+
+        opponent = away_name if is_home else home_name
+
+        recent_matches.append(
+            RecentMatch(
+                event_api_id=ms.event_api_id,
+                event_date=event_date,
+                opponent=opponent,
+                is_home=is_home,
+                minutes_played=ms.minutes_played,
+                goals=ms.goals,
+                goal_assist=ms.goal_assist,
+                expected_goals=ms.expected_goals,
+                rating=ms.rating,
+                shots_on_target=ms.shots_on_target,
+                key_pass=ms.key_pass,
+            )
+        )
 
     return {
-        "status": "sync_started",
-        "strategy": strategy,
-        "message": f"Sync ({strategy}) started in background. Check /players/sync-status for progress.",
+        "player_api_id": player.api_id,
+        "name": player.name,
+        "short_name": player.short_name,
+        "position": player.position,
+        "date_of_birth": player.date_of_birth,
+        "nationality": player.nationality,
+        "height": player.height,
+        "jersey_number": player.jersey_number,
+        "market_value": player.market_value,
+        "team_name": team_name,
+        "season_stats": season_stats_out,
+        "recent_matches": recent_matches,
     }
