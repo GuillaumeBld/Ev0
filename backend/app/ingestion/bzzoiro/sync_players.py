@@ -31,6 +31,7 @@ async def sync_players(session: AsyncSession, client: BzzoiroClient) -> int:
         nat_team = row.get("national_team") or {}
         values = {
             "api_id": row["api_id"],
+            "internal_id": row.get("id"),
             "name": row.get("name", ""),
             "short_name": row.get("short_name"),
             "nationality": row.get("nationality"),

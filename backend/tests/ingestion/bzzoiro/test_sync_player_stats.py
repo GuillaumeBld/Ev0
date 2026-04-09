@@ -5,7 +5,7 @@ import pytest
 
 from app.ingestion.bzzoiro.sync_player_stats import (
     compute_derived_metrics,
-    sync_player_stats_for_event,
+    sync_player_stats_for_player,
 )
 
 
@@ -81,13 +81,11 @@ def test_compute_derived_metrics_zero_denominator():
 
 
 @pytest.mark.asyncio
-async def test_sync_player_stats_for_event():
+async def test_sync_player_stats_for_player():
+    """The API returns stats without player identity; player is known from context."""
     stat_rows = [
         {
-            "player": {"api_id": 101},
-            "event": {"api_id": 999},
-            "team": {"api_id": 201},
-            "is_home": True,
+            "event": {"id": 500, "api_id": 999},
             "minutes_played": 90,
             "rating": 7.5,
             "touches": 55,
@@ -123,10 +121,7 @@ async def test_sync_player_stats_for_event():
             "goals_conceded": 0,
         },
         {
-            "player": {"api_id": 102},
-            "event": {"api_id": 999},
-            "team": {"api_id": 202},
-            "is_home": False,
+            "event": {"id": 501, "api_id": 998},
             "minutes_played": 85,
             "rating": 6.8,
             "touches": 42,
@@ -170,10 +165,30 @@ async def test_sync_player_stats_for_event():
     session.execute = AsyncMock()
     session.commit = AsyncMock()
 
-
-    count = await sync_player_stats_for_event(session, client, event_api_id=999)
+    count = await sync_player_stats_for_player(
+        session, client, player_api_id=101, player_internal_id=42
+    )
     assert count == 2
-    client.get_all.assert_called_once_with("/api/player-stats/", {"event": 999})
+    client.get_all.assert_called_once_with("/api/player-stats/", {"player_id": 42})
+
+
+@pytest.mark.asyncio
+async def test_sync_player_stats_for_player_skips_missing_event_api_id():
+    """Rows without event.api_id are silently skipped."""
+    stat_rows = [
+        {"event": {}, "minutes_played": 90, "rating": 7.0},  # no api_id in event
+        {"event": {"api_id": 999}, "minutes_played": 45, "rating": 6.5},
+    ]
+
+    client = MagicMock()
+    client.get_all = AsyncMock(return_value=stat_rows)
+
+    session = MagicMock()
+    session.execute = AsyncMock()
+    session.commit = AsyncMock()
+
+    count = await sync_player_stats_for_player(session, client, player_api_id=101, player_internal_id=42)
+    assert count == 1
 
 
 def test_compute_derived_metrics_partial_duel():
