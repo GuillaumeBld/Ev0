@@ -175,3 +175,20 @@ async def test_sync_player_stats_for_event():
     count = await sync_player_stats_for_event(session, client, event_api_id=999)
     assert count == 2
     client.get_all.assert_called_once_with("/api/player-stats/", {"event": 999})
+
+
+def test_compute_derived_metrics_partial_duel():
+    row = {
+        "total_shots": None, "shots_on_target": None,
+        "expected_goals": None, "goals": None,
+        "goal_assist": None, "expected_assists": None,
+        "total_pass": None, "accurate_pass": None,
+        "total_long_balls": None, "accurate_long_balls": None,
+        "total_cross": None, "accurate_cross": None,
+        "duel_won": 5, "duel_lost": None,
+        "aerial_won": None, "aerial_lost": 2,
+        "won_tackle": None, "total_tackle": None,
+    }
+    result = compute_derived_metrics(row)
+    assert result["duel_win_rate"] is None
+    assert result["aerial_win_rate"] is None

@@ -44,14 +44,14 @@ def compute_derived_metrics(row: dict[str, Any]) -> dict[str, float | None]:
     total_tackle = row.get("total_tackle")
     won_tackle = row.get("won_tackle")
 
-    # Duel win rate: need at least one non-None value; denominator = sum
+    # Duel win rate: need both values; denominator = sum
     duel_sum: int | None = None
-    if duel_won is not None or duel_lost is not None:
-        duel_sum = (duel_won or 0) + (duel_lost or 0)
+    if duel_won is not None and duel_lost is not None:
+        duel_sum = duel_won + duel_lost
 
     aerial_sum: int | None = None
-    if aerial_won is not None or aerial_lost is not None:
-        aerial_sum = (aerial_won or 0) + (aerial_lost or 0)
+    if aerial_won is not None and aerial_lost is not None:
+        aerial_sum = aerial_won + aerial_lost
 
     finishing_delta: float | None = None
     if goals is not None and expected_goals is not None:
@@ -82,7 +82,6 @@ async def sync_player_stats_for_event(
 ) -> int:
     """Fetch and upsert all player stats for a given event. Returns row count."""
     rows = await client.get_all("/api/player-stats/", {"event": event_api_id})
-    now = datetime.now(UTC)
     count = 0
     for row in rows:
         player = row.get("player") or {}
