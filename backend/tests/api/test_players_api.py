@@ -1,9 +1,9 @@
 """Tests for the Bzzoiro-powered players API endpoints."""
 
-import pytest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi import HTTPException
 
 
@@ -201,8 +201,8 @@ async def test_get_player_detail():
     ms1 = _make_match_stat(player_api_id=1, event_api_id=100, is_home=True)
     ms2 = _make_match_stat(player_api_id=1, event_api_id=101, is_home=False)
 
-    dt1 = datetime(2025, 12, 15, 20, 45, tzinfo=timezone.utc)
-    dt2 = datetime(2025, 12, 8, 18, 0, tzinfo=timezone.utc)
+    dt1 = datetime(2025, 12, 15, 20, 45, tzinfo=UTC)
+    dt2 = datetime(2025, 12, 8, 18, 0, tzinfo=UTC)
 
     # Three execute calls:
     # 1. player + team_name

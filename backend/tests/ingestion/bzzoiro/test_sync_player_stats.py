@@ -170,7 +170,6 @@ async def test_sync_player_stats_for_event():
     session.execute = AsyncMock()
     session.commit = AsyncMock()
 
-    from app.ingestion.bzzoiro.sync_player_stats import sync_player_stats_for_event
 
     count = await sync_player_stats_for_event(session, client, event_api_id=999)
     assert count == 2

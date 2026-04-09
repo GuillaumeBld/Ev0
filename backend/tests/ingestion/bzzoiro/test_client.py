@@ -1,5 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
+
 from app.ingestion.bzzoiro.client import BzzoiroClient
 
 

@@ -1,9 +1,8 @@
 """Tests for Bzzoiro sync jobs registered in the background worker."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # job_sync_bzzoiro_events
