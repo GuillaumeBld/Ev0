@@ -6,8 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.pricing.xg_resolver import XgMode, get_global_xg_mode, resolve_xg_source, set_global_xg_mode
-
+from app.pricing.xg_resolver import (
+    XgMode,
+    get_global_xg_mode,
+    resolve_xg_source,
+    set_global_xg_mode,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -212,3 +216,16 @@ class TestResolveXgSourceFetchesMode:
         assert source == "bzzoiro"
         assert home_xg == 2.0
         assert away_xg == 1.0
+
+
+# ---------------------------------------------------------------------------
+# set_global_xg_mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_global_xg_mode():
+    session = _make_session_with_execute_result(None)
+    await set_global_xg_mode(session, XgMode.MODEL)
+    session.execute.assert_called_once()
+    session.commit.assert_called_once()

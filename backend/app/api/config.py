@@ -19,7 +19,7 @@ class XgSourceResponse(BaseModel):
 
 
 class XgSourceRequest(BaseModel):
-    mode: str
+    mode: XgMode
 
 
 @router.get("/config/xg-source", response_model=XgSourceResponse)
@@ -37,14 +37,5 @@ async def patch_xg_source(
     db: AsyncSession = Depends(get_db),
 ) -> XgSourceResponse:
     """Set the global xG source mode. Accepts {"mode": "bzzoiro"} or {"mode": "model"}."""
-    try:
-        mode = XgMode(body.mode)
-    except ValueError:
-        from fastapi import HTTPException
-
-        raise HTTPException(
-            status_code=422,
-            detail=f"Invalid mode {body.mode!r}. Must be 'bzzoiro' or 'model'.",
-        ) from None
-    await set_global_xg_mode(db, mode)
-    return XgSourceResponse(mode=mode.value)
+    await set_global_xg_mode(db, body.mode)
+    return XgSourceResponse(mode=body.mode.value)
