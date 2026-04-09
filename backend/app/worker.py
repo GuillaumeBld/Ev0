@@ -1986,10 +1986,10 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Bzzoiro predictions: daily at 07:00 UTC
+    # Bzzoiro predictions: daily at 07:45 UTC (offset from job_sync_player_stats at 07:00)
     scheduler.add_job(
         job_sync_bzzoiro_predictions,
-        CronTrigger(hour=7, minute=0),
+        CronTrigger(hour=7, minute=45),
         id="sync_bzzoiro_predictions",
         name="Sync Bzzoiro match predictions",
         replace_existing=True,
