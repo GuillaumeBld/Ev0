@@ -22,6 +22,13 @@ from app.cache import close_redis
 from app.config import settings
 from app.db import async_session, engine
 from app.ingestion.auto_settle import settle_approved_recommendations
+from app.ingestion.bzzoiro.aggregate import aggregate_all_leagues
+from app.ingestion.bzzoiro.client import BzzoiroClient
+from app.ingestion.bzzoiro.sync_events import sync_events
+from app.ingestion.bzzoiro.sync_player_stats import sync_player_stats
+from app.ingestion.bzzoiro.sync_players import sync_players
+from app.ingestion.bzzoiro.sync_predictions import sync_predictions
+from app.ingestion.bzzoiro.sync_reference import sync_leagues, sync_teams
 from app.ingestion.fixture_matcher import match_event_to_fixture_by_teams
 from app.ingestion.match_odds import ingest_match_odds_for_league
 from app.ingestion.odds import QuotaExhaustedError, fetch_events_for_league, ingest_odds_for_league, normalize_league_key
@@ -1690,6 +1697,98 @@ async def job_discover_oddsportal_urls() -> None:
         logger.error("job_discover_oddsportal_urls error: %s", exc, exc_info=True)
 
 
+# ── Bzzoiro Jobs ─────────────────────────────────────────────────
+
+
+async def job_sync_bzzoiro_reference():
+    """Daily at 02:00 UTC: sync Bzzoiro leagues and teams reference data."""
+    logger.info("=== Starting Bzzoiro reference sync ===")
+    if not settings.bzzoiro_api_key:
+        logger.warning("BZZOIRO_API_KEY not configured, skipping reference sync")
+        return
+    try:
+        async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
+            result_leagues = await sync_leagues(session, client)
+            logger.info("Bzzoiro leagues synced: %s", result_leagues)
+            result_teams = await sync_teams(session, client)
+            logger.info("Bzzoiro teams synced: %s", result_teams)
+    except Exception as exc:
+        logger.error("Error in Bzzoiro reference sync: %s", exc, exc_info=True)
+    logger.info("=== Bzzoiro reference sync complete ===")
+
+
+async def job_sync_bzzoiro_players():
+    """Daily at 03:00 UTC: sync Bzzoiro player roster data."""
+    logger.info("=== Starting Bzzoiro players sync ===")
+    if not settings.bzzoiro_api_key:
+        logger.warning("BZZOIRO_API_KEY not configured, skipping players sync")
+        return
+    try:
+        async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
+            result = await sync_players(session, client)
+            logger.info("Bzzoiro players synced: %s", result)
+    except Exception as exc:
+        logger.error("Error in Bzzoiro players sync: %s", exc, exc_info=True)
+    logger.info("=== Bzzoiro players sync complete ===")
+
+
+async def job_aggregate_season_stats():
+    """Daily at 04:00 UTC: aggregate per-match stats into season totals."""
+    logger.info("=== Starting Bzzoiro season stats aggregation ===")
+    try:
+        async with async_session() as session:
+            result = await aggregate_all_leagues(session)
+            logger.info("Bzzoiro season aggregation: %s", result)
+    except Exception as exc:
+        logger.error("Error in Bzzoiro season stats aggregation: %s", exc, exc_info=True)
+    logger.info("=== Bzzoiro season stats aggregation complete ===")
+
+
+async def job_sync_bzzoiro_events():
+    """Every 6h: sync Bzzoiro match events (goals, assists)."""
+    logger.info("=== Starting Bzzoiro events sync ===")
+    if not settings.bzzoiro_api_key:
+        logger.warning("BZZOIRO_API_KEY not configured, skipping events sync")
+        return
+    try:
+        async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
+            result = await sync_events(session, client)
+            logger.info("Bzzoiro events synced: %s", result)
+    except Exception as exc:
+        logger.error("Error in Bzzoiro events sync: %s", exc, exc_info=True)
+    logger.info("=== Bzzoiro events sync complete ===")
+
+
+async def job_sync_bzzoiro_player_stats():
+    """Every 6h (offset 1h from events): sync Bzzoiro per-match player stats."""
+    logger.info("=== Starting Bzzoiro player stats sync ===")
+    if not settings.bzzoiro_api_key:
+        logger.warning("BZZOIRO_API_KEY not configured, skipping player stats sync")
+        return
+    try:
+        async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
+            result = await sync_player_stats(session, client)
+            logger.info("Bzzoiro player stats synced: %s", result)
+    except Exception as exc:
+        logger.error("Error in Bzzoiro player stats sync: %s", exc, exc_info=True)
+    logger.info("=== Bzzoiro player stats sync complete ===")
+
+
+async def job_sync_bzzoiro_predictions():
+    """Daily at 07:00 UTC: sync Bzzoiro match predictions."""
+    logger.info("=== Starting Bzzoiro predictions sync ===")
+    if not settings.bzzoiro_api_key:
+        logger.warning("BZZOIRO_API_KEY not configured, skipping predictions sync")
+        return
+    try:
+        async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
+            result = await sync_predictions(session, client)
+            logger.info("Bzzoiro predictions synced: %s", result)
+    except Exception as exc:
+        logger.error("Error in Bzzoiro predictions sync: %s", exc, exc_info=True)
+    logger.info("=== Bzzoiro predictions sync complete ===")
+
+
 # ── Scheduler Setup ───────────────────────────────────────────────
 
 
@@ -1838,6 +1937,62 @@ def create_scheduler() -> AsyncIOScheduler:
         name="OddsPortal URL auto-discovery: seeds oddsportal_poll_state from league listings",
         replace_existing=True,
         max_instances=1,
+    )
+
+    # ── Bzzoiro jobs ───────────────────────────────────────────────
+
+    # Bzzoiro reference (leagues + teams): daily at 02:00 UTC
+    scheduler.add_job(
+        job_sync_bzzoiro_reference,
+        CronTrigger(hour=2, minute=0),
+        id="sync_bzzoiro_reference",
+        name="Sync Bzzoiro leagues and teams reference data",
+        replace_existing=True,
+    )
+
+    # Bzzoiro players: daily at 03:00 UTC
+    scheduler.add_job(
+        job_sync_bzzoiro_players,
+        CronTrigger(hour=3, minute=0),
+        id="sync_bzzoiro_players",
+        name="Sync Bzzoiro player roster data",
+        replace_existing=True,
+    )
+
+    # Bzzoiro season stats aggregation: daily at 04:00 UTC
+    scheduler.add_job(
+        job_aggregate_season_stats,
+        CronTrigger(hour=4, minute=0),
+        id="aggregate_season_stats",
+        name="Aggregate Bzzoiro per-match stats into season totals",
+        replace_existing=True,
+    )
+
+    # Bzzoiro events: every 6 hours
+    scheduler.add_job(
+        job_sync_bzzoiro_events,
+        IntervalTrigger(hours=6),
+        id="sync_bzzoiro_events",
+        name="Sync Bzzoiro match events (goals, assists)",
+        replace_existing=True,
+    )
+
+    # Bzzoiro player stats: every 6 hours, offset 1h from events
+    scheduler.add_job(
+        job_sync_bzzoiro_player_stats,
+        IntervalTrigger(hours=6, start_date="2000-01-01T01:00:00"),
+        id="sync_bzzoiro_player_stats",
+        name="Sync Bzzoiro per-match player stats",
+        replace_existing=True,
+    )
+
+    # Bzzoiro predictions: daily at 07:00 UTC
+    scheduler.add_job(
+        job_sync_bzzoiro_predictions,
+        CronTrigger(hour=7, minute=0),
+        id="sync_bzzoiro_predictions",
+        name="Sync Bzzoiro match predictions",
+        replace_existing=True,
     )
 
     return scheduler
