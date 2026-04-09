@@ -594,6 +594,52 @@ export interface OptimizationResult {
   status?: string
 }
 
+export interface PlayerSummary {
+  player_api_id: number
+  name: string
+  short_name: string
+  position: string
+  team_name: string
+  nationality: string
+  xg_per_90: number | null
+  xa_per_90: number | null
+  avg_rating: number | null
+  shots_on_target_per_90: number | null
+  form_xg_5: number | null
+  matches_played: number
+  minutes_played: number
+  season: string
+}
+
+export interface RecentMatch {
+  event_api_id: number
+  event_date: string
+  opponent: string
+  is_home: boolean
+  minutes_played: number
+  goals: number
+  goal_assist: number
+  expected_goals: number | null
+  rating: number | null
+  shots_on_target: number
+  key_pass: number
+}
+
+export interface PlayerDetail {
+  player_api_id: number
+  name: string
+  short_name: string
+  position: string
+  date_of_birth: string | null
+  nationality: string
+  height: number | null
+  jersey_number: number | null
+  market_value: number | null
+  team_name: string
+  season_stats: Record<string, number | null>
+  recent_matches: RecentMatch[]
+}
+
 export async function getLastOptimization(): Promise<OptimizationResult | null> {
   try {
     const { data } = await api.get('/api/v1/autopilot/optimization')
