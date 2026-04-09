@@ -62,12 +62,6 @@ def upgrade() -> None:
         type_="foreignkey",
     )
 
-    # bzz_teams FK
-    op.drop_constraint(
-        "bzz_teams_league_api_id_fkey",
-        "bzz_teams",
-        type_="foreignkey",
-    )
 
 
 def downgrade() -> None:
