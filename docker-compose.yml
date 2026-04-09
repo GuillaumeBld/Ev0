@@ -31,6 +31,7 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       CORS_ORIGINS_STR: ${CORS_ORIGINS_STR:?Set CORS_ORIGINS_STR in env}
       ODDS_API_KEY: ${ODDS_API_KEY:?Set ODDS_API_KEY in env}
+      BZZOIRO_API_KEY: ${BZZOIRO_API_KEY:-}
       DEPLOY_VERSION: 2026-02-22-v16
     depends_on:
       - db
