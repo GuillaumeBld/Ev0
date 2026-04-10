@@ -13,7 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.ingestion.understat_scraper import UNDERSTAT_LEAGUES, fetch_understat_league
-from app.models.bzzoiro import BzzEvent, BzzLeague, BzzPlayer, BzzPlayerMatchStat, BzzPlayerSeasonStat, BzzTeam
+from app.models.bzzoiro import (
+    BzzEvent,
+    BzzLeague,
+    BzzPlayer,
+    BzzPlayerMatchStat,
+    BzzPlayerSeasonStat,
+    BzzTeam,
+)
 
 router = APIRouter(prefix="/players", tags=["players"])
 
@@ -157,6 +164,15 @@ class SeasonStatsOut(BaseModel):
     xg_per_shot: float | None
     finishing_delta: float | None
     xa_delta: float | None
+    yellow_card: int | None
+    red_card: int | None
+    saves: int | None
+    accurate_cross_per_90: float | None
+    recoveries_per_90: float | None
+    tackles_per_90: float | None
+    interceptions_per_90: float | None
+    long_ball_accuracy: float | None
+    cross_accuracy: float | None
     pass_completion: float | None
     duel_win_rate: float | None
     aerial_win_rate: float | None
@@ -402,6 +418,15 @@ async def get_player(
             xg_per_shot=season_stat.xg_per_shot,
             finishing_delta=season_stat.finishing_delta,
             xa_delta=season_stat.xa_delta,
+            yellow_card=season_stat.yellow_card,
+            red_card=season_stat.red_card,
+            saves=season_stat.saves,
+            accurate_cross_per_90=season_stat.accurate_cross_per_90,
+            recoveries_per_90=season_stat.recoveries_per_90,
+            tackles_per_90=season_stat.tackles_per_90,
+            interceptions_per_90=season_stat.interceptions_per_90,
+            long_ball_accuracy=season_stat.long_ball_accuracy,
+            cross_accuracy=season_stat.cross_accuracy,
             pass_completion=season_stat.pass_completion,
             duel_win_rate=season_stat.duel_win_rate,
             aerial_win_rate=season_stat.aerial_win_rate,
