@@ -13,13 +13,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.ingestion.understat_scraper import UNDERSTAT_LEAGUES, fetch_understat_league
-from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzPlayerMatchStat, BzzPlayerSeasonStat, BzzTeam
+from app.models.bzzoiro import BzzEvent, BzzLeague, BzzPlayer, BzzPlayerMatchStat, BzzPlayerSeasonStat, BzzTeam
 
 router = APIRouter(prefix="/players", tags=["players"])
 
 # ---------------------------------------------------------------------------
-# Response models
+# Constants
 # ---------------------------------------------------------------------------
+
+TARGET_LEAGUE_IDS = [5, 8, 16, 21, 25, 29]  # BL, UCL, LL, L1, PL, SA
 
 CSV_FIELDS = [
     "name",
@@ -41,15 +43,52 @@ CSV_FIELDS = [
 ]
 
 _SORTABLE_COLUMNS: dict[str, Any] = {
-    "xg_per_90": BzzPlayerSeasonStat.xg_per_90,
-    "xa_per_90": BzzPlayerSeasonStat.xa_per_90,
-    "avg_rating": BzzPlayerSeasonStat.avg_rating,
-    "shots_on_target_per_90": BzzPlayerSeasonStat.shots_on_target_per_90,
-    "form_xg_5": BzzPlayerSeasonStat.form_xg_5,
+    # Identity
+    "name": BzzPlayer.name,
+    "team": BzzTeam.name,
+    # Totals
     "matches_played": BzzPlayerSeasonStat.matches_played,
     "minutes_played": BzzPlayerSeasonStat.minutes_played,
+    "goals": BzzPlayerSeasonStat.goals,
+    "goal_assist": BzzPlayerSeasonStat.goal_assist,
+    "total_shots": BzzPlayerSeasonStat.total_shots,
+    "shots_on_target": BzzPlayerSeasonStat.shots_on_target,
+    "key_pass": BzzPlayerSeasonStat.key_pass,
     "expected_goals": BzzPlayerSeasonStat.expected_goals,
     "expected_assists": BzzPlayerSeasonStat.expected_assists,
+    "yellow_card": BzzPlayerSeasonStat.yellow_card,
+    "red_card": BzzPlayerSeasonStat.red_card,
+    "saves": BzzPlayerSeasonStat.saves,
+    # Per-90
+    "xg_per_90": BzzPlayerSeasonStat.xg_per_90,
+    "xa_per_90": BzzPlayerSeasonStat.xa_per_90,
+    "shots_per_90": BzzPlayerSeasonStat.shots_per_90,
+    "shots_on_target_per_90": BzzPlayerSeasonStat.shots_on_target_per_90,
+    "key_pass_per_90": BzzPlayerSeasonStat.key_pass_per_90,
+    "accurate_cross_per_90": BzzPlayerSeasonStat.accurate_cross_per_90,
+    "recoveries_per_90": BzzPlayerSeasonStat.recoveries_per_90,
+    "tackles_per_90": BzzPlayerSeasonStat.tackles_per_90,
+    "interceptions_per_90": BzzPlayerSeasonStat.interceptions_per_90,
+    # Efficiency
+    "avg_rating": BzzPlayerSeasonStat.avg_rating,
+    "shot_accuracy": BzzPlayerSeasonStat.shot_accuracy,
+    "xg_per_shot": BzzPlayerSeasonStat.xg_per_shot,
+    "finishing_delta": BzzPlayerSeasonStat.finishing_delta,
+    "xa_delta": BzzPlayerSeasonStat.xa_delta,
+    "pass_completion": BzzPlayerSeasonStat.pass_completion,
+    "long_ball_accuracy": BzzPlayerSeasonStat.long_ball_accuracy,
+    "cross_accuracy": BzzPlayerSeasonStat.cross_accuracy,
+    "duel_win_rate": BzzPlayerSeasonStat.duel_win_rate,
+    "aerial_win_rate": BzzPlayerSeasonStat.aerial_win_rate,
+    "tackle_success_rate": BzzPlayerSeasonStat.tackle_success_rate,
+    "avg_minutes_per_match": BzzPlayerSeasonStat.avg_minutes_per_match,
+    "starts_pct": BzzPlayerSeasonStat.starts_pct,
+    # Form
+    "form_xg_5": BzzPlayerSeasonStat.form_xg_5,
+    "form_rating_5": BzzPlayerSeasonStat.form_rating_5,
+    "form_goals_5": BzzPlayerSeasonStat.form_goals_5,
+    "form_assists_5": BzzPlayerSeasonStat.form_assists_5,
+    "rating_trend": BzzPlayerSeasonStat.rating_trend,
 }
 
 
@@ -141,6 +180,50 @@ class PlayerDetail(BaseModel):
     team_name: str | None
     season_stats: SeasonStatsOut | None
     recent_matches: list[RecentMatch]
+
+
+# ---------------------------------------------------------------------------
+# GET /players/leagues  — championnats disponibles
+# ---------------------------------------------------------------------------
+
+
+@router.get("/leagues", response_model=list[dict])
+async def list_player_leagues(
+    session: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """Return the 6 target leagues (hardcoded IDs)."""
+    result = await session.execute(
+        select(BzzLeague.api_id, BzzLeague.name)
+        .where(BzzLeague.api_id.in_(TARGET_LEAGUE_IDS))
+        .order_by(BzzLeague.name)
+    )
+    return [{"api_id": row[0], "name": row[1]} for row in result.all()]
+
+
+# ---------------------------------------------------------------------------
+# GET /players/teams  — équipes du championnat (ou toutes)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/teams", response_model=list[dict])
+async def list_player_teams(
+    session: AsyncSession = Depends(get_db),
+    league_api_id: int | None = Query(None, description="Filter by league api_id"),
+    season: str = Query("2025-2026"),
+) -> list[dict[str, Any]]:
+    """Return teams that have players with season stats."""
+    stmt = (
+        select(BzzTeam.api_id, BzzTeam.name)
+        .join(BzzPlayer, BzzPlayer.current_team_api_id == BzzTeam.api_id)
+        .join(BzzPlayerSeasonStat, BzzPlayerSeasonStat.player_api_id == BzzPlayer.api_id)
+        .where(BzzPlayerSeasonStat.season == season)
+        .distinct()
+        .order_by(BzzTeam.name)
+    )
+    if league_api_id is not None:
+        stmt = stmt.where(BzzPlayerSeasonStat.league_api_id == league_api_id)
+    result = await session.execute(stmt)
+    return [{"api_id": row[0], "name": row[1]} for row in result.all()]
 
 
 # ---------------------------------------------------------------------------

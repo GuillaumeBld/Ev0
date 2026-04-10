@@ -42,7 +42,7 @@ async def test_sync_predictions_empty():
 
     count = await sync_predictions(session, client)
     assert count == 0
-    client.get_all.assert_called_once_with("/api/predictions/")
+    client.get_all.assert_called_once_with("/api/predictions/", params={"upcoming": "true"})
     # Only the event-ID query should have been executed (no upsert rows)
     assert session.execute.call_count == 1
     session.commit.assert_called_once()
@@ -111,7 +111,7 @@ async def test_sync_predictions_basic():
 
     count = await sync_predictions(session, client)
     assert count == 2
-    client.get_all.assert_called_once_with("/api/predictions/")
+    client.get_all.assert_called_once_with("/api/predictions/", params={"upcoming": "true"})
     # 1 event-ID query + 2 upserts
     assert session.execute.call_count == 3
     session.commit.assert_called_once()

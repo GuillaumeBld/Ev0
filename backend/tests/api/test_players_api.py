@@ -261,3 +261,92 @@ async def test_get_player_detail():
     assert m1.event_api_id == 101
     assert m1.is_home is False
     assert m1.opponent == "Real Madrid"
+
+
+# ---------------------------------------------------------------------------
+# Test: list_leagues returns target leagues
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_player_leagues():
+    from app.api.players import list_player_leagues
+
+    result = MagicMock()
+    result.all.return_value = [(25, "Premier League"), (21, "Ligue 1")]
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=result)
+
+    response = await list_player_leagues(session=mock_db)
+    assert len(response) == 2
+    assert response[0] == {"api_id": 25, "name": "Premier League"}
+    assert response[1] == {"api_id": 21, "name": "Ligue 1"}
+
+
+# ---------------------------------------------------------------------------
+# Test: list_teams — all teams when no league filter
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_player_teams_no_filter():
+    from app.api.players import list_player_teams
+
+    result = MagicMock()
+    result.all.return_value = [(100, "Arsenal"), (200, "Chelsea")]
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=result)
+
+    response = await list_player_teams(session=mock_db, league_api_id=None, season="2025-2026")
+    assert len(response) == 2
+    assert response[0] == {"api_id": 100, "name": "Arsenal"}
+
+
+# ---------------------------------------------------------------------------
+# Test: list_teams — filtered by league
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_player_teams_with_league():
+    from app.api.players import list_player_teams
+
+    result = MagicMock()
+    result.all.return_value = [(100, "Arsenal")]
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=result)
+
+    response = await list_player_teams(session=mock_db, league_api_id=25, season="2025-2026")
+    assert response == [{"api_id": 100, "name": "Arsenal"}]
+    mock_db.execute.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Test: list_players — sort_by extended column (avg_rating)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_players_sort_by_avg_rating():
+    from app.api.players import list_players
+
+    p1 = _make_player(api_id=1)
+    s1 = _make_season_stat(player_api_id=1)
+
+    mock_db = AsyncMock()
+    result = MagicMock()
+    result.all.return_value = [(p1, s1, "Arsenal")]
+    mock_db.execute = AsyncMock(return_value=result)
+
+    response = await list_players(
+        session=mock_db,
+        league_api_id=None,
+        team_api_id=None,
+        position=None,
+        min_minutes=0,
+        season="2025-2026",
+        sort_by="avg_rating",
+        sort_order="asc",
+        limit=50,
+        offset=0,
+    )
+    assert len(response) == 1
