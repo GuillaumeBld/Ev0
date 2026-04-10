@@ -296,11 +296,13 @@ export default function PlayersPage() {
                   <tr
                     key={player.player_api_id}
                     className="border-b border-gray-700/50 hover:bg-gray-700/40 cursor-pointer transition-colors"
-                    onClick={() => router.push(
-                      `/dashboard/players/${player.player_api_id}` +
-                      (leagueApiId !== null ? `?league=${leagueApiId}` : '') +
-                      (teamApiId !== null ? `&team=${teamApiId}` : '')
-                    )}
+                    onClick={() => {
+                      const qs = new URLSearchParams()
+                      if (leagueApiId !== null) qs.set('league', leagueApiId.toString())
+                      if (teamApiId !== null) qs.set('team', teamApiId.toString())
+                      const query = qs.toString()
+                      router.push(`/dashboard/players/${player.player_api_id}${query ? `?${query}` : ''}`)
+                    }}
                   >
                     <td className="px-4 py-3">
                       <p className="text-sm font-medium text-white leading-tight">{player.name}</p>
