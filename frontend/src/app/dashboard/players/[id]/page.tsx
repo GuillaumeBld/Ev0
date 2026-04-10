@@ -88,7 +88,7 @@ function PassesSection({ s }: { s: SeasonStatsOut }) {
         <StatCard label="Passes totales" value={fmtInt(s.total_pass)} />
         <StatCard label="Passes précises" value={fmtInt(s.accurate_pass)} />
         <StatCard label="Préc. longues balles" value={pct(s.long_ball_accuracy)} />
-        <StatCard label="Longues balles" value={fmtInt(s.total_long_balls)} />
+        <StatCard label="Longues balles (tot.)" value={fmtInt(s.total_long_balls)} />
         <StatCard label="Centres/90" value={fmt(s.accurate_cross_per_90)} />
         <StatCard label="Précision centres" value={pct(s.cross_accuracy)} />
         <StatCard label="Centres totaux" value={fmtInt(s.total_cross)} />
@@ -237,7 +237,7 @@ export default function PlayerDetailPage() {
 
   const formatMarketValue = (v: number | null) => {
     if (!v) return null
-    return v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M €` : `${(v / 1_000).toFixed(0)}K €`
+    return v >= 1_000_000 ? `${parseFloat((v / 1_000_000).toFixed(1))}M €` : `${(v / 1_000).toFixed(0)}K €`
   }
 
   if (loading) {
