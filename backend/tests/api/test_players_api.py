@@ -73,12 +73,41 @@ def _make_match_stat(
     ms.team_api_id = team_api_id
     ms.is_home = is_home
     ms.minutes_played = 90
+    ms.rating = 8.2
+    ms.touches = 55
     ms.goals = 1
     ms.goal_assist = 0
     ms.expected_goals = 0.73
-    ms.rating = 8.2
+    ms.expected_assists = 0.15
+    ms.total_shots = 4
     ms.shots_on_target = 3
+    ms.total_pass = 42
+    ms.accurate_pass = 36
     ms.key_pass = 2
+    ms.total_long_balls = 3
+    ms.accurate_long_balls = 2
+    ms.total_cross = 1
+    ms.accurate_cross = 0
+    ms.duel_won = 5
+    ms.duel_lost = 3
+    ms.aerial_won = 2
+    ms.aerial_lost = 1
+    ms.total_tackle = 4
+    ms.won_tackle = 3
+    ms.total_clearance = 0
+    ms.interception = 1
+    ms.ball_recovery = 4
+    ms.yellow_card = 0
+    ms.red_card = 0
+    ms.fouls = 1
+    ms.was_fouled = 2
+    ms.dispossessed = 1
+    ms.possession_lost = 3
+    ms.saves = 0
+    ms.goals_conceded = 0
+    ms.shot_accuracy = 0.75
+    ms.pass_completion = 0.857
+    ms.duel_win_rate = 0.625
     return ms
 
 
@@ -261,6 +290,56 @@ async def test_get_player_detail():
     assert m1.event_api_id == 101
     assert m1.is_home is False
     assert m1.opponent == "Real Madrid"
+
+
+@pytest.mark.asyncio
+async def test_get_player_detail_full_match_stats():
+    """Recent match entries expose all BzzPlayerMatchStat fields."""
+    from app.api.players import get_player
+
+    player = _make_player(api_id=1, name="Test Player")
+    season_stat = _make_season_stat(player_api_id=1)
+    ms = _make_match_stat(player_api_id=1, event_api_id=777, is_home=True)
+
+    dt = datetime(2026, 1, 10, 20, 0, tzinfo=UTC)
+
+    player_result = MagicMock()
+    player_result.first.return_value = (player, "Arsenal")
+
+    season_result = MagicMock()
+    season_scalars = MagicMock()
+    season_scalars.first.return_value = season_stat
+    season_result.scalars.return_value = season_scalars
+
+    recent_result = MagicMock()
+    recent_result.all.return_value = [
+        (ms, dt, 100, 200, "Arsenal", "Chelsea"),
+    ]
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(
+        side_effect=[player_result, season_result, recent_result]
+    )
+
+    response = await get_player(player_api_id=1, session=mock_db, season="2025-2026")
+
+    m = response["recent_matches"][0]
+    assert m.event_api_id == 777
+    assert m.touches == 55
+    assert m.total_shots == 4
+    assert m.total_pass == 42
+    assert m.accurate_pass == 36
+    assert m.duel_won == 5
+    assert m.duel_lost == 3
+    assert m.aerial_won == 2
+    assert m.won_tackle == 3
+    assert m.interception == 1
+    assert m.ball_recovery == 4
+    assert m.yellow_card == 0
+    assert m.fouls == 1
+    assert m.shot_accuracy == pytest.approx(0.75)
+    assert m.pass_completion == pytest.approx(0.857)
+    assert m.duel_win_rate == pytest.approx(0.625)
 
 
 # ---------------------------------------------------------------------------

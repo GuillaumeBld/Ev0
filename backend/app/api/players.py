@@ -119,19 +119,48 @@ class PlayerSummary(BaseModel):
 
 
 class RecentMatch(BaseModel):
-    """Single match entry in player detail."""
+    """Single match entry in player detail — all available stats."""
 
     event_api_id: int
     event_date: datetime | None
     opponent: str | None
     is_home: bool | None
     minutes_played: int | None
+    rating: float | None
+    touches: int | None
     goals: int | None
     goal_assist: int | None
     expected_goals: float | None
-    rating: float | None
+    expected_assists: float | None
+    total_shots: int | None
     shots_on_target: int | None
+    total_pass: int | None
+    accurate_pass: int | None
     key_pass: int | None
+    total_long_balls: int | None
+    accurate_long_balls: int | None
+    total_cross: int | None
+    accurate_cross: int | None
+    duel_won: int | None
+    duel_lost: int | None
+    aerial_won: int | None
+    aerial_lost: int | None
+    total_tackle: int | None
+    won_tackle: int | None
+    total_clearance: int | None
+    interception: int | None
+    ball_recovery: int | None
+    yellow_card: int | None
+    red_card: int | None
+    fouls: int | None
+    was_fouled: int | None
+    dispossessed: int | None
+    possession_lost: int | None
+    saves: int | None
+    goals_conceded: int | None
+    shot_accuracy: float | None
+    pass_completion: float | None
+    duel_win_rate: float | None
 
 
 class SeasonStatsOut(BaseModel):
@@ -453,7 +482,6 @@ async def get_player(
         .outerjoin(away_team_alias, away_team_alias.c.api_id == BzzEvent.away_team_api_id)
         .where(BzzPlayerMatchStat.player_api_id == player_api_id)
         .order_by(desc(BzzEvent.event_date))
-        .limit(10)
     )
     recent_rows = recent_result.all()
 
@@ -472,12 +500,41 @@ async def get_player(
                 opponent=opponent,
                 is_home=is_home,
                 minutes_played=ms.minutes_played,
+                rating=ms.rating,
+                touches=ms.touches,
                 goals=ms.goals,
                 goal_assist=ms.goal_assist,
                 expected_goals=ms.expected_goals,
-                rating=ms.rating,
+                expected_assists=ms.expected_assists,
+                total_shots=ms.total_shots,
                 shots_on_target=ms.shots_on_target,
+                total_pass=ms.total_pass,
+                accurate_pass=ms.accurate_pass,
                 key_pass=ms.key_pass,
+                total_long_balls=ms.total_long_balls,
+                accurate_long_balls=ms.accurate_long_balls,
+                total_cross=ms.total_cross,
+                accurate_cross=ms.accurate_cross,
+                duel_won=ms.duel_won,
+                duel_lost=ms.duel_lost,
+                aerial_won=ms.aerial_won,
+                aerial_lost=ms.aerial_lost,
+                total_tackle=ms.total_tackle,
+                won_tackle=ms.won_tackle,
+                total_clearance=ms.total_clearance,
+                interception=ms.interception,
+                ball_recovery=ms.ball_recovery,
+                yellow_card=ms.yellow_card,
+                red_card=ms.red_card,
+                fouls=ms.fouls,
+                was_fouled=ms.was_fouled,
+                dispossessed=ms.dispossessed,
+                possession_lost=ms.possession_lost,
+                saves=ms.saves,
+                goals_conceded=ms.goals_conceded,
+                shot_accuracy=ms.shot_accuracy,
+                pass_completion=ms.pass_completion,
+                duel_win_rate=ms.duel_win_rate,
             )
         )
 
