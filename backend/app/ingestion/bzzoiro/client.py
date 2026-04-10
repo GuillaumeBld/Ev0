@@ -1,12 +1,16 @@
 """Bzzoiro Sports Data API — authenticated async HTTP client with pagination."""
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
 import httpx
 
 BASE_URL = "https://sports.bzzoiro.com"
 DEFAULT_TIMEOUT = 30.0
+
+logger = logging.getLogger(__name__)
 
 
 class BzzoiroClient:
@@ -30,6 +34,21 @@ class BzzoiroClient:
     async def get_page(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self._client:
             raise RuntimeError("Use BzzoiroClient as async context manager")
+        for attempt in range(5):
+            try:
+                response = await self._client.get(path, params=params or None)
+                if response.status_code in (429, 502, 503, 504):
+                    wait = 2 ** attempt * 5  # 5s, 10s, 20s, 40s, 80s
+                    logger.warning("HTTP %d on %s — retry %d in %ds", response.status_code, path, attempt + 1, wait)
+                    await asyncio.sleep(wait)
+                    continue
+                response.raise_for_status()
+                return response.json()
+            except httpx.TimeoutException:
+                wait = 2 ** attempt * 5
+                logger.warning("Timeout on %s — retry %d in %ds", path, attempt + 1, wait)
+                await asyncio.sleep(wait)
+        # Final attempt — let it raise
         response = await self._client.get(path, params=params or None)
         response.raise_for_status()
         return response.json()

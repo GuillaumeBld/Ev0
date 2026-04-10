@@ -5,11 +5,14 @@ response. The only correct approach is to query per-player using the player's
 internal_id (the Bzzoiro DB primary key, distinct from api_id). Each response
 row contains event.api_id which identifies the match.
 
+Filter: use ``player=<internal_id>`` (NOT ``player_id=``).
+
 We limit the scope to players who appeared in recently finished events to keep
 the sync fast.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -195,16 +198,25 @@ async def sync_player_stats(
         return 0
 
     total = 0
-    for player_api_id, player_internal_id in players:
-        count = await sync_player_stats_for_player(
-            session, client, player_api_id, player_internal_id
-        )
-        total += count
+    errors = 0
+    for i, (player_api_id, player_internal_id) in enumerate(players):
+        try:
+            count = await sync_player_stats_for_player(
+                session, client, player_api_id, player_internal_id
+            )
+            total += count
+        except Exception as exc:
+            errors += 1
+            logger.warning("Failed stats for player %d (internal=%d): %s", player_api_id, player_internal_id, exc)
+        # Small delay every player to avoid hammering the API
+        if i % 10 == 9:
+            await asyncio.sleep(0.5)
 
     logger.info(
-        "Synced %d total player-match stats for %d players (days_back=%d)",
+        "Synced %d total player-match stats for %d players (%d errors, days_back=%d)",
         total,
         len(players),
+        errors,
         days_back,
     )
     return total
