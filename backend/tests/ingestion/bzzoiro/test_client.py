@@ -27,16 +27,42 @@ async def test_get_all_follows_pagination():
         {"count": 3, "next": None, "results": [{"id": 2}, {"id": 3}]},
     ]
     call_count = 0
+    urls_called = []
+
     async def fake_get(url, **kwargs):
         nonlocal call_count
+        urls_called.append(str(url))
         r = MagicMock()
         r.raise_for_status = MagicMock()
         r.json = MagicMock(return_value=responses[call_count])
         call_count += 1
         return r
+
     with patch("httpx.AsyncClient.get", side_effect=fake_get):
         client = BzzoiroClient(api_key="test-key")
         async with client:
             results = await client.get_all("/api/players/")
     assert len(results) == 3
     assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_page_preserves_query_string_in_path():
+    """params=None must not strip ?page=2 already embedded in the path."""
+    captured = {}
+
+    async def fake_get(url, **kwargs):
+        captured["url"] = str(url)
+        captured["params"] = kwargs.get("params")
+        r = MagicMock()
+        r.raise_for_status = MagicMock()
+        r.json = MagicMock(return_value={"count": 1, "next": None, "results": [{"id": 99}]})
+        return r
+
+    with patch("httpx.AsyncClient.get", side_effect=fake_get):
+        client = BzzoiroClient(api_key="test-key")
+        async with client:
+            await client.get_page("/api/players/?page=2")
+
+    # params should be None (not {}), so httpx preserves the query string in the path
+    assert captured["params"] is None
