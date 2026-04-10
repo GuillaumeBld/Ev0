@@ -594,49 +594,156 @@ export interface OptimizationResult {
   status?: string
 }
 
+// ── Players (Bzzoiro) ────────────────────────────────────────────
+
+export interface BzzLeague {
+  api_id: number
+  name: string
+}
+
+export interface BzzTeam {
+  api_id: number
+  name: string
+}
+
 export interface PlayerSummary {
   player_api_id: number
   name: string
-  short_name: string
-  position: string
-  team_name: string
-  nationality: string
+  short_name: string | null
+  position: string | null
+  team_name: string | null
+  nationality: string | null
   xg_per_90: number | null
   xa_per_90: number | null
   avg_rating: number | null
   shots_on_target_per_90: number | null
   form_xg_5: number | null
-  matches_played: number
-  minutes_played: number
+  matches_played: number | null
+  minutes_played: number | null
   season: string
+}
+
+export interface SeasonStatsOut {
+  season: string
+  league_api_id: number | null
+  matches_played: number | null
+  minutes_played: number | null
+  starts: number | null
+  goals: number | null
+  goal_assist: number | null
+  total_shots: number | null
+  shots_on_target: number | null
+  key_pass: number | null
+  total_cross: number | null
+  accurate_cross: number | null
+  total_pass: number | null
+  accurate_pass: number | null
+  total_long_balls: number | null
+  accurate_long_balls: number | null
+  duel_won: number | null
+  duel_lost: number | null
+  aerial_won: number | null
+  aerial_lost: number | null
+  total_tackle: number | null
+  won_tackle: number | null
+  interception: number | null
+  ball_recovery: number | null
+  yellow_card: number | null
+  red_card: number | null
+  saves: number | null
+  expected_goals: number | null
+  expected_assists: number | null
+  xg_per_90: number | null
+  xa_per_90: number | null
+  shots_per_90: number | null
+  shots_on_target_per_90: number | null
+  key_pass_per_90: number | null
+  accurate_cross_per_90: number | null
+  recoveries_per_90: number | null
+  tackles_per_90: number | null
+  interceptions_per_90: number | null
+  shot_accuracy: number | null
+  xg_per_shot: number | null
+  finishing_delta: number | null
+  xa_delta: number | null
+  pass_completion: number | null
+  long_ball_accuracy: number | null
+  cross_accuracy: number | null
+  duel_win_rate: number | null
+  aerial_win_rate: number | null
+  tackle_success_rate: number | null
+  avg_rating: number | null
+  avg_minutes_per_match: number | null
+  starts_pct: number | null
+  form_xg_5: number | null
+  form_rating_5: number | null
+  form_goals_5: number | null
+  form_assists_5: number | null
+  rating_trend: number | null
 }
 
 export interface RecentMatch {
   event_api_id: number
-  event_date: string
-  opponent: string
-  is_home: boolean
-  minutes_played: number
-  goals: number
-  goal_assist: number
-  expected_goals: number | null
+  event_date: string | null
+  opponent: string | null
+  is_home: boolean | null
+  minutes_played: number | null
   rating: number | null
-  shots_on_target: number
-  key_pass: number
+  touches: number | null
+  goals: number | null
+  goal_assist: number | null
+  expected_goals: number | null
+  expected_assists: number | null
+  total_shots: number | null
+  shots_on_target: number | null
+  total_pass: number | null
+  accurate_pass: number | null
+  key_pass: number | null
+  total_long_balls: number | null
+  accurate_long_balls: number | null
+  total_cross: number | null
+  accurate_cross: number | null
+  duel_won: number | null
+  duel_lost: number | null
+  aerial_won: number | null
+  aerial_lost: number | null
+  total_tackle: number | null
+  won_tackle: number | null
+  total_clearance: number | null
+  interception: number | null
+  ball_recovery: number | null
+  yellow_card: number | null
+  red_card: number | null
+  fouls: number | null
+  was_fouled: number | null
+  dispossessed: number | null
+  possession_lost: number | null
+  saves: number | null
+  goals_conceded: number | null
+  shot_accuracy: number | null
+  pass_completion: number | null
+  duel_win_rate: number | null
+  xg_per_shot: number | null
+  finishing_delta: number | null
+  xa_delta: number | null
+  long_ball_accuracy: number | null
+  cross_accuracy: number | null
+  aerial_win_rate: number | null
+  tackle_success_rate: number | null
 }
 
 export interface PlayerDetail {
   player_api_id: number
   name: string
-  short_name: string
-  position: string
+  short_name: string | null
+  position: string | null
   date_of_birth: string | null
-  nationality: string
+  nationality: string | null
   height: number | null
   jersey_number: number | null
   market_value: number | null
-  team_name: string
-  season_stats: Record<string, number | null>
+  team_name: string | null
+  season_stats: SeasonStatsOut | null
   recent_matches: RecentMatch[]
 }
 
