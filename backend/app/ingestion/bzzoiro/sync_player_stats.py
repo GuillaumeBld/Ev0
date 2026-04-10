@@ -92,7 +92,7 @@ async def sync_player_stats_for_player(
     """Fetch and upsert all stats for a single player. Returns row count."""
     from app.models.bzzoiro import BzzPlayerMatchStat  # local import avoids circular
 
-    rows = await client.get_all("/api/player-stats/", {"player_id": player_internal_id})
+    rows = await client.get_all("/api/player-stats/", {"player": player_internal_id})
     count = 0
     for row in rows:
         event = row.get("event") or {}
