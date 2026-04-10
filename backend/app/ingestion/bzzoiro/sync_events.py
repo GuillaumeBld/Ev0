@@ -22,16 +22,39 @@ def _extract_odds(event: dict[str, Any]) -> tuple[dict | None, dict | None, dict
     return odds_1x2, odds_ou, odds_btts
 
 
+# Internal Bzzoiro league IDs for the 5 major leagues + Champions League.
+# These match the `id` column in bzz_leagues (not api_id).
+TARGET_LEAGUE_IDS = [5, 8, 16, 21, 25, 29]  # Bundesliga, UCL, La Liga, Ligue 1, PL, Serie A
+
+
 async def sync_events(
     session: AsyncSession,
     client: BzzoiroClient,
     days_back: int = 7,
     days_forward: int = 14,
+    league_ids: list[int] | None = None,
 ) -> int:
+    """Sync events for the given leagues within the date window.
+
+    If ``league_ids`` is None, defaults to the 5 major leagues + Champions League.
+    One API call per league keeps result sets small and avoids global noise.
+    """
+    if league_ids is None:
+        league_ids = TARGET_LEAGUE_IDS
+
     now = datetime.now(UTC)
     date_from = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
     date_to = (now + timedelta(days=days_forward)).strftime("%Y-%m-%d")
-    rows = await client.get_all("/api/events/", params={"date_from": date_from, "date_to": date_to})
+
+    all_rows: list[dict] = []
+    for league_id in league_ids:
+        league_rows = await client.get_all(
+            "/api/events/",
+            params={"date_from": date_from, "date_to": date_to, "league": league_id},
+        )
+        all_rows.extend(league_rows)
+
+    rows = all_rows
     count = 0
     for row in rows:
         league = row.get("league") or {}

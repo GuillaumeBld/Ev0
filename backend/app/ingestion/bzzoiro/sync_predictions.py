@@ -44,7 +44,7 @@ async def sync_predictions(
     )
     upcoming_event_ids = {row[0] for row in event_result.fetchall()}
 
-    rows = await client.get_all("/api/predictions/")
+    rows = await client.get_all("/api/predictions/", params={"upcoming": "true"})
     count = 0
     for row in rows:
         event = row.get("event") or {}
