@@ -14,12 +14,12 @@ type PositionFilter = '' | 'G' | 'D' | 'M' | 'F'
 // Championnats cibles — api_id Bzzoiro hardcodés
 const LEAGUES: { api_id: number | null; label: string; flag: string }[] = [
   { api_id: null, label: 'Tous', flag: '' },
-  { api_id: 25, label: 'Premier League', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
-  { api_id: 21, label: 'Ligue 1', flag: '🇫🇷' },
-  { api_id: 5,  label: 'Bundesliga', flag: '🇩🇪' },
-  { api_id: 16, label: 'La Liga', flag: '🇪🇸' },
-  { api_id: 29, label: 'Serie A', flag: '🇮🇹' },
-  { api_id: 8,  label: 'UCL', flag: '🏆' },
+  { api_id: 17, label: 'Premier League', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+  { api_id: 34, label: 'Ligue 1', flag: '🇫🇷' },
+  { api_id: 35, label: 'Bundesliga', flag: '🇩🇪' },
+  { api_id: 8,  label: 'La Liga', flag: '🇪🇸' },
+  { api_id: 23, label: 'Serie A', flag: '🇮🇹' },
+  { api_id: 7,  label: 'UCL', flag: '🏆' },
 ]
 
 // Backend-sortable fields (server-side sort)
