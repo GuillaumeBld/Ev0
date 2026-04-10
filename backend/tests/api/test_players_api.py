@@ -106,8 +106,15 @@ def _make_match_stat(
     ms.saves = 0
     ms.goals_conceded = 0
     ms.shot_accuracy = 0.75
+    ms.xg_per_shot = 0.18
+    ms.finishing_delta = 0.05
+    ms.xa_delta = 0.02
     ms.pass_completion = 0.857
+    ms.long_ball_accuracy = 0.67
+    ms.cross_accuracy = 0.0
     ms.duel_win_rate = 0.625
+    ms.aerial_win_rate = 0.67
+    ms.tackle_success_rate = 0.75
     return ms
 
 
@@ -338,8 +345,15 @@ async def test_get_player_detail_full_match_stats():
     assert m.yellow_card == 0
     assert m.fouls == 1
     assert m.shot_accuracy == pytest.approx(0.75)
+    assert m.xg_per_shot == pytest.approx(0.18)
+    assert m.finishing_delta == pytest.approx(0.05)
+    assert m.xa_delta == pytest.approx(0.02)
     assert m.pass_completion == pytest.approx(0.857)
+    assert m.long_ball_accuracy == pytest.approx(0.67)
+    assert m.cross_accuracy == pytest.approx(0.0)
     assert m.duel_win_rate == pytest.approx(0.625)
+    assert m.aerial_win_rate == pytest.approx(0.67)
+    assert m.tackle_success_rate == pytest.approx(0.75)
 
 
 # ---------------------------------------------------------------------------

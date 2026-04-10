@@ -159,8 +159,15 @@ class RecentMatch(BaseModel):
     saves: int | None
     goals_conceded: int | None
     shot_accuracy: float | None
+    xg_per_shot: float | None
+    finishing_delta: float | None
+    xa_delta: float | None
     pass_completion: float | None
+    long_ball_accuracy: float | None
+    cross_accuracy: float | None
     duel_win_rate: float | None
+    aerial_win_rate: float | None
+    tackle_success_rate: float | None
 
 
 class SeasonStatsOut(BaseModel):
@@ -464,7 +471,7 @@ async def get_player(
             starts_pct=season_stat.starts_pct,
         )
 
-    # 3. Recent matches (last 10) — join to BzzEvent for date and teams
+    # 3. Recent matches (all available) — join to BzzEvent for date and teams
     home_team_alias = BzzTeam.__table__.alias("ht")
     away_team_alias = BzzTeam.__table__.alias("at_")
 
@@ -533,8 +540,15 @@ async def get_player(
                 saves=ms.saves,
                 goals_conceded=ms.goals_conceded,
                 shot_accuracy=ms.shot_accuracy,
+                xg_per_shot=ms.xg_per_shot,
+                finishing_delta=ms.finishing_delta,
+                xa_delta=ms.xa_delta,
                 pass_completion=ms.pass_completion,
+                long_ball_accuracy=ms.long_ball_accuracy,
+                cross_accuracy=ms.cross_accuracy,
                 duel_win_rate=ms.duel_win_rate,
+                aerial_win_rate=ms.aerial_win_rate,
+                tackle_success_rate=ms.tackle_success_rate,
             )
         )
 
