@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { RefreshCw, Search, ChevronDown, ChevronUp, User, AlertCircle } from 'lucide-react'
 import { clsx } from 'clsx'
@@ -132,8 +132,14 @@ export default function PlayersPage() {
     }
   }, [leagueApiId, teamApiId, positionFilter, sortField, sortDir])
 
-  // On league change: reset team, reload teams list + players
+  // On league change: reset team filter (but not on first mount — URL may already have a team)
+  const isMounted = useRef(false)
   useEffect(() => {
+    if (!isMounted.current) {
+      isMounted.current = true
+      fetchTeams(leagueApiId)
+      return
+    }
     setTeamApiId(null)
     fetchTeams(leagueApiId)
   }, [leagueApiId, fetchTeams])
