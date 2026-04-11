@@ -12,7 +12,6 @@ from sqlalchemy import asc, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.ingestion.understat_scraper import UNDERSTAT_LEAGUES, fetch_understat_league
 from app.models.bzzoiro import (
     BzzEvent,
     BzzLeague,
@@ -285,25 +284,45 @@ async def list_player_teams(
 
 @router.get("/export", summary="Export player stats as CSV")
 async def export_players_csv(
-    league: str | None = Query(
+    session: AsyncSession = Depends(get_db),
+    league_api_id: int | None = Query(
         None,
-        description="League to export: ligue_1, premier_league, or omit for all",
+        description="League API ID to export, or omit for all",
     ),
+    season: str = Query("2025-2026"),
 ) -> StreamingResponse:
-    """Stream all player stats as a UTF-8 CSV file.
-
-    Fetches live data from Understat — no database required.
-    """
-    leagues_to_fetch = (
-        [league] if league and league in UNDERSTAT_LEAGUES else list(UNDERSTAT_LEAGUES.keys())
+    """Stream all player stats as a UTF-8 CSV file from Bzzoiro."""
+    stmt = (
+        select(
+            BzzPlayer.name,
+            BzzTeam.name.label("team"),
+            BzzPlayer.position,
+            BzzLeague.name.label("league"),
+            BzzPlayerSeasonStat.matches_played.label("games"),
+            BzzPlayerSeasonStat.minutes_played.label("minutes"),
+            BzzPlayerSeasonStat.goals,
+            BzzPlayerSeasonStat.goal_assist.label("assists"),
+            BzzPlayerSeasonStat.expected_goals.label("xg"),
+            BzzPlayerSeasonStat.expected_goals.label("npxg"),
+            BzzPlayerSeasonStat.expected_assists.label("xa"),
+            BzzPlayerSeasonStat.total_shots.label("shots"),
+            BzzPlayerSeasonStat.key_pass.label("key_passes"),
+            BzzPlayerSeasonStat.xg_per_90,
+            BzzPlayerSeasonStat.xa_per_90,
+            BzzPlayerSeasonStat.xg_per_90.label("npxg_per_90"),
+        )
+        .select_from(BzzPlayerSeasonStat)
+        .join(BzzPlayer, BzzPlayerSeasonStat.player_api_id == BzzPlayer.api_id)
+        .outerjoin(BzzTeam, BzzPlayer.current_team_api_id == BzzTeam.api_id)
+        .outerjoin(BzzLeague, BzzPlayerSeasonStat.league_api_id == BzzLeague.api_id)
+        .where(BzzPlayerSeasonStat.season == season)
     )
 
-    rows: list[dict] = []
-    for lg in leagues_to_fetch:
-        players, _ = await fetch_understat_league(lg)
-        for p in players:
-            p["league"] = lg
-            rows.append(p)
+    if league_api_id:
+        stmt = stmt.where(BzzPlayerSeasonStat.league_api_id == league_api_id)
+
+    result = await session.execute(stmt)
+    rows = [dict(zip(CSV_FIELDS, r)) for r in result.all()]
 
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=CSV_FIELDS, extrasaction="ignore")

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -65,7 +66,8 @@ class BzzoiroClient:
                 all_results.extend(results)
             raw_next = data.get("next")
             if raw_next:
-                next_url = raw_next.replace(self._base_url, "")
+                parsed = urlparse(raw_next)
+                next_url = f"{parsed.path}?{parsed.query}" if parsed.query else parsed.path
                 page_params = {}
             else:
                 next_url = None

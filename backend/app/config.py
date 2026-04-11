@@ -23,7 +23,7 @@ class Settings(BaseSettings):  # type: ignore[misc]
     firecrawl_api_key: str | None = None  # Firecrawl for web scraping
     openrouter_api_key: str | None = None  # OpenRouter for LLM parsing
     api_football_key: str | None = None  # API-Football for reliable data
-    bzzoiro_api_key: str | None = None  # Bzzoiro Sports Data API
+    bzzoiro_api_key: str | None = "3a6c2b83ba4e89e4a12be3704de1e37a1303b1a4"  # Bzzoiro Sports Data API
     perplexity_api_key: str | None = None  # Perplexity sonar-pro for match context
 
     # LLM Parser settings
