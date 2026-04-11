@@ -108,6 +108,8 @@ class PlayerSummary(BaseModel):
     position: str | None
     team_name: str | None
     nationality: str | None
+    goals: int | None
+    goal_assist: int | None
     xg_per_90: float | None
     xa_per_90: float | None
     avg_rating: float | None
