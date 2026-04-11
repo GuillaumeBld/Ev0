@@ -527,25 +527,34 @@ async def get_player(
         .join(BzzEvent, BzzEvent.api_id == BzzPlayerMatchStat.event_api_id)
         .outerjoin(home_team_alias, home_team_alias.c.api_id == BzzEvent.home_team_api_id)
         .outerjoin(away_team_alias, away_team_alias.c.api_id == BzzEvent.away_team_api_id)
-        .where(BzzPlayerMatchStat.player_api_id == player_api_id)
+        .where(
+            BzzPlayerMatchStat.player_api_id == player_api_id,
+            BzzEvent.league_api_id.in_(TARGET_LEAGUE_IDS),
+        )
         .order_by(desc(BzzEvent.event_date))
     )
     recent_rows = recent_result.all()
 
     recent_matches: list[RecentMatch] = []
     for ms, event_date, home_api_id, away_api_id, home_name, away_name in recent_rows:
-        # Derive is_home from team_api_id directly — more reliable than the stored flag
+        # Derive is_home from team_api_id directly — most reliable source
         if ms.team_api_id is not None:
             if ms.team_api_id == home_api_id:
-                is_home = True
+                is_home: bool | None = True
             elif ms.team_api_id == away_api_id:
                 is_home = False
             else:
-                is_home = ms.is_home  # team transferred mid-season or data gap
+                is_home = ms.is_home
         else:
             is_home = ms.is_home
 
-        opponent = away_name if is_home else home_name
+        # Only show opponent when we can determine side; avoids showing player's own team
+        if is_home is True:
+            opponent: str | None = away_name
+        elif is_home is False:
+            opponent = home_name
+        else:
+            opponent = None
 
         recent_matches.append(
             RecentMatch(
