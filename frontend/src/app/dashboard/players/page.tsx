@@ -7,8 +7,8 @@ import { clsx } from 'clsx'
 import { PlayerSummary, BzzTeam } from '@/lib/api'
 
 type SortField =
-  | 'name' | 'team' | 'xg_per_90' | 'xa_per_90' | 'avg_rating'
-  | 'shots_on_target_per_90' | 'form_xg_5' | 'minutes_played'
+  | 'name' | 'team' | 'goals' | 'goal_assist' | 'xg_per_90' | 'xa_per_90'
+  | 'avg_rating' | 'shots_on_target_per_90' | 'form_xg_5' | 'minutes_played'
 type PositionFilter = '' | 'G' | 'D' | 'M' | 'F'
 
 // Championnats cibles — api_id Bzzoiro hardcodés
@@ -24,8 +24,8 @@ const LEAGUES: { api_id: number | null; label: string; flag: string }[] = [
 
 // Backend-sortable fields (server-side sort)
 const SERVER_SORT_FIELDS = new Set([
-  'xg_per_90', 'xa_per_90', 'avg_rating', 'shots_on_target_per_90',
-  'form_xg_5', 'minutes_played',
+  'goals', 'goal_assist', 'xg_per_90', 'xa_per_90', 'avg_rating',
+  'shots_on_target_per_90', 'form_xg_5', 'minutes_played',
 ])
 
 function fmt(v: number | null | undefined, decimals = 2): string {
@@ -283,6 +283,8 @@ export default function PlayersPage() {
                   <SortTh field="name" label="Joueur" className="text-left pl-4" />
                   <SortTh field="team" label="Équipe" className="text-left" />
                   <th className="px-3 py-3 text-center text-sm font-medium text-gray-400 hidden md:table-cell">Pos</th>
+                  <SortTh field="goals" label="Buts" className="text-right hidden sm:table-cell" />
+                  <SortTh field="goal_assist" label="PD" className="text-right hidden sm:table-cell" />
                   <SortTh field="xg_per_90" label="xG/90" className="text-right hidden sm:table-cell" />
                   <SortTh field="xa_per_90" label="xA/90" className="text-right hidden sm:table-cell" />
                   <SortTh field="avg_rating" label="Rating" className="text-right hidden md:table-cell" />
@@ -313,6 +315,12 @@ export default function PlayersPage() {
                       <span className={clsx('px-2 py-0.5 rounded text-xs font-medium', positionColor(player.position))}>
                         {player.position ?? '?'}
                       </span>
+                    </td>
+                    <td className="px-3 py-3 text-right hidden sm:table-cell">
+                      <span className="text-sm font-mono text-white font-semibold">{player.goals ?? '—'}</span>
+                    </td>
+                    <td className="px-3 py-3 text-right hidden sm:table-cell">
+                      <span className="text-sm font-mono text-gray-300 font-semibold">{player.goal_assist ?? '—'}</span>
                     </td>
                     <td className="px-3 py-3 text-right hidden sm:table-cell">
                       <span className="text-sm font-mono text-green-400 font-medium">{fmt(player.xg_per_90)}</span>

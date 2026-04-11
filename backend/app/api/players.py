@@ -413,6 +413,8 @@ async def list_players(
             "position": player.position,
             "team_name": team_name,
             "nationality": player.nationality,
+            "goals": stats.goals,
+            "goal_assist": stats.goal_assist,
             "xg_per_90": stats.xg_per_90,
             "xa_per_90": stats.xa_per_90,
             "avg_rating": stats.avg_rating,

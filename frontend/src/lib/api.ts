@@ -613,6 +613,8 @@ export interface PlayerSummary {
   position: string | null
   team_name: string | null
   nationality: string | null
+  goals: number | null
+  goal_assist: number | null
   xg_per_90: number | null
   xa_per_90: number | null
   avg_rating: number | null
