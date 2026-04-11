@@ -107,11 +107,12 @@ async def sync_player_stats_for_player(
 
         derived = compute_derived_metrics(row)
 
+        team = row.get("team") or {}
         values: dict[str, Any] = {
             "player_api_id": player_api_id,
             "event_api_id": event_api_id,
-            "team_api_id": None,
-            "is_home": None,
+            "team_api_id": team.get("api_id"),
+            "is_home": row.get("is_home"),
             "minutes_played": row.get("minutes_played"),
             "rating": row.get("rating"),
             "touches": row.get("touches"),

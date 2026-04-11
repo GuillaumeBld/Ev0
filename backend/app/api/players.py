@@ -537,11 +537,12 @@ async def get_player(
 
     recent_matches: list[RecentMatch] = []
     for ms, event_date, home_api_id, away_api_id, home_name, away_name in recent_rows:
-        # Derive is_home from team_api_id directly — most reliable source
-        if ms.team_api_id is not None:
-            if ms.team_api_id == home_api_id:
+        # Use team_api_id from the stat row; fall back to the player's current team
+        player_team_id = ms.team_api_id or player.current_team_api_id
+        if player_team_id is not None:
+            if player_team_id == home_api_id:
                 is_home: bool | None = True
-            elif ms.team_api_id == away_api_id:
+            elif player_team_id == away_api_id:
                 is_home = False
             else:
                 is_home = ms.is_home
