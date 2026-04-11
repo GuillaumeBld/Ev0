@@ -533,10 +533,17 @@ async def get_player(
     recent_rows = recent_result.all()
 
     recent_matches: list[RecentMatch] = []
-    for ms, event_date, home_api_id, _away_api_id, home_name, away_name in recent_rows:
-        is_home = ms.is_home
-        if is_home is None and ms.team_api_id is not None:
-            is_home = ms.team_api_id == home_api_id
+    for ms, event_date, home_api_id, away_api_id, home_name, away_name in recent_rows:
+        # Derive is_home from team_api_id directly — more reliable than the stored flag
+        if ms.team_api_id is not None:
+            if ms.team_api_id == home_api_id:
+                is_home = True
+            elif ms.team_api_id == away_api_id:
+                is_home = False
+            else:
+                is_home = ms.is_home  # team transferred mid-season or data gap
+        else:
+            is_home = ms.is_home
 
         opponent = away_name if is_home else home_name
 
