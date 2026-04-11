@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useParams, useRouter, useSearchParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import { RefreshCw, ArrowLeft, AlertCircle } from 'lucide-react'
 import { clsx } from 'clsx'
 import { PlayerDetail, SeasonStatsOut, RecentMatch } from '@/lib/api'
@@ -201,7 +201,6 @@ function MatchHistoryTable({ matches }: { matches: RecentMatch[] }) {
 export default function PlayerDetailPage() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
-  const searchParams = useSearchParams()
 
   const [player, setPlayer] = useState<PlayerDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -220,15 +219,6 @@ export default function PlayerDetailPage() {
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false))
   }, [id])
-
-  const backUrl = () => {
-    const params = new URLSearchParams()
-    const league = searchParams.get('league')
-    const team = searchParams.get('team')
-    if (league) params.set('league', league)
-    if (team) params.set('team', team)
-    return `/dashboard/players${params.size ? `?${params}` : ''}`
-  }
 
   const age = (dob: string | null) => {
     if (!dob) return null
@@ -251,7 +241,7 @@ export default function PlayerDetailPage() {
   if (error || !player) {
     return (
       <div className="p-8">
-        <button onClick={() => router.push(backUrl())} className="flex items-center gap-2 text-gray-400 hover:text-white mb-6 text-sm transition-colors">
+        <button onClick={() => router.back()} className="flex items-center gap-2 text-gray-400 hover:text-white mb-6 text-sm transition-colors">
           <ArrowLeft className="w-4 h-4" /> Retour
         </button>
         <div className="bg-red-900/50 border border-red-500 rounded-lg p-4 flex items-center gap-2">
@@ -266,7 +256,7 @@ export default function PlayerDetailPage() {
     <div className="p-4 md:p-8 max-w-7xl">
       {/* Back */}
       <button
-        onClick={() => router.push(backUrl())}
+        onClick={() => router.back()}
         className="flex items-center gap-2 text-gray-400 hover:text-white mb-6 text-sm transition-colors"
       >
         <ArrowLeft className="w-4 h-4" /> Retour aux joueurs

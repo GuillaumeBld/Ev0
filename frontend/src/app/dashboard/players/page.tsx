@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { RefreshCw, Search, ChevronDown, ChevronUp, User, AlertCircle } from 'lucide-react'
 import { clsx } from 'clsx'
 import { PlayerSummary, BzzTeam } from '@/lib/api'
@@ -45,25 +45,50 @@ function positionColor(pos: string | null | undefined): string {
 
 export default function PlayersPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
 
   const [players, setPlayers] = useState<PlayerSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState<string | null>(null)
 
-  // Championship filter
-  const [leagueApiId, setLeagueApiId] = useState<number | null>(null)
+  // Championship filter — init from URL
+  const [leagueApiId, setLeagueApiId] = useState<number | null>(() => {
+    const v = searchParams.get('league'); return v ? Number(v) : null
+  })
 
-  // Team filter
+  // Team filter — init from URL
   const [teams, setTeams] = useState<BzzTeam[]>([])
-  const [teamApiId, setTeamApiId] = useState<number | null>(null)
+  const [teamApiId, setTeamApiId] = useState<number | null>(() => {
+    const v = searchParams.get('team'); return v ? Number(v) : null
+  })
 
-  // Other filters
-  const [search, setSearch] = useState('')
-  const [positionFilter, setPositionFilter] = useState<PositionFilter>('')
+  // Other filters — init from URL
+  const [search, setSearch] = useState(() => searchParams.get('search') ?? '')
+  const [positionFilter, setPositionFilter] = useState<PositionFilter>(() =>
+    (searchParams.get('position') as PositionFilter) ?? ''
+  )
 
-  // Sort
-  const [sortField, setSortField] = useState<SortField>('xg_per_90')
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  // Sort — init from URL
+  const [sortField, setSortField] = useState<SortField>(() =>
+    (searchParams.get('sort_by') as SortField) ?? 'xg_per_90'
+  )
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() =>
+    searchParams.get('sort_order') === 'asc' ? 'asc' : 'desc'
+  )
+
+  // Keep URL in sync with filter state so browser back restores exactly this view
+  useEffect(() => {
+    const params = new URLSearchParams()
+    if (leagueApiId !== null) params.set('league', leagueApiId.toString())
+    if (teamApiId !== null) params.set('team', teamApiId.toString())
+    if (search) params.set('search', search)
+    if (positionFilter) params.set('position', positionFilter)
+    if (sortField !== 'xg_per_90') params.set('sort_by', sortField)
+    if (sortDir !== 'desc') params.set('sort_order', sortDir)
+    const qs = params.toString()
+    router.replace(`/dashboard/players${qs ? `?${qs}` : ''}`, { scroll: false })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leagueApiId, teamApiId, search, positionFilter, sortField, sortDir])
 
   const fetchTeams = useCallback(async (leagueId: number | null) => {
     try {
@@ -298,13 +323,7 @@ export default function PlayersPage() {
                   <tr
                     key={player.player_api_id}
                     className="border-b border-gray-700/50 hover:bg-gray-700/40 cursor-pointer transition-colors"
-                    onClick={() => {
-                      const qs = new URLSearchParams()
-                      if (leagueApiId !== null) qs.set('league', leagueApiId.toString())
-                      if (teamApiId !== null) qs.set('team', teamApiId.toString())
-                      const query = qs.toString()
-                      router.push(`/dashboard/players/${player.player_api_id}${query ? `?${query}` : ''}`)
-                    }}
+                    onClick={() => router.push(`/dashboard/players/${player.player_api_id}`)}
                   >
                     <td className="px-4 py-3">
                       <p className="text-sm font-medium text-white leading-tight">{player.name}</p>
