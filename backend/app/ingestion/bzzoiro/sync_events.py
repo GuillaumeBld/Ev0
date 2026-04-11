@@ -12,7 +12,7 @@ from app.ingestion.bzzoiro.client import BzzoiroClient
 from app.ingestion.bzzoiro.constants import (
     CURRENT_SEASON,
     SEASON_START_DATE,
-    TARGET_LEAGUE_API_ID_LIST,
+    TARGET_LEAGUE_INTERNAL_ID_LIST,
 )
 from app.models.bzzoiro import BzzEvent
 
@@ -32,7 +32,7 @@ async def sync_events(
     client: BzzoiroClient,
     days_back: int = 3,
     days_forward: int = 14,
-    league_api_ids: list[int] | None = None,
+    league_internal_ids: list[int] | None = None,
     full_season: bool = False,
 ) -> int:
     """Sync events for the given leagues within the date window.
@@ -40,11 +40,13 @@ async def sync_events(
     Args:
         days_back: How many past days to fetch (ignored if full_season=True).
         days_forward: How many future days to fetch.
-        league_api_ids: Leagues to sync. Defaults to all 6 target leagues.
+        league_internal_ids: Bzzoiro internal IDs to pass as ?league= filter.
+                             Defaults to all 6 target leagues.
+                             NOTE: these are internal_ids, NOT api_ids.
         full_season: If True, fetches the entire current season from SEASON_START_DATE.
     """
-    if league_api_ids is None:
-        league_api_ids = TARGET_LEAGUE_API_ID_LIST
+    if league_internal_ids is None:
+        league_internal_ids = TARGET_LEAGUE_INTERNAL_ID_LIST
 
     now = datetime.now(UTC)
     if full_season:
@@ -55,16 +57,16 @@ async def sync_events(
 
     logger.info(
         "Syncing events: %s → %s for %d leagues (full_season=%s)",
-        date_from, date_to, len(league_api_ids), full_season,
+        date_from, date_to, len(league_internal_ids), full_season,
     )
 
     all_rows: list[dict] = []
-    for league_api_id in league_api_ids:
+    for internal_id in league_internal_ids:
         league_rows = await client.get_all(
             "/api/events/",
-            params={"date_from": date_from, "date_to": date_to, "league": league_api_id},
+            params={"date_from": date_from, "date_to": date_to, "league": internal_id},
         )
-        logger.info("  League api_id=%d: %d events fetched", league_api_id, len(league_rows))
+        logger.info("  League internal_id=%d: %d events fetched", internal_id, len(league_rows))
         all_rows.extend(league_rows)
 
     count = 0
