@@ -12,6 +12,7 @@ from sqlalchemy import asc, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_API_ID_LIST
 from app.models.bzzoiro import (
     BzzEvent,
     BzzLeague,
@@ -27,7 +28,7 @@ router = APIRouter(prefix="/players", tags=["players"])
 # Constants
 # ---------------------------------------------------------------------------
 
-TARGET_LEAGUE_IDS = [5, 8, 16, 21, 25, 29]  # BL, UCL, LL, L1, PL, SA
+TARGET_LEAGUE_IDS = TARGET_LEAGUE_API_ID_LIST  # PL=17, L1=34, BL=35, LL=8, SA=23, UCL=7
 
 CSV_FIELDS = [
     "name",
@@ -260,19 +261,35 @@ async def list_player_leagues(
 async def list_player_teams(
     session: AsyncSession = Depends(get_db),
     league_api_id: int | None = Query(None, description="Filter by league api_id"),
-    season: str = Query("2025-2026"),
 ) -> list[dict[str, Any]]:
-    """Return teams that have players with season stats."""
-    stmt = (
-        select(BzzTeam.api_id, BzzTeam.name)
-        .join(BzzPlayer, BzzPlayer.current_team_api_id == BzzTeam.api_id)
-        .join(BzzPlayerSeasonStat, BzzPlayerSeasonStat.player_api_id == BzzPlayer.api_id)
-        .where(BzzPlayerSeasonStat.season == season)
-        .distinct()
-        .order_by(BzzTeam.name)
+    """Return teams that actually played matches in a given league.
+
+    Teams are derived from BzzEvent (home/away participants), not from player
+    profiles. This correctly handles mid-season transfers where a player's
+    current_team_api_id may belong to a different league than their stats.
+    """
+    from sqlalchemy import or_, union
+
+    home_teams = select(BzzTeam.api_id, BzzTeam.name).join(
+        BzzEvent, BzzEvent.home_team_api_id == BzzTeam.api_id
     )
+    away_teams = select(BzzTeam.api_id, BzzTeam.name).join(
+        BzzEvent, BzzEvent.away_team_api_id == BzzTeam.api_id
+    )
+
     if league_api_id is not None:
-        stmt = stmt.where(BzzPlayerSeasonStat.league_api_id == league_api_id)
+        home_teams = home_teams.where(BzzEvent.league_api_id == league_api_id)
+        away_teams = away_teams.where(BzzEvent.league_api_id == league_api_id)
+    else:
+        home_teams = home_teams.where(BzzEvent.league_api_id.in_(TARGET_LEAGUE_IDS))
+        away_teams = away_teams.where(BzzEvent.league_api_id.in_(TARGET_LEAGUE_IDS))
+
+    combined = union(home_teams, away_teams).subquery()
+    stmt = (
+        select(combined.c.api_id, combined.c.name)
+        .distinct()
+        .order_by(combined.c.name)
+    )
     result = await session.execute(stmt)
     return [{"api_id": row[0], "name": row[1]} for row in result.all()]
 

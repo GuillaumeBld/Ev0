@@ -1745,33 +1745,63 @@ async def job_aggregate_season_stats():
 
 
 async def job_sync_bzzoiro_events():
-    """Every 6h: sync Bzzoiro match events (goals, assists)."""
+    """Every 6h: sync Bzzoiro match events — 3 days back, 14 days forward."""
     logger.info("=== Starting Bzzoiro events sync ===")
     if not settings.bzzoiro_api_key:
         logger.warning("BZZOIRO_API_KEY not configured, skipping events sync")
         return
     try:
         async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
-            result = await sync_events(session, client)
+            result = await sync_events(session, client, days_back=3, days_forward=14)
             logger.info("Bzzoiro events synced: %s", result)
     except Exception as exc:
         logger.error("Error in Bzzoiro events sync: %s", exc, exc_info=True)
     logger.info("=== Bzzoiro events sync complete ===")
 
 
+async def job_sync_bzzoiro_events_full_season():
+    """Weekly: full-season event refresh to catch any gaps."""
+    logger.info("=== Starting Bzzoiro full-season events sync ===")
+    if not settings.bzzoiro_api_key:
+        logger.warning("BZZOIRO_API_KEY not configured, skipping full-season events sync")
+        return
+    try:
+        async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
+            result = await sync_events(session, client, full_season=True)
+            logger.info("Bzzoiro full-season events synced: %s", result)
+    except Exception as exc:
+        logger.error("Error in Bzzoiro full-season events sync: %s", exc, exc_info=True)
+    logger.info("=== Bzzoiro full-season events sync complete ===")
+
+
 async def job_sync_bzzoiro_player_stats():
-    """Every 6h (offset 1h from events): sync Bzzoiro per-match player stats."""
+    """Every 6h (offset 1h from events): sync per-match player stats — 14 days back."""
     logger.info("=== Starting Bzzoiro player stats sync ===")
     if not settings.bzzoiro_api_key:
         logger.warning("BZZOIRO_API_KEY not configured, skipping player stats sync")
         return
     try:
         async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
-            result = await sync_player_stats(session, client)
+            result = await sync_player_stats(session, client, days_back=14)
             logger.info("Bzzoiro player stats synced: %s", result)
     except Exception as exc:
         logger.error("Error in Bzzoiro player stats sync: %s", exc, exc_info=True)
     logger.info("=== Bzzoiro player stats sync complete ===")
+
+
+async def job_sync_bzzoiro_player_stats_full_season():
+    """Weekly: full-season player stats refresh to catch any gaps."""
+    logger.info("=== Starting Bzzoiro full-season player stats sync ===")
+    if not settings.bzzoiro_api_key:
+        logger.warning("BZZOIRO_API_KEY not configured, skipping full-season player stats sync")
+        return
+    try:
+        async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
+            result = await sync_player_stats(session, client, full_season=True)
+            logger.info("Bzzoiro full-season player stats synced: %s", result)
+    except Exception as exc:
+        logger.error("Error in Bzzoiro full-season player stats sync: %s", exc, exc_info=True)
+    logger.info("=== Bzzoiro full-season player stats sync complete ===")
 
 
 async def job_sync_bzzoiro_predictions():
@@ -1982,8 +2012,30 @@ def create_scheduler() -> AsyncIOScheduler:
         job_sync_bzzoiro_player_stats,
         IntervalTrigger(hours=6, start_date="2000-01-01T01:00:00"),
         id="sync_bzzoiro_player_stats",
-        name="Sync Bzzoiro per-match player stats",
+        name="Sync Bzzoiro per-match player stats (14 days back)",
         replace_existing=True,
+    )
+
+    # Bzzoiro full-season events refresh: weekly Monday 01:00 UTC
+    scheduler.add_job(
+        job_sync_bzzoiro_events_full_season,
+        CronTrigger(day_of_week="mon", hour=1, minute=0),
+        id="sync_bzzoiro_events_full_season",
+        name="Sync Bzzoiro events — full season refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Bzzoiro full-season player stats refresh: weekly Monday 02:30 UTC (after full events)
+    scheduler.add_job(
+        job_sync_bzzoiro_player_stats_full_season,
+        CronTrigger(day_of_week="mon", hour=2, minute=30),
+        id="sync_bzzoiro_player_stats_full_season",
+        name="Sync Bzzoiro player stats — full season refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
 
     # Bzzoiro predictions: daily at 07:45 UTC (offset from job_sync_player_stats at 07:00)

@@ -7,8 +7,10 @@ row contains event.api_id which identifies the match.
 
 Filter: use ``player=<internal_id>`` (NOT ``player_id=``).
 
-We limit the scope to players who appeared in recently finished events to keep
-the sync fast.
+Two modes:
+  - Regular sync (days_back): processes players from recently finished events.
+  - Full backfill (full_season=True): processes ALL players who appeared in any
+    finished event across the 6 target leagues in the DB.
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.bzzoiro.client import BzzoiroClient
+from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_API_ID_LIST
 from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzTeam
 
 logger = logging.getLogger(__name__)
@@ -88,7 +90,7 @@ def compute_derived_metrics(row: dict[str, Any]) -> dict[str, float | None]:
 
 async def sync_player_stats_for_player(
     session: AsyncSession,
-    client: BzzoiroClient,
+    client: BzzoiroClient,  # type: ignore[name-defined]
     player_api_id: int,
     player_internal_id: int,
 ) -> int:
@@ -108,8 +110,8 @@ async def sync_player_stats_for_player(
         values: dict[str, Any] = {
             "player_api_id": player_api_id,
             "event_api_id": event_api_id,
-            "team_api_id": None,  # not in response
-            "is_home": None,  # not in response
+            "team_api_id": None,
+            "is_home": None,
             "minutes_played": row.get("minutes_played"),
             "rating": row.get("rating"),
             "touches": row.get("touches"),
@@ -159,21 +161,12 @@ async def sync_player_stats_for_player(
     return count
 
 
-async def sync_player_stats(
+async def _get_players_for_recent_events(
     session: AsyncSession,
-    client: BzzoiroClient,
-    days_back: int = 7,
-) -> int:
-    """Sync player stats for players who appeared in recently finished events.
-
-    Only syncs players whose current team played in a finished event within
-    the last `days_back` days. This limits the scope to ~500-1000 players
-    per run rather than the full 23K global player database.
-    """
-    now = datetime.now(UTC)
-    cutoff = now - timedelta(days=days_back)
-
-    # Find players from recently finished events (via team membership)
+    days_back: int,
+) -> list[tuple[int, int]]:
+    """Return (player_api_id, player_internal_id) for players from recently finished events."""
+    cutoff = datetime.now(UTC) - timedelta(days=days_back)
     result = await session.execute(
         select(BzzPlayer.api_id, BzzPlayer.internal_id)
         .join(BzzTeam, BzzPlayer.current_team_api_id == BzzTeam.api_id)
@@ -187,14 +180,61 @@ async def sync_player_stats(
         .where(
             BzzEvent.status == "finished",
             BzzEvent.event_date >= cutoff,
+            BzzEvent.league_api_id.in_(TARGET_LEAGUE_API_ID_LIST),
             BzzPlayer.internal_id.is_not(None),
         )
         .distinct()
     )
-    players = result.fetchall()
+    return result.fetchall()
+
+
+async def _get_players_for_full_season(
+    session: AsyncSession,
+) -> list[tuple[int, int]]:
+    """Return (player_api_id, player_internal_id) for ALL players in finished events
+    across the 6 target leagues — no date restriction."""
+    result = await session.execute(
+        select(BzzPlayer.api_id, BzzPlayer.internal_id)
+        .join(BzzTeam, BzzPlayer.current_team_api_id == BzzTeam.api_id)
+        .join(
+            BzzEvent,
+            or_(
+                BzzEvent.home_team_api_id == BzzTeam.api_id,
+                BzzEvent.away_team_api_id == BzzTeam.api_id,
+            ),
+        )
+        .where(
+            BzzEvent.status == "finished",
+            BzzEvent.league_api_id.in_(TARGET_LEAGUE_API_ID_LIST),
+            BzzPlayer.internal_id.is_not(None),
+        )
+        .distinct()
+    )
+    return result.fetchall()
+
+
+async def sync_player_stats(
+    session: AsyncSession,
+    client: Any,
+    days_back: int = 14,
+    full_season: bool = False,
+) -> int:
+    """Sync player stats for players who appeared in finished events.
+
+    Args:
+        days_back: Days of history to cover (ignored when full_season=True).
+        full_season: If True, processes ALL players across the entire season
+                     in the 6 target leagues — use for initial backfill.
+    """
+    if full_season:
+        players = await _get_players_for_full_season(session)
+        logger.info("Full-season backfill: %d players to sync", len(players))
+    else:
+        players = await _get_players_for_recent_events(session, days_back)
+        logger.info("Incremental sync (days_back=%d): %d players", days_back, len(players))
 
     if not players:
-        logger.info("No players with internal_id found for recently finished events")
+        logger.info("No players with internal_id found — nothing to sync")
         return 0
 
     total = 0
@@ -207,16 +247,19 @@ async def sync_player_stats(
             total += count
         except Exception as exc:
             errors += 1
-            logger.warning("Failed stats for player %d (internal=%d): %s", player_api_id, player_internal_id, exc)
-        # Small delay every player to avoid hammering the API
+            logger.warning(
+                "Failed stats for player api_id=%d (internal=%d): %s",
+                player_api_id, player_internal_id, exc,
+            )
+        # Throttle every 10 players to avoid hammering the API
         if i % 10 == 9:
             await asyncio.sleep(0.5)
+        # Progress log every 100 players during backfill
+        if full_season and i % 100 == 99:
+            logger.info("  Progress: %d/%d players processed, %d rows so far", i + 1, len(players), total)
 
     logger.info(
-        "Synced %d total player-match stats for %d players (%d errors, days_back=%d)",
-        total,
-        len(players),
-        errors,
-        days_back,
+        "Synced %d total player-match stats for %d players (%d errors, full_season=%s)",
+        total, len(players), errors, full_season,
     )
     return total
