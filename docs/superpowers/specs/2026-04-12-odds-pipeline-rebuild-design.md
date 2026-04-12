@@ -66,12 +66,13 @@ réactive. Le pipeline actuel est mort (OddsPortal bloqué Cloudflare, The Odds 
 
 ### Logique de fréquence (basée sur `bzz_events.event_date`)
 
-| Distance au KO       | Intervalle de scraping |
-|----------------------|------------------------|
-| > 6h                 | Toutes les 2h          |
-| 2h → 6h              | Toutes les 30min       |
-| < 2h                 | Toutes les 3min        |
-| Match commencé (> 0) | Stop                   |
+| Distance au KO         | Intervalle de scraping |
+|------------------------|------------------------|
+| > 6h                   | Toutes les 2h          |
+| 2h → 6h                | Toutes les 30min       |
+| 5min → 2h              | Toutes les 2min        |
+| < 5min (pré-KO)        | Stop                   |
+| Match commencé (≥ KO)  | Stop                   |
 
 ### Implémentation
 
