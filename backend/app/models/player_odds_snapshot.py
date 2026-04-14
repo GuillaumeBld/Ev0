@@ -23,6 +23,6 @@ class PlayerOddsSnapshot(Base):
     __table_args__ = (
         UniqueConstraint(
             "fixture_id", "bookmaker", "market_type", "player_name",
-            name="uq_player_odds_snapshot",
+            name="uq_player_odds",
         ),
     )

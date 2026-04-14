@@ -28,10 +28,10 @@ def upgrade() -> None:
         sa.Column("market_type", sa.String(20), nullable=False),
         sa.Column("player_name", sa.String(200), nullable=False),
         sa.Column("odds", sa.Float(), nullable=False),
-        sa.Column("scraped_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("scraped_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.UniqueConstraint(
             "fixture_id", "bookmaker", "market_type", "player_name",
-            name="uq_player_odds_snapshot",
+            name="uq_player_odds",
         ),
     )
     op.create_index("ix_player_odds_fixture", "player_odds_snapshots", ["fixture_id"])
