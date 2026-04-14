@@ -24,7 +24,7 @@ from typing import Any
 
 import httpx
 
-from app.ingestion.direct_scrapers import MatchOdds, SelectionOdds
+from app.ingestion.scrape_result import PlayerOdds
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,9 @@ _GRPC_HEADERS = {
 # Market name fragments → canonical type
 _GOALSCORER_LABELS = ("buteur (tps r", "buteur anytime", "scorer anytime")  # used by fetch_match_odds
 _ASSIST_LABELS = ("passeur", "joueur d\u00e9cisif", "joueur decisif")       # used by fetch_match_odds
+_H2H_LABELS = ("résultat du match",)
+_TOTALS_LABELS = ("nombre total de buts",)
+_BTTS_LABELS = ("les 2 équipes marquent",)
 
 _PAGE_SLEEP = 0.5   # between competition page fetches (used by scrape_betclic_leagues)
 _MATCH_SLEEP = 0.3  # between match gRPC calls (used by scrape_league)
@@ -177,12 +180,18 @@ def _decode_grpc_web_frames(data: bytes) -> list[bytes]:
 
 
 def _classify_market(name: str) -> str | None:
-    """Return canonical market type or None if not a player odds market."""
+    """Return canonical market type or None if not a recognized market."""
     lower = name.lower()
     if any(x in lower for x in _GOALSCORER_LABELS):
         return "goalscorer"
     if any(x in lower for x in _ASSIST_LABELS):
         return "assist"
+    if any(x in lower for x in _H2H_LABELS):
+        return "h2h"
+    if any(x in lower for x in _TOTALS_LABELS):
+        return "totals"
+    if any(x in lower for x in _BTTS_LABELS):
+        return "btts"
     return None
 
 
@@ -278,20 +287,38 @@ def _proto_fields(data: bytes) -> dict[int, list]:
     return out
 
 
-def _parse_match_proto(proto_bytes: bytes) -> list[SelectionOdds]:
-    """Extract player selections from a GetMatchWithNotification protobuf response.
+def _parse_match_proto(
+    proto_bytes: bytes,
+    home_team: str = "",
+    away_team: str = "",
+) -> dict:
+    """Parse all markets from a GetMatchWithNotification protobuf response.
 
-    Hand-written parser — no external library, cannot hang.
+    Returns a dict with keys:
+      h2h, totals, btts (dict | None)
+      goalscorer, assist (list[PlayerOdds])
 
     Wire structure (reverse-engineered):
-        root.f1.f1.f11.f3[]  = markets
-        market.f2  = name (bytes, UTF-8)
-        market.f9  = state varint (3 = suspended → skip)
+      root.f1.f1.f11.f3[]  = markets
+      market.f2            = market name (bytes, UTF-8)
+      market.f9            = state varint (3 = suspended → skip)
+
+      Player markets (goalscorer/assist):
         market.f11[] = team groups
-        group.f2[] = selections
-        sel.f10 or sel.f11 = player name (bytes, UTF-8)
-        sel.f12 = odds (8 bytes, IEEE 754 double, little-endian wire encoding)
+        group.f2[]   = selections
+        sel.f10|f11  = player name, sel.f12 = odds
+
+      Match-level markets (h2h/totals/btts):
+        market.f10[] = items
+        item.f1[]    = sub-items
+        sub.f1[]     = selections
+        sel.f10|f11  = label, sel.f12 = odds (8-byte IEEE 754 LE double)
     """
+    out: dict = {
+        "h2h": None, "totals": None, "btts": None,
+        "goalscorer": [], "assist": [],
+    }
+
     try:
         root  = _proto_fields(proto_bytes)
         f1    = _proto_fields(root[1][0])
@@ -300,9 +327,7 @@ def _parse_match_proto(proto_bytes: bytes) -> list[SelectionOdds]:
         markets = f11.get(3, [])
     except (KeyError, IndexError, ValueError):
         logger.warning("BetclicGrpcScraper: unexpected protobuf structure")
-        return []
-
-    selections: list[SelectionOdds] = []
+        return out
 
     for market_bytes in markets:
         try:
@@ -315,54 +340,102 @@ def _parse_match_proto(proto_bytes: bytes) -> list[SelectionOdds]:
         market_type = _classify_market(market_name)
         if not market_type:
             continue
-        if market.get(9, [0])[0] == 3:  # suspended/closed
+        if market.get(9, [0])[0] == 3:  # suspended
             continue
 
-        for group_bytes in market.get(11, []):
-            try:
-                group = _proto_fields(group_bytes)
-            except Exception:
-                continue
+        sels: list[tuple[str, float]] = []
 
-            for sel_bytes in group.get(2, []):
+        if market_type in ("goalscorer", "assist"):
+            # Player markets: market.field11[] → group.field2[] → sel
+            for group_bytes in market.get(11, []):
                 try:
-                    sel = _proto_fields(sel_bytes)
+                    group = _proto_fields(group_bytes)
                 except Exception:
                     continue
-
-                name_b = (sel.get(10) or sel.get(11) or [None])[0]
-                if not name_b:
-                    continue
-                player_name = name_b.decode("utf-8", errors="replace").strip()
-                if not player_name:
-                    continue
-
-                odds_raw = (sel.get(12) or [None])[0]
-                if not odds_raw or len(odds_raw) != 8:
-                    continue
-                try:
-                    # Protobuf double is IEEE 754 little-endian on the wire
-                    odds_val = struct.unpack("<d", odds_raw)[0]
-                    if not (1.01 <= odds_val <= 1000.0):
+                for sel_bytes in group.get(2, []):
+                    try:
+                        sel = _proto_fields(sel_bytes)
+                    except Exception:
                         continue
-                    odds = round(odds_val, 2)
-                except struct.error:
+                    name_b = (sel.get(10) or sel.get(11) or [None])[0]
+                    if not name_b:
+                        continue
+                    sel_name = name_b.decode("utf-8", errors="replace").strip()
+                    odds_raw = (sel.get(12) or [None])[0]
+                    if not odds_raw or len(odds_raw) != 8:
+                        continue
+                    try:
+                        val = struct.unpack("<d", odds_raw)[0]
+                        if 1.01 <= val <= 1000.0:
+                            sels.append((sel_name, round(val, 2)))
+                    except struct.error:
+                        continue
+        else:
+            # Match-level markets: market.field10[] → item.field1[] → sub.field1[] → sel
+            for item_bytes in market.get(10, []):
+                try:
+                    item = _proto_fields(item_bytes)
+                except Exception:
                     continue
+                for sub_bytes in item.get(1, []):
+                    try:
+                        sub = _proto_fields(sub_bytes)
+                    except Exception:
+                        continue
+                    for sel_bytes in sub.get(1, []):
+                        try:
+                            sel = _proto_fields(sel_bytes)
+                        except Exception:
+                            continue
+                        name_b = (sel.get(10) or sel.get(11) or [None])[0]
+                        if not name_b:
+                            continue
+                        sel_name = name_b.decode("utf-8", errors="replace").strip()
+                        odds_raw = (sel.get(12) or [None])[0]
+                        if not odds_raw or len(odds_raw) != 8:
+                            continue
+                        try:
+                            val = struct.unpack("<d", odds_raw)[0]
+                            if 1.01 <= val <= 1000.0:
+                                sels.append((sel_name, round(val, 2)))
+                        except struct.error:
+                            continue
 
-                selections.append(
-                    SelectionOdds(
-                        market_type=market_type,
-                        player_name=player_name,
-                        odds=odds,
-                        bookmaker=BOOKMAKER,
-                        raw_data={
-                            "market_name": market_name,
-                            "selection_id": (sel.get(1) or [None])[0],
-                        },
-                    )
-                )
+        # Populate output based on market type
+        if market_type == "goalscorer":
+            out["goalscorer"].extend(
+                PlayerOdds(n, o) for n, o in sels if n and n.lower() != "yes"
+            )
+        elif market_type == "assist":
+            out["assist"].extend(
+                PlayerOdds(n, o) for n, o in sels if n and n.lower() != "yes"
+            )
+        elif market_type == "h2h" and len(sels) == 3:
+            # Betclic order: home, draw, away
+            out["h2h"] = {"home": sels[0][1], "draw": sels[1][1], "away": sels[2][1]}
+        elif market_type == "totals" and sels:
+            totals: dict = {}
+            for name, odds in sels:
+                # French format: "+ de 2,5" / "- de 2,5"
+                # Normalize comma to dot for threshold matching
+                n = name.replace(",", ".")
+                if "1.5" in n:
+                    key = "over_1.5" if n.strip().startswith("+") else "under_1.5"
+                elif "2.5" in n:
+                    key = "over_2.5" if n.strip().startswith("+") else "under_2.5"
+                elif "3.5" in n:
+                    key = "over_3.5" if n.strip().startswith("+") else "under_3.5"
+                elif "4.5" in n:
+                    key = "over_4.5" if n.strip().startswith("+") else "under_4.5"
+                else:
+                    continue
+                totals[key] = odds
+            if totals:
+                out["totals"] = totals
+        elif market_type == "btts" and len(sels) == 2:
+            out["btts"] = {"yes": sels[0][1], "no": sels[1][1]}
 
-    return selections
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -507,18 +580,11 @@ class BetclicGrpcScraper:
         home_team: str,
         away_team: str,
         league: str,
+        fixture_id: int = 0,
         language: str = "fr",
-    ) -> list[SelectionOdds]:
-        """Call GetMatchWithNotification and return all player selections.
+    ) -> "MatchScrapeResult | None":
+        from app.ingestion.scrape_result import MatchScrapeResult
 
-        Uses self._grpc_client if set (separate client for gRPC headers),
-        otherwise falls back to self._client.
-
-        The gRPC-web response is chunked (Transfer-Encoding: chunked) and can
-        be large (50-100 KB). We stream it and stop as soon as the first data
-        frame is complete, avoiding waiting for the server to close the
-        connection.
-        """
         body = encode_grpc_web_request(match_id, language)
         client = self._grpc_client if self._grpc_client is not None else self._client
         timeout = httpx.Timeout(30.0, connect=10.0)
@@ -528,57 +594,64 @@ class BetclicGrpcScraper:
         except Exception as exc:
             logger.warning(
                 "BetclicGrpcScraper: gRPC call failed for match %d (%s v %s): %s",
-                match_id,
-                home_team,
-                away_team,
-                exc,
+                match_id, home_team, away_team, exc,
             )
-            return []
+            return None
 
         if not raw:
             logger.warning(
                 "BetclicGrpcScraper: empty gRPC-web response for match %d", match_id
             )
-            return []
+            return None
 
-        sels = _parse_match_proto(raw)
-        logger.debug(
-            "BetclicGrpcScraper: match %d (%s v %s): %d selections",
-            match_id,
-            home_team,
-            away_team,
-            len(sels),
+        parsed = _parse_match_proto(raw, home_team, away_team)
+        result = MatchScrapeResult(
+            fixture_id=fixture_id,
+            home_team=home_team,
+            away_team=away_team,
+            kickoff_utc=None,  # set by caller from match metadata
+            league=league,
+            bookmaker=BOOKMAKER,
+            scraped_at=datetime.now(_dt.UTC),
+            h2h=parsed["h2h"],
+            totals=parsed["totals"],
+            btts=parsed["btts"],
+            goalscorer=parsed["goalscorer"],
+            assist=parsed["assist"],
         )
-        return sels
+        logger.debug(
+            "BetclicGrpcScraper: match %d (%s v %s): goalscorer=%d h2h=%s totals=%s btts=%s",
+            match_id, home_team, away_team,
+            len(result.goalscorer),
+            "OK" if result.h2h else "—",
+            "OK" if result.totals else "—",
+            "OK" if result.btts else "—",
+        )
+        return result
 
-    async def scrape_league(self, league: str) -> list[MatchOdds]:
+    async def scrape_league(self, league: str) -> list:
         """Scrape all upcoming matches for a league: match list → gRPC per match."""
+        from app.ingestion.scrape_result import MatchScrapeResult
         matches = await self.fetch_competition_matches(league)
         if not matches:
             return []
 
-        results: list[MatchOdds] = []
+        results: list[MatchScrapeResult] = []
 
         for i, mx in enumerate(matches):
-            sels = await self.fetch_match_odds(
+            result = await self.fetch_match_odds(
                 mx["match_id"], mx["home_team"], mx["away_team"], league
             )
-            if sels:
-                mo = MatchOdds(
-                    home_team=mx["home_team"],
-                    away_team=mx["away_team"],
-                    kickoff_utc=mx.get("kickoff_utc"),
-                    league=league,
-                )
-                mo.selections = sels
-                results.append(mo)
-
+            if result:
+                result.kickoff_utc = mx.get("kickoff_utc")
+            if result and result.goalscorer:
+                results.append(result)
             if i < len(matches) - 1:
                 await asyncio.sleep(_MATCH_SLEEP)
 
-        total_sel = sum(len(m.selections) for m in results)
+        total_sel = sum(len(r.goalscorer) for r in results)
         logger.info(
-            "BetclicGrpcScraper %s: %d matches, %d total selections",
+            "BetclicGrpcScraper %s: %d matches, %d total goalscorer selections",
             league, len(results), total_sel,
         )
         return results
@@ -589,12 +662,14 @@ class BetclicGrpcScraper:
 # ---------------------------------------------------------------------------
 
 
-async def scrape_betclic_leagues(leagues: list[str] | None = None) -> list[MatchOdds]:
-    """Scrape all player odds from Betclic via gRPC-web for the given leagues.
+async def scrape_betclic_leagues(leagues: list[str] | None = None) -> list:
+    """Scrape all odds from Betclic via gRPC-web for the given leagues.
 
     Default: all leagues in BETCLIC_LEAGUES.
-    Returns MatchOdds objects with complete goalscorer + assist selections.
+    Returns MatchScrapeResult objects with goalscorer + match-level odds.
     """
+    from app.ingestion.scrape_result import MatchScrapeResult
+
     if leagues is None:
         leagues = list(BETCLIC_LEAGUES.keys())
 
@@ -605,11 +680,11 @@ async def scrape_betclic_leagues(leagues: list[str] | None = None) -> list[Match
         scraper = BetclicGrpcScraper(page_client)
         scraper._grpc_client = grpc_client
 
-        all_matches: list[MatchOdds] = []
+        all_results: list[MatchScrapeResult] = []
         for i, league in enumerate(leagues):
             try:
-                matches = await scraper.scrape_league(league)
-                all_matches.extend(matches)
+                results = await scraper.scrape_league(league)
+                all_results.extend(results)
             except Exception as exc:
                 logger.error(
                     "BetclicGrpcScraper: league %s failed: %s", league, exc,
@@ -620,9 +695,9 @@ async def scrape_betclic_leagues(leagues: list[str] | None = None) -> list[Match
 
     logger.info(
         "scrape_betclic_leagues: %d total matches, %d leagues",
-        len(all_matches), len(leagues),
+        len(all_results), len(leagues),
     )
-    return all_matches
+    return all_results
 
 
 # ---------------------------------------------------------------------------
@@ -645,27 +720,21 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print selections without storing to DB",
+        help="Print results without storing to DB",
     )
     args = parser.parse_args()
 
     leagues = [args.league] if args.league else None
     results = asyncio.run(scrape_betclic_leagues(leagues))
 
-    total_sel = sum(len(m.selections) for m in results)
+    total_goalscorer = sum(len(r.goalscorer) for r in results)
     print(f"\n{'='*60}")
-    print(f"Betclic gRPC scrape: {len(results)} matches, {total_sel} selections")
+    print(f"Betclic gRPC scrape: {len(results)} matches, {total_goalscorer} goalscorer selections")
     print(f"{'='*60}")
-
-    if args.dry_run:
-        for mo in results:
-            print(f"\n  {mo.home_team} vs {mo.away_team} [{mo.league}]")
-            if mo.kickoff_utc:
-                print(f"  Kickoff: {mo.kickoff_utc.strftime('%Y-%m-%d %H:%M UTC')}")
-            by_type: dict[str, list] = {}
-            for s in mo.selections:
-                by_type.setdefault(s.market_type, []).append(s)
-            for mtype, sels in by_type.items():
-                print(f"  [{mtype}] {len(sels)} players")
-                for s in sorted(sels, key=lambda x: x.odds)[:5]:
-                    print(f"    {s.player_name}: {s.odds}")
+    for r in results:
+        print(f"\n{r.home_team} vs {r.away_team} ({r.league})")
+        print(f"  h2h:     {r.h2h}")
+        print(f"  totals:  {r.totals}")
+        print(f"  btts:    {r.btts}")
+        print(f"  goalscorer: {len(r.goalscorer)} players")
+        print(f"  assist:     {len(r.assist)} players")
