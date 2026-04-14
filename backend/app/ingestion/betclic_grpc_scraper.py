@@ -303,16 +303,24 @@ def _parse_match_proto(
       market.f2            = market name (bytes, UTF-8)
       market.f9            = state varint (3 = suspended → skip)
 
-      Player markets (goalscorer/assist):
+      Player markets (goalscorer/assist) — field10/field11 path:
         market.f11[] = team groups
         group.f2[]   = selections
         sel.f10|f11  = player name, sel.f12 = odds
+        (field10 = first contestant's players, field11 = second contestant's
+        players; we try both because either may be absent)
 
-      Match-level markets (h2h/totals/btts):
+      Match-level markets (h2h/totals/btts) — field10 path:
         market.f10[] = items
         item.f1[]    = sub-items
         sub.f1[]     = selections
         sel.f10|f11  = label, sel.f12 = odds (8-byte IEEE 754 LE double)
+
+    Odds encoding note:
+      sel.f12 arrives here as raw 8 bytes from _proto_fields wire type 1,
+      decoded with little-endian ("<d").  This differs from decode_odds_float64,
+      which receives a blackboxprotobuf integer (network/big-endian fixed64) and
+      therefore uses big-endian (">d").
     """
     out: dict = {
         "h2h": None, "totals": None, "btts": None,
@@ -365,7 +373,7 @@ def _parse_match_proto(
                     if not odds_raw or len(odds_raw) != 8:
                         continue
                     try:
-                        val = struct.unpack("<d", odds_raw)[0]
+                        val = struct.unpack("<d", odds_raw)[0]  # raw bytes from wire type 1 — LE, unlike decode_odds_float64 which takes an int
                         if 1.01 <= val <= 1000.0:
                             sels.append((sel_name, round(val, 2)))
                     except struct.error:
@@ -395,7 +403,7 @@ def _parse_match_proto(
                         if not odds_raw or len(odds_raw) != 8:
                             continue
                         try:
-                            val = struct.unpack("<d", odds_raw)[0]
+                            val = struct.unpack("<d", odds_raw)[0]  # raw bytes from wire type 1 — LE, unlike decode_odds_float64 which takes an int
                             if 1.01 <= val <= 1000.0:
                                 sels.append((sel_name, round(val, 2)))
                         except struct.error:
