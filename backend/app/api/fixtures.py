@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
-from app.models.odds import OddsSnapshot
+from app.models.player_odds_snapshot import PlayerOddsSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class OddsSnapshotOut(BaseModel):
     bookmaker: str
     odds: float
     implied_probability: float
-    snapshot_utc: str
+    snapshot_utc: str  # maps to scraped_at
 
 
 class FixtureOut(BaseModel):
@@ -99,8 +99,8 @@ async def list_fixtures(
 
     # Count odds per fixture in a single subquery — never load all rows
     odds_count_subq = (
-        select(OddsSnapshot.fixture_id, func.count().label("cnt"))
-        .group_by(OddsSnapshot.fixture_id)
+        select(PlayerOddsSnapshot.fixture_id, func.count().label("cnt"))
+        .group_by(PlayerOddsSnapshot.fixture_id)
         .subquery()
     )
 
@@ -230,9 +230,9 @@ async def get_fixture_odds(
 ):
     """Get odds snapshots for a fixture."""
     result = await db.execute(
-        select(OddsSnapshot)
-        .where(OddsSnapshot.fixture_id == fixture_id)
-        .order_by(OddsSnapshot.snapshot_utc.desc())
+        select(PlayerOddsSnapshot)
+        .where(PlayerOddsSnapshot.fixture_id == fixture_id)
+        .order_by(PlayerOddsSnapshot.scraped_at.desc())
     )
     snapshots = result.scalars().all()
     return [
@@ -242,8 +242,8 @@ async def get_fixture_odds(
             market_type=o.market_type,
             bookmaker=o.bookmaker,
             odds=o.odds,
-            implied_probability=o.implied_probability,
-            snapshot_utc=str(o.snapshot_utc),
+            implied_probability=round(1.0 / o.odds, 6),
+            snapshot_utc=str(o.scraped_at),
         )
         for o in snapshots
     ]
@@ -265,14 +265,13 @@ async def create_odds(
         raise HTTPException(status_code=400, detail="Odds must be greater than 1.0")
 
     now = datetime.now(UTC)
-    snapshot = OddsSnapshot(
+    snapshot = PlayerOddsSnapshot(
         fixture_id=fixture_id,
         player_name=body.player_name,
         market_type=body.market_type,
         bookmaker=body.bookmaker,
         odds=body.odds,
-        implied_probability=round(1.0 / body.odds, 6),
-        snapshot_utc=now,
+        scraped_at=now,
     )
     db.add(snapshot)
     await db.commit()
@@ -284,6 +283,6 @@ async def create_odds(
         market_type=snapshot.market_type,
         bookmaker=snapshot.bookmaker,
         odds=snapshot.odds,
-        implied_probability=snapshot.implied_probability,
-        snapshot_utc=str(snapshot.snapshot_utc),
+        implied_probability=round(1.0 / snapshot.odds, 6),
+        snapshot_utc=str(snapshot.scraped_at),
     )

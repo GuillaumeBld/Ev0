@@ -338,19 +338,19 @@ async def get_autopilot_today(db: AsyncSession = Depends(get_db)):
         })
 
     # Query odds snapshots for contextual features
-    from app.models.odds import OddsSnapshot
+    from app.models.player_odds_snapshot import PlayerOddsSnapshot
 
     output = []
     for rec, rec_dict in zip(recs, all_rec_dicts):
         # Get odds history for this player+market+fixture
         odds_stmt = (
-            select(OddsSnapshot.odds)
+            select(PlayerOddsSnapshot.odds)
             .where(
-                OddsSnapshot.fixture_id == rec.fixture_id,
-                OddsSnapshot.player_name == rec.player_name,
-                OddsSnapshot.market_type == rec.market_type,
+                PlayerOddsSnapshot.fixture_id == rec.fixture_id,
+                PlayerOddsSnapshot.player_name == rec.player_name,
+                PlayerOddsSnapshot.market_type == rec.market_type,
             )
-            .order_by(OddsSnapshot.snapshot_utc.asc())
+            .order_by(PlayerOddsSnapshot.scraped_at.asc())
         )
         odds_result = await db.execute(odds_stmt)
         odds_history = [row[0] for row in odds_result.all()]

@@ -793,7 +793,7 @@ async def job_autopilot_run():
 
         from app.models.autopilot import AutopilotDecision
         from app.models.fixtures import Fixture
-        from app.models.odds import OddsSnapshot
+        from app.models.player_odds_snapshot import PlayerOddsSnapshot as OddsSnapshot
         from app.models.recommendations import Recommendation
 
         async with async_session() as session:
@@ -888,7 +888,7 @@ async def job_autopilot_run():
                         OddsSnapshot.player_name == rec.player_name,
                         OddsSnapshot.market_type == rec.market_type,
                     )
-                    .order_by(OddsSnapshot.snapshot_utc.asc())
+                    .order_by(OddsSnapshot.scraped_at.asc())
                 )
                 odds_result = await session.execute(odds_stmt)
                 odds_history = [row[0] for row in odds_result.all()]

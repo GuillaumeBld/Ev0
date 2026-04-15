@@ -1,16 +1,11 @@
 """Fixture model."""
 
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
-
-if TYPE_CHECKING:
-    from app.models.odds import OddsSnapshot
-
 
 class Fixture(Base, TimestampMixin):
     """A football match fixture."""
@@ -57,9 +52,6 @@ class Fixture(Base, TimestampMixin):
     # Results (filled after match)
     home_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     away_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    # Relationships
-    odds_snapshots: Mapped[list["OddsSnapshot"]] = relationship(back_populates="fixture")
 
     def __repr__(self) -> str:
         return f"<Fixture {self.home_team} vs {self.away_team} ({self.kickoff_utc})>"

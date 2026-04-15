@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.fixtures import Fixture
-from app.models.odds import OddsSnapshot
+from app.models.player_odds_snapshot import PlayerOddsSnapshot
 from app.models.players import PlayerStats
 from app.models.recommendations import Recommendation
 
@@ -92,7 +92,7 @@ async def data_quality(db: AsyncSession = Depends(get_db)):
 
     # Odds Snapshots
     result = await db.execute(
-        select(func.count(OddsSnapshot.id), func.max(OddsSnapshot.snapshot_utc))
+        select(func.count(PlayerOddsSnapshot.id), func.max(PlayerOddsSnapshot.scraped_at))
     )
     count, last = result.one()
     fresh = _freshness(last)

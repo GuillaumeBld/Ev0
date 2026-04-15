@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from sqlalchemy import JSON, DateTime, Float, ForeignKey, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
 
@@ -35,9 +35,6 @@ class OddsSnapshot(Base, TimestampMixin):
 
     # Raw response (for debugging)
     raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-
-    # Relationship
-    fixture = relationship("Fixture", back_populates="odds_snapshots")
 
     __table_args__ = (
         UniqueConstraint(
