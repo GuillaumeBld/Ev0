@@ -488,7 +488,7 @@ async def get_recommendations_for_date(
     from datetime import timedelta
 
     from app.models.fixtures import Fixture
-    from app.models.odds import OddsSnapshot as OddsSnapshotModel
+    from app.models.player_odds_snapshot import PlayerOddsSnapshot as OddsSnapshotModel
 
     # 1. Load upcoming fixtures from DB (next 48h from target_date)
     window_start = target_date
@@ -522,7 +522,7 @@ async def get_recommendations_for_date(
         odds_result = await db.execute(
             select(OddsSnapshotModel)
             .where(OddsSnapshotModel.fixture_id == f.id)
-            .order_by(OddsSnapshotModel.snapshot_utc.desc())
+            .order_by(OddsSnapshotModel.scraped_at.desc())
         )
         # Keep best odds per (player, market) — avoids duplicates from multiple bookmakers/snapshots
         best_odds: dict[tuple[str, str], dict[str, Any]] = {}
