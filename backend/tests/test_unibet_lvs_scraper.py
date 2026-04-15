@@ -62,7 +62,7 @@ class TestParseStart:
 
 
 class TestParseMatchItems:
-    """Tests for _parse_match_items: extracts MatchOdds from LVS /ff/ response."""
+    """Tests for _parse_match_items: extracts MatchScrapeResult from LVS /ff/ response."""
 
     SAMPLE_ITEMS = {
         "e100": {"a": "PSG", "b": "Marseille", "start": "2604051930"},
@@ -87,45 +87,40 @@ class TestParseMatchItems:
         return UnibetLVSScraper(httpx.AsyncClient())
 
     def test_extracts_goalscorer_selections(self):
-        mo = self._scraper()._parse_match_items(self.SAMPLE_ITEMS, "ligue_1")
-        assert mo is not None
-        goal = [s for s in mo.selections if s.market_type == "goalscorer"]
-        names = [s.player_name for s in goal]
+        result = self._scraper()._parse_match_items(self.SAMPLE_ITEMS, "ligue_1")
+        assert result is not None
+        names = [s.player_name for s in result.goalscorer]
         assert "Mbappé" in names
         assert "Neymar" in names
 
     def test_extracts_assist_selections(self):
-        mo = self._scraper()._parse_match_items(self.SAMPLE_ITEMS, "ligue_1")
-        assist = [s for s in mo.selections if s.market_type == "assist"]
-        assert len(assist) == 1
-        assert assist[0].player_name == "Mbappé"
-        assert assist[0].odds == pytest.approx(3.20)
+        result = self._scraper()._parse_match_items(self.SAMPLE_ITEMS, "ligue_1")
+        assert len(result.assist) == 1
+        assert result.assist[0].player_name == "Mbappé"
+        assert result.assist[0].odds == pytest.approx(3.20)
 
     def test_deduplicates_anytime_over_first_scorer(self):
         """Anytime (markettypeId=31) bat toujours First Scorer (markettypeId=4)."""
-        mo = self._scraper()._parse_match_items(self.SAMPLE_ITEMS, "ligue_1")
-        mbappe_goals = [
-            s for s in mo.selections
-            if s.market_type == "goalscorer" and s.player_name == "Mbappé"
-        ]
+        result = self._scraper()._parse_match_items(self.SAMPLE_ITEMS, "ligue_1")
+        mbappe_goals = [s for s in result.goalscorer if s.player_name == "Mbappé"]
         # Un seul Mbappé goalscorer, avec les cotes anytime (2.75) pas first scorer (4.00)
         assert len(mbappe_goals) == 1
         assert mbappe_goals[0].odds == pytest.approx(2.75)
 
     def test_skips_null_price(self):
         """Outcomes avec price=None (marché suspendu) sont ignorés."""
-        mo = self._scraper()._parse_match_items(self.SAMPLE_ITEMS, "ligue_1")
+        result = self._scraper()._parse_match_items(self.SAMPLE_ITEMS, "ligue_1")
         # Giroud a price=None → ne doit pas apparaître
-        goal_names = [s.player_name for s in mo.selections if s.market_type == "goalscorer"]
+        goal_names = [s.player_name for s in result.goalscorer]
         assert "Giroud" not in goal_names
         # Exactement 2 buteurs (Mbappé + Neymar)
-        assert len([s for s in mo.selections if s.market_type == "goalscorer"]) == 2
+        assert len(result.goalscorer) == 2
 
     def test_correct_teams_and_league(self):
-        mo = self._scraper()._parse_match_items(self.SAMPLE_ITEMS, "ligue_1")
-        assert mo.home_team == "PSG"
-        assert mo.away_team == "Marseille"
-        assert mo.league == "ligue_1"
+        result = self._scraper()._parse_match_items(self.SAMPLE_ITEMS, "ligue_1")
+        assert result.home_team == "PSG"
+        assert result.away_team == "Marseille"
+        assert result.league == "ligue_1"
 
     def test_returns_none_when_no_event(self):
         assert self._scraper()._parse_match_items({}, "ligue_1") is None
@@ -133,15 +128,74 @@ class TestParseMatchItems:
     def test_returns_none_when_no_target_markets(self):
         items = {
             "e100": {"a": "PSG", "b": "Marseille", "start": "2604051930"},
-            # Seul un marché 1X2 (non ciblé)
-            "m200": {"parent": "e100", "markettypeId": 1, "desc": "1X2"},
+            # Seul un marché non ciblé (markettypeId=999)
+            "m200": {"parent": "e100", "markettypeId": 999, "desc": "Unknown"},
             "o300": {"parent": "m200", "desc": "PSG", "price": "1,80"},
         }
         assert self._scraper()._parse_match_items(items, "ligue_1") is None
 
     def test_bookmaker_is_unibet(self):
-        mo = self._scraper()._parse_match_items(self.SAMPLE_ITEMS, "ligue_1")
-        assert all(s.bookmaker == "unibet" for s in mo.selections)
+        result = self._scraper()._parse_match_items(self.SAMPLE_ITEMS, "ligue_1")
+        assert result.bookmaker == "unibet"
+
+
+class TestParseMatchItemsMatchOdds:
+    """_parse_match_items extracts h2h + totals + btts when present."""
+
+    SAMPLE_ITEMS_FULL = {
+        "e100": {"a": "PSG", "b": "Lyon", "start": "2605011900"},
+        # h2h
+        "m1": {"markettypeId": 1, "parent": "e100", "desc": "1X2"},
+        "o1": {"parent": "m1", "desc": "PSG", "price": "2,10"},
+        "o2": {"parent": "m1", "desc": "Match nul", "price": "3,40"},
+        "o3": {"parent": "m1", "desc": "Lyon", "price": "3,60"},
+        # totals
+        "m2": {"markettypeId": 994001271, "parent": "e100", "desc": "Total buts"},
+        "o4": {"parent": "m2", "desc": "Plus de 2,5", "price": "1,80"},
+        "o5": {"parent": "m2", "desc": "Moins de 2,5", "price": "2,00"},
+        # btts
+        "m3": {"markettypeId": 350, "parent": "e100", "desc": "BTTS"},
+        "o6": {"parent": "m3", "desc": "Oui", "price": "1,75"},
+        "o7": {"parent": "m3", "desc": "Non", "price": "2,10"},
+        # goalscorer
+        "m4": {"markettypeId": 31, "parent": "e100", "desc": "Buteur"},
+        "o8": {"parent": "m4", "desc": "Mbappé", "price": "2,75"},
+    }
+
+    def test_returns_match_scrape_result(self):
+        from app.ingestion.scrape_result import MatchScrapeResult
+        scraper = UnibetLVSScraper.__new__(UnibetLVSScraper)
+        result = scraper._parse_match_items(self.SAMPLE_ITEMS_FULL, "ligue_1")
+        assert isinstance(result, MatchScrapeResult)
+        assert result.bookmaker == "unibet"
+
+    def test_h2h_extracted(self):
+        scraper = UnibetLVSScraper.__new__(UnibetLVSScraper)
+        result = scraper._parse_match_items(self.SAMPLE_ITEMS_FULL, "ligue_1")
+        assert result is not None
+        assert result.h2h == {"home": pytest.approx(2.10), "draw": pytest.approx(3.40), "away": pytest.approx(3.60)}
+
+    def test_totals_extracted(self):
+        scraper = UnibetLVSScraper.__new__(UnibetLVSScraper)
+        result = scraper._parse_match_items(self.SAMPLE_ITEMS_FULL, "ligue_1")
+        assert result is not None
+        assert result.totals is not None
+        assert "over_2.5" in result.totals
+        assert "under_2.5" in result.totals
+        assert result.totals["over_2.5"] == pytest.approx(1.80)
+
+    def test_btts_extracted(self):
+        scraper = UnibetLVSScraper.__new__(UnibetLVSScraper)
+        result = scraper._parse_match_items(self.SAMPLE_ITEMS_FULL, "ligue_1")
+        assert result is not None
+        assert result.btts == {"yes": pytest.approx(1.75), "no": pytest.approx(2.10)}
+
+    def test_goalscorer_still_works(self):
+        scraper = UnibetLVSScraper.__new__(UnibetLVSScraper)
+        result = scraper._parse_match_items(self.SAMPLE_ITEMS_FULL, "ligue_1")
+        assert result is not None
+        assert len(result.goalscorer) == 1
+        assert result.goalscorer[0].player_name == "Mbappé"
 
 
 class TestFetchEventIds:

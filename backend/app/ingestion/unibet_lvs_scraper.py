@@ -6,9 +6,12 @@ Le nouveau www.unibet.fr tourne sur la plateforme LVS (Lineup7/SportEase).
 API publique, token anonyme sans compte requis.
 
 Marchés extraits :
-- markettypeId=31       : Buteur anytime     → market_type="goalscorer"
-- markettypeId=4        : 1er Buteur         → market_type="goalscorer" (dédupliqué)
-- markettypeId=100002524: Passeur décisif    → market_type="assist"
+- markettypeId=1         : 1X2 (résultat du match)   → h2h
+- markettypeId=994001271 : Nbre total buts            → totals
+- markettypeId=350       : Les 2 équipes marqueront?  → btts
+- markettypeId=31        : Buteur anytime             → goalscorer
+- markettypeId=4         : 1er Buteur                 → goalscorer (dédupliqué)
+- markettypeId=100002524 : Passeur décisif            → assist
 
 CLI usage (dry-run):
     python -m app.ingestion.unibet_lvs_scraper --dry-run
@@ -25,7 +28,7 @@ from typing import Any
 
 import httpx
 
-from app.ingestion.direct_scrapers import MatchOdds, SelectionOdds
+from app.ingestion.scrape_result import MatchScrapeResult, PlayerOdds
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,11 @@ LVS_NODE_IDS: dict[str, int] = {
 
 # markettypeId → market_type Ev0
 _MARKET_TYPES: dict[int, str] = {
+    # Match-level (confirmed by audit)
+    1:          "h2h",        # 1 N 2 — résultat du match
+    994001271:  "totals",     # Nbre total buts — Over/Under
+    350:        "btts",       # Les 2 équipes marqueront-elles?
+    # Player props
     31:        "goalscorer",   # Buteur anytime (priorité haute)
     4:         "goalscorer",   # 1er Buteur (priorité basse — dédupliqué)
     100002524: "assist",       # Passeur décisif
@@ -162,8 +170,9 @@ class UnibetLVSScraper:
         self,
         items: dict[str, Any],
         league: str,
-    ) -> MatchOdds | None:
-        """Parse les items /ff/ d'un match en MatchOdds.
+        fixture_id: int = 0,
+    ) -> MatchScrapeResult | None:
+        """Parse les items /ff/ d'un match en MatchScrapeResult.
 
         La réponse LVS mélange événements (e...), marchés (m...) et
         outcomes (o...) dans un dict plat. On reconstruit la hiérarchie
@@ -197,12 +206,12 @@ class UnibetLVSScraper:
         if not target_markets:
             return None
 
-        # Collecter les selections en trois dicts séparés
-        # Pour goalscorer : anytime (31) a priorité absolue sur first scorer (4)
-        # Merge final : {**selections_first, **selections_anytime} → anytime écrase first
-        selections_anytime: dict[str, SelectionOdds] = {}   # player_lower → SelectionOdds
-        selections_first:   dict[str, SelectionOdds] = {}
-        selections_assist:  dict[str, SelectionOdds] = {}
+        # Collect outcomes grouped by market key
+        market_outcomes: dict[str, list[tuple[str, float]]] = {}  # market_key → [(desc, odds)]
+        # For goalscorer dedup
+        selections_anytime: dict[str, PlayerOdds] = {}
+        selections_first: dict[str, PlayerOdds] = {}
+        selections_assist: dict[str, PlayerOdds] = {}
 
         for key, val in items.items():
             if not key.startswith("o"):
@@ -212,51 +221,95 @@ class UnibetLVSScraper:
                 continue
 
             mtype_id, market_type = target_markets[parent]
-            player_name = (val.get("desc") or "").strip()
-            if not player_name:
+            desc = (val.get("desc") or "").strip()
+            if not desc:
                 continue
-
             odds = _parse_price(val.get("price"))
             if odds is None:
                 continue
 
-            sel = SelectionOdds(
-                market_type=market_type,
-                player_name=player_name,
-                odds=odds,
-                bookmaker=BOOKMAKER,
-                raw_data={"markettypeId": mtype_id, "outcome_key": key},
-            )
-            name_lower = player_name.lower()
+            if market_type in ("h2h", "totals", "btts"):
+                market_outcomes.setdefault(parent, []).append((desc, odds))
+            elif market_type == "goalscorer":
+                name_lower = desc.lower()
+                if mtype_id == _ANYTIME_SCORER_ID:
+                    selections_anytime.setdefault(name_lower, PlayerOdds(desc, odds))
+                else:
+                    selections_first.setdefault(name_lower, PlayerOdds(desc, odds))
+            elif market_type == "assist":
+                name_lower = desc.lower()
+                selections_assist.setdefault(name_lower, PlayerOdds(desc, odds))
 
-            if market_type == "assist":
-                selections_assist.setdefault(name_lower, sel)
-            elif mtype_id == _ANYTIME_SCORER_ID:
-                selections_anytime.setdefault(name_lower, sel)
-            else:
-                selections_first.setdefault(name_lower, sel)
+        # Build match-level odds
+        h2h: dict | None = None
+        totals: dict | None = None
+        btts: dict | None = None
 
-        # Fusionner : anytime prend priorité sur first scorer
-        final_goalscorer: dict[str, SelectionOdds] = {**selections_first, **selections_anytime}
+        for mkey, sels in market_outcomes.items():
+            mtype_id, market_type = target_markets[mkey]
 
-        mo = MatchOdds(
+            if market_type == "h2h" and len(sels) == 3:
+                # Identify draw by "nul" in desc; remaining in order = home, away
+                draw_odds = None
+                non_draw: list[tuple[str, float]] = []
+                for desc, odds in sels:
+                    if "nul" in desc.lower():
+                        draw_odds = odds
+                    else:
+                        non_draw.append((desc, odds))
+                if draw_odds is not None and len(non_draw) == 2:
+                    h2h = {"home": non_draw[0][1], "draw": draw_odds, "away": non_draw[1][1]}
+
+            elif market_type == "totals" and sels:
+                totals_dict: dict = {}
+                for desc, odds in sels:
+                    d = desc.replace(",", ".").lower()
+                    plus = "plus" in d or d.strip().startswith("+")
+                    if "4.5" in d:
+                        totals_dict["over_4.5" if plus else "under_4.5"] = odds
+                    elif "3.5" in d:
+                        totals_dict["over_3.5" if plus else "under_3.5"] = odds
+                    elif "2.5" in d:
+                        totals_dict["over_2.5" if plus else "under_2.5"] = odds
+                    elif "1.5" in d:
+                        totals_dict["over_1.5" if plus else "under_1.5"] = odds
+                if totals_dict:
+                    totals = totals_dict
+
+            elif market_type == "btts" and len(sels) == 2:
+                # Outcomes: "Oui" / "Non"
+                yes_odds = next((o for d, o in sels if "oui" in d.lower()), None)
+                no_odds = next((o for d, o in sels if "non" in d.lower()), None)
+                if yes_odds and no_odds:
+                    btts = {"yes": yes_odds, "no": no_odds}
+
+        # Fusionner goalscorer : anytime > first
+        final_goalscorer = list({**selections_first, **selections_anytime}.values())
+
+        return MatchScrapeResult(
+            fixture_id=fixture_id,
             home_team=home,
             away_team=away,
             kickoff_utc=kickoff,
             league=league,
+            bookmaker=BOOKMAKER,
+            scraped_at=datetime.now(UTC),
+            h2h=h2h,
+            totals=totals,
+            btts=btts,
+            goalscorer=final_goalscorer,
+            assist=list(selections_assist.values()),
         )
-        mo.selections = list(final_goalscorer.values()) + list(selections_assist.values())
-        return mo
 
-    async def scrape_league(self, league: str) -> list[MatchOdds]:
-        """Scrape une ligue : liste événements → marchés → MatchOdds."""
+    async def scrape_league(self, league: str) -> list[MatchScrapeResult]:
+        """Scrape une ligue : liste événements → marchés → MatchScrapeResult."""
         events = await self.fetch_event_ids(league)
         if not events:
             logger.info("UnibetLVSScraper %s: 0 événements", league)
             return []
 
         logger.info("UnibetLVSScraper %s: %d événements à traiter", league, len(events))
-        results: list[MatchOdds] = []
+        results: list[MatchScrapeResult] = []
 
         for event_id, home, away, kickoff in events:
             url = f"{LVS_BASE}/lvs-api/ff/e{event_id}?{_LIST_PARAMS}"
@@ -269,25 +322,22 @@ class UnibetLVSScraper:
                 await asyncio.sleep(_EVENT_SLEEP)
                 continue
 
-            mo = self._parse_match_items(items, league)
-            if mo and mo.selections:
-                results.append(mo)
+            result = self._parse_match_items(items, league)
+            if result and result.goalscorer:
+                results.append(result)
 
             await asyncio.sleep(_EVENT_SLEEP)
 
-        total_sel = sum(len(m.selections) for m in results)
+        total_sel = sum(len(r.goalscorer) for r in results)
         logger.info(
-            "UnibetLVSScraper %s: %d matchs, %d sélections",
+            "UnibetLVSScraper %s: %d matchs, %d sélections buteur",
             league, len(results), total_sel,
         )
         return results
 
 
-async def scrape_all_unibet(leagues: list[str]) -> list[MatchOdds]:
-    """Scrape les cotes Unibet pour toutes les ligues via l'API LVS.
-
-    Pure HTTP — pas de Playwright requis.
-    """
+async def scrape_all_unibet(leagues: list[str]) -> list[MatchScrapeResult]:
+    """Scrape les cotes Unibet pour toutes les ligues via l'API LVS."""
     async with httpx.AsyncClient(follow_redirects=True) as client:
         scraper = UnibetLVSScraper(client)
 
@@ -297,21 +347,21 @@ async def scrape_all_unibet(leagues: list[str]) -> list[MatchOdds]:
             logger.error("UnibetLVSScraper: impossible d'obtenir le token LVS: %s", exc)
             return []
 
-        all_matches: list[MatchOdds] = []
+        all_results: list[MatchScrapeResult] = []
         for league in leagues:
             try:
-                matches = await scraper.scrape_league(league)
-                all_matches.extend(matches)
+                results = await scraper.scrape_league(league)
+                all_results.extend(results)
             except Exception as exc:
                 logger.error(
                     "UnibetLVSScraper: erreur sur %s: %s", league, exc, exc_info=True
                 )
 
     logger.info(
-        "scrape_all_unibet: %d match-odds sur %d ligues",
-        len(all_matches), len(leagues),
+        "scrape_all_unibet: %d matchs sur %d ligues",
+        len(all_results), len(leagues),
     )
-    return all_matches
+    return all_results
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -319,25 +369,24 @@ async def scrape_all_unibet(leagues: list[str]) -> list[MatchOdds]:
 
 async def _cli_main(args: argparse.Namespace) -> None:
     leagues = [args.league] if args.league else list(LVS_NODE_IDS.keys())
-    all_matches = await scrape_all_unibet(leagues)
+    all_results = await scrape_all_unibet(leagues)
 
-    total_sel = sum(len(m.selections) for m in all_matches)
+    total_sel = sum(len(r.goalscorer) for r in all_results)
     print(f"\n{'=' * 60}")
-    print(f"Unibet LVS: {len(all_matches)} matchs, {total_sel} sélections")
+    print(f"Unibet LVS: {len(all_results)} matchs, {total_sel} sélections buteur")
     print(f"{'=' * 60}")
 
     if args.dry_run:
-        for m in all_matches:
-            print(f"\n  {m.home_team} vs {m.away_team}  [{m.league}]")
-            if m.kickoff_utc:
-                print(f"  Kickoff: {m.kickoff_utc.strftime('%Y-%m-%d %H:%M UTC')}")
-            goal = [s for s in m.selections if s.market_type == "goalscorer"]
-            assist = [s for s in m.selections if s.market_type == "assist"]
-            print(f"  Buteurs: {len(goal)}  Passeurs: {len(assist)}")
-            for s in sorted(goal, key=lambda x: x.odds)[:5]:
-                print(f"    [G] {s.player_name}: {s.odds:.2f}")
-            for s in sorted(assist, key=lambda x: x.odds)[:5]:
-                print(f"    [A] {s.player_name}: {s.odds:.2f}")
+        for r in all_results:
+            print(f"\n  {r.home_team} vs {r.away_team}  [{r.league}]")
+            if r.kickoff_utc:
+                print(f"  Kickoff: {r.kickoff_utc.strftime('%Y-%m-%d %H:%M UTC')}")
+            print(f"  h2h:   {r.h2h}")
+            print(f"  totals: {r.totals}")
+            print(f"  btts:   {r.btts}")
+            print(f"  Buteurs: {len(r.goalscorer)}  Passeurs: {len(r.assist)}")
+            for p in sorted(r.goalscorer, key=lambda x: x.odds)[:5]:
+                print(f"    [G] {p.player_name}: {p.odds:.2f}")
 
 
 if __name__ == "__main__":
