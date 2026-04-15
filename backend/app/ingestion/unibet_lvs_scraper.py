@@ -47,8 +47,8 @@ LVS_NODE_IDS: dict[str, int] = {
 # markettypeId → market_type Ev0
 _MARKET_TYPES: dict[int, str] = {
     # Match-level (confirmed by audit)
-    1:          "h2h",        # 1 N 2 — résultat du match
-    994001271:  "totals",     # Nbre total buts — Over/Under
+    1:          "h2h",        # 1 N 2 — résultat du match (draw outcome = "N")
+    994001025:  "totals",     # Plus / Moins X.5 But(s) — over/under per threshold
     350:        "btts",       # Les 2 équipes marqueront-elles?
     # Player props
     31:        "goalscorer",   # Buteur anytime (priorité haute)
@@ -242,18 +242,19 @@ class UnibetLVSScraper:
 
         # Build match-level odds
         h2h: dict | None = None
-        totals: dict | None = None
+        totals_dict: dict = {}  # accumulated across all threshold markets
         btts: dict | None = None
 
         for mkey, sels in market_outcomes.items():
             mtype_id, market_type = target_markets[mkey]
 
-            if market_type == "h2h" and len(sels) == 3:
-                # Identify draw by "nul" in desc; remaining in order = home, away
+            if market_type == "h2h" and len(sels) == 3 and h2h is None:
+                # Draw outcome in Unibet is "N" (not "Nul") — match single char or full word
                 draw_odds = None
                 non_draw: list[tuple[str, float]] = []
                 for desc, odds in sels:
-                    if "nul" in desc.lower():
+                    d = desc.strip().lower()
+                    if d == "n" or "nul" in d:
                         draw_odds = odds
                     else:
                         non_draw.append((desc, odds))
@@ -261,20 +262,19 @@ class UnibetLVSScraper:
                     h2h = {"home": non_draw[0][1], "draw": draw_odds, "away": non_draw[1][1]}
 
             elif market_type == "totals" and sels:
-                totals_dict: dict = {}
+                # 994001025 creates one market per threshold (0.5, 1.5, 2.5, 3.5, 4.5…)
+                # Accumulate all thresholds into a single dict
                 for desc, odds in sels:
                     d = desc.replace(",", ".").lower()
                     plus = "plus" in d or d.strip().startswith("+")
                     if "4.5" in d:
-                        totals_dict["over_4.5" if plus else "under_4.5"] = odds
+                        totals_dict.setdefault("over_4.5" if plus else "under_4.5", odds)
                     elif "3.5" in d:
-                        totals_dict["over_3.5" if plus else "under_3.5"] = odds
+                        totals_dict.setdefault("over_3.5" if plus else "under_3.5", odds)
                     elif "2.5" in d:
-                        totals_dict["over_2.5" if plus else "under_2.5"] = odds
+                        totals_dict.setdefault("over_2.5" if plus else "under_2.5", odds)
                     elif "1.5" in d:
-                        totals_dict["over_1.5" if plus else "under_1.5"] = odds
-                if totals_dict:
-                    totals = totals_dict
+                        totals_dict.setdefault("over_1.5" if plus else "under_1.5", odds)
 
             elif market_type == "btts" and len(sels) == 2:
                 # Outcomes: "Oui" / "Non"
@@ -285,6 +285,7 @@ class UnibetLVSScraper:
 
         # Fusionner goalscorer : anytime > first
         final_goalscorer = list({**selections_first, **selections_anytime}.values())
+        totals: dict | None = totals_dict if totals_dict else None
 
         return MatchScrapeResult(
             fixture_id=fixture_id,
@@ -323,7 +324,7 @@ class UnibetLVSScraper:
                 continue
 
             result = self._parse_match_items(items, league)
-            if result and result.goalscorer:
+            if result and (result.h2h or result.totals or result.btts or result.goalscorer or result.assist):
                 results.append(result)
 
             await asyncio.sleep(_EVENT_SLEEP)
