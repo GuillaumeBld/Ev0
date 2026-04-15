@@ -30,16 +30,12 @@ from app.ingestion.bzzoiro.sync_players import sync_players
 from app.ingestion.bzzoiro.sync_predictions import sync_predictions
 from app.ingestion.bzzoiro.sync_reference import sync_leagues, sync_teams
 from app.ingestion.fixture_matcher import match_event_to_fixture_by_teams
-from app.ingestion.match_odds import ingest_match_odds_for_league
-from app.ingestion.odds import QuotaExhaustedError, fetch_events_for_league, ingest_odds_for_league, normalize_league_key
 from app.ingestion.storage import (
     store_match_events,
     store_odds_snapshot,
     store_recommendation,
 )
-from app.models.match_odds import MatchOddsSnapshot
 from app.models.settings import UserSettings
-from app.services.market_scrape_scheduler import MarketScrapeScheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,8 +47,42 @@ logger = logging.getLogger(__name__)
 DEFAULT_LEAGUES = ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a", "champions_league"]
 CURRENT_SEASON = "2025-2026"
 
-# Module-level scheduler instance for the OddsPortal market scrape tick
-_market_scheduler = MarketScrapeScheduler()
+# League key helpers (formerly in app.ingestion.odds, inlined after that module was removed)
+_SPORT_KEYS = {
+    "ligue_1":          "soccer_france_ligue_one",
+    "premier_league":   "soccer_epl",
+    "bundesliga":       "soccer_germany_bundesliga",
+    "la_liga":          "soccer_spain_la_liga",
+    "serie_a":          "soccer_italy_serie_a",
+    "champions_league": "soccer_uefa_champs_league",
+}
+_LEAGUE_ALIASES = {"ligue1": "ligue_1", "ligue-1": "ligue_1"}
+
+
+def normalize_league_key(key: str) -> str:
+    """Normalize a league key, resolving legacy aliases."""
+    return _LEAGUE_ALIASES.get(key, key)
+
+
+async def fetch_events_for_league(league: str) -> list[dict]:
+    """Fetch upcoming fixtures for a league from The Odds API (used by job_sync_fixtures)."""
+    import httpx
+    from app.config import settings as _settings
+    sport_key = _SPORT_KEYS.get(league)
+    if not sport_key:
+        logger.warning("fetch_events_for_league: unknown league %s", league)
+        return []
+    if not _settings.odds_api_key:
+        return []
+    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/events"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url, params={"apiKey": _settings.odds_api_key})
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:
+        logger.error("fetch_events_for_league %s: %s", league, exc)
+        return []
 
 
 async def _load_user_settings() -> dict[str, str]:
@@ -503,324 +533,6 @@ async def job_sync_match_events():
         logger.error("Error syncing match events: %s", exc, exc_info=True)
 
     logger.info("=== Match events sync complete ===")
-
-
-# ── Job 3: Odds Snapshot ─────────────────────────────────────────
-
-
-async def job_snapshot_odds():
-    """Snapshot odds from The Odds API for upcoming matches and store in DB.
-
-    Flow:
-    1. Fetch odds + raw events from The Odds API
-    2. Load upcoming DB fixtures
-    3. Match events → fixtures by team names (fixture_matcher)
-    4. Persist odds_api_event_id on matched fixtures (cached for next run)
-    5. Store odds snapshots against matched DB fixture.id
-    """
-    logger.info("=== Starting odds snapshot ===")
-
-    if not settings.odds_api_key:
-        logger.warning("ODDS_API_KEY not configured, skipping odds snapshot")
-        return
-
-    user_settings = await _load_user_settings()
-    leagues = _get_leagues(user_settings)
-    logger.info("Active leagues for odds: %s", leagues)
-
-    from app.ingestion.fixture_matcher import match_odds_event_to_fixture
-    from app.models.fixtures import Fixture
-
-    for league in leagues:
-        for market in ["goalscorer", "assist"]:
-            try:
-                snapshots, events = await ingest_odds_for_league(league, market)
-                logger.info(
-                    "Got %d odds from %d events for %s %s",
-                    len(snapshots), len(events), league, market,
-                )
-
-                if not events:
-                    continue
-
-                stored = 0
-                matched_events = 0
-
-                async with async_session() as session:
-                    # Load upcoming fixtures from DB
-                    result = await session.execute(
-                        select(Fixture).where(Fixture.league == league)
-                    )
-                    db_fixtures = list(result.scalars().all())
-
-                    # Build event_id → snapshots index
-                    snaps_by_event: dict[str, list] = {}
-                    for snap in snapshots:
-                        snaps_by_event.setdefault(snap.fixture_id, []).append(snap)
-
-                    for event in events:
-                        event_id = event.get("id", "")
-                        if not event_id:
-                            continue
-
-                        fixture = match_odds_event_to_fixture(event, db_fixtures)
-                        if not fixture:
-                            continue
-
-                        matched_events += 1
-
-                        # Cache the Odds API event ID on the fixture
-                        if not fixture.odds_api_event_id:
-                            fixture.odds_api_event_id = event_id
-                            session.add(fixture)
-                            await session.flush()
-
-                        # Store all snapshots for this event
-                        event_snaps = snaps_by_event.get(event_id, [])
-                        for snap in event_snaps:
-                            try:
-                                await store_odds_snapshot(
-                                    session,
-                                    fixture_id=fixture.id,
-                                    player_name=snap.player_name,
-                                    market_type=snap.market_type,
-                                    bookmaker=snap.bookmaker,
-                                    odds=snap.odds,
-                                    raw_data=snap.raw_data,
-                                )
-                                stored += 1
-                            except Exception as exc:
-                                logger.debug("Odds upsert skip (likely duplicate): %s", exc)
-                                await session.rollback()
-
-                    await session.commit()
-
-                logger.info(
-                    "Matched %d/%d events, stored %d/%d odds for %s %s",
-                    matched_events, len(events), stored, len(snapshots), league, market,
-                )
-
-            except Exception as exc:
-                logger.error(
-                    "Error snapshotting %s %s odds: %s", league, market, exc, exc_info=True
-                )
-
-    # ── Match-level odds (h2h / totals / btts) ──────────────────────────────
-    logger.info("--- Starting match-level odds ingestion ---")
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-    from app.models.fixtures import Fixture
-
-    for league in leagues:
-        try:
-            async with async_session() as session:
-                match_rows, match_errors = await ingest_match_odds_for_league(
-                    league, session, api_key=settings.odds_api_key
-                )
-
-                if match_errors:
-                    logger.warning(
-                        "Match odds errors for %s: %d error(s)", league, len(match_errors)
-                    )
-
-                if not match_rows:
-                    logger.info("No match odds rows for %s", league)
-                    continue
-
-                # Build event_id → fixture_id mapping via odds_api_event_id
-                event_ids = list({r.event_id for r in match_rows})
-                result = await session.execute(
-                    select(Fixture).where(
-                        Fixture.odds_api_event_id.in_(event_ids)
-                    )
-                )
-                seen: dict[str, int] = {}
-                for f in result.scalars().all():
-                    if not f.odds_api_event_id:
-                        continue
-                    if f.odds_api_event_id in seen:
-                        logger.warning(
-                            "Duplicate odds_api_event_id %s (fixtures %d and %d) — skipping both",
-                            f.odds_api_event_id, seen[f.odds_api_event_id], f.id,
-                        )
-                        seen[f.odds_api_event_id] = -1  # sentinel: skip
-                    else:
-                        seen[f.odds_api_event_id] = f.id
-                fixtures_by_event_id = {k: v for k, v in seen.items() if v != -1}
-
-                # Build insert values, skipping rows without a matched fixture
-                insert_values = []
-                skipped = 0
-                for row in match_rows:
-                    fixture_id = fixtures_by_event_id.get(row.event_id)
-                    if fixture_id is None:
-                        skipped += 1
-                        continue
-                    insert_values.append({
-                        "fixture_id": fixture_id,
-                        "bookmaker": row.bookmaker,
-                        "market_type": row.market_type,
-                        "outcome": row.outcome,
-                        "odds": row.odds,
-                        "snapshot_utc": row.snapshot_utc,
-                    })
-
-                if not insert_values:
-                    logger.info(
-                        "No match odds rows could be matched to fixtures for %s "
-                        "(%d skipped, %d total)",
-                        league, skipped, len(match_rows),
-                    )
-                    continue
-
-                stmt = pg_insert(MatchOddsSnapshot).values(insert_values)
-                stmt = stmt.on_conflict_do_nothing(constraint="uq_match_odds_snapshot")
-                await session.execute(stmt)
-                await session.commit()
-
-                logger.info(
-                    "Match odds for %s: inserted %d rows (%d skipped, %d errors)",
-                    league, len(insert_values), skipped, len(match_errors),
-                )
-
-        except QuotaExhaustedError:
-            logger.warning(
-                "Odds API quota exhausted while ingesting match odds for %s — stopping league loop",
-                league,
-            )
-            break
-        except Exception as exc:
-            logger.error(
-                "Error ingesting match odds for %s: %s", league, exc, exc_info=True
-            )
-
-    logger.info("=== Odds snapshot complete ===")
-
-
-# ── Job 3b: Direct Odds Snapshot (French bookmakers) ─────────────
-
-
-async def job_snapshot_direct_odds():
-    """Snapshot odds from Unibet LVS HTTP API + Playwright scrapers.
-
-    Flow:
-    1. Unibet LVS API (nouveau site post-fusion PSEL) — no browser needed
-    2. Playwright scrapers (Betclic, Unibet page, ParionsSport) — best-effort
-    3. Match each MatchOdds → DB fixture by team name + date window
-    4. Persist selections via store_odds_snapshot()
-    """
-    logger.info("=== Starting direct odds snapshot ===")
-
-    from app.ingestion.fixture_matcher import match_odds_event_to_fixture
-    from app.models.fixtures import Fixture
-
-    user_settings = await _load_user_settings()
-    leagues = _get_leagues(user_settings)
-    logger.info("Direct scrapers: leagues = %s", leagues)
-
-    all_match_odds = []
-
-    # ── 1. Unibet LVS scraper (nouveau site post-fusion PSEL, pure HTTP) ──
-    try:
-        from app.ingestion.unibet_lvs_scraper import scrape_all_unibet
-
-        unibet_results = await scrape_all_unibet(leagues)
-        all_match_odds.extend(unibet_results)
-        logger.info("Unibet LVS scraper: %d match-odds objects", len(unibet_results))
-    except Exception as exc:
-        logger.error("Unibet LVS scrape failed: %s", exc, exc_info=True)
-
-    # ── 2. Betclic gRPC-web scraper (full player odds, no Playwright needed) ──
-    try:
-        from app.ingestion.betclic_grpc_scraper import scrape_betclic_leagues
-
-        betclic_results = await scrape_betclic_leagues(leagues)
-        all_match_odds.extend(betclic_results)
-        logger.info("Betclic gRPC scraper: %d match-odds objects", len(betclic_results))
-    except Exception as exc:
-        logger.error("Betclic gRPC scrape failed: %s", exc, exc_info=True)
-
-    # ── 3. Playwright scrapers (Unibet page, ParionsSport) ──
-    try:
-        from playwright.async_api import async_playwright
-
-        from app.ingestion.direct_scrapers import scrape_all_direct
-
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-            )
-            try:
-                pw_results = await scrape_all_direct(leagues, browser)
-                all_match_odds.extend(pw_results)
-                logger.info("Playwright scrapers: %d match-odds objects", len(pw_results))
-            finally:
-                await browser.close()
-    except ImportError:
-        logger.warning("Playwright not installed — skipping Playwright scrapers")
-    except Exception as exc:
-        logger.error("Playwright scrape failed: %s", exc, exc_info=True)
-
-    if not all_match_odds:
-        logger.warning("All scrapers returned 0 match-odds objects")
-        logger.info("=== Direct odds snapshot complete (nothing stored) ===")
-        return
-
-    logger.info("Direct scrapers total: %d match-odds objects", len(all_match_odds))
-
-    # ── Match → fixtures + store ──
-    stored = 0
-    matched = 0
-
-    async with async_session() as session:
-        result = await session.execute(select(Fixture).where(Fixture.league.in_(leagues)))
-        db_fixtures = list(result.scalars().all())
-
-        for mo in all_match_odds:
-            # Adapt MatchOdds to the dict shape that fixture_matcher expects
-            event_dict = {
-                "id": "",
-                "home_team": mo.home_team,
-                "away_team": mo.away_team,
-                "commence_time": mo.kickoff_utc.isoformat() if mo.kickoff_utc else "",
-            }
-            league_fixtures = [f for f in db_fixtures if f.league == mo.league]
-            fixture = match_odds_event_to_fixture(event_dict, league_fixtures)
-
-            if not fixture:
-                logger.debug(
-                    "No fixture match for %s vs %s (%s)", mo.home_team, mo.away_team, mo.league
-                )
-                continue
-
-            matched += 1
-
-            for sel in mo.selections:
-                try:
-                    async with session.begin_nested():
-                        await store_odds_snapshot(
-                            session,
-                            fixture_id=fixture.id,
-                            player_name=sel.player_name,
-                            market_type=sel.market_type,
-                            bookmaker=sel.bookmaker,
-                            odds=sel.odds,
-                            raw_data=sel.raw_data,
-                        )
-                    stored += 1
-                except Exception as exc:
-                    logger.debug("Direct odds upsert skip (likely duplicate): %s", exc)
-
-        await session.commit()
-
-    logger.info(
-        "Direct odds: matched %d/%d fixtures, stored %d selections",
-        matched,
-        len(all_match_odds),
-        stored,
-    )
-    logger.info("=== Direct odds snapshot complete ===")
 
 
 # ── Job 3b: Weekly Player Stats Refresh ──────────────────────────
@@ -1661,40 +1373,24 @@ async def job_autopilot_reoptimize():
         logger.exception("job_autopilot_reoptimize failed")
 
 
-# ── Job: OddsPortal Scheduler Tick ───────────────────────────────
+# ── Odds Scheduler ────────────────────────────────────────────────────────────
+
+_odds_scheduler = None  # initialized lazily
 
 
-async def job_oddsportal_scheduler_tick() -> None:
-    """Token-bucket tick — fires scrape chains for due fixtures."""
+async def job_odds_scheduler_tick() -> None:
+    """Adaptive odds scraper — fires Betclic + Unibet for fixtures due based on KO distance."""
+    global _odds_scheduler
+    from app.ingestion.odds_scheduler import OddsScheduler
+    if _odds_scheduler is None:
+        _odds_scheduler = OddsScheduler()
     async with async_session() as session:
         try:
-            await _market_scheduler.tick(session)
+            n = await _odds_scheduler.tick(session)
+            if n:
+                logger.info("job_odds_scheduler_tick: scraped %d fixtures", n)
         except Exception as exc:
-            logger.error("job_oddsportal_scheduler_tick error: %s", exc, exc_info=True)
-
-
-# ── Job: OddsPortal URL Auto-Discovery ───────────────────────────
-
-
-async def job_discover_oddsportal_urls() -> None:
-    """Daily discovery — scrapes OddsPortal league listings and seeds oddsportal_poll_state."""
-    from playwright.async_api import async_playwright
-
-    from app.ingestion.oddsportal_fixture_matcher import match_items_to_fixtures
-    from app.ingestion.oddsportal_league_discoverer import discover_all_leagues
-
-    try:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True)
-            try:
-                items = await discover_all_leagues(browser)
-            finally:
-                await browser.close()
-        async with async_session() as session:
-            results = await match_items_to_fixtures(items, session)
-        logger.info("job_discover_oddsportal_urls: seeded %d fixtures", len(results))
-    except Exception as exc:
-        logger.error("job_discover_oddsportal_urls error: %s", exc, exc_info=True)
+            logger.error("job_odds_scheduler_tick error: %s", exc, exc_info=True)
 
 
 # ── Bzzoiro Jobs ─────────────────────────────────────────────────
@@ -1864,24 +1560,6 @@ def create_scheduler() -> AsyncIOScheduler:
 
     # Match events: handled by settle_pipeline (every 30 min)
 
-    # Odds: Every hour
-    scheduler.add_job(
-        job_snapshot_odds,
-        IntervalTrigger(hours=1),
-        id="snapshot_odds",
-        name="Snapshot odds from bookmakers",
-        replace_existing=True,
-    )
-
-    # Direct odds (Unibet LVS HTTP + Playwright scrapers): Every 3 hours
-    scheduler.add_job(
-        job_snapshot_direct_odds,
-        IntervalTrigger(hours=3),
-        id="snapshot_direct_odds",
-        name="Snapshot direct odds (Unibet LVS, Betclic, ParionsSport)",
-        replace_existing=True,
-    )
-
     # Weekly player stats refresh: every Monday at 06:00 UTC
     scheduler.add_job(
         job_refresh_player_stats,
@@ -1949,24 +1627,15 @@ def create_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
 
-    # OddsPortal scrape scheduler tick: every 15 seconds
+    # Odds scheduler tick: every 60 seconds
     scheduler.add_job(
-        job_oddsportal_scheduler_tick,
-        IntervalTrigger(seconds=15, jitter=2),
-        id="job_oddsportal_scheduler_tick",
-        name="OddsPortal token-bucket tick: fires scrape chains for due fixtures",
+        job_odds_scheduler_tick,
+        IntervalTrigger(seconds=60),
+        id="job_odds_scheduler_tick",
+        name="Odds scheduler: adaptive Betclic+Unibet scraping based on KO distance",
         replace_existing=True,
         max_instances=1,
-    )
-
-    # OddsPortal URL auto-discovery: daily at 08:00 UTC
-    scheduler.add_job(
-        job_discover_oddsportal_urls,
-        CronTrigger(hour=8, minute=0),
-        id="job_discover_oddsportal_urls",
-        name="OddsPortal URL auto-discovery: seeds oddsportal_poll_state from league listings",
-        replace_existing=True,
-        max_instances=1,
+        coalesce=True,
     )
 
     # ── Bzzoiro jobs ───────────────────────────────────────────────
@@ -2068,8 +1737,6 @@ async def main():
     logger.info("Running initial sync...")
     await job_sync_fixtures()
     await job_sync_match_events()
-    await job_snapshot_odds()
-    await job_snapshot_direct_odds()
 
     # Keep running
     try:
