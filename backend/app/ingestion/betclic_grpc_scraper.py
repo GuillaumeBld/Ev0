@@ -521,7 +521,7 @@ class BetclicGrpcScraper:
             return []
 
         slug, comp_id = league_cfg
-        url = f"{BETCLIC_BASE}/football-s1/{slug}/"
+        url = f"{BETCLIC_BASE}/football-sfootball/{slug}/"
 
         try:
             r = await self._client.get(url, timeout=20)
