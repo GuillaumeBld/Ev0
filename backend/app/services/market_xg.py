@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-MAX_SNAPSHOT_AGE = timedelta(hours=3)
+MAX_SNAPSHOT_AGE = timedelta(minutes=30)
 FIT_RESIDUAL_FLAG_THRESHOLD = 0.06
 
 
