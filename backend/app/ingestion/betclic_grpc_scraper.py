@@ -69,7 +69,12 @@ _GRPC_HEADERS = {
 
 # Market name fragments → canonical type
 _GOALSCORER_LABELS = ("buteur (tps r", "buteur anytime", "scorer anytime")  # used by fetch_match_odds
-_ASSIST_LABELS = ("passeur", "joueur d\u00e9cisif", "joueur decisif")       # used by fetch_match_odds
+_ASSIST_LABELS = (
+    "joueur passeur d\u00e9cisif",   # Joueur passeur décisif (tps rég.)
+    "joueur passeur decisif",         # sans accent
+    "passeur d\u00e9cisif",           # fragment générique
+    "passeur decisif",
+)  # "joueur décisif" exclu : c'est le combo buteur OU passeur, pas un marché assist pur
 _H2H_LABELS = ("résultat du match",)
 _TOTALS_LABELS = ("nombre total de buts",)
 _BTTS_LABELS = ("les 2 équipes marquent",)
