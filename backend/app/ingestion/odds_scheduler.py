@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import unicodedata
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -60,6 +62,113 @@ def should_scrape(kickoff_utc: datetime, last_scraped_at: datetime | None) -> bo
         last_scraped_at = last_scraped_at.replace(tzinfo=UTC)
     interval = scrape_interval_seconds(kickoff_utc)
     return (now - last_scraped_at).total_seconds() >= interval
+
+
+_TEAM_ALIASES: dict[str, str] = {
+    # Ligue 1
+    "paris sg": "paris saint-germain",
+    "psg": "paris saint-germain",
+    # Bundesliga
+    "bayern munich": "fc bayern munchen",
+    "fc bayern munich": "fc bayern munchen",
+    "cologne": "1 fc koln",
+    "fc koln": "1 fc koln",
+    "1 fc cologne": "1 fc koln",
+    "hambourg": "hamburger sv",
+    "mayence": "mainz 05",
+    "1 fsv mayence 05": "mainz 05",
+    "fribourg": "sc freiburg",
+    "fribourg sc": "sc freiburg",
+    "m gladbach": "borussia monchengladbach",
+    "mgladbach": "borussia monchengladbach",
+    "m'gladbach": "borussia monchengladbach",
+    "borussia mgladbach": "borussia monchengladbach",
+    "leverkusen": "bayer leverkusen",
+    "bayer 04 leverkusen": "bayer leverkusen",
+    "dortmund": "borussia dortmund",
+    "stuttgart": "vfb stuttgart",
+    "ein francfort": "eintracht frankfurt",
+    "eintr francfort": "eintracht frankfurt",
+    "augsbourg": "fc augsburg",
+    "wolfsbourg": "vfl wolfsburg",
+    "bremen": "sv werder bremen",
+    "werder bremen": "sv werder bremen",
+    "heidenheim": "1 fc heidenheim 1846",
+    # Serie A
+    "naples": "napoli",
+    "as rome": "as roma",
+    "milan ac": "ac milan",
+    "inter milan": "inter",
+    "fc inter": "inter",
+    "juventus turin": "juventus",
+    "bologne": "bologna",
+    "bologne fc": "bologna",
+    "parme": "parma",
+    "como 1907": "como",
+    "hellas verone": "hellas verona",
+    "veronerfc": "hellas verona",
+    "florence": "fiorentina",
+    "la spezia": "spezia",
+    "lecce us": "us lecce",
+    # Premier League
+    "newcastle": "newcastle united",
+    "wolverhampton": "wolverhampton wanderers",
+    "wolves": "wolverhampton wanderers",
+    "man city": "manchester city",
+    "man united": "manchester united",
+    "man utd": "manchester united",
+    "afc bournemouth": "bournemouth",
+    "brighton hove": "brighton & hove albion",
+    "brighton": "brighton & hove albion",
+    "tottenham": "tottenham hotspur",
+    "spurs": "tottenham hotspur",
+    "nottingham f": "nottingham forest",
+    "nott'm forest": "nottingham forest",
+    "leeds utd": "leeds united",
+    "west ham": "west ham united",
+    "sheffield utd": "sheffield united",
+    "ipswich": "ipswich town",
+    "luton": "luton town",
+    "brentford": "brentford",
+    # La Liga
+    "majorque": "mallorca",
+    "rcd majorque": "mallorca",
+    "ath bilbao": "athletic club",
+    "athletic bilbao": "athletic club",
+    "atl madrid": "atletico madrid",
+    "atletico de madrid": "atletico madrid",
+    "betis seville": "real betis",
+    "r betis": "real betis",
+    "fc seville": "sevilla",
+    "sevilla fc": "sevilla",
+    "cf valence": "valencia",
+    "valence cf": "valencia",
+    "fc barcelone": "fc barcelona",
+    "barcelone": "fc barcelona",
+    "alaves": "deportivo alaves",
+    "deportivo alaves": "deportivo alaves",
+    "gerone": "girona",
+    "girona fc": "girona",
+    "celta vigo": "celta vigo",
+    "getafe cf": "getafe",
+    "villarreal cf": "villarreal",
+    "rayo vallecano": "rayo vallecano",
+    "las palmas": "ud las palmas",
+    "espanyol": "rcd espanyol",
+    "osasuna": "ca osasuna",
+    "real sociedad": "real sociedad",
+    "real madrid cf": "real madrid",
+}
+
+
+def _normalize_team(name: str) -> str:
+    """Normalize team name for fuzzy matching: lowercase, strip accents, collapse spaces."""
+    n = name.lower().strip()
+    n = unicodedata.normalize("NFKD", n)
+    n = "".join(c for c in n if not unicodedata.combining(c))
+    n = re.sub(r"['.,-]", " ", n)
+    n = re.sub(r"\s+", " ", n).strip()
+    return _TEAM_ALIASES.get(n, n)
 
 
 def _league_key(league_name: str | None) -> str | None:
@@ -136,7 +245,7 @@ class OddsScheduler:
             league = _league_key(f.league)
             if league:
                 leagues_needed.add(league)
-            fixture_by_teams[(f.home_team.lower(), f.away_team.lower())] = f.id
+            fixture_by_teams[(_normalize_team(f.home_team), _normalize_team(f.away_team))] = f.id
 
         if not leagues_needed:
             logger.warning("OddsScheduler.tick: no recognized leagues in due fixtures")
@@ -158,10 +267,10 @@ class OddsScheduler:
         # Match scraped results to fixture_ids and store
         scraped = 0
         for r in all_results:
-            key = (r.home_team.lower(), r.away_team.lower())
+            key = (_normalize_team(r.home_team), _normalize_team(r.away_team))
             fixture_id = fixture_by_teams.get(key)
             if not fixture_id:
-                key_rev = (r.away_team.lower(), r.home_team.lower())
+                key_rev = (_normalize_team(r.away_team), _normalize_team(r.home_team))
                 fixture_id = fixture_by_teams.get(key_rev)
             if not fixture_id:
                 logger.debug(

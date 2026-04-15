@@ -39,7 +39,7 @@ BETCLIC_LEAGUES: dict[str, tuple[str, str]] = {
     "ligue_1":          ("ligue-1-mcdonald-s-c4",  "4"),
     "ligue_2":          ("ligue-2-bkt-c19",         "19"),
     "premier_league":   ("premier-league-c3",       "3"),
-    "laliga":           ("laliga-c7",               "7"),
+    "la_liga":          ("laliga-c7",               "7"),
     "bundesliga":       ("allemagne-bundesliga-c5", "5"),
     "serie_a":          ("italie-serie-a-c6",       "6"),
     "champions_league": ("ligue-des-champions-c8",  "8"),
