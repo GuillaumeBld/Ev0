@@ -89,7 +89,7 @@ class OddsScheduler:
         from app.models.odds_scrape_state import OddsScrapeState
 
         now = datetime.now(UTC)
-        cutoff = now + timedelta(hours=72)
+        cutoff = now + timedelta(days=10)
 
         # Load upcoming fixtures
         result = await session.execute(

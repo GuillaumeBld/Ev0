@@ -53,7 +53,7 @@ _MARKET_TYPES: dict[int, str] = {
     # Player props
     31:        "goalscorer",   # Buteur anytime (priorité haute)
     4:         "goalscorer",   # 1er Buteur (priorité basse — dédupliqué)
-    100002524: "assist",       # Passeur décisif
+    100001899: "assist",       # Nbre de passes décisives (outcomes: "Nom 1+", "Nom 2+")
 }
 
 # markettypeId=31 est l'anytime scorer, prioritaire sur le 1er buteur (4)
@@ -237,8 +237,17 @@ class UnibetLVSScraper:
                 else:
                     selections_first.setdefault(name_lower, PlayerOdds(desc, odds))
             elif market_type == "assist":
-                name_lower = desc.lower()
-                selections_assist.setdefault(name_lower, PlayerOdds(desc, odds))
+                # Unibet format: "Sotoca, Florian 1+" / "Sotoca, Florian 2+"
+                # Strip trailing threshold suffix — keep "1+" (anytime assist, lowest odds)
+                import re as _re
+                player_name = _re.sub(r"\s+\d+\+\s*$", "", desc).strip()
+                if not player_name:
+                    player_name = desc
+                name_lower = player_name.lower()
+                # Keep lowest odds (1+ threshold = anytime assist)
+                existing = selections_assist.get(name_lower)
+                if existing is None or odds < existing.odds:
+                    selections_assist[name_lower] = PlayerOdds(player_name, odds)
 
         # Build match-level odds
         h2h: dict | None = None
