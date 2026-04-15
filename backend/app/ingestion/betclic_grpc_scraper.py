@@ -36,15 +36,15 @@ GRPC_ENDPOINT = (
 BETCLIC_BASE = "https://www.betclic.fr"
 
 BETCLIC_LEAGUES: dict[str, tuple[str, str]] = {
-    "ligue_1":          ("ligue-1-s4",            "4"),
-    "ligue_2":          ("ligue-2-s19",            "19"),
-    "premier_league":   ("premier-league-s3",      "3"),
-    "laliga":           ("laliga-s7",              "7"),
-    "bundesliga":       ("bundesliga-s5",           "5"),
-    "serie_a":          ("serie-a-s6",             "6"),
-    "champions_league": ("champions-league-s15",   "8"),
-    "europa_league":    ("ligue-europa-s3453",     "3453"),
-    "coupe_de_france":  ("coupe-de-france-s36",    "36"),
+    "ligue_1":          ("ligue-1-mcdonald-s-c4",  "4"),
+    "ligue_2":          ("ligue-2-bkt-c19",         "19"),
+    "premier_league":   ("premier-league-c3",       "3"),
+    "laliga":           ("laliga-c7",               "7"),
+    "bundesliga":       ("allemagne-bundesliga-c5", "5"),
+    "serie_a":          ("italie-serie-a-c6",       "6"),
+    "champions_league": ("ligue-des-champions-c8",  "8"),
+    "europa_league":    ("ligue-europa-c3453",      "3453"),
+    "coupe_de_france":  ("coupe-de-france-c36",     "36"),
 }
 
 _PAGE_HEADERS = {
