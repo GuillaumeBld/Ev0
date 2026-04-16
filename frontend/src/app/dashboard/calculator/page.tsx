@@ -332,6 +332,23 @@ function CalculatorInner() {
         </p>
       </div>
 
+      {/* xG source reminder */}
+      <div className="mb-5 flex items-center gap-3 px-3 py-2 rounded-lg bg-gray-800/60 border border-gray-700/50 text-xs text-gray-400 w-fit">
+        <span className="font-medium text-gray-300">xG source</span>
+        <span className="w-px h-4 bg-gray-700" />
+        <span className="flex items-center gap-1.5">
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-blue-500 text-white">API</span>
+          Bzzoiro — xG live scrappés
+        </span>
+        <span className="w-px h-4 bg-gray-700" />
+        <span className="flex items-center gap-1.5">
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-orange-500 text-white">MODEL</span>
+          Modèle interne Ev0 (stats historiques)
+        </span>
+        <span className="w-px h-4 bg-gray-700" />
+        <span className="text-gray-500 italic">Basculer via le bouton en haut à droite</span>
+      </div>
+
       {/* Match selector */}
       <div className="mb-6">
         <label className="block text-sm text-gray-400 mb-2">Sélectionner un match</label>
