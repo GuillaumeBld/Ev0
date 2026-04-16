@@ -64,100 +64,163 @@ def should_scrape(kickoff_utc: datetime, last_scraped_at: datetime | None) -> bo
     return (now - last_scraped_at).total_seconds() >= interval
 
 
+# Alias table: maps scraper-normalized names → DB-normalized names.
+# Both sides go through _normalize_team (accents stripped, ['.,-] → space,
+# lowercase, whitespace collapsed). Alias VALUES must therefore match what
+# the DB team name produces after that same normalization.
+# e.g. DB "Paris Saint-Germain" → normalized "paris saint germain" (hyphen stripped)
+#      DB "Bayern München"      → normalized "bayern munchen"
 _TEAM_ALIASES: dict[str, str] = {
-    # Ligue 1
-    "paris sg": "paris saint-germain",
-    "psg": "paris saint-germain",
-    # Bundesliga
-    "bayern munich": "fc bayern munchen",
-    "fc bayern munich": "fc bayern munchen",
-    "cologne": "1 fc koln",
-    "fc koln": "1 fc koln",
-    "1 fc cologne": "1 fc koln",
-    "hambourg": "hamburger sv",
-    "mayence": "mainz 05",
-    "1 fsv mayence 05": "mainz 05",
-    "fribourg": "sc freiburg",
-    "fribourg sc": "sc freiburg",
-    "m gladbach": "borussia monchengladbach",
-    "mgladbach": "borussia monchengladbach",
-    "m'gladbach": "borussia monchengladbach",
-    "borussia mgladbach": "borussia monchengladbach",
-    "leverkusen": "bayer leverkusen",
-    "bayer 04 leverkusen": "bayer leverkusen",
-    "dortmund": "borussia dortmund",
-    "stuttgart": "vfb stuttgart",
-    "ein francfort": "eintracht frankfurt",
-    "eintr francfort": "eintracht frankfurt",
-    "augsbourg": "fc augsburg",
-    "wolfsbourg": "vfl wolfsburg",
-    "bremen": "sv werder bremen",
-    "werder bremen": "sv werder bremen",
-    "heidenheim": "1 fc heidenheim 1846",
-    # Serie A
-    "naples": "napoli",
-    "as rome": "as roma",
-    "milan ac": "ac milan",
-    "inter milan": "inter",
-    "fc inter": "inter",
-    "juventus turin": "juventus",
-    "bologne": "bologna",
-    "bologne fc": "bologna",
-    "parme": "parma",
-    "como 1907": "como",
-    "hellas verone": "hellas verona",
-    "veronerfc": "hellas verona",
-    "florence": "fiorentina",
-    "la spezia": "spezia",
-    "lecce us": "us lecce",
-    # Premier League
-    "newcastle": "newcastle united",
-    "wolverhampton": "wolverhampton wanderers",
-    "wolves": "wolverhampton wanderers",
-    "man city": "manchester city",
-    "man united": "manchester united",
-    "man utd": "manchester united",
-    "afc bournemouth": "bournemouth",
-    "brighton hove": "brighton & hove albion",
-    "brighton": "brighton & hove albion",
-    "tottenham": "tottenham hotspur",
-    "spurs": "tottenham hotspur",
-    "nottingham f": "nottingham forest",
-    "nott'm forest": "nottingham forest",
-    "leeds utd": "leeds united",
-    "west ham": "west ham united",
-    "sheffield utd": "sheffield united",
-    "ipswich": "ipswich town",
-    "luton": "luton town",
-    "brentford": "brentford",
-    # La Liga
-    "majorque": "mallorca",
-    "rcd majorque": "mallorca",
-    "ath bilbao": "athletic club",
-    "athletic bilbao": "athletic club",
-    "atl madrid": "atletico madrid",
-    "atletico de madrid": "atletico madrid",
-    "betis seville": "real betis",
-    "r betis": "real betis",
-    "fc seville": "sevilla",
-    "sevilla fc": "sevilla",
-    "cf valence": "valencia",
-    "valence cf": "valencia",
-    "fc barcelone": "fc barcelona",
-    "barcelone": "fc barcelona",
-    "alaves": "deportivo alaves",
-    "deportivo alaves": "deportivo alaves",
-    "gerone": "girona",
-    "girona fc": "girona",
-    "celta vigo": "celta vigo",
-    "getafe cf": "getafe",
-    "villarreal cf": "villarreal",
-    "rayo vallecano": "rayo vallecano",
-    "las palmas": "ud las palmas",
-    "espanyol": "rcd espanyol",
-    "osasuna": "ca osasuna",
-    "real sociedad": "real sociedad",
-    "real madrid cf": "real madrid",
+    # ── Ligue 1 ───────────────────────────────────────────────────────────────
+    # DB "Paris Saint-Germain" → "paris saint germain"
+    "paris sg":                 "paris saint germain",
+    "psg":                      "paris saint germain",
+
+    # ── Bundesliga ────────────────────────────────────────────────────────────
+    # DB "Bayern München" → "bayern munchen"
+    "bayern munich":            "bayern munchen",
+    "fc bayern munich":         "bayern munchen",
+    "fc bayern munchen":        "bayern munchen",
+    # DB "1. FC Köln" → "1 fc koln"
+    "cologne":                  "1 fc koln",
+    "fc koln":                  "1 fc koln",
+    "1 fc cologne":             "1 fc koln",
+    # DB "Hamburger SV" → "hamburger sv"
+    "hambourg":                 "hamburger sv",
+    # DB "Mainz 05" → "mainz 05"
+    "mayence":                  "mainz 05",
+    "1 fsv mayence 05":         "mainz 05",
+    # DB "Freiburg" → "freiburg"
+    "fribourg":                 "freiburg",
+    "fribourg sc":              "freiburg",
+    "sc freiburg":              "freiburg",
+    # DB "Borussia Mönchengladbach" → "borussia monchengladbach"
+    "m gladbach":               "borussia monchengladbach",
+    "mgladbach":                "borussia monchengladbach",
+    "borussia mgladbach":       "borussia monchengladbach",
+    # DB "Bayer Leverkusen" → "bayer leverkusen"
+    "leverkusen":               "bayer leverkusen",
+    "bayer 04 leverkusen":      "bayer leverkusen",
+    # DB "Borussia Dortmund" → "borussia dortmund"
+    "dortmund":                 "borussia dortmund",
+    # DB "VfB Stuttgart" → "vfb stuttgart"
+    "stuttgart":                "vfb stuttgart",
+    # DB "Eintracht Frankfurt" → "eintracht frankfurt"
+    "ein francfort":            "eintracht frankfurt",
+    "eintr francfort":          "eintracht frankfurt",
+    # DB "Augsburg" → "augsburg"
+    "augsbourg":                "augsburg",
+    # DB "Wolfsburg" → "wolfsburg"
+    "wolfsbourg":               "wolfsburg",
+    # DB "Werder Bremen" → "werder bremen"
+    # Unibet "Werder Brême" → normalize → "werder breme"
+    "werder breme":             "werder bremen",
+    "sv werder bremen":         "werder bremen",
+    # DB "FC Heidenheim" → "fc heidenheim"
+    "heidenheim":               "fc heidenheim",
+    "1 fc heidenheim":          "fc heidenheim",
+    "1 fc heidenheim 1846":     "fc heidenheim",
+    # DB "RB Leipzig" → "rb leipzig"
+    "rasenballsport leipzig":   "rb leipzig",
+
+    # ── Serie A ───────────────────────────────────────────────────────────────
+    # DB "Napoli" → "napoli"
+    "naples":                   "napoli",
+    # DB "Roma" → "roma"
+    "as rome":                  "roma",
+    "as roma":                  "roma",
+    # DB "Milan" → "milan"
+    "milan ac":                 "milan",
+    "ac milan":                 "milan",
+    # DB "Inter" → "inter"
+    "inter milan":              "inter",
+    "fc inter":                 "inter",
+    # DB "Juventus" → "juventus"
+    "juventus turin":           "juventus",
+    # DB "Bologna" → "bologna"
+    "bologne":                  "bologna",
+    "bologne fc":               "bologna",
+    # DB "Parma" → "parma"
+    "parme":                    "parma",
+    # DB "Como" → "como"
+    "como 1907":                "como",
+    "come":                     "como",   # Betclic "Côme" → normalize → "come"
+    # DB "Hellas Verona" → "hellas verona"
+    "hellas verone":            "hellas verona",
+    # DB "Lazio" → "lazio"
+    "lazio rome":               "lazio",
+    "lazio roma":               "lazio",
+    # DB "Cremonese" → "cremonese"
+    "us cremonese":             "cremonese",
+    # DB "Pisa" → "pisa"
+    "ac pisa 1909":             "pisa",
+    # DB "Fiorentina" → "fiorentina"
+    "acf fiorentina":           "fiorentina",
+    "florence":                 "fiorentina",
+
+    # ── Premier League ────────────────────────────────────────────────────────
+    # DB "Newcastle United" → "newcastle united"
+    "newcastle":                "newcastle united",
+    # DB "Wolverhampton Wanderers" → "wolverhampton wanderers"
+    "wolverhampton":            "wolverhampton wanderers",
+    "wolves":                   "wolverhampton wanderers",
+    # DB "Manchester City" → "manchester city"
+    "man city":                 "manchester city",
+    # DB "Manchester United" → "manchester united"
+    "man united":               "manchester united",
+    "man utd":                  "manchester united",
+    # DB "AFC Bournemouth" → "afc bournemouth"
+    "bournemouth":              "afc bournemouth",
+    # DB "Brighton & Hove Albion" → "brighton & hove albion"
+    "brighton hove":            "brighton & hove albion",
+    "brighton":                 "brighton & hove albion",
+    # DB "Tottenham Hotspur" → "tottenham hotspur"
+    "tottenham":                "tottenham hotspur",
+    "spurs":                    "tottenham hotspur",
+    # DB "Nottingham Forest" → "nottingham forest"
+    "nottingham f":             "nottingham forest",
+    "nott m forest":            "nottingham forest",  # "Nott'm Forest" → "nott m forest"
+    # DB "Leeds United" → "leeds united"
+    "leeds utd":                "leeds united",
+    # DB "West Ham United" → "west ham united"
+    "west ham":                 "west ham united",
+    # DB "Sheffield United" → "sheffield united"
+    "sheffield utd":            "sheffield united",
+
+    # ── La Liga ───────────────────────────────────────────────────────────────
+    # DB "Mallorca" → "mallorca"
+    "majorque":                 "mallorca",
+    "rcd majorque":             "mallorca",
+    # DB "Athletic Club" → "athletic club"
+    "ath bilbao":               "athletic club",
+    "athletic bilbao":          "athletic club",
+    # DB "Atletico Madrid" → "atletico madrid"
+    "atl madrid":               "atletico madrid",
+    "atletico de madrid":       "atletico madrid",
+    # DB "Real Betis" → "real betis"
+    "betis seville":            "real betis",
+    "r betis":                  "real betis",
+    # DB "Sevilla" → "sevilla"
+    "fc seville":               "sevilla",
+    "sevilla fc":               "sevilla",
+    # DB "Valencia" → "valencia"
+    "cf valence":               "valencia",
+    "valence cf":               "valencia",
+    # DB "Barcelona" → "barcelona"
+    "fc barcelone":             "barcelona",
+    "barcelone":                "barcelona",
+    "fc barcelona":             "barcelona",
+    # DB "Deportivo Alaves" → "deportivo alaves"
+    "alaves":                   "deportivo alaves",
+    # DB "Girona" → "girona"
+    "gerone":                   "girona",
+    "girona fc":                "girona",
+    # DB "Getafe" → "getafe"
+    "getafe cf":                "getafe",
+    # DB "Villarreal" → "villarreal"
+    "villarreal cf":            "villarreal",
+    # DB "Real Madrid" → "real madrid"
+    "real madrid cf":           "real madrid",
 }
 
 
