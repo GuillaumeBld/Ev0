@@ -261,7 +261,9 @@ class OddsScheduler:
         from app.models.odds_scrape_state import OddsScrapeState
 
         now = datetime.now(UTC)
-        cutoff = now + timedelta(days=10)
+        # +11 days so that matches on the 10th day (which may kick off late in
+        # the day) are always included regardless of the current time of day.
+        cutoff = now + timedelta(days=11)
 
         # Load upcoming fixtures
         result = await session.execute(
