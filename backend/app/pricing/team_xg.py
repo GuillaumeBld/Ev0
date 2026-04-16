@@ -447,13 +447,20 @@ async def _load_team_players(
     """
     from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat, BzzTeam
 
-    # Find team by case-insensitive partial match
+    # Find team: exact match first, then partial (shortest name wins to avoid
+    # false positives like "Roma" → "Romania" or "Arsenal" → "FK Arsenal Tivat")
     team_res = await db.execute(
-        select(BzzTeam).where(
-            func.lower(BzzTeam.name).contains(func.lower(team))
-        )
+        select(BzzTeam).where(func.lower(BzzTeam.name) == func.lower(team))
     )
     bzz_team = team_res.scalar_one_or_none()
+    if bzz_team is None:
+        team_res = await db.execute(
+            select(BzzTeam)
+            .where(func.lower(BzzTeam.name).contains(func.lower(team)))
+            .order_by(func.length(BzzTeam.name))
+            .limit(1)
+        )
+        bzz_team = team_res.scalar_one_or_none()
 
     if bzz_team is None:
         return []
