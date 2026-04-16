@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-MAX_SNAPSHOT_AGE = timedelta(minutes=30)
+MAX_SNAPSHOT_AGE = timedelta(hours=4)  # scraper runs every 2h for matches >6h out
 FIT_RESIDUAL_FLAG_THRESHOLD = 0.06
 
 
