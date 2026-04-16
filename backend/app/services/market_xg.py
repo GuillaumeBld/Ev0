@@ -352,11 +352,17 @@ class MarketXgService:
             )
             return None
 
-        # 3. Load all rows for the freshest snapshot_utc
+        # 3. Load all rows within 15 min of the freshest snapshot.
+        # Different bookmakers in the same scrape cycle have slightly different
+        # snapshot_utc values (e.g. Betclic at HH:54:14, Unibet at HH:54:57).
+        # A 15-min window captures the full cycle without merging two separate cycles
+        # (scraper cadence is 2 h for matches >6 h out, 30 min for 2–6 h out).
         rows_result = await session.execute(
             select(MatchOddsSnapshot)
             .where(MatchOddsSnapshot.fixture_id == fixture_id)
-            .where(MatchOddsSnapshot.snapshot_utc == freshest_snapshot_utc)
+            .where(MatchOddsSnapshot.snapshot_utc >= freshest_snapshot_utc - timedelta(minutes=15))
+            .where(MatchOddsSnapshot.snapshot_utc <= freshest_snapshot_utc)
+            .order_by(MatchOddsSnapshot.snapshot_utc)  # earlier rows overwritten by later writes
         )
         rows = rows_result.scalars().all()
 
