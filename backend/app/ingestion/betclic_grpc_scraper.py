@@ -66,7 +66,12 @@ _GRPC_HEADERS = {
 }
 
 # Market name fragments → canonical type
-_GOALSCORER_LABELS = ("buteur (tps r", "buteur anytime", "scorer anytime")  # used by fetch_match_odds
+_GOALSCORER_LABELS = (
+    "buteur (tps r",  # "Buteur (tps rég.)"
+    "buteur ou son",  # "Buteur ou son remplaçant (tps rég.)"
+    "buteur anytime",
+    "scorer anytime",
+)
 _ASSIST_LABELS = (
     "joueur passeur d\u00e9cisif",   # Joueur passeur décisif (tps rég.)
     "joueur passeur decisif",         # sans accent
