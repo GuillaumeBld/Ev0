@@ -448,9 +448,13 @@ async def _load_team_players(
     from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat, BzzTeam
 
     # Find team: exact match first, then partial (shortest name wins to avoid
-    # false positives like "Roma" → "Romania" or "Arsenal" → "FK Arsenal Tivat")
+    # false positives like "Roma" → "Romania" or "Arsenal" → "FK Arsenal Tivat").
+    # Use .limit(1) on both branches — bzz_teams can have duplicate names
+    # (e.g. two "Real Madrid" entries with different api_ids).
     team_res = await db.execute(
-        select(BzzTeam).where(func.lower(BzzTeam.name) == func.lower(team))
+        select(BzzTeam)
+        .where(func.lower(BzzTeam.name) == func.lower(team))
+        .limit(1)
     )
     bzz_team = team_res.scalar_one_or_none()
     if bzz_team is None:
