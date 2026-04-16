@@ -384,35 +384,60 @@ def _parse_match_proto(
                     except struct.error:
                         continue
         else:
-            # Match-level markets: market.field10[] → item.field1[] → sub.field1[] → sel
-            for item_bytes in market.get(10, []):
+            # Match-level markets: try f16 flat path first (newer API layout),
+            # then fall back to f10 nested path (older layout used by totals/btts).
+            #
+            # f16 path: market.f16[] = direct selections (h2h uses this layout)
+            #   sel.f10|f11 = label bytes, sel.f12 = IEEE 754 LE double (8 bytes)
+            for sel_bytes in market.get(16, []):
                 try:
-                    item = _proto_fields(item_bytes)
+                    sel = _proto_fields(sel_bytes)
                 except Exception:
                     continue
-                for sub_bytes in item.get(1, []):
+                name_b = (sel.get(10) or sel.get(11) or [None])[0]
+                if not name_b:
+                    continue
+                sel_name = name_b.decode("utf-8", errors="replace").strip()
+                odds_raw = (sel.get(12) or [None])[0]
+                if not odds_raw or len(odds_raw) != 8:
+                    continue
+                try:
+                    val = struct.unpack("<d", odds_raw)[0]
+                    if 1.01 <= val <= 1000.0:
+                        sels.append((sel_name, round(val, 2)))
+                except struct.error:
+                    continue
+
+            # f10 nested path: market.f10[] → item.f1[] → sub.f1[] → sel
+            if not sels:
+                for item_bytes in market.get(10, []):
                     try:
-                        sub = _proto_fields(sub_bytes)
+                        item = _proto_fields(item_bytes)
                     except Exception:
                         continue
-                    for sel_bytes in sub.get(1, []):
+                    for sub_bytes in item.get(1, []):
                         try:
-                            sel = _proto_fields(sel_bytes)
+                            sub = _proto_fields(sub_bytes)
                         except Exception:
                             continue
-                        name_b = (sel.get(10) or sel.get(11) or [None])[0]
-                        if not name_b:
-                            continue
-                        sel_name = name_b.decode("utf-8", errors="replace").strip()
-                        odds_raw = (sel.get(12) or [None])[0]
-                        if not odds_raw or len(odds_raw) != 8:
-                            continue
-                        try:
-                            val = struct.unpack("<d", odds_raw)[0]  # raw bytes from wire type 1 — LE, unlike decode_odds_float64 which takes an int
-                            if 1.01 <= val <= 1000.0:
-                                sels.append((sel_name, round(val, 2)))
-                        except struct.error:
-                            continue
+                        for sel_bytes in sub.get(1, []):
+                            try:
+                                sel = _proto_fields(sel_bytes)
+                            except Exception:
+                                continue
+                            name_b = (sel.get(10) or sel.get(11) or [None])[0]
+                            if not name_b:
+                                continue
+                            sel_name = name_b.decode("utf-8", errors="replace").strip()
+                            odds_raw = (sel.get(12) or [None])[0]
+                            if not odds_raw or len(odds_raw) != 8:
+                                continue
+                            try:
+                                val = struct.unpack("<d", odds_raw)[0]
+                                if 1.01 <= val <= 1000.0:
+                                    sels.append((sel_name, round(val, 2)))
+                            except struct.error:
+                                continue
 
         # Populate output based on market type
         if market_type == "goalscorer":
@@ -657,8 +682,9 @@ class BetclicGrpcScraper:
             )
             if result:
                 result.kickoff_utc = mx.get("kickoff_utc")
-            if result and result.goalscorer:
-                results.append(result)
+                # Include any match with at least one market (h2h, totals, btts or goalscorer)
+                if result.h2h or result.totals or result.btts or result.goalscorer:
+                    results.append(result)
             if i < len(matches) - 1:
                 await asyncio.sleep(_MATCH_SLEEP)
 
