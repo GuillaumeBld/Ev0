@@ -198,12 +198,15 @@ _TEAM_ALIASES: dict[str, str] = {
     "atl madrid":               "atletico madrid",
     "atletico de madrid":       "atletico madrid",
     # DB "Real Betis" → "real betis"
+    "betis":                    "real betis",   # Betclic short form
     "betis seville":            "real betis",
     "r betis":                  "real betis",
     # DB "Sevilla" → "sevilla"
+    "seville":                  "sevilla",       # Betclic FR: "Séville" → "seville"
     "fc seville":               "sevilla",
     "sevilla fc":               "sevilla",
     # DB "Valencia" → "valencia"
+    "valence":                  "valencia",      # Betclic FR: "Valence" → "valence"
     "cf valence":               "valencia",
     "valence cf":               "valencia",
     # DB "Barcelona" → "barcelona"
@@ -221,6 +224,19 @@ _TEAM_ALIASES: dict[str, str] = {
     "villarreal cf":            "villarreal",
     # DB "Real Madrid" → "real madrid"
     "real madrid cf":           "real madrid",
+
+    # ── Bundesliga (noms FR Betclic) ──────────────────────────────────────────
+    # DB "Eintracht Frankfurt" → "eintracht frankfurt"
+    # Betclic FR "Eintracht Francfort" → "eintracht francfort"
+    "eintracht francfort":      "eintracht frankfurt",
+    # DB "Borussia Mönchengladbach" → "borussia monchengladbach"
+    # Betclic FR "Borussia M'gladbach" → "borussia m gladbach" (apostrophe → space)
+    "borussia m gladbach":      "borussia monchengladbach",
+
+    # ── Serie A (noms FR Betclic) ─────────────────────────────────────────────
+    # DB "Pisa" → "pisa"
+    # Betclic FR "Pise" → "pise"
+    "pise":                     "pisa",
 }
 
 

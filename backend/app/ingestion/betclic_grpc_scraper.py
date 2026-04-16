@@ -14,11 +14,8 @@ from __future__ import annotations
 import asyncio
 import codecs
 import datetime as _dt
-import json
 import logging
-import re
 import struct
-import unicodedata
 from datetime import datetime
 from typing import Any
 
@@ -33,30 +30,31 @@ GRPC_ENDPOINT = (
     "https://offering.begmedia.com/web/offering.access.api"
     "/offering.access.api.MatchService/GetMatchWithNotification"
 )
-BETCLIC_BASE = "https://www.betclic.fr"
+GRPC_COMPETITION_ENDPOINT = (
+    "https://offering.begmedia.com/web/offering.access.api"
+    "/offering.access.api.MatchService/GetMatchesByCompetitionWithNotifications"
+)
 
-BETCLIC_LEAGUES: dict[str, tuple[str, str]] = {
-    "ligue_1":          ("ligue-1-mcdonald-s-c4",  "4"),
-    "ligue_2":          ("ligue-2-bkt-c19",         "19"),
-    "premier_league":   ("premier-league-c3",       "3"),
-    "la_liga":          ("laliga-c7",               "7"),
-    "bundesliga":       ("allemagne-bundesliga-c5", "5"),
-    "serie_a":          ("italie-serie-a-c6",       "6"),
-    "champions_league": ("ligue-des-champions-c8",  "8"),
-    "europa_league":    ("ligue-europa-c3453",      "3453"),
-    "coupe_de_france":  ("coupe-de-france-c36",     "36"),
+# Maps scheduler league key → Betclic competition_id (int).
+# Used by fetch_competition_matches to call GetMatchesByCompetitionWithNotifications.
+BETCLIC_COMPETITION_IDS: dict[str, int] = {
+    "ligue_1":          4,
+    "premier_league":   3,
+    "la_liga":          7,
+    "bundesliga":       5,
+    "serie_a":          6,
+    "champions_league": 8,
+    "europa_league":    3453,
+    "ligue_2":          19,
+    "coupe_de_france":  36,
 }
 
-_PAGE_HEADERS = {
+_GRPC_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "fr-FR,fr;q=0.9",
-}
-
-_GRPC_HEADERS = {
-    **_PAGE_HEADERS,
     "content-type": "application/grpc-web+proto",
     "x-grpc-web": "1",
     "x-bg-ref-platform": "DESKTOP",
@@ -79,7 +77,6 @@ _H2H_LABELS = ("résultat du match",)
 _TOTALS_LABELS = ("nombre total de buts",)
 _BTTS_LABELS = ("les 2 équipes marquent",)
 
-_PAGE_SLEEP = 0.5   # between competition page fetches (used by scrape_betclic_leagues)
 _MATCH_SLEEP = 0.3  # between match gRPC calls (used by scrape_league)
 
 
@@ -477,47 +474,118 @@ def _parse_match_proto(
 
 
 # ---------------------------------------------------------------------------
-# HTML / ng-state helpers
+# Competition matches helper
 # ---------------------------------------------------------------------------
 
 
-def _slugify(s: str) -> str:
-    """URL-slugify a string (lower-case, ASCII-only, hyphens)."""
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
-    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+def _parse_kickoff(raw: bytes | None) -> datetime | None:
+    """Parse Betclic UTC kickoff bytes to datetime.
 
-
-def _parse_kickoff(raw: str | None) -> datetime | None:
-    """Parse Betclic UTC kickoff string to datetime."""
-    if not raw:
+    Format: b"2026-03-05T20:10:00.0000000Z"
+    """
+    if not raw or not isinstance(raw, bytes):
         return None
     try:
-        # Format: "2026-03-05T20:10:00.0000000Z" or "2026-03-05T20:10:00Z"
-        cleaned = raw.replace("Z", "").split(".")[0] + "+00:00"  # strip Z, sub-seconds; add tz
+        s = raw.decode("utf-8")
+        cleaned = s.replace("Z", "").split(".")[0] + "+00:00"
         return datetime.fromisoformat(cleaned)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, UnicodeDecodeError):
         return None
 
 
-def _parse_ng_state(html: str) -> dict:
-    """Extract the Angular ng-state JSON from page HTML."""
-    m = re.search(
-        r'<script[^>]*id="ng-state"[^>]*type="application/json"[^>]*>(.*?)</script>',
-        html,
-        re.DOTALL | re.IGNORECASE,
+async def _fetch_competition_matches_grpc(
+    client: httpx.AsyncClient,
+    competition_id: int,
+    league: str,
+    language: str = "fr",
+) -> list[dict]:
+    """Call GetMatchesByCompetitionWithNotifications and return upcoming match metadata.
+
+    Returns:
+        List of dicts with keys: match_id (int), home_team, away_team,
+        kickoff_utc (datetime), league (str).
+        Past matches are excluded.
+
+    Wire format of GetCompetitionRequest (input message):
+        field 1 (int64):  competition_id
+        field 3 (string): language
+    Response proto structure (first data frame):
+        root.f1 = payload message
+        payload.f3 = repeated match messages
+        match.f1 = match_id (int64/varint)
+        match.f2 = "Home - Away" (bytes, UTF-8)
+        match.f3 = kickoff UTC string (bytes, UTF-8)
+    """
+    lang_b = language.encode("utf-8")
+    proto = (
+        b"\x08" + _encode_varint(competition_id)
+        + b"\x1a" + _encode_varint(len(lang_b)) + lang_b
     )
-    if not m:
-        m = re.search(
-            r'<script[^>]*type="application/json"[^>]*id="ng-state"[^>]*>(.*?)</script>',
-            html,
-            re.DOTALL | re.IGNORECASE,
-        )
-    if not m:
-        return {}
+    body = b"\x00" + struct.pack(">I", len(proto)) + proto
+
+    timeout = httpx.Timeout(30.0, connect=10.0)
     try:
-        return json.loads(m.group(1))
-    except (json.JSONDecodeError, ValueError):
-        return {}
+        raw = await _stream_first_grpc_frame(client, GRPC_COMPETITION_ENDPOINT, body, timeout)
+    except Exception as exc:
+        logger.warning(
+            "BetclicGrpcScraper: competition fetch failed for comp_id=%d (%s): %s",
+            competition_id, league, exc,
+        )
+        return []
+
+    if not raw:
+        logger.warning(
+            "BetclicGrpcScraper: empty competition response for comp_id=%d (%s)",
+            competition_id, league,
+        )
+        return []
+
+    try:
+        root = _proto_fields(raw)
+        payload = _proto_fields(root[1][0])
+        match_messages = payload.get(3, [])
+    except (KeyError, IndexError, ValueError):
+        logger.warning(
+            "BetclicGrpcScraper: unexpected competition proto structure for comp_id=%d",
+            competition_id,
+        )
+        return []
+
+    now = datetime.now(_dt.UTC)
+    results: list[dict] = []
+
+    for m_bytes in match_messages:
+        try:
+            mx = _proto_fields(m_bytes)
+        except Exception:
+            continue
+
+        match_id = mx.get(1, [None])[0]
+        if not isinstance(match_id, int):
+            continue
+
+        name_raw = mx.get(2, [b""])[0]
+        name = name_raw.decode("utf-8", errors="replace") if isinstance(name_raw, bytes) else ""
+        kickoff = _parse_kickoff(mx.get(3, [None])[0])
+
+        if not name or not kickoff or kickoff < now:
+            continue
+
+        # Match name format: "Home Team - Away Team"
+        parts = name.split(" - ", 1)
+        if len(parts) != 2:
+            continue
+
+        home, away = parts
+        results.append({
+            "match_id": match_id,
+            "home_team": home,
+            "away_team": away,
+            "kickoff_utc": kickoff,
+            "league": league,
+        })
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -532,81 +600,24 @@ class BetclicGrpcScraper:
 
     def __init__(self, client: httpx.AsyncClient) -> None:
         self._client = client
-        self._grpc_client: httpx.AsyncClient | None = None  # set by scrape_betclic_leagues for gRPC calls
 
     async def fetch_competition_matches(self, league: str) -> list[dict]:
-        """Return upcoming match metadata for a league from the competition page ng-state.
+        """Return upcoming match metadata for a league via GetMatchesByCompetitionWithNotifications.
 
-        Fetches the Betclic competition page HTML, extracts the Angular ng-state
-        JSON, and returns match metadata from the gRPC payload.
+        Uses the gRPC endpoint directly (no HTML scraping) to get all matches
+        for the requested competition across the next 2 matchdays (~18–20 matches).
 
         Returns:
-            List of dicts with keys: match_id, home_team, away_team,
-            kickoff_utc, competition_id, competition_name, league.
+            List of dicts with keys: match_id (int), home_team, away_team,
+            kickoff_utc (datetime), league (str).
             Past matches are excluded.
         """
-        league_cfg = BETCLIC_LEAGUES.get(league)
-        if not league_cfg:
+        competition_id = BETCLIC_COMPETITION_IDS.get(league)
+        if not competition_id:
             logger.warning("BetclicGrpcScraper: unknown league %s", league)
             return []
 
-        slug, comp_id = league_cfg
-        url = f"{BETCLIC_BASE}/football-sfootball/{slug}/"
-
-        try:
-            r = await self._client.get(url, timeout=20)
-            r.raise_for_status()
-        except Exception as exc:
-            logger.warning("BetclicGrpcScraper: page fetch failed %s: %s", url, exc)
-            return []
-
-        ng = _parse_ng_state(r.text)
-        payload = (
-            ng.get("grpc:4011162472", {})
-            .get("response", {})
-            .get("payload", {})
-        )
-        if not payload:
-            logger.warning(
-                "BetclicGrpcScraper: no grpc:4011162472 payload in ng-state for %s", league
-            )
-            return []
-
-        now = datetime.now(_dt.UTC)
-        results: list[dict] = []
-
-        for mx in payload.get("matches", []):
-            kickoff = _parse_kickoff(mx.get("matchDateUtc"))
-            if kickoff and kickoff < now:
-                continue  # skip past matches
-
-            contestants = mx.get("contestants", [])
-            if len(contestants) < 2:
-                continue
-
-            home = contestants[0].get("name", "")
-            away = contestants[1].get("name", "")
-            if not home or not away:
-                continue
-
-            match_id_raw = mx.get("matchId")
-            if not match_id_raw:
-                continue
-            competition = mx.get("competition", {})
-            # Filter to only the requested competition to avoid parsing protobufs
-            # from other competitions (the page shows all upcoming matches).
-            if competition.get("id", "") != comp_id:
-                continue
-            results.append({
-                "match_id": int(match_id_raw),
-                "home_team": home,
-                "away_team": away,
-                "kickoff_utc": kickoff,
-                "competition_id": competition.get("id", ""),
-                "competition_name": competition.get("name", ""),
-                "league": league,
-            })
-
+        results = await _fetch_competition_matches_grpc(self._client, competition_id, league)
         logger.info(
             "BetclicGrpcScraper %s: %d upcoming matches found", league, len(results)
         )
@@ -624,11 +635,10 @@ class BetclicGrpcScraper:
         from app.ingestion.scrape_result import MatchScrapeResult
 
         body = encode_grpc_web_request(match_id, language)
-        client = self._grpc_client if self._grpc_client is not None else self._client
         timeout = httpx.Timeout(30.0, connect=10.0)
 
         try:
-            raw = await _stream_first_grpc_frame(client, GRPC_ENDPOINT, body, timeout)
+            raw = await _stream_first_grpc_frame(self._client, GRPC_ENDPOINT, body, timeout)
         except Exception as exc:
             logger.warning(
                 "BetclicGrpcScraper: gRPC call failed for match %d (%s v %s): %s",
@@ -704,20 +714,16 @@ class BetclicGrpcScraper:
 async def scrape_betclic_leagues(leagues: list[str] | None = None) -> list:
     """Scrape all odds from Betclic via gRPC-web for the given leagues.
 
-    Default: all leagues in BETCLIC_LEAGUES.
+    Default: all leagues in BETCLIC_COMPETITION_IDS.
     Returns MatchScrapeResult objects with goalscorer + match-level odds.
     """
     from app.ingestion.scrape_result import MatchScrapeResult
 
     if leagues is None:
-        leagues = list(BETCLIC_LEAGUES.keys())
+        leagues = list(BETCLIC_COMPETITION_IDS.keys())
 
-    async with (
-        httpx.AsyncClient(headers=_PAGE_HEADERS, follow_redirects=True) as page_client,
-        httpx.AsyncClient(headers=_GRPC_HEADERS, follow_redirects=True) as grpc_client,
-    ):
-        scraper = BetclicGrpcScraper(page_client)
-        scraper._grpc_client = grpc_client
+    async with httpx.AsyncClient(headers=_GRPC_HEADERS, follow_redirects=True) as grpc_client:
+        scraper = BetclicGrpcScraper(grpc_client)
 
         all_results: list[MatchScrapeResult] = []
         for i, league in enumerate(leagues):
@@ -730,7 +736,7 @@ async def scrape_betclic_leagues(leagues: list[str] | None = None) -> list:
                     exc_info=True,
                 )
             if i < len(leagues) - 1:
-                await asyncio.sleep(_PAGE_SLEEP)
+                await asyncio.sleep(_MATCH_SLEEP)
 
     logger.info(
         "scrape_betclic_leagues: %d total matches, %d leagues",
@@ -752,7 +758,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Betclic gRPC-web full scraper")
     parser.add_argument(
         "--league",
-        choices=list(BETCLIC_LEAGUES.keys()),
+        choices=list(BETCLIC_COMPETITION_IDS.keys()),
         default=None,
         help="Scrape a single league (default: all)",
     )
