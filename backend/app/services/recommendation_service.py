@@ -15,15 +15,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.odds import normalize_selection_name
 from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat, BzzTeam
-from app.pricing.assist import ASSIST_GOAL_RATE
-from app.pricing.goalscorer import calculate_edge
-from app.pricing.team_xg import PEN_CONVERSION, PENS_PER_MATCH
+from app.pricing.assist import (
+    ASSIST_GOAL_RATE,
+    calculate_creation_multiplier_v2,
+    calculate_xa_conversion,
+    calculate_assist_lambda,
+)
+from app.pricing.goalscorer import (
+    calculate_edge,
+    calculate_finishing_multiplier,
+    calculate_conversion_rate,
+    calculate_goalscorer_lambda,
+)
 from app.services.market_xg import MarketXgService
 from app.strategy.selector import RecommendationFilter, select_bets
 
 logger = logging.getLogger(__name__)
-
-CALIBRATION_SCALE = 0.84  # Empirically derived from settled data (Mar 2026): actual win rate 18.8% / model avg prob 22.3%
 
 # Position-based xG/xA defaults for players with stats in DB but missing per-90 values
 POSITION_DEFAULTS: dict[str, dict[str, float]] = {
@@ -185,6 +192,12 @@ async def generate_recommendations(
 
         fixture_odds = odds_data.get(fixture_id, [])
 
+        # Pre-compute top-down share denominators for this fixture
+        team_denoms = _compute_team_denominators(
+            player_stats, home_team, away_team,
+            home_match_xg, away_match_xg,
+        )
+
         for odds_entry in fixture_odds:
             player_name = odds_entry.get("player_name")
             market_type = odds_entry.get("market_type", "goalscorer")
@@ -226,23 +239,37 @@ async def generate_recommendations(
             pen_home_id, pen_away_id = (pen_takers or {}).get(fixture_id, (None, None))
             is_pen_taker = player_api_id is not None and player_api_id in {pen_home_id, pen_away_id}
 
-            # Lambda: player's historical xG rate scaled by market-implied team xG.
-            # Market xG is already fixture-specific — no fixture_strength adjustment needed.
-            team_match_xg = home_match_xg if team == home_team else away_match_xg
             expected_minutes = stats.get("expected_minutes", 75.0)
             mins_ratio = expected_minutes / 90.0
 
+            team_lambda = home_match_xg if team == home_team else away_match_xg
+            denom_info = team_denoms.get(team, {})
+            avg_mins = stats.get("avg_minutes_per_match") or expected_minutes
+
             if market_type == "goalscorer":
-                lambda_base = max(0.001, _xg_per_90 * mins_ratio)
-                lambda_penalty = PEN_CONVERSION * PENS_PER_MATCH * mins_ratio if is_pen_taker else 0.0
-                lambda_val = lambda_base + lambda_penalty
+                blended_xg = _blend_rate(_xg_per_90, stats.get("form_xg_5"), avg_mins)
+                weight_i = blended_xg * mins_ratio
+                goal_denom = denom_info.get("goal_denom") or team_lambda or 1.0
+                share_i = weight_i / goal_denom if goal_denom > 0 else 0.0
+
+                finishing_mult = calculate_finishing_multiplier(stats, position)
+                conversion = calculate_conversion_rate(stats)
+                lambda_val = calculate_goalscorer_lambda(
+                    share_i, team_lambda, finishing_mult, conversion, mins_ratio, is_pen_taker,
+                )
             else:  # assist
-                lambda_val = max(0.001, _xa_per_90 * mins_ratio)
+                blended_xa = _blend_rate(_xa_per_90, stats.get("form_assists_5"), avg_mins)
+                weight_xa = blended_xa * mins_ratio
+                budget_assists = team_lambda * ASSIST_GOAL_RATE
+                assist_denom = denom_info.get("assist_denom") or budget_assists or 1.0
+                share_xa = weight_xa / assist_denom if assist_denom > 0 else 0.0
+
+                creation_mult = calculate_creation_multiplier_v2(stats, position)
+                xa_conv = calculate_xa_conversion(stats)
+                lambda_val = calculate_assist_lambda(share_xa, budget_assists, creation_mult, xa_conv)
 
             probability = 1 - math.exp(-lambda_val)
-            probability = probability * CALIBRATION_SCALE
-            fair_odds = 1 / probability if probability > 0 else 9999.0
-            fair_odds = round(fair_odds, 2)
+            fair_odds = round(1 / probability if probability > 0 else 9999.0, 2)
 
             # Calculate edge
             edge = calculate_edge(fair_odds, market_odds)
@@ -292,12 +319,13 @@ async def generate_recommendations(
                 "xg_source": xg_source,
                 "is_pen_taker": is_pen_taker,
                 "explanation": {
-                    "model": "market_implied_xg",
+                    "model": "top_down_v2",
                     "xg_source": xg_source,
-                    "team_match_xg": round(team_match_xg, 3),
+                    "team_lambda": round(team_lambda, 3),
                     "expected_minutes": expected_minutes,
                     "lambda": round(lambda_val, 4),
                     "is_pen_taker": is_pen_taker,
+                    "market_type": market_type,
                 },
             }
 
