@@ -467,18 +467,28 @@ async def get_recommendations_for_date(
             )
 
             entry = {
-                "player_api_id": stats.player_api_id,
-                "xg_per_90": xg_per_90,
-                "xa_per_90": xa_per_90,
-                "npxg_total": xg_total,
-                "xa_total": stats.expected_assists or 0.0,
-                "expected_minutes": expected_minutes,
-                "conversion_rate": conversion_rate,
-                "team": team_name,
-                "position": position,
-                "goals": goals_total,
-                "assists": stats.goal_assist or 0,
-                "matches_played": stats.matches_played or 0,
+                "player_api_id":          stats.player_api_id,
+                "xg_per_90":              xg_per_90,
+                "xa_per_90":              xa_per_90,
+                "npxg_total":             xg_total,
+                "xa_total":               stats.expected_assists or 0.0,
+                "expected_minutes":       expected_minutes,
+                "avg_minutes_per_match":  stats.avg_minutes_per_match or expected_minutes,
+                "conversion_rate":        conversion_rate,
+                "team":                   team_name,
+                "position":               position,
+                "goals":                  goals_total,
+                "assists":                stats.goal_assist or 0,
+                "matches_played":         stats.matches_played or 0,
+                # Bzzoiro enriched fields (top-down model)
+                "form_xg_5":              stats.form_xg_5,
+                "form_assists_5":         stats.form_assists_5,
+                "shot_accuracy":          stats.shot_accuracy,
+                "xg_per_shot":            stats.xg_per_shot,
+                "avg_rating":             stats.avg_rating,
+                "key_pass_per_90":        stats.key_pass_per_90,
+                "accurate_cross_per_90":  stats.accurate_cross_per_90,
+                "cross_accuracy":         stats.cross_accuracy,
             }
 
             # If same player appears for multiple fixture leagues, keep the richer entry
