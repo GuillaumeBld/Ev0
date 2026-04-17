@@ -7,16 +7,14 @@ actionable betting recommendations.
 import logging
 import math
 import uuid
-from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.odds import normalize_selection_name
-from app.ingestion.player_stats import calculate_form_factor
-from app.models.players import Player, PlayerStats
+from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat, BzzTeam
 from app.pricing.goalscorer import calculate_edge
 from app.pricing.team_xg import PENS_PER_MATCH
 from app.services.market_xg import MarketXgService
@@ -35,13 +33,26 @@ POSITION_DEFAULTS: dict[str, dict[str, float]] = {
 }
 DEFAULT_POSITION_FALLBACK = {"xg_per_90": 0.10, "xa_per_90": 0.08}  # Unknown position
 
+# Bzzoiro single-char position → canonical FW/MF/DF/GK
+_BZZ_POSITION_MAP: dict[str, str] = {"G": "GK", "D": "DF", "M": "MF", "F": "FW"}
+
+# Fixture league slug → bzz_leagues.api_id
+FIXTURE_LEAGUE_TO_BZZ_ID: dict[str, int] = {
+    "ligue_1": 34,
+    "premier_league": 17,
+    "bundesliga": 35,
+    "la_liga": 8,
+    "serie_a": 23,
+    "champions_league": 7,
+}
+
+CURRENT_SEASON = "2025-2026"
+
 
 def _normalize_position(raw_position: str | None) -> str | None:
     """Map various position formats to canonical FW/MF/DF/GK.
 
-    Understat uses e.g. "F M S", "D S", "GK S", "M S".
-    FBref uses "FW", "MF", "DF", "GK".
-    We pick the primary role from multi-position strings.
+    Handles Bzzoiro single-char (G/D/M/F) and legacy multi-char formats.
     """
     if not raw_position:
         return None
@@ -49,19 +60,18 @@ def _normalize_position(raw_position: str | None) -> str | None:
     # Direct match for standard codes
     if pos in POSITION_DEFAULTS:
         return pos
-    # Check for GK first (always takes priority)
+    # Bzzoiro single-char (G/D/M/F)
+    if pos in _BZZ_POSITION_MAP:
+        return _BZZ_POSITION_MAP[pos]
+    # Legacy multi-char fallbacks
     if "GK" in pos:
         return "GK"
-    # Forward indicators
     if pos.startswith("F") or "FW" in pos:
         return "FW"
-    # Defender indicators
     if pos.startswith("D") or "DF" in pos or "CB" in pos:
         return "DF"
-    # Midfielder indicators
     if pos.startswith("M") or "MF" in pos or "AM" in pos:
         return "MF"
-    # Understat "S" alone means Sub — treat as unknown
     return None
 
 
@@ -70,7 +80,7 @@ async def generate_recommendations(
     player_stats: dict[str, dict[str, Any]],  # player_name -> stats
     odds_data: dict[str, list[dict[str, Any]]],  # fixture_id -> odds list
     filter_config: RecommendationFilter | None = None,
-    team_strengths: dict[str, dict[str, float]] | None = None,  # team -> strengths
+    team_strengths: dict[str, dict[str, float]] | None = None,  # team -> strengths (unused, kept for compat)
     team_ev0_stats: dict[str, Any] | None = None,  # Top-Down data (unused, kept for compat)
     fixture_xg: dict[str, tuple[float, float, str]] | None = None,  # ext_id -> (xg_home, xg_away, xg_source)
 ) -> list[dict[str, Any]]:
@@ -164,7 +174,7 @@ async def generate_recommendations(
             # Calculate edge
             edge = calculate_edge(fair_odds, market_odds)
 
-            # Step 4: Confidence based on data quality, not edge magnitude
+            # Confidence based on data quality
             matches = stats.get("matches_played", 0) or 0
             pos_defaults = (
                 POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK)
@@ -183,7 +193,6 @@ async def generate_recommendations(
             else:
                 confidence = 0.40
 
-            # Classification still depends on edge
             if edge >= 0.05:
                 classification = "VALUE"
             elif edge >= 0.0:
@@ -295,13 +304,6 @@ def _get_opponent_factor(
 
     > 1.0 = weak defense (good for attacker)
     < 1.0 = strong defense (bad for attacker)
-
-    Uses opponent attacking xG as a proxy: a team with high attacking xG
-    likely has a weaker defense (they play open). We invert so that facing
-    a weak-attacking opponent (strong defense) yields factor < 1.0.
-
-    Applies 40% shrinkage toward neutral (1.0) to avoid overweighting.
-    Clamped to [0.7, 1.4].
     """
     if not team_strengths or opponent not in team_strengths:
         return 1.0
@@ -316,161 +318,9 @@ def _get_opponent_factor(
     if opponent_xg <= 0 or league_avg <= 0:
         return 1.0
 
-    # Higher opponent attack xG → they concede more (play open) → good for our player
     raw_factor = opponent_xg / league_avg
-    # 40% shrinkage toward neutral
     shrunk_factor = 0.6 * raw_factor + 0.4 * 1.0
-    # Clamp to reasonable range
     return max(0.7, min(1.4, shrunk_factor))
-
-
-async def _compute_team_strengths(db: AsyncSession) -> dict[str, dict[str, float]]:
-    """
-    Compute average xG per match and finishing factor for each team.
-
-    Returns dict of team_name -> {"xg_per_match": ..., "finishing": ...}.
-    - xg_per_match: proxy for team attacking strength / opponent defensive weakness.
-    - finishing: team_goals / team_xG, clamped [0.7, 1.3]. >1 = good finishers.
-    """
-    result = await db.execute(
-        select(
-            Player.team,
-            func.sum(PlayerStats.xg).label("total_xg"),
-            func.sum(PlayerStats.matches_played).label("total_matches"),
-            func.sum(PlayerStats.goals).label("total_goals"),
-        )
-        .join(Player, Player.id == PlayerStats.player_id)
-        .where(Player.team.isnot(None))
-        .group_by(Player.team)
-    )
-
-    strengths: dict[str, dict[str, float]] = {}
-    for row in result.all():
-        team_name = row[0]
-        total_xg = row[1] or 0.0
-        total_matches = row[2] or 0
-        total_goals = row[3] or 0
-        if total_matches > 0 and team_name:
-            xg_per_match = total_xg / total_matches
-            finishing = max(0.7, min(1.3, total_goals / total_xg)) if total_xg > 0 else 1.0
-            strengths[team_name] = {
-                "xg_per_match": xg_per_match,
-                "finishing": finishing,
-            }
-
-    if strengths:
-        avg_xg = sum(s["xg_per_match"] for s in strengths.values()) / len(strengths)
-        avg_fin = sum(s["finishing"] for s in strengths.values()) / len(strengths)
-        logger.info(
-            "Team strengths computed: %d teams, avg xG/match=%.3f, avg finishing=%.3f",
-            len(strengths),
-            avg_xg,
-            avg_fin,
-        )
-    return strengths
-
-
-async def _compute_form_factors(
-    db: AsyncSession,
-) -> dict[int, dict[str, float]]:
-    """
-    Compute form_factor and rolling conversion rate from PlayerStats snapshots.
-
-    Uses temporal snapshots (INSERT-based, not upsert) to approximate recent
-    performance trajectory. Requires >= 2 snapshots per player.
-
-    Returns dict of player_id -> {"form_factor": ..., "rolling_cr": ...}.
-    """
-    # Get last 6 snapshots per player, ordered by date descending.
-    # We use a window function to rank snapshots per player.
-    rank_subq = (
-        select(
-            PlayerStats.player_id,
-            PlayerStats.as_of_utc,
-            PlayerStats.xg,
-            PlayerStats.goals,
-            PlayerStats.matches_played,
-            func.row_number()
-            .over(
-                partition_by=PlayerStats.player_id,
-                order_by=PlayerStats.as_of_utc.desc(),
-            )
-            .label("rn"),
-        )
-        .where(PlayerStats.source == "average")
-        .subquery()
-    )
-
-    result = await db.execute(
-        select(
-            rank_subq.c.player_id,
-            rank_subq.c.as_of_utc,
-            rank_subq.c.xg,
-            rank_subq.c.goals,
-            rank_subq.c.matches_played,
-        )
-        .where(rank_subq.c.rn <= 6)
-        .order_by(rank_subq.c.player_id, rank_subq.c.as_of_utc.desc())
-    )
-
-    # Group snapshots by player
-    player_snapshots: dict[int, list[dict]] = defaultdict(list)
-    for row in result.all():
-        player_snapshots[row[0]].append(
-            {
-                "as_of_utc": row[1],
-                "xg": row[2] or 0.0,
-                "goals": row[3] or 0,
-                "matches_played": row[4] or 0,
-            }
-        )
-
-    factors: dict[int, dict[str, float]] = {}
-
-    for player_id, snapshots in player_snapshots.items():
-        if len(snapshots) < 2:
-            continue
-
-        # Snapshots are most-recent-first. Compute deltas between consecutive pairs.
-        xg_per_period: list[float] = []
-        for i in range(len(snapshots) - 1):
-            newer = snapshots[i]
-            older = snapshots[i + 1]
-            xg_delta = newer["xg"] - older["xg"]
-            matches_delta = newer["matches_played"] - older["matches_played"]
-            if matches_delta > 0:
-                xg_per_period.append(xg_delta / matches_delta)
-
-        # Form factor from per-period xG values (most recent first)
-        form = calculate_form_factor(xg_per_period) if xg_per_period else 1.0
-
-        # Rolling conversion rate from the most recent period (last 2 snapshots)
-        rolling_cr: float | None = None
-        newest = snapshots[0]
-        second = snapshots[1]
-        goals_delta = newest["goals"] - second["goals"]
-        xg_delta = newest["xg"] - second["xg"]
-        matches_delta = newest["matches_played"] - second["matches_played"]
-        if matches_delta >= 3 and xg_delta > 0:
-            raw_cr = goals_delta / xg_delta
-            rolling_cr = max(0.5, min(2.0, raw_cr))
-
-        entry: dict[str, float] = {"form_factor": form}
-        if rolling_cr is not None:
-            entry["rolling_cr"] = rolling_cr
-        factors[player_id] = entry
-
-    if factors:
-        form_values = [v["form_factor"] for v in factors.values()]
-        logger.info(
-            "Form factors computed: %d players, avg=%.3f, min=%.3f, max=%.3f",
-            len(factors),
-            sum(form_values) / len(form_values),
-            min(form_values),
-            max(form_values),
-        )
-
-    return factors
 
 
 async def get_recommendations_for_date(
@@ -490,9 +340,9 @@ async def get_recommendations_for_date(
     from app.models.fixtures import Fixture
     from app.models.player_odds_snapshot import PlayerOddsSnapshot as OddsSnapshotModel
 
-    # 1. Load upcoming fixtures from DB (next 48h from target_date)
+    # 1. Load upcoming fixtures from DB (next 7 days from target_date)
     window_start = target_date
-    window_end = target_date + timedelta(hours=48)
+    window_end = target_date + timedelta(days=7)
 
     fixture_result = await db.execute(
         select(Fixture)
@@ -545,89 +395,88 @@ async def get_recommendations_for_date(
             "stage": "no_fixtures_for_date",
         }
 
-    # 2. Load player stats from DB (latest snapshot per player, filtered to fixture leagues)
-    #    Filtering by league prevents UCL stats from being used for PL fixtures and vice-versa.
+    # 2. Load player stats from Bzzoiro (current season, filtered to fixture leagues)
     fixture_leagues = list({f.league for f in db_fixtures if f.league})
+    bzz_league_ids = [
+        FIXTURE_LEAGUE_TO_BZZ_ID[lg]
+        for lg in fixture_leagues
+        if lg in FIXTURE_LEAGUE_TO_BZZ_ID
+    ]
 
-    latest_subq = (
-        select(
-            PlayerStats.player_id,
-            PlayerStats.league,
-            func.max(PlayerStats.as_of_utc).label("max_date"),
-        )
-        .where(PlayerStats.league.in_(fixture_leagues))
-        .group_by(PlayerStats.player_id, PlayerStats.league)
-        .subquery()
-    )
+    player_stats: dict[str, dict[str, Any]] = {}
 
-    result = await db.execute(
-        select(PlayerStats, Player.name, Player.team, Player.position, Player.normalized_name)
-        .join(Player, Player.id == PlayerStats.player_id)
-        .join(
-            latest_subq,
-            (PlayerStats.player_id == latest_subq.c.player_id)
-            & (PlayerStats.as_of_utc == latest_subq.c.max_date)
-            & (PlayerStats.league == latest_subq.c.league),
-        )
-    )
-
-    player_stats = {}
-    for row in result.all():
-        stats: PlayerStats = row[0]
-        player_name: str = row[1]
-        team: str | None = row[2]
-        raw_position: str | None = row[3]
-        _normalized_name: str | None = row[4]
-        position = _normalize_position(raw_position)
-
-        # Step 1: Skip GKs at the data loading stage too
-        if position == "GK":
-            continue
-
-        minutes = stats.minutes_played or 0
-        matches = stats.matches_played or 1
-        expected_minutes = minutes / matches if matches > 0 else 75.0
-
-        # Step 2: Clamp conversion rate to [0.5, 2.0], require >= 3 matches
-        raw_cr = (stats.goals / stats.xg) if stats.xg and stats.xg > 0 else 1.0
-        conversion_rate = (
-            max(0.5, min(2.0, raw_cr)) if (stats.matches_played or 0) >= 3 else 1.0
+    if bzz_league_ids:
+        result = await db.execute(
+            select(
+                BzzPlayerSeasonStat,
+                BzzPlayer.name,
+                BzzPlayer.position,
+                BzzTeam.name.label("team_name"),
+            )
+            .join(BzzPlayer, BzzPlayer.api_id == BzzPlayerSeasonStat.player_api_id)
+            .join(BzzTeam, BzzTeam.api_id == BzzPlayer.current_team_api_id, isouter=True)
+            .where(BzzPlayerSeasonStat.league_api_id.in_(bzz_league_ids))
+            .where(BzzPlayerSeasonStat.season == CURRENT_SEASON)
         )
 
-        # Step 1: Position-based defaults for missing xG/xA
-        pos_defaults = (
-            POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK)
-            if position
-            else DEFAULT_POSITION_FALLBACK
-        )
-        xg_per_90 = (
-            stats.xg_per_90 if stats.xg_per_90 is not None else pos_defaults["xg_per_90"]
-        )
-        xa_per_90 = (
-            stats.xa_per_90 if stats.xa_per_90 is not None else pos_defaults["xa_per_90"]
-        )
+        for row in result.all():
+            stats: BzzPlayerSeasonStat = row[0]
+            player_name: str = row[1]
+            raw_position: str | None = row[2]
+            team_name: str | None = row[3]
+            position = _normalize_position(raw_position)
 
-        entry = {
-            "player_id": stats.player_id,
-            "xg_per_90": xg_per_90,
-            "xa_per_90": xa_per_90,
-            "npxg_total": stats.npxg or 0.0,
-            "xa_total": stats.xa or 0.0,
-            "expected_minutes": expected_minutes,
-            "conversion_rate": conversion_rate,
-            "team": team,
-            "position": position,
-            "goals": stats.goals,
-            "assists": stats.assists,
-            "matches_played": stats.matches_played,
-        }
+            # Skip GKs at data loading stage
+            if position == "GK":
+                continue
 
-        # If the same player appears for multiple fixture leagues, keep the richer entry
-        existing = player_stats.get(player_name)
-        if existing is None or (matches > (existing.get("matches_played") or 0)):
-            player_stats[player_name] = entry
+            matches = stats.matches_played or 1
+            minutes = stats.minutes_played or 0
+            # Use pre-computed avg_minutes_per_match if available, else derive
+            expected_minutes = stats.avg_minutes_per_match or (minutes / matches if matches > 0 else 75.0)
 
-    # Step 5: Compute market-implied xG per fixture via MarketXgService
+            # Conversion rate: goals / xG, clamped [0.5, 2.0], require >= 3 matches
+            xg_total = stats.expected_goals or 0.0
+            goals_total = stats.goals or 0
+            raw_cr = (goals_total / xg_total) if xg_total > 0 else 1.0
+            conversion_rate = (
+                max(0.5, min(2.0, raw_cr)) if (stats.matches_played or 0) >= 3 else 1.0
+            )
+
+            # Per-90 values — fall back to position defaults if missing
+            pos_defaults = (
+                POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK)
+                if position
+                else DEFAULT_POSITION_FALLBACK
+            )
+            xg_per_90 = (
+                stats.xg_per_90 if stats.xg_per_90 is not None else pos_defaults["xg_per_90"]
+            )
+            xa_per_90 = (
+                stats.xa_per_90 if stats.xa_per_90 is not None else pos_defaults["xa_per_90"]
+            )
+
+            entry = {
+                "player_api_id": stats.player_api_id,
+                "xg_per_90": xg_per_90,
+                "xa_per_90": xa_per_90,
+                "npxg_total": xg_total,
+                "xa_total": stats.expected_assists or 0.0,
+                "expected_minutes": expected_minutes,
+                "conversion_rate": conversion_rate,
+                "team": team_name,
+                "position": position,
+                "goals": goals_total,
+                "assists": stats.goal_assist or 0,
+                "matches_played": stats.matches_played or 0,
+            }
+
+            # If same player appears for multiple fixture leagues, keep the richer entry
+            existing = player_stats.get(player_name)
+            if existing is None or (matches > (existing.get("matches_played") or 0)):
+                player_stats[player_name] = entry
+
+    # 3. Compute market-implied xG per fixture via MarketXgService
     _market_xg_svc = MarketXgService()
     fixture_xg: dict[str, tuple[float, float, str]] = {}
     for f in db_fixtures:
@@ -642,31 +491,16 @@ async def get_recommendations_for_date(
             continue
         fixture_xg[f.external_id] = (market_xg.xg_home, market_xg.xg_away, market_xg.data_source)
 
-    # Legacy team_strengths (still used for confidence scoring)
-    team_strengths = await _compute_team_strengths(db)
-
-    # Form factors and rolling conversion rates
-    form_factors = await _compute_form_factors(db)
-
-    for _pname, pstats in player_stats.items():
-        pid = pstats.get("player_id")
-        if pid and pid in form_factors:
-            pf = form_factors[pid]
-            pstats["form_factor"] = pf["form_factor"]
-            if "rolling_cr" in pf:
-                pstats["conversion_rate"] = pf["rolling_cr"]
-
-    # 3. Generate recommendations
+    # 4. Generate recommendations
     recs = await generate_recommendations(
         fixtures,
         player_stats,
         odds_data,
         filter_config,
-        team_strengths,
         fixture_xg=fixture_xg,
     )
 
-    # 4. Add unique IDs
+    # 5. Add unique IDs
     for rec in recs:
         rec["id"] = str(uuid.uuid4())
 
