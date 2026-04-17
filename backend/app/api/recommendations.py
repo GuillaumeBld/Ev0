@@ -69,6 +69,7 @@ class Recommendation(BaseModel):
     explanation: dict
     status: RecommendationStatus = RecommendationStatus.PENDING
     xg_source: str | None = None
+    is_pen_taker: bool = False
 
 
 class RecommendationsResponse(BaseModel):
@@ -146,6 +147,7 @@ async def get_recommendations(
                 explanation=rec.explanation or {},
                 status=rec.status,
                 xg_source=rec.xg_source,
+                is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
             )
             for rec, fix in rows
         ]
@@ -226,6 +228,7 @@ async def get_recommendations(
                         explanation=expl,
                         generated_utc=now,
                         xg_source=rec.get("xg_source"),
+                        is_pen_taker=rec.get("is_pen_taker", False) or False,
                     )
                     new_db_recs.append((rec, db_rec))
 
@@ -293,6 +296,7 @@ async def get_recommendations(
                 explanation=rec.get("explanation", {}),
                 status=status_map.get(db_id, RecommendationStatus.PENDING),
                 xg_source=rec.get("xg_source"),
+                is_pen_taker=rec.get("is_pen_taker", False) or False,
             )
         )
 
@@ -357,6 +361,7 @@ async def get_expired_recommendations(
                 explanation=rec.explanation or {},
                 status=rec.status,
                 xg_source=rec.xg_source,
+                is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
             )
             for rec, fix in rows
         ]
@@ -403,6 +408,7 @@ async def get_expired_recommendations(
             explanation=rec.explanation or {},
             status=rec.status,
             xg_source=rec.xg_source,
+            is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
         )
         for rec, fix in rows
     ]

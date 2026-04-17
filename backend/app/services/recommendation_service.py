@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ingestion.odds import normalize_selection_name
 from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat, BzzTeam
 from app.pricing.goalscorer import calculate_edge
-from app.pricing.team_xg import PENS_PER_MATCH
+from app.pricing.team_xg import PEN_CONVERSION, PENS_PER_MATCH
 from app.services.market_xg import MarketXgService
 from app.strategy.selector import RecommendationFilter, select_bets
 
@@ -83,6 +83,7 @@ async def generate_recommendations(
     team_strengths: dict[str, dict[str, float]] | None = None,  # team -> strengths (unused, kept for compat)
     team_ev0_stats: dict[str, Any] | None = None,  # Top-Down data (unused, kept for compat)
     fixture_xg: dict[str, tuple[float, float, str]] | None = None,  # ext_id -> (xg_home, xg_away, xg_source)
+    pen_takers: dict[str, tuple[int | None, int | None]] | None = None,  # ext_id -> (home_id, away_id)
 ) -> list[dict[str, Any]]:
     """Generate betting recommendations for upcoming fixtures.
 
@@ -155,6 +156,11 @@ async def generate_recommendations(
                 _unmatched += 1
                 continue
 
+            # Pen taker flag: check persisted override for this fixture
+            player_api_id = stats.get("player_api_id")
+            pen_home_id, pen_away_id = (pen_takers or {}).get(fixture_id, (None, None))
+            is_pen_taker = player_api_id is not None and player_api_id in {pen_home_id, pen_away_id}
+
             # Lambda: player's historical xG rate scaled by market-implied team xG.
             # Market xG is already fixture-specific — no fixture_strength adjustment needed.
             team_match_xg = home_match_xg if team == home_team else away_match_xg
@@ -162,7 +168,9 @@ async def generate_recommendations(
             mins_ratio = expected_minutes / 90.0
 
             if market_type == "goalscorer":
-                lambda_val = max(0.001, _xg_per_90 * mins_ratio)
+                lambda_base = max(0.001, _xg_per_90 * mins_ratio)
+                lambda_penalty = PEN_CONVERSION * PENS_PER_MATCH * mins_ratio if is_pen_taker else 0.0
+                lambda_val = lambda_base + lambda_penalty
             else:  # assist
                 lambda_val = max(0.001, _xa_per_90 * mins_ratio)
 
@@ -217,12 +225,14 @@ async def generate_recommendations(
                 "classification": classification,
                 "confidence": confidence,
                 "xg_source": xg_source,
+                "is_pen_taker": is_pen_taker,
                 "explanation": {
                     "model": "market_implied_xg",
                     "xg_source": xg_source,
                     "team_match_xg": round(team_match_xg, 3),
                     "expected_minutes": expected_minutes,
                     "lambda": round(lambda_val, 4),
+                    "is_pen_taker": is_pen_taker,
                 },
             }
 
@@ -476,7 +486,28 @@ async def get_recommendations_for_date(
             if existing is None or (matches > (existing.get("matches_played") or 0)):
                 player_stats[player_name] = entry
 
-    # 3. Compute market-implied xG per fixture via MarketXgService
+    # 3. Load pen taker overrides from app_config
+    from app.models.app_config import AppConfig
+    pen_takers_by_fixture: dict[str, tuple[int | None, int | None]] = {}
+    if db_fixtures:
+        config_keys = [f"pen_taker::{f.id}" for f in db_fixtures]
+        cfg_result = await db.execute(
+            select(AppConfig).where(AppConfig.key.in_(config_keys))
+        )
+        for cfg in cfg_result.scalars().all():
+            fid_str = cfg.key.split("::")[-1]
+            try:
+                import json as _json
+                data = _json.loads(cfg.value)
+                # Map fixture.id → external_id for lookup in generate_recommendations
+                for f in db_fixtures:
+                    if str(f.id) == fid_str:
+                        pen_takers_by_fixture[f.external_id] = (data.get("home"), data.get("away"))
+                        break
+            except Exception:
+                pass
+
+    # 4. Compute market-implied xG per fixture via MarketXgService
     _market_xg_svc = MarketXgService()
     fixture_xg: dict[str, tuple[float, float, str]] = {}
     for f in db_fixtures:
@@ -491,16 +522,17 @@ async def get_recommendations_for_date(
             continue
         fixture_xg[f.external_id] = (market_xg.xg_home, market_xg.xg_away, market_xg.data_source)
 
-    # 4. Generate recommendations
+    # 5. Generate recommendations
     recs = await generate_recommendations(
         fixtures,
         player_stats,
         odds_data,
         filter_config,
         fixture_xg=fixture_xg,
+        pen_takers=pen_takers_by_fixture,
     )
 
-    # 5. Add unique IDs
+    # 6. Add unique IDs
     for rec in recs:
         rec["id"] = str(uuid.uuid4())
 

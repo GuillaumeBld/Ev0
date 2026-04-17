@@ -24,6 +24,7 @@ interface Recommendation {
   status?: 'pending' | 'approved' | 'rejected'
   lineup?: LineupData | null
   xg_source?: string | null
+  is_pen_taker?: boolean
 }
 
 function XgSourceBadge({ source }: { source: string | null | undefined }) {
@@ -142,8 +143,13 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
               <XgSourceBadge source={rec.xg_source} />
               <span className="text-[10px] text-ev-t5 font-mono">{timeStr}</span>
             </div>
-            <h3 className="text-base font-semibold text-white mt-2 leading-tight">
+            <h3 className="text-base font-semibold text-white mt-2 leading-tight flex items-center gap-1.5">
               {rec.player}
+              {rec.is_pen_taker && (
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 tracking-wide">
+                  PEN
+                </span>
+              )}
             </h3>
             <p className="text-xs text-ev-t4 mt-0.5">
               {rec.team} <span className="text-ev-t5">vs</span> {rec.opponent}

@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Calculator, RefreshCw, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
-import { getFixtures, priceMatch, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
+import { getFixtures, priceMatch, getPenTakers, setPenTakers, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
 import { LineupPricingWidget } from '@/components/calculator/LineupPricingWidget'
 import { XgBadge } from '@/components/XgBadge'
 
@@ -300,14 +300,32 @@ function CalculatorInner() {
     setAwayPenTaker(null)
     homeStartersRef.current = null
     awayStartersRef.current = null
+    if (id) {
+      getPenTakers(id).then(data => {
+        setHomePenTaker(data.home_pen_taker_id)
+        setAwayPenTaker(data.away_pen_taker_id)
+      }).catch(() => {})
+    }
   }
 
   function handleHomePenClick(playerId: number) {
-    setHomePenTaker(prev => prev === playerId ? null : playerId)
+    setHomePenTaker(prev => {
+      const next = prev === playerId ? null : playerId
+      if (selectedFixtureId) {
+        setPenTakers(selectedFixtureId, next, awayPenTaker).catch(() => {})
+      }
+      return next
+    })
   }
 
   function handleAwayPenClick(playerId: number) {
-    setAwayPenTaker(prev => prev === playerId ? null : playerId)
+    setAwayPenTaker(prev => {
+      const next = prev === playerId ? null : playerId
+      if (selectedFixtureId) {
+        setPenTakers(selectedFixtureId, homePenTaker, next).catch(() => {})
+      }
+      return next
+    })
   }
 
   function handleCalculateWithLineup(side: 'home' | 'away', starters: string[]) {

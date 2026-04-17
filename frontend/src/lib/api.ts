@@ -53,6 +53,7 @@ export interface Recommendation {
   status?: string
   error?: string | null
   xg_source?: string | null
+  is_pen_taker?: boolean
 }
 
 export interface PriceRequest {
@@ -764,6 +765,30 @@ export async function optimizeAutopilot(n_trials?: number): Promise<Optimization
     n_trials: n_trials ?? 100,
   }, {
     timeout: 600_000, // optimization can take up to 10 min on large datasets
+  })
+  return data
+}
+
+export interface PenTakerResponse {
+  fixture_id: number
+  home_pen_taker_id: number | null
+  away_pen_taker_id: number | null
+}
+
+export async function getPenTakers(fixtureId: number): Promise<PenTakerResponse> {
+  const { data } = await api.get(`/api/v1/pen-takers/${fixtureId}`)
+  return data
+}
+
+export async function setPenTakers(
+  fixtureId: number,
+  homeId: number | null,
+  awayId: number | null,
+): Promise<PenTakerResponse> {
+  const { data } = await api.post('/api/v1/pen-takers', {
+    fixture_id: fixtureId,
+    home_pen_taker_id: homeId,
+    away_pen_taker_id: awayId,
   })
   return data
 }

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -55,6 +55,7 @@ class Recommendation(Base, TimestampMixin):
     decided_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     settled_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     xg_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    is_pen_taker: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     __table_args__ = (
         UniqueConstraint(
