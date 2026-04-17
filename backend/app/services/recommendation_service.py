@@ -15,14 +15,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.odds import normalize_selection_name
 from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat, BzzTeam
-from app.pricing.goalscorer import calculate_edge
-from app.pricing.team_xg import PEN_CONVERSION, PENS_PER_MATCH
+from app.pricing.assist import (
+    ASSIST_GOAL_RATE,
+    calculate_creation_multiplier_v2,
+    calculate_xa_conversion,
+    calculate_assist_lambda,
+)
+from app.pricing.goalscorer import (
+    calculate_edge,
+    calculate_finishing_multiplier,
+    calculate_conversion_rate,
+    calculate_goalscorer_lambda,
+)
 from app.services.market_xg import MarketXgService
 from app.strategy.selector import RecommendationFilter, select_bets
 
 logger = logging.getLogger(__name__)
-
-CALIBRATION_SCALE = 0.84  # Empirically derived from settled data (Mar 2026): actual win rate 18.8% / model avg prob 22.3%
 
 # Position-based xG/xA defaults for players with stats in DB but missing per-90 values
 POSITION_DEFAULTS: dict[str, dict[str, float]] = {
@@ -47,6 +55,70 @@ FIXTURE_LEAGUE_TO_BZZ_ID: dict[str, int] = {
 }
 
 CURRENT_SEASON = "2025-2026"
+
+
+def _blend_rate(season_rate: float, form_value: float | None, avg_mins: float) -> float:
+    """Blend season per-90 rate with last-5-match form (60% season, 40% form).
+
+    form_value is cumulative over 5 matches (e.g. form_xg_5 or form_assists_5).
+    Returns season_rate unchanged if form_value is None or avg_mins is 0.
+    """
+    if form_value is None or avg_mins <= 0:
+        return season_rate
+    form_rate = form_value / (5.0 * avg_mins / 90.0)
+    return 0.60 * season_rate + 0.40 * form_rate
+
+
+def _compute_team_denominators(
+    player_stats: dict[str, dict],
+    home_team: str,
+    away_team: str,
+    lambda_home: float,
+    lambda_away: float,
+) -> dict[str, dict[str, float]]:
+    """Compute top-down share denominators for both teams in a fixture.
+
+    For each team: denominator = max(sum of player weights in DB, λ_team).
+    This ensures share_i = weight_i / denom ≤ 1 even when DB covers < 100% of squad.
+
+    Returns: {team_name: {"goal_denom": float, "assist_denom": float}}
+    """
+    team_goal_weights: dict[str, list[float]] = {home_team: [], away_team: []}
+    team_assist_weights: dict[str, list[float]] = {home_team: [], away_team: []}
+
+    for stats in player_stats.values():
+        team = stats.get("team")
+        if team not in team_goal_weights:
+            continue
+        avg_mins = stats.get("avg_minutes_per_match") or stats.get("expected_minutes") or 75.0
+        mins_ratio = (stats.get("expected_minutes") or 75.0) / 90.0
+
+        blended_xg = _blend_rate(
+            stats.get("xg_per_90") or 0.0,
+            stats.get("form_xg_5"),
+            avg_mins,
+        )
+        blended_xa = _blend_rate(
+            stats.get("xa_per_90") or 0.0,
+            stats.get("form_assists_5"),
+            avg_mins,
+        )
+        team_goal_weights[team].append(blended_xg * mins_ratio)
+        team_assist_weights[team].append(blended_xa * mins_ratio)
+
+    def denom(weights: list[float], lambda_ref: float, rate: float = 1.0) -> float:
+        return max(sum(weights), lambda_ref * rate)
+
+    return {
+        home_team: {
+            "goal_denom":   denom(team_goal_weights[home_team],   lambda_home),
+            "assist_denom": denom(team_assist_weights[home_team], lambda_home, ASSIST_GOAL_RATE),
+        },
+        away_team: {
+            "goal_denom":   denom(team_goal_weights[away_team],   lambda_away),
+            "assist_denom": denom(team_assist_weights[away_team], lambda_away, ASSIST_GOAL_RATE),
+        },
+    }
 
 
 def _normalize_position(raw_position: str | None) -> str | None:
@@ -120,6 +192,12 @@ async def generate_recommendations(
 
         fixture_odds = odds_data.get(fixture_id, [])
 
+        # Pre-compute top-down share denominators for this fixture
+        team_denoms = _compute_team_denominators(
+            player_stats, home_team, away_team,
+            home_match_xg, away_match_xg,
+        )
+
         for odds_entry in fixture_odds:
             player_name = odds_entry.get("player_name")
             market_type = odds_entry.get("market_type", "goalscorer")
@@ -161,45 +239,58 @@ async def generate_recommendations(
             pen_home_id, pen_away_id = (pen_takers or {}).get(fixture_id, (None, None))
             is_pen_taker = player_api_id is not None and player_api_id in {pen_home_id, pen_away_id}
 
-            # Lambda: player's historical xG rate scaled by market-implied team xG.
-            # Market xG is already fixture-specific — no fixture_strength adjustment needed.
-            team_match_xg = home_match_xg if team == home_team else away_match_xg
             expected_minutes = stats.get("expected_minutes", 75.0)
             mins_ratio = expected_minutes / 90.0
 
+            team_lambda = home_match_xg if team == home_team else away_match_xg
+            denom_info = team_denoms.get(team, {})
+            avg_mins = stats.get("avg_minutes_per_match") or expected_minutes
+
             if market_type == "goalscorer":
-                lambda_base = max(0.001, _xg_per_90 * mins_ratio)
-                lambda_penalty = PEN_CONVERSION * PENS_PER_MATCH * mins_ratio if is_pen_taker else 0.0
-                lambda_val = lambda_base + lambda_penalty
+                blended_xg = _blend_rate(_xg_per_90, stats.get("form_xg_5"), avg_mins)
+                weight_i = blended_xg * mins_ratio
+                goal_denom = denom_info.get("goal_denom") or team_lambda or 1.0
+                share_i = weight_i / goal_denom if goal_denom > 0 else 0.0
+
+                finishing_mult = calculate_finishing_multiplier(stats, position)
+                conversion = calculate_conversion_rate(stats)
+                lambda_val = calculate_goalscorer_lambda(
+                    share_i, team_lambda, finishing_mult, conversion, mins_ratio, is_pen_taker,
+                )
             else:  # assist
-                lambda_val = max(0.001, _xa_per_90 * mins_ratio)
+                blended_xa = _blend_rate(_xa_per_90, stats.get("form_assists_5"), avg_mins)
+                weight_xa = blended_xa * mins_ratio
+                budget_assists = team_lambda * ASSIST_GOAL_RATE
+                assist_denom = denom_info.get("assist_denom") or budget_assists or 1.0
+                share_xa = weight_xa / assist_denom if assist_denom > 0 else 0.0
+
+                creation_mult = calculate_creation_multiplier_v2(stats, position)
+                xa_conv = calculate_xa_conversion(stats)
+                lambda_val = calculate_assist_lambda(share_xa, budget_assists, creation_mult, xa_conv)
 
             probability = 1 - math.exp(-lambda_val)
-            probability = probability * CALIBRATION_SCALE
-            fair_odds = 1 / probability if probability > 0 else 9999.0
-            fair_odds = round(fair_odds, 2)
+            fair_odds = round(1 / probability if probability > 0 else 9999.0, 2)
 
             # Calculate edge
             edge = calculate_edge(fair_odds, market_odds)
 
             # Confidence based on data quality
             matches = stats.get("matches_played", 0) or 0
-            pos_defaults = (
-                POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK)
-                if position
-                else DEFAULT_POSITION_FALLBACK
-            )
-            has_real_xg = stats.get("xg_per_90") is not None and stats.get(
-                "xg_per_90"
-            ) != pos_defaults.get("xg_per_90")
-            if matches >= 10 and has_real_xg:
-                confidence = 0.80
-            elif matches >= 5 and has_real_xg:
-                confidence = 0.65
+            form_key = "form_xg_5" if market_type == "goalscorer" else "form_assists_5"
+            rate_key = "xg_per_90" if market_type == "goalscorer" else "xa_per_90"
+            has_form = stats.get(form_key) is not None
+            has_real = stats.get(rate_key) is not None
+
+            if matches >= 10 and has_form and has_real:
+                confidence = 0.85
+            elif matches >= 5 and has_real:
+                confidence = 0.70
             elif matches >= 3:
                 confidence = 0.55
-            else:
+            elif matches >= 1:
                 confidence = 0.40
+            else:
+                confidence = 0.25
 
             if edge >= 0.05:
                 classification = "VALUE"
@@ -227,12 +318,13 @@ async def generate_recommendations(
                 "xg_source": xg_source,
                 "is_pen_taker": is_pen_taker,
                 "explanation": {
-                    "model": "market_implied_xg",
+                    "model": "top_down_v2",
                     "xg_source": xg_source,
-                    "team_match_xg": round(team_match_xg, 3),
+                    "team_lambda": round(team_lambda, 3),
                     "expected_minutes": expected_minutes,
                     "lambda": round(lambda_val, 4),
                     "is_pen_taker": is_pen_taker,
+                    "market_type": market_type,
                 },
             }
 
@@ -467,18 +559,28 @@ async def get_recommendations_for_date(
             )
 
             entry = {
-                "player_api_id": stats.player_api_id,
-                "xg_per_90": xg_per_90,
-                "xa_per_90": xa_per_90,
-                "npxg_total": xg_total,
-                "xa_total": stats.expected_assists or 0.0,
-                "expected_minutes": expected_minutes,
-                "conversion_rate": conversion_rate,
-                "team": team_name,
-                "position": position,
-                "goals": goals_total,
-                "assists": stats.goal_assist or 0,
-                "matches_played": stats.matches_played or 0,
+                "player_api_id":          stats.player_api_id,
+                "xg_per_90":              xg_per_90,
+                "xa_per_90":              xa_per_90,
+                "npxg_total":             xg_total,
+                "xa_total":               stats.expected_assists or 0.0,
+                "expected_minutes":       expected_minutes,
+                "avg_minutes_per_match":  stats.avg_minutes_per_match or expected_minutes,
+                "conversion_rate":        conversion_rate,
+                "team":                   team_name,
+                "position":               position,
+                "goals":                  goals_total,
+                "assists":                stats.goal_assist or 0,
+                "matches_played":         stats.matches_played or 0,
+                # Bzzoiro enriched fields (top-down model)
+                "form_xg_5":              stats.form_xg_5,
+                "form_assists_5":         stats.form_assists_5,
+                "shot_accuracy":          stats.shot_accuracy,
+                "xg_per_shot":            stats.xg_per_shot,
+                "avg_rating":             stats.avg_rating,
+                "key_pass_per_90":        stats.key_pass_per_90,
+                "accurate_cross_per_90":  stats.accurate_cross_per_90,
+                "cross_accuracy":         stats.cross_accuracy,
             }
 
             # If same player appears for multiple fixture leagues, keep the richer entry
