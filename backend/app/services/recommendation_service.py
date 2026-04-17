@@ -276,22 +276,21 @@ async def generate_recommendations(
 
             # Confidence based on data quality
             matches = stats.get("matches_played", 0) or 0
-            pos_defaults = (
-                POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK)
-                if position
-                else DEFAULT_POSITION_FALLBACK
-            )
-            has_real_xg = stats.get("xg_per_90") is not None and stats.get(
-                "xg_per_90"
-            ) != pos_defaults.get("xg_per_90")
-            if matches >= 10 and has_real_xg:
-                confidence = 0.80
-            elif matches >= 5 and has_real_xg:
-                confidence = 0.65
+            form_key = "form_xg_5" if market_type == "goalscorer" else "form_assists_5"
+            rate_key = "xg_per_90" if market_type == "goalscorer" else "xa_per_90"
+            has_form = stats.get(form_key) is not None
+            has_real = stats.get(rate_key) is not None
+
+            if matches >= 10 and has_form and has_real:
+                confidence = 0.85
+            elif matches >= 5 and has_real:
+                confidence = 0.70
             elif matches >= 3:
                 confidence = 0.55
-            else:
+            elif matches >= 1:
                 confidence = 0.40
+            else:
+                confidence = 0.25
 
             if edge >= 0.05:
                 classification = "VALUE"
