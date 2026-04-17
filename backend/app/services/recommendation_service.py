@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.odds import normalize_selection_name
 from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat, BzzTeam
+from app.pricing.assist import ASSIST_GOAL_RATE
 from app.pricing.goalscorer import calculate_edge
 from app.pricing.team_xg import PEN_CONVERSION, PENS_PER_MATCH
 from app.services.market_xg import MarketXgService
@@ -47,6 +48,70 @@ FIXTURE_LEAGUE_TO_BZZ_ID: dict[str, int] = {
 }
 
 CURRENT_SEASON = "2025-2026"
+
+
+def _blend_rate(season_rate: float, form_value: float | None, avg_mins: float) -> float:
+    """Blend season per-90 rate with last-5-match form (60% season, 40% form).
+
+    form_value is cumulative over 5 matches (e.g. form_xg_5 or form_assists_5).
+    Returns season_rate unchanged if form_value is None or avg_mins is 0.
+    """
+    if form_value is None or avg_mins <= 0:
+        return season_rate
+    form_rate = form_value / (5.0 * avg_mins / 90.0)
+    return 0.60 * season_rate + 0.40 * form_rate
+
+
+def _compute_team_denominators(
+    player_stats: dict[str, dict],
+    home_team: str,
+    away_team: str,
+    lambda_home: float,
+    lambda_away: float,
+) -> dict[str, dict[str, float]]:
+    """Compute top-down share denominators for both teams in a fixture.
+
+    For each team: denominator = max(sum of player weights in DB, λ_team).
+    This ensures share_i = weight_i / denom ≤ 1 even when DB covers < 100% of squad.
+
+    Returns: {team_name: {"goal_denom": float, "assist_denom": float}}
+    """
+    team_goal_weights: dict[str, list[float]] = {home_team: [], away_team: []}
+    team_assist_weights: dict[str, list[float]] = {home_team: [], away_team: []}
+
+    for stats in player_stats.values():
+        team = stats.get("team")
+        if team not in team_goal_weights:
+            continue
+        avg_mins = stats.get("avg_minutes_per_match") or stats.get("expected_minutes") or 75.0
+        mins_ratio = (stats.get("expected_minutes") or 75.0) / 90.0
+
+        blended_xg = _blend_rate(
+            stats.get("xg_per_90") or 0.0,
+            stats.get("form_xg_5"),
+            avg_mins,
+        )
+        blended_xa = _blend_rate(
+            stats.get("xa_per_90") or 0.0,
+            stats.get("form_assists_5"),
+            avg_mins,
+        )
+        team_goal_weights[team].append(blended_xg * mins_ratio)
+        team_assist_weights[team].append(blended_xa * mins_ratio)
+
+    def denom(weights: list[float], lambda_ref: float, rate: float = 1.0) -> float:
+        return max(sum(weights), lambda_ref * rate)
+
+    return {
+        home_team: {
+            "goal_denom":   denom(team_goal_weights[home_team],   lambda_home),
+            "assist_denom": denom(team_assist_weights[home_team], lambda_home, ASSIST_GOAL_RATE),
+        },
+        away_team: {
+            "goal_denom":   denom(team_goal_weights[away_team],   lambda_away),
+            "assist_denom": denom(team_assist_weights[away_team], lambda_away, ASSIST_GOAL_RATE),
+        },
+    }
 
 
 def _normalize_position(raw_position: str | None) -> str | None:
