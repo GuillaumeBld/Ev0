@@ -50,11 +50,21 @@ async def store_match_scrape_result(
         match_inserted = res.rowcount or 0
 
     # ── 2. player_odds_snapshots ──────────────────────────────────────────────
-    player_rows: list[dict] = []
+    player_rows_raw: list[dict] = []
     for p in result.goalscorer:
-        player_rows.append(_player_row(result, "goalscorer", p.player_name, p.odds, now))
+        player_rows_raw.append(_player_row(result, "goalscorer", p.player_name, p.odds, now))
     for p in result.assist:
-        player_rows.append(_player_row(result, "assist", p.player_name, p.odds, now))
+        player_rows_raw.append(_player_row(result, "assist", p.player_name, p.odds, now))
+
+    # Deduplicate on (fixture_id, bookmaker, market_type, player_name) — keep best odds.
+    # PostgreSQL's ON CONFLICT DO UPDATE cannot handle two rows with the same conflict key
+    # in a single batch, so duplicates must be resolved before the INSERT.
+    dedup: dict[tuple, dict] = {}
+    for row in player_rows_raw:
+        key = (row["fixture_id"], row["bookmaker"], row["market_type"], row["player_name"])
+        if key not in dedup or row["odds"] > dedup[key]["odds"]:
+            dedup[key] = row
+    player_rows = list(dedup.values())
 
     player_upserted = 0
     if player_rows:
