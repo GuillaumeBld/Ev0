@@ -278,3 +278,85 @@ class TestCreationMultiplierFormula:
         """The three weights in the new creation formula sum to 1.0."""
         weights = [0.40, 0.40, 0.20]
         assert abs(sum(weights) - 1.0) < 1e-9
+
+
+# ── Nouveaux tests : finishing multiplier, conversion, λ top-down ──────────
+
+from app.pricing.goalscorer import (
+    calculate_finishing_multiplier,
+    calculate_conversion_rate,
+    calculate_goalscorer_lambda,
+)
+
+
+class TestFinishingMultiplier:
+    def test_average_fw_returns_near_one(self):
+        stats = {"shot_accuracy": 0.42, "xg_per_shot": 0.12, "avg_rating": 6.9}
+        mult = calculate_finishing_multiplier(stats, "FW")
+        assert 0.95 <= mult <= 1.05
+
+    def test_elite_fw_clamped_to_max(self):
+        stats = {"shot_accuracy": 0.80, "xg_per_shot": 0.30, "avg_rating": 9.0}
+        mult = calculate_finishing_multiplier(stats, "FW")
+        assert mult == 1.50
+
+    def test_poor_fw_clamped_to_min(self):
+        stats = {"shot_accuracy": 0.05, "xg_per_shot": 0.01, "avg_rating": 4.0}
+        mult = calculate_finishing_multiplier(stats, "FW")
+        assert mult == 0.70
+
+    def test_none_stats_return_min(self):
+        stats = {"shot_accuracy": None, "xg_per_shot": None, "avg_rating": None}
+        mult = calculate_finishing_multiplier(stats, "MF")
+        assert mult == 0.70
+
+    def test_unknown_position_uses_fallback(self):
+        stats = {"shot_accuracy": 0.37, "xg_per_shot": 0.10, "avg_rating": 6.8}
+        mult = calculate_finishing_multiplier(stats, None)
+        assert 0.95 <= mult <= 1.05
+
+
+class TestConversionRate:
+    def test_below_min_matches_returns_one(self):
+        stats = {"matches_played": 3, "goals": 5, "npxg_total": 2.0}
+        assert calculate_conversion_rate(stats) == 1.0
+
+    def test_overperformer_clamped(self):
+        stats = {"matches_played": 10, "goals": 15, "npxg_total": 5.0}
+        assert calculate_conversion_rate(stats) == 1.40
+
+    def test_underperformer_clamped(self):
+        stats = {"matches_played": 10, "goals": 1, "npxg_total": 8.0}
+        assert calculate_conversion_rate(stats) == 0.75
+
+    def test_zero_xg_returns_one(self):
+        stats = {"matches_played": 10, "goals": 0, "npxg_total": 0.0}
+        assert calculate_conversion_rate(stats) == 1.0
+
+    def test_normal_conversion(self):
+        stats = {"matches_played": 10, "goals": 8, "npxg_total": 8.0}
+        assert calculate_conversion_rate(stats) == pytest.approx(1.0, abs=0.01)
+
+
+class TestGoalscorerLambda:
+    def test_basic_lambda(self):
+        lam = calculate_goalscorer_lambda(
+            share=0.30, lambda_team=1.5, finishing_mult=1.0,
+            conversion=1.0, mins_ratio=1.0, is_pen_taker=False,
+        )
+        assert lam == pytest.approx(0.45, abs=0.001)
+
+    def test_pen_taker_bonus_added(self):
+        lam_no_pen = calculate_goalscorer_lambda(0.20, 1.5, 1.0, 1.0, 1.0, False)
+        lam_pen    = calculate_goalscorer_lambda(0.20, 1.5, 1.0, 1.0, 1.0, True)
+        assert lam_pen > lam_no_pen
+        # bonus ≈ PEN_CONVERSION(0.78) × PENS_PER_MATCH(0.10) × 1.0 = 0.078
+        assert lam_pen - lam_no_pen == pytest.approx(0.078, abs=0.001)
+
+    def test_lambda_clamped_to_max(self):
+        lam = calculate_goalscorer_lambda(1.0, 10.0, 1.5, 1.4, 1.0, False)
+        assert lam == 3.0  # CLAMP_LAMBDA_MAX
+
+    def test_lambda_clamped_to_min(self):
+        lam = calculate_goalscorer_lambda(0.0, 0.0, 0.70, 0.75, 0.0, False)
+        assert lam == 0.01  # CLAMP_LAMBDA_MIN

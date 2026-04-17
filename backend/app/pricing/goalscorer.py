@@ -209,6 +209,78 @@ def _interpret_probability(prob: float) -> str:
         return "Very unlikely — defensive player or limited minutes expected"
 
 
+# ── Pen taker constants ───────────────────────────────────────────
+PEN_CONVERSION = 0.78
+PENS_PER_MATCH = 0.10
+
+# ── Top-down finishing multiplier (Bzzoiro) ───────────────────────
+
+GOALSCORER_POSITION_AVGS: dict[str, dict[str, float]] = {
+    "FW": {"shot_accuracy": 0.42, "xg_per_shot": 0.12, "rating": 0.69},
+    "MF": {"shot_accuracy": 0.35, "xg_per_shot": 0.09, "rating": 0.68},
+    "DF": {"shot_accuracy": 0.30, "xg_per_shot": 0.07, "rating": 0.67},
+}
+_GOALSCORER_FALLBACK_AVGS: dict[str, float] = {
+    "shot_accuracy": 0.37, "xg_per_shot": 0.10, "rating": 0.68,
+}
+
+FINISHING_MULT_WEIGHTS: dict[str, float] = {
+    "shot_accuracy": 0.40,
+    "xg_per_shot":   0.40,
+    "rating":        0.20,
+}
+FINISHING_MULT_CLAMP: tuple[float, float] = (0.70, 1.50)
+CONVERSION_CLAMP: tuple[float, float] = (0.75, 1.40)
+CONVERSION_MIN_MATCHES: int = 5
+
+
+def calculate_finishing_multiplier(stats: dict[str, Any], position: str | None) -> float:
+    """Normalize finishing quality stats against position averages → multiplier ≈ 1.0."""
+    avgs = GOALSCORER_POSITION_AVGS.get(position or "", _GOALSCORER_FALLBACK_AVGS)
+
+    def norm(key: str) -> float:
+        val = stats.get(key) or 0.0
+        avg = avgs.get(key, 1.0)
+        return (val / avg) if avg > 0 else 0.0
+
+    rating_raw = (stats.get("avg_rating") or 0.0) / 10.0  # normalize to 0-1
+    rating_norm = rating_raw / avgs["rating"] if avgs["rating"] > 0 else 0.0
+
+    raw = (
+        norm("shot_accuracy") * FINISHING_MULT_WEIGHTS["shot_accuracy"]
+        + norm("xg_per_shot")   * FINISHING_MULT_WEIGHTS["xg_per_shot"]
+        + rating_norm           * FINISHING_MULT_WEIGHTS["rating"]
+    )
+    return max(FINISHING_MULT_CLAMP[0], min(raw, FINISHING_MULT_CLAMP[1]))
+
+
+def calculate_conversion_rate(stats: dict[str, Any]) -> float:
+    """Goals / xG conversion rate. Returns 1.0 if insufficient data."""
+    matches = stats.get("matches_played") or 0
+    if matches < CONVERSION_MIN_MATCHES:
+        return 1.0
+    xg = stats.get("npxg_total") or 0.0
+    goals = stats.get("goals") or 0
+    if xg <= 0:
+        return 1.0
+    return max(CONVERSION_CLAMP[0], min(goals / xg, CONVERSION_CLAMP[1]))
+
+
+def calculate_goalscorer_lambda(
+    share: float,
+    lambda_team: float,
+    finishing_mult: float,
+    conversion: float,
+    mins_ratio: float,
+    is_pen_taker: bool = False,
+) -> float:
+    """Compute final goalscorer λ (top-down allocation)."""
+    lam = share * lambda_team * finishing_mult * conversion
+    if is_pen_taker:
+        lam += PEN_CONVERSION * PENS_PER_MATCH * mins_ratio
+    return max(CLAMP_LAMBDA_MIN, min(lam, CLAMP_LAMBDA_MAX))
+
+
 # ── Bzzoiro quality multiplier ────────────────────────────────────
 
 # New quality multiplier weights for bzz_player_season_stats fields
