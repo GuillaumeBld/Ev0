@@ -1,94 +1,109 @@
 # Guide des onglets
 
 ## Dashboard (/)
-Vue d'ensemble : bankroll actuelle, ROI, nombre de paris actifs, P&L des 30 derniers jours.
-Le graphique P&L est cumulatif.
 
-## Calculateur (/calculator)
-Entrez une cote et une probabilité estimée → Ev0 calcule l'edge et la mise Kelly recommandée.
-Utile pour vérifier un pari manuellement avant de le placer.
+Vue d'ensemble : bankroll actuelle, ROI, nombre de paris actifs, P&L des 30 derniers jours. Le graphique P&L est cumulatif.
+
+---
 
 ## Recommandations (/recommendations)
-Vue consolidée de tous les paris à valeur actifs, triés chronologiquement par heure de match.
 
-**Mode View All (défaut)** : toutes les recommandations actives (statut `pending` ou `approved`) sont affichées, paginées 50 par page. La pagination apparaît en bas quand il y a plus de 50 picks.
+Vue consolidée de tous les paris à valeur identifiés, triés par heure de match.
 
-**Filtre date (opt-in)** : cliquer "Filtrer par date" pour n'afficher que les picks d'un jour précis. Un badge `12 avr ✕` apparaît — cliquer ✕ pour revenir en View All.
+**Mode View All (défaut)** : toutes les recommandations actives (statut `pending` ou `approved`) sont affichées, paginées 50 par page.
 
-**Filtres marché / edge** : actifs dans les deux modes. Changer le filtre edge ou marché reste en View All si aucune date n'est sélectionnée.
+**Filtre date (opt-in)** : cliquer "Filtrer par date" pour n'afficher que les picks d'un jour précis. Un badge `18 avr ✕` apparaît — cliquer ✕ pour revenir en View All.
+
+**Filtres marché / edge** : actifs dans les deux modes.
 
 Chaque carte affiche :
-- **Joueur** + marché (buteur / passeur)
-- **Cote** du bookmaker
-- **Fair odds** calculés par Ev0
-- **Edge** en %
+- **Joueur** + marché (buteur / passeur décisif)
+- **Cote** du bookmaker · **Fair odds** Ev0 · **Edge** en %
 - **Mise Kelly** recommandée
-- **Statut** : pending → approved → placed → won/lost
-- **XgBadge** : badge 🟦 `API` (source Bzzoiro) ou 🟧 `MODEL` (solveur Poisson interne), indiquant quelle source de xG a été utilisée pour cette recommandation
+- **Confiance** (0.25 à 0.85 selon le nombre de matchs et la disponibilité des données de forme)
+- **Statut** : pending → approved → placed → won / lost / void
 
-La section **Expirées** (en bas, repliable) suit la même logique : View All par défaut, filtrée par date si une date est active.
+La section **Expirées** (en bas, repliable) liste les recommandations déjà settlées.
 
-Cliquer sur une carte pour voir les détails (features utilisées, intensité lambda, etc.).
+---
+
+## Calculateur (/calculator)
+
+Sélectionner un match → Ev0 calcule en temps réel les cotes fair pour **tous les joueurs** des deux équipes, en utilisant le même moteur top-down que les recommandations.
+
+Chaque carte joueur affiche :
+- **Part xG** (npxg_share) et **Part xA** (xa_share) dans le budget équipe
+- **Cote fair buteur** et **cote fair passeur**
+- **Minutes attendues** estimées depuis l'historique
+
+Si le match a des compositions connues, activer l'onglet **Compo** pour redistribuer le xG uniquement entre les titulaires (cotes plus précises).
+
+**Override manuel** : il est possible de saisir un xG d'équipe différent (ex. : si une cote de marché semble aberrante) — les cotes joueurs se recalculent instantanément.
+
+---
 
 ## Joueurs (/players)
-Base de données des joueurs suivis, alimentée par les données Bzzoiro.
 
-**Vue liste** : tableau trié par nom, avec colonnes xG/90, xA/90, rating, minutes. Filtres disponibles :
+Base de données des joueurs suivis, alimentée par Bzzoiro.
+
+**Vue liste** : tableau trié par nom, avec colonnes xG/90, xA/90, rating, minutes jouées. Filtres disponibles :
 - Recherche par nom
-- Filtre par **poste** (GK / DEF / MID / FWD)
-- Filtre par **minutes** (seuil minimum de minutes jouées en saison)
+- Filtre par poste (GK / DEF / MID / FWD)
+- Filtre par seuil minimum de minutes
 
-**Graphique PlayerMatchChart** : cliquer sur un joueur pour dérouler le détail — un graphique par match s'affiche avec l'évolution de ses métriques clés (xG, buts, rating) sur les dernières journées.
+Cliquer sur un joueur pour dérouler l'historique match par match : évolution xG, buts, rating sur la saison.
 
-Les stats affichées proviennent de `bzz_player_season_stats` (agrégats saison) et `bzz_player_match_stats` (historique match par match). Elles sont mises à jour chaque nuit par `job_aggregate_season_stats` (04:00 UTC).
+---
 
 ## Matchs (/matches)
-Calendrier des matchs à venir. Voir quels matchs ont des recommandations actives.
-Possibilité d'ajouter manuellement un match ou d'ajuster les minutes attendues d'un joueur.
+
+Calendrier des matchs à venir avec statut des recommandations disponibles. Possibilité d'ajuster manuellement les minutes attendues d'un joueur pour un match.
+
+---
 
 ## Compos (/lineups)
-Saisie manuelle des compositions probables avant les matchs.
-- Sélectionner un match → voir la compo active de chaque équipe (badge : Officielle / Probable / Dernière compo)
-- Cliquer **Modifier** pour saisir une compo probable : sélectionner les joueurs + leur poste (GK/DEF/MID/FWD)
-- Enregistrer → la compo devient active pour ce match (mode "Probable")
-- **Effacer** → revient à la dernière compo officielle connue
-- Le statut BU (avant-centre) d'un joueur se définit dans la page Joueurs (icône 🎯)
 
-## Backtest (/backtest)
-Lance le simulateur sur les données historiques (saison 2024-2025). Affiche :
-- Nombre de paris simulés, win rate, ROI
-- Courbe P&L cumulatif
-- Comparaison avec une stratégie flat stake
+Saisie des compositions probables avant les matchs.
+
+- Sélectionner un match → voir la composition active de chaque équipe
+- Cliquer **Modifier** pour saisir une compo probable
+- Enregistrer → la compo devient active (mode "Probable")
+- **Effacer** → revient à la dernière compo connue
+
+Une fois une compo enregistrée, le calculateur peut redistribuer le xG uniquement entre les titulaires.
+
+---
 
 ## Historique (/history)
-Tous les paris settlés. Filtrer par date, ligue, marché, résultat.
-Statistiques : win rate global, ROI par ligue/marché.
+
+Tous les paris settlés. Filtrer par date, ligue, marché, résultat.  
+Statistiques : win rate global, ROI par ligue et par marché.
+
+**Settlement manuel** : cliquer sur un pari → modifier le résultat (won / lost / void). Utilisé pour corriger les erreurs ou annuler un pari (joueur blessé en cours de match n'ayant pas joué 1 minute → void).
+
+---
 
 ## Autopilot (/autopilot)
-L'agent qui decide automatiquement quels paris prendre et a quelle mise.
 
-La page est organisee en plusieurs sections :
-- **En haut** : cartes resumant les performances des 30 derniers jours (nombre de paris, win rate, ROI, Sharpe, Brier score) et un bouton pour activer/desactiver l'agent
-- **Entrainement** : bouton pour entrainer l'agent sur les donnees historiques. Affiche les resultats une fois termine (nombre de records, P&L, Sharpe)
-- **Optimisation** : bouton "Lancer Optimisation" qui cherche automatiquement les meilleurs reglages pour l'agent (~30 a 60 secondes). Affiche ensuite la croissance du capital (log-wealth), la fiabilite du resultat (DSR), et quelles informations l'agent utilise ou ignore. L'agent est mis a jour automatiquement apres chaque optimisation
-- **Decisions du jour** : tableau avec chaque pari recommande, l'action choisie par l'agent (passer, quart Kelly, demi Kelly, Kelly), et le montant de la mise
-- **En bas** : courbe P&L cumulative, importance de chaque information dans la decision, repartition des actions, et graphique de calibration
+L'agent qui décide automatiquement quels paris prendre et à quelle mise. Voir la section dédiée dans la documentation.
 
-Voir la page Autopilot dans la documentation pour comprendre comment l'agent fonctionne.
+---
 
-## Toggle xG mode (en-tête du dashboard)
-Un sélecteur dans l'en-tête permet de choisir le mode xG utilisé pour les recommandations :
-- **bzzoiro** : utilise les xG prédits par l'API Bzzoiro (badge 🟦 `API`) — source principale recommandée
-- **model** : utilise le solveur Poisson interne basé sur les cotes de marché (badge 🟧 `MODEL`) — utile si les prédictions Bzzoiro ne sont pas encore disponibles
+## Backtest (/backtest)
 
-Ce toggle affecte le calcul des nouvelles recommandations. Les recommandations déjà générées conservent leur badge d'origine.
+Lance le simulateur sur les données historiques. Affiche le nombre de paris simulés, win rate, ROI et la courbe P&L cumulatif.
+
+---
 
 ## Santé (/health)
-État du système en temps réel : API quota, dernière mise à jour des cotes, statut des jobs worker.
-Inclut le statut des 6 jobs de synchronisation Bzzoiro (dernière exécution, nombre de records synchronisés).
+
+État du système en temps réel : dernière mise à jour des cotes, statut des jobs worker, couverture des match odds par fixture.
+
+---
 
 ## Paramètres (/settings)
+
 - Bankroll actuelle
-- Kelly multiplier
+- Kelly multiplier (fraction de Kelly appliquée)
 - Ligues et marchés actifs
 - Mode autopilot (paper / live)

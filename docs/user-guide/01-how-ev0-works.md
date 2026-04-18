@@ -2,107 +2,100 @@
 
 ## Le principe : valeur attendue (Expected Value)
 
-Ev0 cherche des paris à **valeur positive (+EV)** : des paris où notre estimation de la probabilité réelle est plus haute que celle implicite dans la cote du bookmaker.
-
-### Étape 1 — Probabilité "fair"
-
-Pour chaque joueur et chaque match, Ev0 calcule une probabilité "fair" qu'il marque (buteur) ou fasse une passe décisive (passeur) via le **Modèle C** (alimenté par Bzzoiro API) :
-
-- **Module buteur** : `λ = npxG/90 × (mins/90) × quality_multiplier × finishing_delta × opponent_factor × form`
-  - Ancre : `xG/90` (Bzzoiro — expected goals)
-  - Multiplicateur qualité : `shot_accuracy×0.35 + xg_per_shot×0.35 + rating×0.30` (normalisé par moyenne de ligue)
-  - **finishing_delta** : correction par joueur mesurant l'écart entre buts réels et xG accumulé — capte les finisseurs au-dessus / en-dessous de leur xG
-- **Module passeur** : `λ = xA/90 × (mins/90) × creation_multiplier × opponent_factor × form`
-  - Ancre : `xA/90` (Bzzoiro — expected assists)
-  - Multiplicateur création : `key_pass_per_90×0.40 + xa_per_90×0.40 + accurate_cross_per_90×0.20`
-
-### Étape 2 — Cote "fair"
+Ev0 cherche des paris à **valeur positive (+EV)** : des situations où la probabilité qu'un joueur marque (ou fasse une passe décisive) est plus élevée que celle que le bookmaker lui attribue implicitement via sa cote.
 
 ```
-fair_odds = 1 / fair_probability
+edge = (market_odds / fair_odds) - 1
 ```
 
-### Étape 3 — Edge
+Un edge > 5 % est considéré comme une opportunité de valeur.
+
+---
+
+## Le modèle top-down (v2)
+
+Le moteur de pricing est **entièrement top-down** : on part du xG estimé de l'équipe pour le match, puis on redistribue ce budget aux joueurs proportionnellement à leur contribution historique.
+
+### Étape 1 — xG de l'équipe pour le match
+
+Le xG de chaque équipe (`λ_home`, `λ_away`) est calculé à partir des **cotes bookmaker** (Over/Under 2.5, H2H 1×2, BTTS) via un solveur Poisson L-BFGS-B à 4 contraintes. Ce sont des λ market-implied — ils reflètent ce que le marché anticipe pour ce match précis.
+
+Si les 4 marchés sont disponibles, le solveur utilise : victoire domicile, nul, over 2.5, BTTS.  
+Si BTTS est absent, il se replie sur 2 contraintes : over 2.5 + H2H.
+
+Un snapshot est considéré **périmé après 4 h**. Si aucun snapshot récent n'est disponible pour un match, le pricing n'est pas calculé.
+
+### Étape 2 — Parts des joueurs (player shares)
+
+Pour chaque joueur, on calcule un **poids form-blended** :
 
 ```
-edge = (fair_probability - market_probability) / market_probability
+blended_xg = 0.60 × xg_per_90 (saison) + 0.40 × form_xg_5 (5 derniers matchs)
 ```
 
-Un edge > 0.05 (5%) est considéré comme une opportunité de valeur.
+La part de chaque joueur dans le budget de l'équipe est proportionnelle à ce poids blendé. Si les données de forme sont absentes, on utilise uniquement le xG saison.
 
-### Étape 4 — Fraction de Kelly
-
-La mise optimale selon le critère de Kelly :
+Le budget passeur décisif est calculé comme :
 
 ```
-kelly_fraction = edge / (market_odds - 1)
-stake = bankroll × kelly_fraction × kelly_multiplier
+budget_assists = λ_team × 0.65
 ```
 
-Le `kelly_multiplier` est entre 0.25 et 1.0 pour limiter la variance.
+(environ 65 % des buts ont une passe décisive officielle)
 
-## xG au niveau du match : solveur Poisson market-implied
+### Étape 3 — Pricing joueur
 
-Avant d'allouer le xG aux joueurs, Ev0 estime les espérances de buts des deux équipes (`λ_home`, `λ_away`) via un solveur Poisson à 3 contraintes (L-BFGS-B).
-
-### Mode xG — toggle "bzzoiro" vs "model"
-
-Ev0 supporte deux modes pour les xG de match, sélectionnable depuis l'en-tête du dashboard :
-
-| Mode | Source | Badge |
-|------|--------|-------|
-| **bzzoiro** | xG prédits directement par l'API Bzzoiro (`bzz_predictions`) | 🟦 `API` (bleu) |
-| **model** | xG calculés par le solveur Poisson interne (Dixon-Coles market-implied) | 🟧 `MODEL` (orange) |
-
-Le badge **XgBadge** apparaît sur les cartes de recommandations et les résultats du match pour indiquer quelle source est active.
-
-En mode `bzzoiro`, si une prédiction Bzzoiro est disponible pour le match, elle remplace le solveur. En mode `model` ou si aucune prédiction n'est disponible, le solveur Poisson prend le relais.
-
-### Pipeline de collecte d'odds (mode model)
-
-Le worker scrape les odds toutes les 15 secondes via une chaîne de fallback :
-
-1. **OddsPortal** (Playwright) — source primaire ; CSS selectors à vérifier sur site en production
-2. **Betclic** (HTTP, `__NEXT_DATA__` SSR JSON) — 1er fallback si OddsPortal échoue
-3. **Unibet** (HTTP, LVS/kambicdn API) — 2e fallback
-
-3 marchés sont collectés par scrape : **H2H** (1×2), **Over/Under 2.5**, **BTTS**. Chaque snapshot est stocké dans `match_odds_snapshots` avec les colonnes `source`, `source_url`, `parse_version`, `fallback_used`.
-
-Le planning de scrape est géré par un token-bucket adaptatif (`MarketScrapeScheduler`) :
-- Intervalles : >24h→120min, 6-24h→60min, 2-6h→20min, 30min-2h→7min, 5-30min→3min, ≤5min→stop
-- RPM dynamique : 1.0 (idle), 2.0 (quelques matches), 3.0 (file chargée), jusqu'à 5.0 (pression pre-KO)
-- Backoff automatique (÷2, gel 20min) sur erreur persistante ; récupération progressive (+0.25 toutes les 10min)
-
-### Solveur Poisson
-
-Après chaque scrape réussi, le service `MarketXgService` dé-viguise les cotes, puis minimise :
+**Module buteur :**
 
 ```
-residual = Σ (P_poisson(i) - p_market(i))²  pour i ∈ {home_win, draw, over_2.5, btts}
+λ_goal = npxg_share × λ_team × finishing_multiplier × conversion_rate
 ```
 
-avec les bornes λ ∈ [0.05, 4.5] et warm start via `brentq` sur Over 2.5.
+- `finishing_multiplier` : qualité de finition du joueur normalisée par la moyenne de sa position (FW / MF / DF). Un attaquant moyen donne ≈ 1.0.
+  - Métriques : `shot_accuracy × 0.40 + xg_per_shot × 0.40 + rating × 0.20`
+- `conversion_rate` : ratio buts / xG cumulé sur la saison, bridé à [0.75, 1.40]
 
-Si BTTS n'est pas disponible, le solveur se replie sur 2 contraintes (H2H + O/U).
+**Module passeur décisif :**
 
-### Sources et staleness
+```
+λ_assist = xa_share × budget_assists × creation_multiplier × xa_conversion
+```
 
-- Un snapshot est considéré **périmé** après **3 h** (absolu, indépendamment du coup d'envoi)
-- Si aucun snapshot récent n'est disponible, `compute()` retourne `None` → la recommandation est ignorée
-- `xg_source` dans la réponse API indique la source d'odds : `"bzzoiro"`, `"oddsportal"`, `"betclic"` ou `"unibet"`
-- `flagged=True` si le résiduel du solveur dépasse 0.06 (marchés contradictoires)
+- `creation_multiplier` : profil de création normalisé par position et profil (côté / axial / hybride)
+  - Métriques : `xa_per_90 × 0.40 + key_pass_per_90 × 0.35 + accurate_cross_per_90 × 0.25`
+- `xa_conversion` : ratio passes déc. réelles / xA cumulé, bridé à [0.75, 1.30]
 
-## Sources de probabilité
+**Conversion en probabilité et cote fair :**
 
-| Signal | Module | Source |
-|--------|--------|--------|
-| xG/90min (ancre buteur) | Buteur | Bzzoiro |
-| xA/90min (ancre passeur) | Passeur | Bzzoiro |
-| shot_accuracy, xg_per_shot | Buteur (quality multiplier) | Bzzoiro |
-| rating | Buteur (quality multiplier) | Bzzoiro |
-| key_pass_per_90, xa_per_90 | Passeur (creation multiplier) | Bzzoiro |
-| accurate_cross_per_90 | Passeur (creation multiplier) | Bzzoiro |
-| finishing_delta | Buteur (correction finisseur) | Calculé depuis bzz_player_season_stats |
-| Minutes attendues | Les deux | Modèle interne (historique) |
-| Forme récente | Les deux | Décroissance exponentielle |
-| Intensité lambda | Les deux | Poisson process |
+```
+P(score ≥ 1) = 1 - e^(-λ)
+fair_odds = 1 / P
+```
+
+---
+
+## Comparaison avec la cote bookmaker
+
+Pour chaque joueur présent dans le marché buteur ou passeur du bookmaker, Ev0 compare sa cote fair à la cote proposée :
+
+```
+edge = (market_odds / fair_odds) - 1
+```
+
+| Edge | Classification |
+|------|---------------|
+| ≥ 5 % | **VALUE** — opportunité identifiée |
+| 0 % à 5 % | **NO_VALUE** — légèrement sous-coté, pas recommandé |
+| < 0 % | **AVOID** — surcôté |
+
+---
+
+## Sources de données
+
+| Donnée | Source | Table DB |
+|--------|--------|----------|
+| Stats joueurs (xG/90, xA/90, rating…) | Bzzoiro API | `bzz_player_season_stats` |
+| Forme récente (5 derniers matchs) | Bzzoiro API | `bzz_player_match_stats` |
+| Cotes match (H2H, O/U, BTTS) | OddsPortal → Betclic → Unibet | `match_odds_snapshots` |
+| Cotes joueurs (buteur / passeur) | Betclic, Unibet | `player_odds_snapshots` |
+| Fixtures | FotMob (backfill) + The Odds API | `fixtures` |

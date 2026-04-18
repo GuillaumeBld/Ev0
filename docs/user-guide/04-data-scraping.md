@@ -1,76 +1,71 @@
-# Sources de données et scraping
+# Sources de données
 
-## Données scrappées
+## Statistiques joueurs — Bzzoiro API
 
-### Cotes bookmakers
+Toutes les statistiques joueurs sont alimentées par l'**API Bzzoiro**. Six jobs de synchronisation tournent quotidiennement :
 
-| Bookmaker | Méthode | Fréquence |
-|-----------|---------|-----------|
-| Unibet | API LVS HTTP (nouveau site post-fusion PSEL, mars 2026) | Toutes les 3h |
-| Betclic | gRPC (API non officielle) | Toutes les 3h |
-| Parions Sport | HTTP scraping | Toutes les 3h |
-
-Le worker (`backend/app/worker.py`) lance `job_snapshot_direct_odds()` toutes les 3h.
-Les cotes sont stockées dans `OddsSnapshot` avec timestamp.
-
-**Note Unibet** : Le site Unibet.fr a fusionné avec PSEL en mars 2026 (Kambi abandonné). Le nouveau site tourne sur la plateforme LVS (Lineup7/SportEase). Le scraper (`unibet_lvs_scraper.py`) s'authentifie via token anonyme, sans compte ni Playwright requis. Couvre le Big 5 + Ligue des Champions, marchés buteur et passeur décisif.
-
-### Statistiques joueurs — Source primaire : Bzzoiro API
-
-Depuis l'intégration Bzzoiro, toutes les statistiques joueurs sont alimentées par l'**API Bzzoiro** (source officielle). Six jobs de synchronisation tournent quotidiennement :
-
-| Job | Table(s) alimentée(s) | Fréquence |
-|-----|-----------------------|-----------|
+| Job | Tables alimentées | Fréquence |
+|-----|-------------------|-----------|
 | `job_sync_bzzoiro_reference` | `bzz_leagues`, `bzz_teams` | 06:00 UTC |
 | `job_sync_bzzoiro_players` | `bzz_players` | 06:05 UTC |
-| `job_sync_bzzoiro_events` | `bzz_events` (fixtures enrichis) | 06:10 UTC |
-| `job_sync_bzzoiro_player_stats` | `bzz_player_match_stats` (métriques par match) | 06:20 UTC |
-| `job_sync_bzzoiro_predictions` | `bzz_predictions` (xG prédits par Bzzoiro) | 06:30 UTC |
-| `job_aggregate_season_stats` | `bzz_player_season_stats` (agrégats saison) | 04:00 UTC |
+| `job_sync_bzzoiro_events` | `bzz_events` | 06:10 UTC |
+| `job_sync_bzzoiro_player_stats` | `bzz_player_match_stats` | 06:20 UTC |
+| `job_aggregate_season_stats` | `bzz_player_season_stats` | 04:00 UTC |
 
-**Métriques collectées par match** (dans `bzz_player_match_stats`) :
+**Métriques collectées par match** :
 - Minutes jouées, buts, passes décisives, tirs, tirs cadrés
 - xG (expected goals), xA (expected assists), rating
 - Passes clés (`key_passes`), centres précis (`accurate_crosses`)
 - Métriques dérivées calculées à l'ingestion : `xg_per_shot`, `shot_accuracy`, `key_pass_per_90`, `xa_per_90`, `accurate_cross_per_90`
 
-### Sources de secours (fallback uniquement)
+Les **agrégats saison** (`bzz_player_season_stats`) incluent les données de forme des 5 derniers matchs (`form_xg_5`, `form_assists_5`), utilisées dans le blend 60/40 du modèle top-down.
 
-Understat et Sofascore sont désormais relégués au rang de **sources de secours** — ils ne sont plus utilisés dans le pipeline principal. Ils peuvent être réactivés manuellement si l'API Bzzoiro est indisponible.
+---
 
-| Source | Données | Statut |
-|--------|---------|--------|
-| Understat | npxG, xA, xGChain — données historiques | Fallback uniquement |
-| Sofascore | SOT, rating, passes clés — bloqué sur VPS (Cloudflare 403) | Fallback uniquement |
-| FotMob | Fixtures, match events, lineups | Backfill initial uniquement |
+## Cotes de marché — solveur Poisson (xG équipe)
 
-### Matchs et événements
+Les cotes H2H (1×2), Over/Under 2.5 et BTTS sont collectées pour alimenter le solveur qui calcule `λ_home` et `λ_away`. La chaîne de priorité est :
 
-- **Fixtures** : FotMob API → table `fixtures` (backfill initial) + Bzzoiro `bzz_events` (sync continue)
-- **Kickoffs** : The Odds API `/v4/sports/{sport_key}/events` → mise à jour quotidienne de `kickoff_utc` via `job_sync_fixtures` (06:00 UTC). Couvre les 6 ligues (Big 5 + Ligue des Champions).
-- **Match events** (buts, passes décisives) : Bzzoiro `bzz_player_match_stats` → table `match_events` (via ingestion)
+**OddsPortal** (Playwright) → **Betclic** (HTTP) → **Unibet** (HTTP)
 
-### Cotes de marché (solveur Poisson)
+Ces cotes sont stockées dans `match_odds_snapshots`. Un snapshot est valide pendant **4 heures**.
 
-OddsPortal est la source primaire pour le solveur Poisson (MarketXgService). La chaîne de fallback est : OddsPortal → Betclic → Unibet. Ces cotes alimentent `oddsportal_poll_state` et `match_odds_snapshots`, distinctes des OddsSnapshot bookmakers ci-dessus.
+**Découverte automatique des URLs (`job_discover_oddsportal_urls`)** — tourne chaque jour à 08:00 UTC :
+1. Scrape les pages listing OddsPortal pour les 5 ligues (Big 5) + Champions League via Playwright
+2. Mappe chaque match vers une fixture DB (fenêtre ±30 min, fuzzy matching + alias équipe)
+3. Met à jour `oddsportal_poll_state` pour que le scraper puisse collecter les cotes
 
-**Seeding automatique (`job_discover_oddsportal_urls`)** — tourne chaque jour à 08:00 UTC :
-1. Scrape les pages listing OddsPortal pour les 6 ligues (Big 5 + Ligue des Champions) via Playwright
-2. Mappe chaque match découvert vers une fixture DB (fenêtre ±30min, fuzzy matching + alias DB)
-3. Upsert dans `oddsportal_poll_state` pour que le `MarketScrapeScheduler` puisse scraper les cotes
+**Cadence de scrape** adaptative selon le temps avant le match :
+- > 24h → toutes les 120 min
+- 6–24h → toutes les 60 min
+- 2–6h → toutes les 20 min
+- < 2h → toutes les 7 min
+- < 30 min → stop (la cote ne bouge plus)
 
-**Apprentissage des alias** : à chaque match confirmé, le nom OddsPortal non encore connu est ajouté à `canonical_teams.aliases` pour accélérer les run suivants.
+---
 
-## Limitations du scraping
+## Cotes joueurs — buteur / passeur
 
-- **Unibet LVS** : API non documentée, node IDs des compétitions peuvent changer si Unibet restructure son catalogue
-- **Betclic gRPC** : API non documentée, susceptible de casser si Betclic change son protocole
-- **Parions Sport** : retourne parfois 404 (protection anti-bot connue)
-- **Bzzoiro** : données disponibles uniquement après la première exécution des jobs de sync (voir `05-limitations.md`)
-- **Compositions** : non disponibles avant ~1h du match → incertitude sur les minutes attendues
+Les cotes anytime goalscorer et anytime assist sont scrappées directement :
+
+| Bookmaker | Méthode |
+|-----------|---------|
+| Unibet | API LVS HTTP (plateforme post-fusion PSEL, mars 2026) |
+| Betclic | HTTP scraping |
+
+Ces cotes sont stockées dans `player_odds_snapshots`. Le worker (`job_snapshot_direct_odds`) tourne toutes les 2 heures. Pour chaque paire (joueur, marché), seule la meilleure cote disponible est retenue lors du calcul des recommandations.
+
+---
+
+## Fixtures et événements de match
+
+- **Fixtures** : FotMob API (backfill initial) + The Odds API (`job_sync_fixtures`, 06:00 UTC)
+- **Match events** (buts, passes décisives) : importés manuellement depuis Sofascore via script one-off (Sofascore est bloqué sur le VPS par Cloudflare). Les events sont stockés dans `match_events` et utilisés pour le settlement automatique.
+
+---
 
 ## Données non scrappées (calcul interne)
 
-- Probabilités fair : modèle Poisson interne
+- Probabilités fair : modèle top-down Poisson interne
 - Kelly fractions : calcul algébrique pur
 - Backtest rewards : simulation sur données historiques
