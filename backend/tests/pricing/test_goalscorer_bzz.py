@@ -167,7 +167,7 @@ class TestLoadTeamPlayersBasic:
         assert p1["xg_per_90"] == 0.50
         assert p1["shot_accuracy"] == 0.55
         assert p1["xg_per_shot"] == 0.18
-        assert abs(p1["rating"] - 0.82) < 1e-6  # 8.2 / 10
+        assert abs(p1["avg_rating"] - 8.2) < 1e-6  # brut (0-10)
         assert p1["key_pass_per_90"] == 1.2
         assert p1["xa_per_90"] == 0.20
         assert p1["accurate_cross_per_90"] == 0.1
@@ -177,7 +177,7 @@ class TestLoadTeamPlayersBasic:
         # Check player 2 fields
         p2 = next(p for p in result if p["name"] == "Ousmane Dembélé")
         assert p2["minutes_played"] == 720
-        assert abs(p2["rating"] - 0.75) < 1e-6  # 7.5 / 10
+        assert abs(p2["avg_rating"] - 7.5) < 1e-6  # brut (0-10)
         assert p2["xa_per_90"] == 0.25
         assert abs(p2["finishing_delta"] - 0.4) < 1e-6  # goals(2) - xG(1.6)
 

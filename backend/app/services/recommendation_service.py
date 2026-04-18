@@ -5,7 +5,6 @@ actionable betting recommendations.
 """
 
 import logging
-import math
 import uuid
 from datetime import datetime
 from typing import Any
@@ -14,25 +13,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.odds import normalize_selection_name
-from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat, BzzTeam
-from app.pricing.assist import (
-    ASSIST_GOAL_RATE,
-    calculate_creation_multiplier_v2,
-    calculate_xa_conversion,
-    calculate_assist_lambda,
-)
-from app.pricing.goalscorer import (
-    calculate_edge,
-    calculate_finishing_multiplier,
-    calculate_conversion_rate,
-    calculate_goalscorer_lambda,
-)
-from app.services.market_xg import MarketXgService
+from app.pricing.goalscorer import calculate_edge
+from app.pricing.team_xg import load_match_pricing
 from app.strategy.selector import RecommendationFilter, select_bets
 
 logger = logging.getLogger(__name__)
 
 # Position-based xG/xA defaults for players with stats in DB but missing per-90 values
+# Kept for backward compat: imported by simulator.py and generate_synthetic_odds.py
 POSITION_DEFAULTS: dict[str, dict[str, float]] = {
     "FW": {"xg_per_90": 0.35, "xa_per_90": 0.15},
     "MF": {"xg_per_90": 0.10, "xa_per_90": 0.12},
@@ -44,87 +32,12 @@ DEFAULT_POSITION_FALLBACK = {"xg_per_90": 0.10, "xa_per_90": 0.08}  # Unknown po
 # Bzzoiro single-char position → canonical FW/MF/DF/GK
 _BZZ_POSITION_MAP: dict[str, str] = {"G": "GK", "D": "DF", "M": "MF", "F": "FW"}
 
-# Fixture league slug → bzz_leagues.api_id
-FIXTURE_LEAGUE_TO_BZZ_ID: dict[str, int] = {
-    "ligue_1": 34,
-    "premier_league": 17,
-    "bundesliga": 35,
-    "la_liga": 8,
-    "serie_a": 23,
-    "champions_league": 7,
-}
-
-CURRENT_SEASON = "2025-2026"
-
-
-def _blend_rate(season_rate: float, form_value: float | None, avg_mins: float) -> float:
-    """Blend season per-90 rate with last-5-match form (60% season, 40% form).
-
-    form_value is cumulative over 5 matches (e.g. form_xg_5 or form_assists_5).
-    Returns season_rate unchanged if form_value is None or avg_mins is 0.
-    """
-    if form_value is None or avg_mins <= 0:
-        return season_rate
-    form_rate = form_value / (5.0 * avg_mins / 90.0)
-    return 0.60 * season_rate + 0.40 * form_rate
-
-
-def _compute_team_denominators(
-    player_stats: dict[str, dict],
-    home_team: str,
-    away_team: str,
-    lambda_home: float,
-    lambda_away: float,
-) -> dict[str, dict[str, float]]:
-    """Compute top-down share denominators for both teams in a fixture.
-
-    For each team: denominator = max(sum of player weights in DB, λ_team).
-    This ensures share_i = weight_i / denom ≤ 1 even when DB covers < 100% of squad.
-
-    Returns: {team_name: {"goal_denom": float, "assist_denom": float}}
-    """
-    team_goal_weights: dict[str, list[float]] = {home_team: [], away_team: []}
-    team_assist_weights: dict[str, list[float]] = {home_team: [], away_team: []}
-
-    for stats in player_stats.values():
-        team = stats.get("team")
-        if team not in team_goal_weights:
-            continue
-        avg_mins = stats.get("avg_minutes_per_match") or stats.get("expected_minutes") or 75.0
-        mins_ratio = (stats.get("expected_minutes") or 75.0) / 90.0
-
-        blended_xg = _blend_rate(
-            stats.get("xg_per_90") or 0.0,
-            stats.get("form_xg_5"),
-            avg_mins,
-        )
-        blended_xa = _blend_rate(
-            stats.get("xa_per_90") or 0.0,
-            stats.get("form_assists_5"),
-            avg_mins,
-        )
-        team_goal_weights[team].append(blended_xg * mins_ratio)
-        team_assist_weights[team].append(blended_xa * mins_ratio)
-
-    def denom(weights: list[float], lambda_ref: float, rate: float = 1.0) -> float:
-        return max(sum(weights), lambda_ref * rate)
-
-    return {
-        home_team: {
-            "goal_denom":   denom(team_goal_weights[home_team],   lambda_home),
-            "assist_denom": denom(team_assist_weights[home_team], lambda_home, ASSIST_GOAL_RATE),
-        },
-        away_team: {
-            "goal_denom":   denom(team_goal_weights[away_team],   lambda_away),
-            "assist_denom": denom(team_assist_weights[away_team], lambda_away, ASSIST_GOAL_RATE),
-        },
-    }
-
 
 def _normalize_position(raw_position: str | None) -> str | None:
     """Map various position formats to canonical FW/MF/DF/GK.
 
     Handles Bzzoiro single-char (G/D/M/F) and legacy multi-char formats.
+    Kept for backward compat: imported by simulator.py and generate_synthetic_odds.py.
     """
     if not raw_position:
         return None
@@ -149,30 +62,24 @@ def _normalize_position(raw_position: str | None) -> str | None:
 
 async def generate_recommendations(
     fixtures: list[dict[str, Any]],
-    player_stats: dict[str, dict[str, Any]],  # player_name -> stats
-    odds_data: dict[str, list[dict[str, Any]]],  # fixture_id -> odds list
+    odds_data: dict[str, list[dict[str, Any]]],
+    db: AsyncSession,
+    db_fixtures: list,           # objets Fixture ORM
     filter_config: RecommendationFilter | None = None,
-    team_strengths: dict[str, dict[str, float]] | None = None,  # team -> strengths (unused, kept for compat)
-    team_ev0_stats: dict[str, Any] | None = None,  # Top-Down data (unused, kept for compat)
-    fixture_xg: dict[str, tuple[float, float, str]] | None = None,  # ext_id -> (xg_home, xg_away, xg_source)
-    pen_takers: dict[str, tuple[int | None, int | None]] | None = None,  # ext_id -> (home_id, away_id)
+    pen_takers: dict[str, tuple[int | None, int | None]] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate betting recommendations for upcoming fixtures.
 
-    fixture_xg maps external fixture id → (xg_home, xg_away, xg_source) from MarketXgService.
-    Fixtures without an entry in fixture_xg are skipped (no market data).
+    Delegates all pricing to load_match_pricing (top-down engine).
+    Fixtures without market xG data are skipped.
     """
     all_recommendations = []
     _matched = 0
     _unmatched = 0
     _skipped_position = 0
-    _unmatched_names: list[str] = []
 
-    # Build normalized index for player matching
-    normalized_index: dict[str, dict] = {}
-    for name, s in player_stats.items():
-        norm_key = normalize_selection_name(name)
-        normalized_index[norm_key] = s
+    # Index ORM objects par external_id
+    fixture_orm_map = {str(f.external_id): f for f in db_fixtures}
 
     for fixture in fixtures:
         fixture_id = str(fixture.get("fixture_id") or fixture.get("id") or "")
@@ -181,23 +88,34 @@ async def generate_recommendations(
         kickoff = fixture.get("kickoff_utc")
         league = fixture.get("league")
 
-        # Market-implied xG from MarketXgService (pre-computed per fixture)
-        if fixture_xg is None or fixture_id not in fixture_xg:
-            logger.warning(
-                "rec_service: no market xG for fixture %s — skipping (no market data)",
-                fixture_id,
-            )
+        fixture_orm = fixture_orm_map.get(fixture_id)
+        if not fixture_orm:
             continue
-        home_match_xg, away_match_xg, xg_source = fixture_xg[fixture_id]
+
+        # Pen taker overrides
+        pen_home_id, pen_away_id = (pen_takers or {}).get(fixture_id, (None, None))
+
+        # Get pricing from the single top-down engine
+        pricing = await load_match_pricing(
+            db, fixture_orm,
+            home_pen_taker_override=pen_home_id,
+            away_pen_taker_override=pen_away_id,
+        )
+        if pricing is None:
+            logger.warning("rec_service: no market xG for fixture %s — skipping", fixture_id)
+            continue
+
+        xg_source = pricing.xg_source
+        home_match_xg = pricing.home_match_xg
+        away_match_xg = pricing.away_match_xg
+
+        # Build player allocation lookup (normalized name → allocation)
+        alloc_by_norm: dict[str, Any] = {}
+        for alloc in pricing.home_players + pricing.away_players:
+            norm_key = normalize_selection_name(alloc.player_name)
+            alloc_by_norm[norm_key] = alloc
 
         fixture_odds = odds_data.get(fixture_id, [])
-
-        # Pre-compute top-down share denominators for this fixture
-        team_denoms = _compute_team_denominators(
-            player_stats, home_team, away_team,
-            home_match_xg, away_match_xg,
-        )
-
         for odds_entry in fixture_odds:
             player_name = odds_entry.get("player_name")
             market_type = odds_entry.get("market_type", "goalscorer")
@@ -207,83 +125,37 @@ async def generate_recommendations(
             if not player_name or market_odds <= 1:
                 continue
 
-            stats = _find_player_stats(player_name, player_stats, normalized_index)
-            if not stats:
+            norm_key = normalize_selection_name(player_name)
+            alloc = alloc_by_norm.get(norm_key)
+            if not alloc:
                 _unmatched += 1
-                if len(_unmatched_names) < 20:
-                    _unmatched_names.append(player_name)
                 continue
 
-            position = stats.get("position")
-            if position == "GK":
+            if alloc.position == "GK":
                 _skipped_position += 1
                 continue
 
             _matched += 1
-            team = stats.get("team") or _infer_team(player_name, home_team, away_team)
 
-            # Skip players with no real scoring data to avoid false VALUE signals
-            npxg_total = stats.get("npxg_total", 0.0) or 0.0
-            xa_total = stats.get("xa_total", 0.0) or 0.0
-            _xg_per_90 = stats.get("xg_per_90") or 0.0
-            _xa_per_90 = stats.get("xa_per_90") or 0.0
-            if market_type == "goalscorer" and npxg_total <= 0.01 and _xg_per_90 <= 0.005:
-                _unmatched += 1
-                continue
-            if market_type == "assist" and xa_total <= 0.01 and _xa_per_90 <= 0.005:
-                _unmatched += 1
-                continue
-
-            # Pen taker flag: check persisted override for this fixture
-            player_api_id = stats.get("player_api_id")
-            pen_home_id, pen_away_id = (pen_takers or {}).get(fixture_id, (None, None))
-            is_pen_taker = player_api_id is not None and player_api_id in {pen_home_id, pen_away_id}
-
-            expected_minutes = stats.get("expected_minutes", 75.0)
-            mins_ratio = expected_minutes / 90.0
-
-            team_lambda = home_match_xg if team == home_team else away_match_xg
-            denom_info = team_denoms.get(team, {})
-            avg_mins = stats.get("avg_minutes_per_match") or expected_minutes
-
+            # Get fair odds from allocation
             if market_type == "goalscorer":
-                blended_xg = _blend_rate(_xg_per_90, stats.get("form_xg_5"), avg_mins)
-                weight_i = blended_xg * mins_ratio
-                goal_denom = denom_info.get("goal_denom") or team_lambda or 1.0
-                share_i = weight_i / goal_denom if goal_denom > 0 else 0.0
+                fair_odds = alloc.fair_odds_goal
+                probability = alloc.prob_goal
+                lambda_val = alloc.lambda_total
+                has_form = alloc.has_form_goal
+            else:
+                fair_odds = alloc.fair_odds_assist
+                probability = alloc.prob_assist
+                lambda_val = alloc.lambda_assist
+                has_form = alloc.has_form_assist
 
-                finishing_mult = calculate_finishing_multiplier(stats, position)
-                conversion = calculate_conversion_rate(stats)
-                lambda_val = calculate_goalscorer_lambda(
-                    share_i, team_lambda, finishing_mult, conversion, mins_ratio, is_pen_taker,
-                )
-            else:  # assist
-                blended_xa = _blend_rate(_xa_per_90, stats.get("form_assists_5"), avg_mins)
-                weight_xa = blended_xa * mins_ratio
-                budget_assists = team_lambda * ASSIST_GOAL_RATE
-                assist_denom = denom_info.get("assist_denom") or budget_assists or 1.0
-                share_xa = weight_xa / assist_denom if assist_denom > 0 else 0.0
-
-                creation_mult = calculate_creation_multiplier_v2(stats, position)
-                xa_conv = calculate_xa_conversion(stats)
-                lambda_val = calculate_assist_lambda(share_xa, budget_assists, creation_mult, xa_conv)
-
-            probability = 1 - math.exp(-lambda_val)
-            fair_odds = round(1 / probability if probability > 0 else 9999.0, 2)
-
-            # Calculate edge
             edge = calculate_edge(fair_odds, market_odds)
 
-            # Confidence based on data quality
-            matches = stats.get("matches_played", 0) or 0
-            form_key = "form_xg_5" if market_type == "goalscorer" else "form_assists_5"
-            rate_key = "xg_per_90" if market_type == "goalscorer" else "xa_per_90"
-            has_form = stats.get(form_key) is not None
-            has_real = stats.get(rate_key) is not None
-
-            if matches >= 10 and has_form and has_real:
+            # Confidence
+            matches = alloc.matches_played
+            if matches >= 10 and has_form:
                 confidence = 0.85
-            elif matches >= 5 and has_real:
+            elif matches >= 5:
                 confidence = 0.70
             elif matches >= 3:
                 confidence = 0.55
@@ -299,13 +171,15 @@ async def generate_recommendations(
             else:
                 classification = "AVOID"
 
+            team_lambda = home_match_xg if alloc.team == home_team else away_match_xg
+
             recommendation = {
                 "fixture_id": fixture_id,
                 "fixture_name": f"{home_team} vs {away_team}",
                 "kickoff_utc": kickoff,
                 "league": league,
                 "player_name": player_name,
-                "team": team,
+                "team": alloc.team,
                 "market_type": market_type,
                 "fair_probability": round(probability, 4),
                 "fair_odds": fair_odds,
@@ -316,84 +190,26 @@ async def generate_recommendations(
                 "classification": classification,
                 "confidence": confidence,
                 "xg_source": xg_source,
-                "is_pen_taker": is_pen_taker,
+                "is_pen_taker": alloc.is_pen_taker,
                 "explanation": {
                     "model": "top_down_v2",
                     "xg_source": xg_source,
                     "team_lambda": round(team_lambda, 3),
-                    "expected_minutes": expected_minutes,
+                    "expected_minutes": alloc.expected_minutes,
                     "lambda": round(lambda_val, 4),
-                    "is_pen_taker": is_pen_taker,
+                    "is_pen_taker": alloc.is_pen_taker,
                     "market_type": market_type,
                 },
             }
-
             all_recommendations.append(recommendation)
 
     logger.info(
         "Player matching: %d matched, %d unmatched, %d skipped (GK)",
-        _matched,
-        _unmatched,
-        _skipped_position,
+        _matched, _unmatched, _skipped_position,
     )
-    if _unmatched_names:
-        logger.debug("Unmatched players (sample): %s", _unmatched_names[:10])
 
-    # Apply strategy selection
     selection = select_bets(all_recommendations, filter_config)
-
     return selection.selected
-
-
-def _find_player_stats(
-    player_name: str,
-    stats_dict: dict[str, dict],
-    normalized_index: dict[str, dict] | None = None,
-) -> dict[str, Any] | None:
-    """Find player stats by name with normalized matching."""
-    # Direct match
-    if player_name in stats_dict:
-        return stats_dict[player_name]
-
-    # Normalized match using normalize_selection_name (handles accents, punctuation, etc.)
-    if normalized_index:
-        norm_key = normalize_selection_name(player_name)
-        if norm_key in normalized_index:
-            return normalized_index[norm_key]
-
-    # Fallback: basic normalized match
-    normalized = player_name.lower().replace(" ", "-")
-    for key, stats in stats_dict.items():
-        if key.lower().replace(" ", "-") == normalized:
-            return stats
-
-    # Partial match (last name)
-    parts = player_name.split()
-    if parts:
-        last_name = parts[-1].lower()
-        for key, stats in stats_dict.items():
-            if last_name in key.lower():
-                return stats
-
-    return None
-
-
-def _infer_team(
-    player_name: str,
-    home_team: str,
-    away_team: str,
-    player_stats: dict[str, dict[str, Any]] | None = None,
-) -> str:
-    """Try to infer player's team.
-
-    Checks the player_stats dict first (which has team from DB).
-    Falls back to home_team as a last resort.
-    """
-    if player_stats:
-        stats = _find_player_stats(player_name, player_stats)
-        if stats and stats.get("team"):
-            return stats["team"]
-    return home_team
 
 
 def _get_opponent_factor(
@@ -497,98 +313,7 @@ async def get_recommendations_for_date(
             "stage": "no_fixtures_for_date",
         }
 
-    # 2. Load player stats from Bzzoiro (current season, filtered to fixture leagues)
-    fixture_leagues = list({f.league for f in db_fixtures if f.league})
-    bzz_league_ids = [
-        FIXTURE_LEAGUE_TO_BZZ_ID[lg]
-        for lg in fixture_leagues
-        if lg in FIXTURE_LEAGUE_TO_BZZ_ID
-    ]
-
-    player_stats: dict[str, dict[str, Any]] = {}
-
-    if bzz_league_ids:
-        result = await db.execute(
-            select(
-                BzzPlayerSeasonStat,
-                BzzPlayer.name,
-                BzzPlayer.position,
-                BzzTeam.name.label("team_name"),
-            )
-            .join(BzzPlayer, BzzPlayer.api_id == BzzPlayerSeasonStat.player_api_id)
-            .join(BzzTeam, BzzTeam.api_id == BzzPlayer.current_team_api_id, isouter=True)
-            .where(BzzPlayerSeasonStat.league_api_id.in_(bzz_league_ids))
-            .where(BzzPlayerSeasonStat.season == CURRENT_SEASON)
-        )
-
-        for row in result.all():
-            stats: BzzPlayerSeasonStat = row[0]
-            player_name: str = row[1]
-            raw_position: str | None = row[2]
-            team_name: str | None = row[3]
-            position = _normalize_position(raw_position)
-
-            # Skip GKs at data loading stage
-            if position == "GK":
-                continue
-
-            matches = stats.matches_played or 1
-            minutes = stats.minutes_played or 0
-            # Use pre-computed avg_minutes_per_match if available, else derive
-            expected_minutes = stats.avg_minutes_per_match or (minutes / matches if matches > 0 else 75.0)
-
-            # Conversion rate: goals / xG, clamped [0.5, 2.0], require >= 3 matches
-            xg_total = stats.expected_goals or 0.0
-            goals_total = stats.goals or 0
-            raw_cr = (goals_total / xg_total) if xg_total > 0 else 1.0
-            conversion_rate = (
-                max(0.5, min(2.0, raw_cr)) if (stats.matches_played or 0) >= 3 else 1.0
-            )
-
-            # Per-90 values — fall back to position defaults if missing
-            pos_defaults = (
-                POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK)
-                if position
-                else DEFAULT_POSITION_FALLBACK
-            )
-            xg_per_90 = (
-                stats.xg_per_90 if stats.xg_per_90 is not None else pos_defaults["xg_per_90"]
-            )
-            xa_per_90 = (
-                stats.xa_per_90 if stats.xa_per_90 is not None else pos_defaults["xa_per_90"]
-            )
-
-            entry = {
-                "player_api_id":          stats.player_api_id,
-                "xg_per_90":              xg_per_90,
-                "xa_per_90":              xa_per_90,
-                "npxg_total":             xg_total,
-                "xa_total":               stats.expected_assists or 0.0,
-                "expected_minutes":       expected_minutes,
-                "avg_minutes_per_match":  stats.avg_minutes_per_match or expected_minutes,
-                "conversion_rate":        conversion_rate,
-                "team":                   team_name,
-                "position":               position,
-                "goals":                  goals_total,
-                "assists":                stats.goal_assist or 0,
-                "matches_played":         stats.matches_played or 0,
-                # Bzzoiro enriched fields (top-down model)
-                "form_xg_5":              stats.form_xg_5,
-                "form_assists_5":         stats.form_assists_5,
-                "shot_accuracy":          stats.shot_accuracy,
-                "xg_per_shot":            stats.xg_per_shot,
-                "avg_rating":             stats.avg_rating,
-                "key_pass_per_90":        stats.key_pass_per_90,
-                "accurate_cross_per_90":  stats.accurate_cross_per_90,
-                "cross_accuracy":         stats.cross_accuracy,
-            }
-
-            # If same player appears for multiple fixture leagues, keep the richer entry
-            existing = player_stats.get(player_name)
-            if existing is None or (matches > (existing.get("matches_played") or 0)):
-                player_stats[player_name] = entry
-
-    # 3. Load pen taker overrides from app_config
+    # 2. Load pen taker overrides from app_config
     from app.models.app_config import AppConfig
     pen_takers_by_fixture: dict[str, tuple[int | None, int | None]] = {}
     if db_fixtures:
@@ -609,38 +334,23 @@ async def get_recommendations_for_date(
             except Exception:
                 pass
 
-    # 4. Compute market-implied xG per fixture via MarketXgService
-    _market_xg_svc = MarketXgService()
-    fixture_xg: dict[str, tuple[float, float, str]] = {}
-    for f in db_fixtures:
-        market_xg = await _market_xg_svc.compute(f.id, db)
-        if market_xg is None:
-            logger.warning(
-                "rec_service: no market xG for fixture %s (%s vs %s) — will skip",
-                f.id,
-                f.home_team,
-                f.away_team,
-            )
-            continue
-        fixture_xg[f.external_id] = (market_xg.xg_home, market_xg.xg_away, market_xg.data_source)
-
-    # 5. Generate recommendations
+    # 3. Generate recommendations (pricing delegated to load_match_pricing per fixture)
     recs = await generate_recommendations(
         fixtures,
-        player_stats,
         odds_data,
-        filter_config,
-        fixture_xg=fixture_xg,
+        db=db,
+        db_fixtures=db_fixtures,
+        filter_config=filter_config,
         pen_takers=pen_takers_by_fixture,
     )
 
-    # 6. Add unique IDs
+    # 4. Add unique IDs
     for rec in recs:
         rec["id"] = str(uuid.uuid4())
 
     metadata = {
         "fixtures_count": len(fixtures),
-        "player_stats_count": len(player_stats),
+        "player_stats_count": 0,  # now computed inside load_match_pricing per fixture
         "total_odds_entries": sum(len(v) for v in odds_data.values()),
         "recommendations_count": len(recs),
     }
