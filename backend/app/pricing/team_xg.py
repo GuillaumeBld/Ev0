@@ -2,16 +2,14 @@
 
 Three-stage pipeline (unchanged structure, updated player allocation):
   Stage 1 — Team Match xG : attack_strength × defense_weakness × home_factor × league_avg
-  Stage 2 — Player Shares : npxg_share / xa_share with Bayesian shrinkage
-  Stage 3 — Player Pricing: Model C quality/creation multipliers applied per player
+  Stage 2 — Player Shares : form-blended top-down shares (npxg_share / xa_share)
+  Stage 3 — Player Pricing: finishing_multiplier + creation_multiplier_v2 applied per player
 
 Changes from original (FBref → Understat + Sofascore):
-  - Goalscorer λ now applies quality_multiplier (SOT + TAP + xGChain) from Model C
-  - Assist λ now applies creation_multiplier (BCC + xGChain + Crosses + TB) from Model C
+  - Goalscorer λ now applies calculate_finishing_multiplier (position-normalized)
+  - Assist λ now applies calculate_creation_multiplier_v2 (profile+position)
+  - compute_player_shares uses form-blend (60% season + 40% form) top-down approach
   - _load_team_players now reads from bzz_player_season_stats (joined to bzz_players)
-  - Bzzoiro quality formula: shot_accuracy × 0.35 + xg_per_shot × 0.35 + rating × 0.30
-  - Bzzoiro creation formula: key_pass_per_90 × 0.40 + xa_per_90 × 0.40 + accurate_cross_per_90 × 0.20
-  - conversion_rate computed from expected_goals (bzzoiro) (unchanged logic)
 """
 
 from __future__ import annotations
@@ -23,8 +21,17 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.pricing.assist import calculate_creation_multiplier, calculate_creation_multiplier_bzz
-from app.pricing.goalscorer import calculate_quality_multiplier, calculate_quality_multiplier_bzz
+from app.pricing.assist import (
+    ASSIST_GOAL_RATE,
+    calculate_assist_lambda,
+    calculate_creation_multiplier_v2,
+    calculate_xa_conversion,
+)
+from app.pricing.goalscorer import (
+    calculate_conversion_rate,
+    calculate_finishing_multiplier,
+    calculate_goalscorer_lambda,
+)
 from app.services.market_xg import MarketXgResult, MarketXgService
 
 # ── Constants ─────────────────────────────────────────────────────
@@ -117,10 +124,16 @@ class PlayerShare:
     # Bzzoiro-specific stats (from bzz_player_season_stats)
     shot_accuracy: float = 0.0
     xg_per_shot: float = 0.0
-    rating: float = 0.0          # avg_rating normalized to 0-1
+    avg_rating: float = 0.0          # brut (0-10)
     key_pass_per_90: float = 0.0
     accurate_cross_per_90: float = 0.0
-    form_xg_5: float = 0.0
+    cross_accuracy: float = 0.0
+    npxg_total: float = 0.0
+    goals_total: int = 0
+    xa_total: float = 0.0
+    assists_total: int = 0
+    form_xg_5: float | None = None
+    form_assists_5: float | None = None
     finishing_delta: float = 0.0
     has_bzz_stats: bool = False  # True when loaded from bzz_player_season_stats
 
@@ -147,6 +160,9 @@ class PlayerAllocation:
     lambda_assist: float
     prob_assist: float
     fair_odds_assist: float
+    matches_played: int = 0
+    has_form_goal: bool = False
+    has_form_assist: bool = False
 
 
 @dataclass
@@ -255,65 +271,86 @@ def estimate_team_match_xg(
 def compute_player_shares(
     players: list[dict[str, Any]],
     team: str,
+    lambda_team: float,
 ) -> list[PlayerShare]:
-    """Compute npxG/xA shares with Bayesian shrinkage + attach Model C per-90 stats."""
-    team_npxg = sum(p.get("npxg", 0.0) or 0.0 for p in players) or 1e-9
-    team_xa = sum(p.get("xa", 0.0) or 0.0 for p in players) or 1e-9
-
-    shares = []
+    """Compute top-down shares via form-blended rates. denominator = max(sum weights, λ_team)."""
+    # Pass 1 — compute blended weights per player
+    entries = []
     for p in players:
+        matches = p.get("matches_played", 0) or 0
+        mins = p.get("minutes_played", 0) or 0
+        avg_mins = p.get("avg_minutes_per_match") or ((mins / matches) if matches > 0 else 75.0)
+        exp_mins = min(90.0, max(1.0, avg_mins))
+        mins_ratio = exp_mins / 90.0
+
+        # Goal weight — blend season xg_per_90 + form_xg_5
+        xg_per_90 = p.get("npxg_per_90") or p.get("xg_per_90") or 0.0
+        form_xg = p.get("form_xg_5")
+        if form_xg is not None and avg_mins > 0:
+            form_rate = form_xg / (5.0 * avg_mins / 90.0)
+            blended_xg = 0.60 * xg_per_90 + 0.40 * form_rate
+        else:
+            blended_xg = xg_per_90
+        goal_weight = blended_xg * mins_ratio
+
+        # Assist weight — blend season xa_per_90 + form_assists_5
+        xa_per_90 = p.get("xa_per_90") or 0.0
+        form_xa = p.get("form_assists_5")
+        if form_xa is not None and avg_mins > 0:
+            form_xa_rate = form_xa / (5.0 * avg_mins / 90.0)
+            blended_xa = 0.60 * xa_per_90 + 0.40 * form_xa_rate
+        else:
+            blended_xa = xa_per_90
+        assist_weight = blended_xa * mins_ratio
+
+        entries.append((p, exp_mins, goal_weight, assist_weight))
+
+    # Pass 2 — denominators
+    total_goal = sum(e[2] for e in entries)
+    total_assist = sum(e[3] for e in entries)
+    budget_assists = lambda_team * ASSIST_GOAL_RATE
+    goal_denom = max(total_goal, lambda_team) or 1e-9
+    assist_denom = max(total_assist, budget_assists) or 1e-9
+
+    # Pass 3 — build PlayerShare objects
+    shares = []
+    for p, exp_mins, goal_weight, assist_weight in entries:
         pos = p.get("position")
         matches = p.get("matches_played", 0) or 0
-        shrink = min(matches / SHRINKAGE_N, 1.0)
-
-        npxg_prior = POSITION_NPXG_PRIORS.get(pos or "MF", 0.08)
-        xa_prior = POSITION_XA_PRIORS.get(pos or "MF", 0.10)
-
-        npxg_share = (
-            shrink * ((p.get("npxg", 0.0) or 0.0) / team_npxg)
-            + (1 - shrink) * npxg_prior
-        )
-        xa_share = (
-            shrink * ((p.get("xa", 0.0) or 0.0) / team_xa)
-            + (1 - shrink) * xa_prior
-        )
-
-        mins = p.get("minutes_played", 0) or 0
-        exp_mins = max(0.0, min(90.0, (mins / matches) if matches > 0 else 75.0))
-
-        # Conversion rate: actual goals / npxG over season, clamped [0.5, 2.0]
-        npxg = p.get("npxg", 0.0) or 0.0
-        goals = p.get("goals", 0) or 0
-        conversion_rate = max(0.5, min(2.0, goals / npxg)) if npxg > 0 else 1.0
+        npxg_total = p.get("npxg_total") or p.get("npxg") or 0.0
+        goals_total = p.get("goals_total") or p.get("goals") or 0
 
         shares.append(PlayerShare(
             player_id=p["player_id"],
             player_name=p["player_name"],
             team=team,
             position=pos,
-            npxg_share=npxg_share,
-            xa_share=xa_share,
+            npxg_share=goal_weight / goal_denom,
+            xa_share=assist_weight / assist_denom,
             expected_minutes=exp_mins,
             matches_played=matches,
-            # Understat per-90
-            npxg_per_90=p.get("npxg_per_90", 0.0) or 0.0,
-            xa_per_90=p.get("xa_per_90", 0.0) or 0.0,
-            xgchain_per_90=p.get("xgchain_per_90", 0.0) or 0.0,
-            conversion_rate=conversion_rate,
-            # Sofascore per-90
-            sot_per_90=p.get("shots_on_target_per_90", 0.0) or 0.0,
-            tap_per_90=p.get("touches_attack_pen_area_per_90", 0.0) or 0.0,
-            bcc_per_90=p.get("bcc_per_90", 0.0) or 0.0,
-            accurate_crosses_per_90=p.get("accurate_crosses_per_90", 0.0) or 0.0,
-            through_balls_per_90=p.get("through_balls_per_90", 0.0) or 0.0,
-            # Bzzoiro-specific stats
-            shot_accuracy=p.get("shot_accuracy", 0.0) or 0.0,
-            xg_per_shot=p.get("xg_per_shot", 0.0) or 0.0,
-            rating=p.get("rating", 0.0) or 0.0,
-            key_pass_per_90=p.get("key_pass_per_90", 0.0) or 0.0,
-            accurate_cross_per_90=p.get("accurate_cross_per_90", 0.0) or 0.0,
-            form_xg_5=p.get("form_xg_5", 0.0) or 0.0,
-            finishing_delta=p.get("finishing_delta", 0.0) or 0.0,
+            npxg_per_90=p.get("npxg_per_90") or p.get("xg_per_90") or 0.0,
+            xa_per_90=p.get("xa_per_90") or 0.0,
+            xgchain_per_90=p.get("xgchain_per_90") or 0.0,
+            conversion_rate=1.0,  # computed in allocate_player
+            sot_per_90=p.get("shots_on_target_per_90") or 0.0,
+            tap_per_90=p.get("touches_attack_pen_area_per_90") or 0.0,
+            bcc_per_90=p.get("bcc_per_90") or 0.0,
+            accurate_crosses_per_90=p.get("accurate_crosses_per_90") or 0.0,
+            through_balls_per_90=p.get("through_balls_per_90") or 0.0,
+            shot_accuracy=p.get("shot_accuracy") or 0.0,
+            xg_per_shot=p.get("xg_per_shot") or 0.0,
+            avg_rating=p.get("avg_rating") or 0.0,      # brut (0-10)
+            cross_accuracy=p.get("cross_accuracy") or 0.0,
+            npxg_total=npxg_total,
+            goals_total=goals_total,
+            xa_total=p.get("xa_total") or 0.0,
+            assists_total=p.get("assists_total") or 0,
+            key_pass_per_90=p.get("key_pass_per_90") or 0.0,
+            accurate_cross_per_90=p.get("accurate_cross_per_90") or 0.0,
+            form_xg_5=p.get("form_xg_5"),
+            form_assists_5=p.get("form_assists_5"),
+            finishing_delta=p.get("finishing_delta") or 0.0,
             has_bzz_stats=p.get("has_bzz_stats", False),
         ))
     return shares
@@ -337,74 +374,43 @@ def allocate_player(
     share: PlayerShare,
     team_match_xg: float,
     is_pen_taker: bool,
-    team_pen_ratio: float = PENS_PER_MATCH,
+    budget_assists: float,
     league_avg_goalscorer: dict[str, float] | None = None,
     league_avg_assist: dict[str, float] | None = None,
 ) -> PlayerAllocation:
-    """
-    Compute Poisson lambdas for one player using Model C.
-
-    Goalscorer:
-        λ_open = team_xG × (1−pen_ratio) × npxg_share × (mins/90)
-                × quality_multiplier(SOT, TAP, xGChain)
-                × conversion_rate
-
-    Assist:
-        λ_assist = team_xG × xa_share × (mins/90)
-                 × creation_multiplier(BCC, xGChain, Crosses, TB)
-    """
+    """Compute Poisson lambdas using new top-down formulas."""
     mins_ratio = share.expected_minutes / 90.0
 
     # ── Goalscorer ────────────────────────────────────────────────
-    if share.has_bzz_stats:
-        # Bzzoiro quality formula: shot_accuracy × 0.35 + xg_per_shot × 0.35 + rating × 0.30
-        raw_q = calculate_quality_multiplier_bzz({
-            "shot_accuracy": share.shot_accuracy,
-            "xg_per_shot": share.xg_per_shot,
-            "rating": share.rating,
-        })
-        q_mult = max(CLAMP_MULTIPLIER_MIN, min(raw_q, CLAMP_MULTIPLIER_MAX))
-    else:
-        q_mult, _ = calculate_quality_multiplier(
-            sot_per_90=share.sot_per_90,
-            touches_attack_pen_per_90=share.tap_per_90,
-            xgchain_per_90=share.xgchain_per_90,
-            league_averages=league_avg_goalscorer or LEAGUE_AVG_GOALSCORER,
-        )
-
-    lambda_open_play = (
-        team_match_xg
-        * (1 - team_pen_ratio)
-        * share.npxg_share
-        * mins_ratio
-        * q_mult
-        * share.conversion_rate
-    )
+    goal_stats = {
+        "shot_accuracy": share.shot_accuracy,
+        "xg_per_shot": share.xg_per_shot,
+        "avg_rating": share.avg_rating,        # brut (0-10)
+        "matches_played": share.matches_played,
+        "npxg_total": share.npxg_total,
+        "goals": share.goals_total,
+    }
+    finishing_mult = calculate_finishing_multiplier(goal_stats, share.position)
+    conversion = calculate_conversion_rate(goal_stats)
+    lambda_open_play = share.npxg_share * team_match_xg * finishing_mult * conversion
     lambda_penalty = PEN_CONVERSION * PENS_PER_MATCH * mins_ratio if is_pen_taker else 0.0
-    lambda_total = max(0.001, lambda_open_play + lambda_penalty)
+    lambda_total = max(0.001, min(lambda_open_play + lambda_penalty, 3.0))
     prob_goal = 1 - math.exp(-lambda_total)
     fair_odds_goal = round(1 / prob_goal, 2) if prob_goal > 0 else 9999.0
 
     # ── Assist ────────────────────────────────────────────────────
-    if share.has_bzz_stats:
-        # Bzzoiro creation formula: key_pass_per_90 × 0.40 + xa_per_90 × 0.40 + accurate_cross_per_90 × 0.20
-        raw_c = calculate_creation_multiplier_bzz({
-            "key_pass_per_90": share.key_pass_per_90,
-            "xa_per_90": share.xa_per_90,
-            "accurate_cross_per_90": share.accurate_cross_per_90,
-        })
-        c_mult = max(CLAMP_MULTIPLIER_MIN, min(raw_c, CLAMP_MULTIPLIER_MAX))
-    else:
-        c_mult, _ = calculate_creation_multiplier(
-            bcc_per_90=share.bcc_per_90,
-            xgchain_per_90=share.xgchain_per_90,
-            accurate_crosses_per_90=share.accurate_crosses_per_90,
-            through_balls_per_90=share.through_balls_per_90,
-            position=share.position,
-            league_averages=league_avg_assist or LEAGUE_AVG_ASSIST,
-        )
-
-    lambda_assist = max(0.001, team_match_xg * share.xa_share * mins_ratio * c_mult)
+    assist_stats = {
+        "xa_per_90": share.xa_per_90,
+        "key_pass_per_90": share.key_pass_per_90,
+        "accurate_cross_per_90": share.accurate_cross_per_90,
+        "cross_accuracy": share.cross_accuracy,
+        "matches_played": share.matches_played,
+        "xa_total": share.xa_total,
+        "assists": share.assists_total,
+    }
+    creation_mult = calculate_creation_multiplier_v2(assist_stats, share.position)
+    xa_conv = calculate_xa_conversion(assist_stats)
+    lambda_assist = calculate_assist_lambda(share.xa_share, budget_assists, creation_mult, xa_conv)
     prob_assist = 1 - math.exp(-lambda_assist)
     fair_odds_assist = round(1 / prob_assist, 2) if prob_assist > 0 else 9999.0
 
@@ -417,16 +423,19 @@ def allocate_player(
         is_pen_taker=is_pen_taker,
         npxg_share=round(share.npxg_share, 4),
         xa_share=round(share.xa_share, 4),
-        quality_multiplier=round(q_mult, 4),
+        quality_multiplier=round(finishing_mult, 4),
         lambda_open_play=round(lambda_open_play, 4),
         lambda_penalty=round(lambda_penalty, 4),
         lambda_total=round(lambda_total, 4),
         prob_goal=round(prob_goal, 4),
         fair_odds_goal=fair_odds_goal,
-        creation_multiplier=round(c_mult, 4),
+        creation_multiplier=round(creation_mult, 4),
         lambda_assist=round(lambda_assist, 4),
         prob_assist=round(prob_assist, 4),
         fair_odds_assist=fair_odds_assist,
+        matches_played=share.matches_played,
+        has_form_goal=share.form_xg_5 is not None,
+        has_form_assist=share.form_assists_5 is not None,
     )
 
 
@@ -545,10 +554,16 @@ async def _load_team_players(
             "xg_per_90": stat.xg_per_90 or 0.0,
             "shot_accuracy": stat.shot_accuracy or 0.0,
             "xg_per_shot": stat.xg_per_shot or 0.0,
-            "rating": (stat.avg_rating or 0.0) / 10.0,  # normalize to 0-1
+            "avg_rating":      stat.avg_rating or 0.0,          # brut (0-10)
+            "cross_accuracy":  stat.cross_accuracy or 0.0,
+            "xa_total":        stat.expected_assists or 0.0,
+            "assists_total":   stat.goal_assist or 0,
+            "form_assists_5":  stat.form_assists_5,              # peut être None
+            "npxg_total":      xg_total,
+            "goals_total":     goals_total,
             "key_pass_per_90": stat.key_pass_per_90 or 0.0,
             "accurate_cross_per_90": stat.accurate_cross_per_90 or 0.0,
-            "form_xg_5": stat.form_xg_5 or 0.0,
+            "form_xg_5": stat.form_xg_5 if stat.form_xg_5 else None,
             "finishing_delta": finishing_delta,
             # Sofascore fields — not available from bzz; default to 0
             "shots_on_target_per_90": stat.shots_on_target_per_90 or 0.0,
@@ -584,13 +599,14 @@ def compute_lineup_allocation(
     if len(starters) < 5:
         return []
 
-    shares = compute_player_shares(starters, team)
+    shares = compute_player_shares(starters, team, lambda_team=match_xg)
     pen_id = detect_penalty_taker(starters)
     for s in shares:
         s.is_pen_taker = s.player_id == pen_id
 
+    budget_assists = match_xg * ASSIST_GOAL_RATE
     return sorted(
-        [allocate_player(s, match_xg, s.is_pen_taker) for s in shares],
+        [allocate_player(s, match_xg, s.is_pen_taker, budget_assists) for s in shares],
         key=lambda a: a.prob_goal,
         reverse=True,
     )
@@ -637,8 +653,8 @@ async def load_match_pricing(
     home_players_db = await _load_team_players(db, home_team)
     away_players_db = await _load_team_players(db, away_team)
 
-    home_shares = compute_player_shares(home_players_db, home_team)
-    away_shares = compute_player_shares(away_players_db, away_team)
+    home_shares = compute_player_shares(home_players_db, home_team, lambda_team=home_match_xg)
+    away_shares = compute_player_shares(away_players_db, away_team, lambda_team=away_match_xg)
 
     home_pen_id = home_pen_taker_override or detect_penalty_taker(home_players_db)
     away_pen_id = away_pen_taker_override or detect_penalty_taker(away_players_db)
@@ -647,12 +663,15 @@ async def load_match_pricing(
     for s in away_shares:
         s.is_pen_taker = s.player_id == away_pen_id
 
+    budget_assists_home = home_match_xg * ASSIST_GOAL_RATE
+    budget_assists_away = away_match_xg * ASSIST_GOAL_RATE
+
     home_allocs = sorted(
-        [allocate_player(s, home_match_xg, s.is_pen_taker) for s in home_shares],
+        [allocate_player(s, home_match_xg, s.is_pen_taker, budget_assists_home) for s in home_shares],
         key=lambda a: a.prob_goal, reverse=True,
     )
     away_allocs = sorted(
-        [allocate_player(s, away_match_xg, s.is_pen_taker) for s in away_shares],
+        [allocate_player(s, away_match_xg, s.is_pen_taker, budget_assists_away) for s in away_shares],
         key=lambda a: a.prob_goal, reverse=True,
     )
 
