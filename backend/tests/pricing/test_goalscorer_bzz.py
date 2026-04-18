@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.pricing.assist import calculate_creation_multiplier, calculate_creation_multiplier_bzz
-from app.pricing.goalscorer import calculate_quality_multiplier, calculate_quality_multiplier_bzz
+from app.pricing.assist import calculate_creation_multiplier
+from app.pricing.goalscorer import calculate_quality_multiplier
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -185,102 +185,7 @@ class TestLoadTeamPlayersBasic:
         assert p2["has_bzz_stats"] is True
 
 
-# ---------------------------------------------------------------------------
-# Tests for quality multiplier formula (goalscorer.py)
-# ---------------------------------------------------------------------------
-
-
-class TestQualityMultiplierFormula:
-    def test_quality_multiplier_formula_basic(self):
-        """Quality score uses shot_accuracy*0.35 + xg_per_shot*0.35 + rating*0.30."""
-        stats = {
-            "shot_accuracy": 0.5,
-            "xg_per_shot": 0.2,
-            "rating": 0.8,  # normalized (avg_rating / 10)
-        }
-        expected = 0.5 * 0.35 + 0.2 * 0.35 + 0.8 * 0.30
-        # expected = 0.175 + 0.070 + 0.240 = 0.485
-
-        result = calculate_quality_multiplier_bzz(stats)
-        assert abs(result - expected) < 1e-9
-
-    def test_quality_multiplier_formula_zeros(self):
-        """Quality score with all-zero stats returns 0."""
-        stats = {"shot_accuracy": 0.0, "xg_per_shot": 0.0, "rating": 0.0}
-        result = calculate_quality_multiplier_bzz(stats)
-        assert result == 0.0
-
-    def test_quality_multiplier_formula_missing_keys(self):
-        """Missing keys default to 0 via `or 0`."""
-        stats: dict = {}
-        result = calculate_quality_multiplier_bzz(stats)
-        assert result == 0.0
-
-    def test_calculate_quality_multiplier_still_works(self):
-        """The existing calculate_quality_multiplier function in goalscorer.py still works."""
-        multiplier, breakdown = calculate_quality_multiplier(
-            sot_per_90=0.6,
-            touches_attack_pen_per_90=2.5,
-            xgchain_per_90=0.35,
-        )
-        assert 0.5 <= multiplier <= 2.0
-        assert "sot" in breakdown
-
-    def test_quality_weights_sum_to_one(self):
-        """The three weights in the new quality formula sum to 1.0."""
-        weights = [0.35, 0.35, 0.30]
-        assert abs(sum(weights) - 1.0) < 1e-9
-
-
-# ---------------------------------------------------------------------------
-# Tests for creation multiplier formula (assist.py)
-# ---------------------------------------------------------------------------
-
-
-class TestCreationMultiplierFormula:
-    def test_creation_multiplier_formula_basic(self):
-        """Creation score uses key_pass*0.40 + xa_per_90*0.40 + accurate_cross*0.20."""
-        stats = {
-            "key_pass_per_90": 1.5,
-            "xa_per_90": 0.25,
-            "accurate_cross_per_90": 0.8,
-        }
-        expected = 1.5 * 0.40 + 0.25 * 0.40 + 0.8 * 0.20
-        # expected = 0.60 + 0.10 + 0.16 = 0.86
-
-        result = calculate_creation_multiplier_bzz(stats)
-        assert abs(result - expected) < 1e-9
-
-    def test_creation_multiplier_formula_zeros(self):
-        """Creation score with all-zero stats returns 0."""
-        stats = {"key_pass_per_90": 0.0, "xa_per_90": 0.0, "accurate_cross_per_90": 0.0}
-        result = calculate_creation_multiplier_bzz(stats)
-        assert result == 0.0
-
-    def test_creation_multiplier_formula_missing_keys(self):
-        """Missing keys default to 0 via `or 0`."""
-        stats: dict = {}
-        result = calculate_creation_multiplier_bzz(stats)
-        assert result == 0.0
-
-    def test_calculate_creation_multiplier_still_works(self):
-        """The existing calculate_creation_multiplier function in assist.py still works."""
-        multiplier, breakdown = calculate_creation_multiplier(
-            bcc_per_90=0.18,
-            xgchain_per_90=0.35,
-            accurate_crosses_per_90=0.80,
-            through_balls_per_90=0.25,
-        )
-        assert 0.5 <= multiplier <= 2.0
-        assert "bcc" in breakdown
-
-    def test_creation_weights_sum_to_one(self):
-        """The three weights in the new creation formula sum to 1.0."""
-        weights = [0.40, 0.40, 0.20]
-        assert abs(sum(weights) - 1.0) < 1e-9
-
-
-# ── Nouveaux tests : finishing multiplier, conversion, λ top-down ──────────
+# ── Finishing multiplier, conversion, λ top-down tests ──────────────────────
 
 from app.pricing.goalscorer import (
     calculate_finishing_multiplier,

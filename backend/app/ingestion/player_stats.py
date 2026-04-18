@@ -181,8 +181,7 @@ def compute_league_averages_from_merged(
     """
     Compute league-average per-90 values from a list of merged player rows.
 
-    Used to update LEAGUE_AVG_GOALSCORER and LEAGUE_AVG_ASSIST in team_xg.py
-    at the start of each season.
+    Used by goalscorer and assist pricing modules for quality/creation multiplier normalization.
 
     Only players with >= min_minutes are included.
     """
