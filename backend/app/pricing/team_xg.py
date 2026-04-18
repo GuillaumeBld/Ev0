@@ -18,7 +18,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.pricing.assist import (
@@ -428,6 +428,17 @@ def allocate_player(
 
 # ── DB helpers ────────────────────────────────────────────────────
 
+# Fixture team name → exact bzz_teams.name mapping for names that can't be
+# resolved by substring matching (accent mismatches, abbreviations, etc.).
+_TEAM_NAME_ALIASES: dict[str, str] = {
+    "Atletico Madrid":         "Atlético Madrid",
+    "Bayer Leverkusen":        "Bayer 04 Leverkusen",
+    "Borussia Mönchengladbach":"Borussia M'gladbach",
+    "Deportivo Alaves":        "Deportivo Alavés",
+    "Rennes":                  "Stade Rennais",
+}
+
+
 async def _load_team_players(
     db: AsyncSession,
     team: str,
@@ -435,34 +446,48 @@ async def _load_team_players(
 ) -> list[dict[str, Any]]:
     """Load player season stats from bzz_player_season_stats for a team.
 
-    1. Find BzzTeam by case-insensitive partial name match.
-    2. Query BzzPlayerSeasonStat joined to BzzPlayer where current_team_api_id matches.
-    3. Return player dicts compatible with compute_player_shares.
+    Lookup order (stops at first hit):
+    1. Alias map (_TEAM_NAME_ALIASES) — for accent/abbreviation mismatches.
+    2. Exact case-insensitive match.
+    3. bzz name CONTAINS fixture name  (e.g. "FC Augsburg" ⊇ "Augsburg").
+    4. Fixture name CONTAINS bzz name  (e.g. "Wolverhampton Wanderers" ⊇ "Wolverhampton").
 
     Falls back to [] if no BzzTeam found for the team name.
     """
     from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat, BzzTeam
 
-    # Find team: exact match first, then partial (shortest name wins to avoid
-    # false positives like "Roma" → "Romania" or "Arsenal" → "FK Arsenal Tivat").
-    # Use .limit(1) on both branches — bzz_teams can have duplicate names
-    # (e.g. two "Real Madrid" entries with different api_ids).
+    resolved = _TEAM_NAME_ALIASES.get(team, team)
+
+    # Step 1+2: alias-resolved exact match
     team_res = await db.execute(
         select(BzzTeam)
-        .where(func.lower(BzzTeam.name) == func.lower(team))
+        .where(func.lower(BzzTeam.name) == func.lower(resolved))
         .limit(1)
     )
     bzz_team = team_res.scalar_one_or_none()
+
+    # Step 3: bzz name contains fixture name (e.g. "FC Bayern München" ⊇ "Bayern München")
     if bzz_team is None:
         team_res = await db.execute(
             select(BzzTeam)
-            .where(func.lower(BzzTeam.name).contains(func.lower(team)))
+            .where(func.lower(BzzTeam.name).contains(func.lower(resolved)))
             .order_by(func.length(BzzTeam.name))
             .limit(1)
         )
         bzz_team = team_res.scalar_one_or_none()
 
+    # Step 4: fixture name contains bzz name (e.g. "Wolverhampton Wanderers" ⊇ "Wolverhampton")
     if bzz_team is None:
+        team_res = await db.execute(
+            select(BzzTeam)
+            .where(literal(resolved.lower()).contains(func.lower(BzzTeam.name)))
+            .order_by(func.length(BzzTeam.name).desc())  # prefer longest bzz name (more specific)
+            .limit(1)
+        )
+        bzz_team = team_res.scalar_one_or_none()
+
+    if bzz_team is None:
+        logger.warning("_load_team_players: no bzz team found for %r", team)
         return []
 
     # Query season stats joined to player — pick the most recent season per player
