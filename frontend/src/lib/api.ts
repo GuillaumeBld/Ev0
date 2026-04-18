@@ -56,25 +56,6 @@ export interface Recommendation {
   is_pen_taker?: boolean
 }
 
-export interface PriceRequest {
-  player_id: string
-  fixture_id: string
-  xg_per_90?: number
-  xa_per_90?: number
-  expected_minutes?: number
-  // ... other fields
-}
-
-export interface PriceResponse {
-  player_id: string
-  fixture_id: string
-  market_type: string
-  lambda_intensity: number
-  probability: number
-  fair_odds: number
-  explanation: Record<string, any>
-}
-
 // ── Match pricing (Top-Down) ────────────────────────────────────
 
 export interface MatchPriceRequest {
@@ -169,16 +150,6 @@ export async function getExpiredRecommendations(params?: {
 
 export async function getRecommendation(id: string) {
   const { data } = await api.get(`/api/v1/recommendations/${id}`)
-  return data
-}
-
-export async function priceGoalscorer(request: PriceRequest): Promise<PriceResponse> {
-  const { data } = await api.post('/api/v1/price/goalscorer', request)
-  return data
-}
-
-export async function priceAssist(request: PriceRequest): Promise<PriceResponse> {
-  const { data } = await api.post('/api/v1/price/assist', request)
   return data
 }
 

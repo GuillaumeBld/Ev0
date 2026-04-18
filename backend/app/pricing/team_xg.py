@@ -50,19 +50,6 @@ POSITION_XA_PRIORS: dict[str, float] = {
     "FW": 0.10, "MF": 0.15, "DF": 0.03, "GK": 0.00,
 }
 
-# League-average per-90 values used for quality/creation multiplier normalization.
-# Updated from live Sofascore data each season via compute_league_averages().
-LEAGUE_AVG_GOALSCORER: dict[str, float] = {
-    "sot":     0.60,
-    "tap":     2.50,
-    "xgchain": 0.35,
-}
-LEAGUE_AVG_ASSIST: dict[str, float] = {
-    "bcc":     0.18,
-    "xgchain": 0.35,
-    "crosses": 0.80,
-    "tb":      0.25,
-}
 
 
 # ── Position normalisation ────────────────────────────────────────

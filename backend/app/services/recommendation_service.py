@@ -212,35 +212,6 @@ async def generate_recommendations(
     return selection.selected
 
 
-def _get_opponent_factor(
-    opponent: str,
-    market_type: str,
-    team_strengths: dict[str, dict[str, float]] | None = None,
-) -> float:
-    """
-    Get opponent defensive factor.
-
-    > 1.0 = weak defense (good for attacker)
-    < 1.0 = strong defense (bad for attacker)
-    """
-    if not team_strengths or opponent not in team_strengths:
-        return 1.0
-
-    opponent_xg = team_strengths[opponent]["xg_per_match"]
-    league_avg = (
-        sum(s["xg_per_match"] for s in team_strengths.values()) / len(team_strengths)
-        if team_strengths
-        else 1.0
-    )
-
-    if opponent_xg <= 0 or league_avg <= 0:
-        return 1.0
-
-    raw_factor = opponent_xg / league_avg
-    shrunk_factor = 0.6 * raw_factor + 0.4 * 1.0
-    return max(0.7, min(1.4, shrunk_factor))
-
-
 async def get_recommendations_for_date(
     target_date: datetime,
     db: AsyncSession,

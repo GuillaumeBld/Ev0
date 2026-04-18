@@ -281,41 +281,6 @@ def calculate_goalscorer_lambda(
     return max(CLAMP_LAMBDA_MIN, min(lam, CLAMP_LAMBDA_MAX))
 
 
-# ── Bzzoiro quality multiplier ────────────────────────────────────
-
-# New quality multiplier weights for bzz_player_season_stats fields
-# Formula: shot_accuracy × 0.35 + xg_per_shot × 0.35 + rating × 0.30
-# rating is pre-normalized to 0-1 range (avg_rating / 10)
-BZZ_QUALITY_WEIGHTS = {
-    "shot_accuracy": 0.35,
-    "xg_per_shot":   0.35,
-    "rating":        0.30,
-}
-
-
-def calculate_quality_multiplier_bzz(
-    stats: dict[str, Any],
-) -> float:
-    """
-    Compute quality score from bzz_player_season_stats fields.
-
-    Formula:
-        quality = shot_accuracy × 0.35 + xg_per_shot × 0.35 + rating × 0.30
-
-    Args:
-        stats: Player dict with keys shot_accuracy, xg_per_shot, rating.
-               rating should already be normalized to 0-1 (avg_rating / 10).
-
-    Returns:
-        Raw quality score (not clamped — caller may clamp if needed).
-    """
-    return (
-        (stats.get("shot_accuracy") or 0) * BZZ_QUALITY_WEIGHTS["shot_accuracy"]
-        + (stats.get("xg_per_shot") or 0) * BZZ_QUALITY_WEIGHTS["xg_per_shot"]
-        + (stats.get("rating") or 0) * BZZ_QUALITY_WEIGHTS["rating"]
-    )
-
-
 # ── Edge & margin helpers ─────────────────────────────────────────
 
 def calculate_edge(fair_odds: float, market_odds: float) -> float:
