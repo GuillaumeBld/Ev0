@@ -27,10 +27,13 @@ async def sync_players(session: AsyncSession, client: BzzoiroClient) -> int:
     now = datetime.now(UTC)
     count = 0
     for row in rows:
+        api_id = row.get("api_id") or row.get("id")
+        if not api_id:
+            continue
         team = row.get("current_team") or {}
         nat_team = row.get("national_team") or {}
         values = {
-            "api_id": row["api_id"],
+            "api_id": api_id,
             "internal_id": row.get("id"),
             "name": row.get("name", ""),
             "short_name": row.get("short_name"),
@@ -40,8 +43,8 @@ async def sync_players(session: AsyncSession, client: BzzoiroClient) -> int:
             "jersey_number": row.get("jersey_number"),
             "position": row.get("position"),
             "market_value": row.get("market_value"),
-            "current_team_api_id": team.get("api_id"),
-            "national_team_api_id": nat_team.get("api_id"),
+            "current_team_api_id": team.get("api_id") or team.get("id"),
+            "national_team_api_id": nat_team.get("api_id") or nat_team.get("id"),
             "synced_at": now,
         }
         stmt = pg_insert(BzzPlayer).values(**values).on_conflict_do_update(

@@ -14,9 +14,12 @@ Changes from original (FBref → Understat + Sofascore):
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -511,6 +514,12 @@ async def _load_team_players(
             & (BzzPlayerSeasonStat.season == latest_subq.c.max_season),
         )
         .where(BzzPlayer.current_team_api_id == bzz_team.api_id)
+        # Ensure the row with the most matches is seen first so seen_ids dedup
+        # keeps the full-season row rather than a sparse migration artifact.
+        .order_by(
+            BzzPlayerSeasonStat.player_api_id,
+            BzzPlayerSeasonStat.matches_played.desc().nullslast(),
+        )
     )
 
     res = await db.execute(stats_q)

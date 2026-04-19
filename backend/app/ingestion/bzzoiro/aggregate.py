@@ -23,11 +23,22 @@ def _safe_div(numerator: float | int | None, denominator: float | int | None) ->
     return numerator / denominator
 
 
-async def aggregate_season_stats(session: AsyncSession, league_api_id: int, season: str) -> int:
+async def aggregate_season_stats(
+    session: AsyncSession,
+    league_api_id: int,
+    season: str,
+    league_api_id_aliases: list[int] | None = None,
+) -> int:
     """Aggregate per-match stats into per-season stats for a league.
+
+    league_api_id_aliases: additional league IDs to include (e.g. old SofaScore IDs
+    that map to the same real league as league_api_id post-migration). Stats are
+    stored under league_api_id (the canonical ID).
 
     Aggregates all finished matches for the league. Returns count of rows upserted.
     """
+    all_league_ids = [league_api_id] + (league_api_id_aliases or [])
+
     # Step 1: Query aggregated stats grouped by player
     agg_stmt = (
         select(
@@ -78,7 +89,7 @@ async def aggregate_season_stats(session: AsyncSession, league_api_id: int, seas
         )
         .join(BzzEvent, BzzPlayerMatchStat.event_api_id == BzzEvent.api_id)
         .where(
-            BzzEvent.league_api_id == league_api_id,
+            BzzEvent.league_api_id.in_(all_league_ids),
             BzzEvent.status == "finished",
         )
         .group_by(BzzPlayerMatchStat.player_api_id)
@@ -107,7 +118,7 @@ async def aggregate_season_stats(session: AsyncSession, league_api_id: int, seas
         )
         .join(BzzEvent, BzzPlayerMatchStat.event_api_id == BzzEvent.api_id)
         .where(
-            BzzEvent.league_api_id == league_api_id,
+            BzzEvent.league_api_id.in_(all_league_ids),
             BzzEvent.status == "finished",
         )
         .subquery()
@@ -257,19 +268,42 @@ async def aggregate_season_stats(session: AsyncSession, league_api_id: int, seas
 async def aggregate_all_leagues(session: AsyncSession, season: str = "2025-2026") -> int:
     """Aggregate season stats for all leagues with finished matches.
 
+    Equivalent league IDs (SofaScore api_id vs Bzzoiro internal id for the same
+    real league) are merged into a single aggregation stored under the canonical
+    Bzzoiro internal ID. This prevents duplicate rows arising from the API migration.
+
     Returns total count of rows upserted across all leagues.
     """
+    from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_API_IDS, TARGET_LEAGUE_INTERNAL_IDS
+
+    # Build mapping: old SofaScore api_id → canonical Bzzoiro internal id
+    old_to_canonical: dict[int, int] = {
+        TARGET_LEAGUE_API_IDS[name]: TARGET_LEAGUE_INTERNAL_IDS[name]
+        for name in TARGET_LEAGUE_API_IDS
+        if TARGET_LEAGUE_API_IDS[name] != TARGET_LEAGUE_INTERNAL_IDS[name]
+    }
+
     result = await session.execute(
         select(BzzEvent.league_api_id.distinct()).where(
             BzzEvent.league_api_id.is_not(None),
             BzzEvent.status == "finished",
         )
     )
-    league_ids = [row[0] for row in result.fetchall()]
+    all_ids = [row[0] for row in result.fetchall()]
+
+    # Group: canonical_id → [all equivalent ids found in bzz_events]
+    groups: dict[int, list[int]] = {}
+    for lid in all_ids:
+        canonical = old_to_canonical.get(lid, lid)
+        groups.setdefault(canonical, []).append(lid)
 
     total = 0
-    for league_api_id in league_ids:
-        total += await aggregate_season_stats(session, league_api_id, season=season)
+    for canonical_id, group_ids in groups.items():
+        aliases = [i for i in group_ids if i != canonical_id]
+        total += await aggregate_season_stats(
+            session, canonical_id, season=season,
+            league_api_id_aliases=aliases or None,
+        )
 
-    logger.info("Aggregated season stats for %d leagues, %d total rows", len(league_ids), total)
+    logger.info("Aggregated season stats for %d leagues, %d total rows", len(groups), total)
     return total
