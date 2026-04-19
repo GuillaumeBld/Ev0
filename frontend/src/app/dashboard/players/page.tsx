@@ -11,14 +11,14 @@ type SortField =
   | 'avg_rating' | 'shots_on_target_per_90' | 'form_xg_5' | 'minutes_played'
 type PositionFilter = '' | 'G' | 'D' | 'M' | 'F'
 
-// Championnats cibles — api_id Bzzoiro hardcodés
+// Championnats cibles — IDs internes Bzzoiro (post-migration API)
 const LEAGUES: { api_id: number | null; label: string; flag: string }[] = [
   { api_id: null, label: 'Tous', flag: '' },
-  { api_id: 17, label: 'Premier League', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
-  { api_id: 34, label: 'Ligue 1', flag: '🇫🇷' },
-  { api_id: 35, label: 'Bundesliga', flag: '🇩🇪' },
-  { api_id: 8,  label: 'La Liga', flag: '🇪🇸' },
-  { api_id: 23, label: 'Serie A', flag: '🇮🇹' },
+  { api_id: 1,  label: 'Premier League', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+  { api_id: 6,  label: 'Ligue 1', flag: '🇫🇷' },
+  { api_id: 5,  label: 'Bundesliga', flag: '🇩🇪' },
+  { api_id: 3,  label: 'La Liga', flag: '🇪🇸' },
+  { api_id: 4,  label: 'Serie A', flag: '🇮🇹' },
   { api_id: 7,  label: 'UCL', flag: '🏆' },
 ]
 
