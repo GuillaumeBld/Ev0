@@ -23,7 +23,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_API_ID_LIST
+from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_API_ID_LIST, TARGET_LEAGUE_INTERNAL_ID_LIST
+
+# Accept both old SofaScore api_ids and new Bzzoiro internal ids in league_api_id column
+_ALL_LEAGUE_IDS = list(set(TARGET_LEAGUE_API_ID_LIST + TARGET_LEAGUE_INTERNAL_ID_LIST))
 from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzTeam
 
 logger = logging.getLogger(__name__)
@@ -101,7 +104,7 @@ async def sync_player_stats_for_player(
     count = 0
     for row in rows:
         event = row.get("event") or {}
-        event_api_id = event.get("api_id")
+        event_api_id = event.get("api_id") or event.get("id")
         if event_api_id is None:
             continue
 
@@ -111,7 +114,7 @@ async def sync_player_stats_for_player(
         values: dict[str, Any] = {
             "player_api_id": player_api_id,
             "event_api_id": event_api_id,
-            "team_api_id": team.get("api_id"),
+            "team_api_id": team.get("api_id") or team.get("id"),
             "is_home": row.get("is_home"),
             "minutes_played": row.get("minutes_played"),
             "rating": row.get("rating"),
@@ -181,7 +184,7 @@ async def _get_players_for_recent_events(
         .where(
             BzzEvent.status == "finished",
             BzzEvent.event_date >= cutoff,
-            BzzEvent.league_api_id.in_(TARGET_LEAGUE_API_ID_LIST),
+            BzzEvent.league_api_id.in_(_ALL_LEAGUE_IDS),
             BzzPlayer.internal_id.is_not(None),
         )
         .distinct()
@@ -206,7 +209,7 @@ async def _get_players_for_full_season(
         )
         .where(
             BzzEvent.status == "finished",
-            BzzEvent.league_api_id.in_(TARGET_LEAGUE_API_ID_LIST),
+            BzzEvent.league_api_id.in_(_ALL_LEAGUE_IDS),
             BzzPlayer.internal_id.is_not(None),
         )
         .distinct()

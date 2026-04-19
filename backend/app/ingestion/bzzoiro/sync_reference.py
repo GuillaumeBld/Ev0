@@ -18,8 +18,11 @@ async def sync_leagues(session: AsyncSession, client: BzzoiroClient) -> int:
     now = datetime.now(UTC)
     count = 0
     for row in rows:
+        api_id = row.get("api_id") or row.get("id")
+        if not api_id:
+            continue
         stmt = pg_insert(BzzLeague).values(
-            api_id=row["api_id"],
+            api_id=api_id,
             name=row.get("name", ""),
             country=row.get("country"),
             season_id=row.get("season_id"),
@@ -41,8 +44,11 @@ async def sync_teams(session: AsyncSession, client: BzzoiroClient) -> int:
     now = datetime.now(UTC)
     count = 0
     for row in rows:
+        api_id = row.get("api_id") or row.get("id")
+        if not api_id:
+            continue
         stmt = pg_insert(BzzTeam).values(
-            api_id=row["api_id"],
+            api_id=api_id,
             name=row.get("name", ""),
             short_name=row.get("short_name"),
             country=row.get("country"),

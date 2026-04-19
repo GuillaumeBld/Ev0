@@ -71,6 +71,10 @@ async def sync_events(
 
     count = 0
     for row in all_rows:
+        api_id = row.get("api_id") or row.get("id")
+        if not api_id:
+            logger.warning("Skipping event row without id: %s", list(row.keys()))
+            continue
         league = row.get("league") or {}
         home_team = row.get("home_team_obj") or {}
         away_team = row.get("away_team_obj") or {}
@@ -81,10 +85,10 @@ async def sync_events(
             if event_date_raw else None
         )
         values = {
-            "api_id": row["api_id"],
-            "league_api_id": league.get("api_id"),
-            "home_team_api_id": home_team.get("api_id"),
-            "away_team_api_id": away_team.get("api_id"),
+            "api_id": api_id,
+            "league_api_id": league.get("api_id") or league.get("id"),
+            "home_team_api_id": home_team.get("api_id") or home_team.get("id"),
+            "away_team_api_id": away_team.get("api_id") or away_team.get("id"),
             "event_date": event_date,
             "status": row.get("status"),
             "period": row.get("period"),
