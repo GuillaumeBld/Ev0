@@ -12,7 +12,7 @@ from sqlalchemy import asc, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_API_ID_LIST
+from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_API_ID_LIST, TARGET_LEAGUE_INTERNAL_ID_LIST
 from app.models.bzzoiro import (
     BzzEvent,
     BzzLeague,
@@ -28,7 +28,10 @@ router = APIRouter(prefix="/players", tags=["players"])
 # Constants
 # ---------------------------------------------------------------------------
 
-TARGET_LEAGUE_IDS = TARGET_LEAGUE_API_ID_LIST  # PL=17, L1=34, BL=35, LL=8, SA=23, UCL=7
+# Canonical Bzzoiro internal IDs (post-migration) used for all new data.
+# Old SofaScore IDs kept for recent_matches query (old events still carry those IDs).
+TARGET_LEAGUE_IDS = TARGET_LEAGUE_INTERNAL_ID_LIST  # PL=1, LL=3, SA=4, BL=5, L1=6, UCL=7
+_ALL_LEAGUE_IDS = list(set(TARGET_LEAGUE_API_ID_LIST + TARGET_LEAGUE_INTERNAL_ID_LIST))
 
 CSV_FIELDS = [
     "name",
@@ -529,7 +532,7 @@ async def get_player(
         .outerjoin(away_team_alias, away_team_alias.c.api_id == BzzEvent.away_team_api_id)
         .where(
             BzzPlayerMatchStat.player_api_id == player_api_id,
-            BzzEvent.league_api_id.in_(TARGET_LEAGUE_IDS),
+            BzzEvent.league_api_id.in_(_ALL_LEAGUE_IDS),
         )
         .order_by(desc(BzzEvent.event_date))
     )
