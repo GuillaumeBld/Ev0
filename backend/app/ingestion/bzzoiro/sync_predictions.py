@@ -87,7 +87,6 @@ async def sync_predictions(
             "over_35_recommend": row.get("over_35_recommend"),
             "btts_recommend": row.get("btts_recommend"),
             "winner_recommend": row.get("winner_recommend"),
-            "synced_at": now,
         }
         stmt = pg_insert(BzzPrediction).values(**values).on_conflict_do_update(
             index_elements=["event_api_id"],

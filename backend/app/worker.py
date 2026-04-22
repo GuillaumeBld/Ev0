@@ -1298,13 +1298,14 @@ async def job_auto_finish_fixtures():
 
 
 async def job_settle_pipeline():
-    """Every 30 min: auto-finish → sync match events (ESPN) → settle.
-
-    Chains the three settlement steps in sequence so a bet can be settled
-    within ~30 min of kickoff + 2h instead of waiting for three independent
-    job cycles (up to 4h30 previously).
-    """
+    """Every 30 min: Bzzoiro status sync → auto-finish → sync match events → settle."""
     logger.info("=== Settlement pipeline: start ===")
+    from app.ingestion.bzzoiro.sync_fixture_status import sync_fixture_status_from_bzz
+    try:
+        async with async_session() as session:
+            await sync_fixture_status_from_bzz(session)
+    except Exception as exc:
+        logger.error("Settlement pipeline: bzz status sync failed: %s", exc, exc_info=True)
     await job_auto_finish_fixtures()
     await job_sync_match_events()
     await job_auto_settle()
@@ -1452,6 +1453,16 @@ async def job_sync_bzzoiro_events():
             logger.info("Bzzoiro events synced: %s", result)
     except Exception as exc:
         logger.error("Error in Bzzoiro events sync: %s", exc, exc_info=True)
+
+    # Sync fixture dates/status from BzzEvent
+    try:
+        from app.ingestion.bzzoiro.sync_fixture_status import sync_fixture_status_from_bzz
+        async with async_session() as session:
+            n = await sync_fixture_status_from_bzz(session)
+            logger.info("Fixture status sync from BzzEvent: %d updated", n)
+    except Exception as exc:
+        logger.error("Error in fixture status sync from BzzEvent: %s", exc, exc_info=True)
+
     logger.info("=== Bzzoiro events sync complete ===")
 
 
@@ -1736,6 +1747,9 @@ async def main():
     # Run initial sync on startup
     logger.info("Running initial sync...")
     await job_sync_fixtures()
+    from app.ingestion.bzzoiro.sync_fixture_status import sync_fixture_status_from_bzz
+    async with async_session() as session:
+        await sync_fixture_status_from_bzz(session)
     await job_sync_match_events()
 
     # Keep running
