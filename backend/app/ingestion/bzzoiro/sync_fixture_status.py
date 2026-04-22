@@ -112,13 +112,22 @@ async def sync_fixture_status_from_bzz(session: AsyncSession) -> int:
         if not candidates:
             continue
 
-        # Pick the BzzEvent closest in date to the fixture's current kickoff_utc
-        best = min(
-            candidates,
-            key=lambda ev: abs(
-                (ev.event_date - fixture.kickoff_utc).total_seconds()
-            ) if ev.event_date is not None else float("inf"),
-        )
+        # Pick the BzzEvent closest in date to the fixture's current kickoff_utc.
+        # When two events are equidistant, prefer the more advanced status
+        # (finished > inprogress/live > anything else) so a stale "notstarted"
+        # duplicate doesn't shadow the real finished result.
+        _STATUS_PRIORITY = {"finished": 0, "inprogress": 1, "live": 1}
+
+        def _sort_key(ev: BzzEvent):
+            date_diff = (
+                abs((ev.event_date - fixture.kickoff_utc).total_seconds())
+                if ev.event_date is not None
+                else float("inf")
+            )
+            status_rank = _STATUS_PRIORITY.get(ev.status or "", 2)
+            return (date_diff, status_rank)
+
+        best = min(candidates, key=_sort_key)
 
         if best.event_date is None:
             continue
