@@ -267,34 +267,28 @@ async def list_player_teams(
     session: AsyncSession = Depends(get_db),
     league_api_id: int | None = Query(None, description="Filter by league api_id"),
 ) -> list[dict[str, Any]]:
-    """Return teams that actually played matches in a given league.
+    """Return teams derived from players with season stats in target leagues.
 
-    Teams are derived from BzzEvent (home/away participants), not from player
-    profiles. This correctly handles mid-season transfers where a player's
-    current_team_api_id may belong to a different league than their stats.
+    Uses BzzPlayer.current_team_api_id + current_team_name (from player profiles)
+    so the returned IDs match what the list endpoint filters on. This avoids the
+    mismatch between the events API team IDs and the player profiles API team IDs.
     """
-    from sqlalchemy import or_, union
-
-    home_teams = select(BzzTeam.api_id, BzzTeam.name).join(
-        BzzEvent, BzzEvent.home_team_api_id == BzzTeam.api_id
-    )
-    away_teams = select(BzzTeam.api_id, BzzTeam.name).join(
-        BzzEvent, BzzEvent.away_team_api_id == BzzTeam.api_id
+    stmt = (
+        select(BzzPlayer.current_team_api_id, BzzPlayer.current_team_name)
+        .join(BzzPlayerSeasonStat, BzzPlayerSeasonStat.player_api_id == BzzPlayer.api_id)
+        .where(
+            BzzPlayer.current_team_api_id.is_not(None),
+            BzzPlayer.current_team_name.is_not(None),
+            BzzPlayerSeasonStat.season == "2025-2026",
+        )
     )
 
     if league_api_id is not None:
-        home_teams = home_teams.where(BzzEvent.league_api_id == league_api_id)
-        away_teams = away_teams.where(BzzEvent.league_api_id == league_api_id)
+        stmt = stmt.where(BzzPlayerSeasonStat.league_api_id == league_api_id)
     else:
-        home_teams = home_teams.where(BzzEvent.league_api_id.in_(TARGET_LEAGUE_IDS))
-        away_teams = away_teams.where(BzzEvent.league_api_id.in_(TARGET_LEAGUE_IDS))
+        stmt = stmt.where(BzzPlayerSeasonStat.league_api_id.in_(_ALL_LEAGUE_IDS))
 
-    combined = union(home_teams, away_teams).subquery()
-    stmt = (
-        select(combined.c.api_id, combined.c.name)
-        .distinct()
-        .order_by(combined.c.name)
-    )
+    stmt = stmt.distinct().order_by(BzzPlayer.current_team_name)
     result = await session.execute(stmt)
     return [{"api_id": row[0], "name": row[1]} for row in result.all()]
 
@@ -387,10 +381,8 @@ async def list_players(
         select(
             BzzPlayer,
             BzzPlayerSeasonStat,
-            BzzTeam.name.label("team_name"),
         )
         .join(BzzPlayerSeasonStat, BzzPlayerSeasonStat.player_api_id == BzzPlayer.api_id)
-        .outerjoin(BzzTeam, BzzTeam.api_id == BzzPlayer.current_team_api_id)
         .where(BzzPlayerSeasonStat.season == season)
     )
 
@@ -416,7 +408,7 @@ async def list_players(
             "name": player.name,
             "short_name": player.short_name,
             "position": player.position,
-            "team_name": team_name,
+            "team_name": player.current_team_name,
             "nationality": player.nationality,
             "goals": stats.goals,
             "goal_assist": stats.goal_assist,
@@ -429,7 +421,7 @@ async def list_players(
             "minutes_played": stats.minutes_played,
             "season": stats.season,
         }
-        for player, stats, team_name in rows
+        for player, stats in rows
     ]
 
 
@@ -448,15 +440,11 @@ async def get_player(
 
     # 1. Fetch player
     player_result = await session.execute(
-        select(BzzPlayer, BzzTeam.name.label("team_name"))
-        .outerjoin(BzzTeam, BzzTeam.api_id == BzzPlayer.current_team_api_id)
-        .where(BzzPlayer.api_id == player_api_id)
+        select(BzzPlayer).where(BzzPlayer.api_id == player_api_id)
     )
-    row = player_result.first()
-    if row is None:
+    player = player_result.scalars().first()
+    if player is None:
         raise HTTPException(status_code=404, detail="Player not found")
-
-    player, team_name = row
 
     # 2. Season stats
     stats_result = await session.execute(
@@ -622,7 +610,7 @@ async def get_player(
         "height": player.height,
         "jersey_number": player.jersey_number,
         "market_value": player.market_value,
-        "team_name": team_name,
+        "team_name": player.current_team_name,
         "season_stats": season_stats_out,
         "recent_matches": recent_matches,
     }

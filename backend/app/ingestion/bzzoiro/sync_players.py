@@ -44,6 +44,7 @@ async def sync_players(session: AsyncSession, client: BzzoiroClient) -> int:
             "position": row.get("position"),
             "market_value": row.get("market_value"),
             "current_team_api_id": team.get("api_id") or team.get("id"),
+            "current_team_name": team.get("name"),
             "national_team_api_id": nat_team.get("api_id") or nat_team.get("id"),
             "synced_at": now,
         }

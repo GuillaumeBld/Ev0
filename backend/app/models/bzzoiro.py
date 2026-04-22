@@ -66,6 +66,7 @@ class BzzPlayer(Base, TimestampMixin):
         nullable=True,
         index=True,
     )
+    current_team_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     national_team_api_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("bzz_teams.api_id", ondelete="SET NULL"),

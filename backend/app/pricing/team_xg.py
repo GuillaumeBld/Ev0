@@ -498,6 +498,11 @@ async def _load_team_players(
         logger.warning("_load_team_players: no bzz team found for %r", team)
         return []
 
+    # Filter by team name (case-insensitive) — avoids the mismatch between
+    # events API team IDs (bzz_teams.api_id) and player profile API team IDs
+    # (BzzPlayer.current_team_api_id), which use incompatible ID systems.
+    team_name_filter = func.lower(BzzPlayer.current_team_name) == func.lower(bzz_team.name)
+
     # Query season stats joined to player — pick the most recent season per player
     latest_subq = (
         select(
@@ -505,7 +510,7 @@ async def _load_team_players(
             func.max(BzzPlayerSeasonStat.season).label("max_season"),
         )
         .join(BzzPlayer, BzzPlayer.api_id == BzzPlayerSeasonStat.player_api_id)
-        .where(BzzPlayer.current_team_api_id == bzz_team.api_id)
+        .where(team_name_filter)
         .group_by(BzzPlayerSeasonStat.player_api_id)
         .subquery()
     )
@@ -518,7 +523,7 @@ async def _load_team_players(
             (BzzPlayerSeasonStat.player_api_id == latest_subq.c.player_api_id)
             & (BzzPlayerSeasonStat.season == latest_subq.c.max_season),
         )
-        .where(BzzPlayer.current_team_api_id == bzz_team.api_id)
+        .where(team_name_filter)
         # Ensure the row with the most matches is seen first so seen_ids dedup
         # keeps the full-season row rather than a sparse migration artifact.
         .order_by(
@@ -597,7 +602,7 @@ async def _load_team_players(
     # and append missing ones with zero stats — positional priors handle them.
     all_roster_result = await db.execute(
         select(BzzPlayer)
-        .where(BzzPlayer.current_team_api_id == bzz_team.api_id)
+        .where(team_name_filter)
     )
     for player in all_roster_result.scalars().all():
         if player.api_id in seen_ids:
