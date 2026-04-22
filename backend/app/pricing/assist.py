@@ -28,6 +28,8 @@ Sources:
     BCC, accurate crosses, through balls → Sofascore
 """
 
+from __future__ import annotations
+
 import math
 from typing import Any, TypedDict
 

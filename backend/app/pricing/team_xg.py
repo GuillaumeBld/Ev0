@@ -57,6 +57,11 @@ POSITION_XA_PRIORS: dict[str, float] = {
 
 # ── Position normalisation ────────────────────────────────────────
 
+def _bzz_pos_to_raw(bzz_pos: str | None) -> str | None:
+    """Map Bzzoiro single-char position codes to pricing engine format."""
+    return {"G": "GK", "D": "DF", "M": "MF", "F": "FW"}.get(bzz_pos or "", bzz_pos)
+
+
 def _norm_pos(raw: str | None) -> str | None:
     """Canonical position: FW / MF / DF / GK (W and FB kept for assist weighting)."""
     if not raw:
@@ -537,17 +542,7 @@ async def _load_team_players(
         seen_names.add(name_key)
 
         # Map bzz position (G/D/M/F) to pricing engine format (GK/DF/MF/FW)
-        bzz_pos = player.position
-        if bzz_pos == "G":
-            raw_pos = "GK"
-        elif bzz_pos == "D":
-            raw_pos = "DF"
-        elif bzz_pos == "M":
-            raw_pos = "MF"
-        elif bzz_pos == "F":
-            raw_pos = "FW"
-        else:
-            raw_pos = bzz_pos
+        raw_pos = _bzz_pos_to_raw(player.position)
         position = _norm_pos(raw_pos)
         if position == "GK":
             continue
@@ -595,6 +590,61 @@ async def _load_team_players(
             # Flag to indicate bzz-sourced stats (triggers new multiplier formulas)
             "has_bzz_stats": True,
         })
+
+    # ── Fallback: add roster players with no season stats ─────────
+    # Players in bzz_players for this team but without BzzPlayerSeasonStat
+    # rows are invisible to the pricing engine. Load all roster players
+    # and append missing ones with zero stats — positional priors handle them.
+    all_roster_result = await db.execute(
+        select(BzzPlayer)
+        .where(BzzPlayer.current_team_api_id == bzz_team.api_id)
+    )
+    for player in all_roster_result.scalars().all():
+        if player.api_id in seen_ids:
+            continue
+        name = player.name
+        name_key = (name or "").strip().lower()
+        if name_key in seen_names:
+            continue
+
+        raw_pos = _bzz_pos_to_raw(player.position)
+        position = _norm_pos(raw_pos)
+        if position == "GK":
+            continue
+
+        seen_ids.add(player.api_id)
+        seen_names.add(name_key)
+        players.append({
+            "player_id": player.api_id,
+            "player_name": name,
+            "name": name,
+            "position": position,
+            "matches_played": 0,
+            "minutes_played": 0,
+            "goals": 0,
+            "xg": 0.0,
+            "npxg": 0.0,
+            "xa": 0.0,
+            "npxg_per_90": 0.0,
+            "xa_per_90": 0.0,
+            "xgchain_per_90": 0.0,
+            "xg_per_90": 0.0,
+            "shot_accuracy": 0.0,
+            "xg_per_shot": 0.0,
+            "rating": 0.0,
+            "key_pass_per_90": 0.0,
+            "accurate_cross_per_90": 0.0,
+            "form_xg_5": 0.0,
+            "finishing_delta": 0.0,
+            "shots_on_target_per_90": 0.0,
+            "touches_attack_pen_area_per_90": 0.0,
+            "bcc_per_90": 0.0,
+            "accurate_crosses_per_90": 0.0,
+            "through_balls_per_90": 0.0,
+            "has_bzz_stats": False,
+        })
+    # ── End fallback ──────────────────────────────────────────────
+
     return players
 
 

@@ -155,7 +155,13 @@ class TestLoadTeamPlayersBasic:
         players_exec_result = MagicMock()
         players_exec_result.all.return_value = [row1, row2]
 
-        session.execute = AsyncMock(side_effect=[team_exec_result, players_exec_result])
+        # Third execute: fallback roster query → same players (already in seen_ids, no duplicates added)
+        roster_scalars = MagicMock()
+        roster_scalars.all.return_value = [player1, player2]
+        roster_exec_result = MagicMock()
+        roster_exec_result.scalars.return_value = roster_scalars
+
+        session.execute = AsyncMock(side_effect=[team_exec_result, players_exec_result, roster_exec_result])
 
         result = await _load_team_players(session, "Paris Saint-Germain", "ligue_1")
 
