@@ -34,7 +34,6 @@ async def sync_players(session: AsyncSession, client: BzzoiroClient) -> int:
         nat_team = row.get("national_team") or {}
         values = {
             "api_id": api_id,
-            "internal_id": row.get("id"),
             "name": row.get("name", ""),
             "short_name": row.get("short_name"),
             "nationality": row.get("nationality"),
@@ -48,20 +47,12 @@ async def sync_players(session: AsyncSession, client: BzzoiroClient) -> int:
             "national_team_api_id": nat_team.get("api_id") or nat_team.get("id"),
             "synced_at": now,
         }
-        # Exclude internal_id from update — it has a unique constraint and Bzzoiro
-        # can reuse the same internal_id across different api_ids.
         stmt = pg_insert(BzzPlayer).values(**values).on_conflict_do_update(
             index_elements=["api_id"],
-            set_={k: v for k, v in values.items() if k not in ("api_id", "internal_id")},
+            set_={k: v for k, v in values.items() if k != "api_id"},
         )
-        # Use a savepoint so a constraint violation only rolls back this one row,
-        # not the entire transaction (which would lose current_team_name updates).
-        try:
-            async with session.begin_nested():
-                await session.execute(stmt)
-            count += 1
-        except Exception:
-            pass
+        await session.execute(stmt)
+        count += 1
     await session.commit()
     logger.info("Synced %d players", count)
     return count
