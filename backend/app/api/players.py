@@ -267,16 +267,35 @@ async def _get_team_dominant_leagues(
             WHERE bpss.season = :season AND bp.current_team_name IS NOT NULL
             GROUP BY bp.current_team_name, bpss.league_api_id
         ),
-        ranked AS (
+        -- Best domestic Big5 league per team (excluding UCL so UCL rows don't shadow domestic)
+        domestic_ranked AS (
             SELECT current_team_name, league_api_id, cnt,
                    ROW_NUMBER() OVER (PARTITION BY current_team_name ORDER BY cnt DESC) AS rn
-            FROM per_name_league
+            FROM per_name_league WHERE league_api_id IN (1,3,4,5,6)
+        ),
+        domestic_best AS (
+            SELECT current_team_name, league_api_id AS domestic_league, cnt AS domestic_cnt
+            FROM domestic_ranked WHERE rn = 1
+        ),
+        ucl_stats AS (
+            SELECT current_team_name, cnt AS ucl_cnt
+            FROM per_name_league WHERE league_api_id = 7
+        ),
+        all_teams AS (
+            SELECT DISTINCT current_team_name FROM per_name_league
         )
         SELECT
-            current_team_name,
-            CASE WHEN league_api_id IN (1,3,4,5,6,7) AND cnt >= :min_cnt
-                 THEN league_api_id ELSE -1 END AS effective_league
-        FROM ranked WHERE rn = 1
+            t.current_team_name,
+            CASE
+                WHEN db.domestic_league IS NOT NULL AND db.domestic_cnt >= :min_cnt
+                    THEN db.domestic_league
+                WHEN u.ucl_cnt >= :min_cnt
+                    THEN 7
+                ELSE -1
+            END AS effective_league
+        FROM all_teams t
+        LEFT JOIN domestic_best db ON db.current_team_name = t.current_team_name
+        LEFT JOIN ucl_stats u ON u.current_team_name = t.current_team_name
     """)
     result = await session.execute(stmt, {"season": season, "min_cnt": _MIN_PLAYERS_FOR_TARGET_LEAGUE})
     return {row[0]: row[1] for row in result.all()}
