@@ -246,11 +246,19 @@ class PlayerDetail(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+_MIN_PLAYERS_FOR_TARGET_LEAGUE = 10
+
+
 async def _get_team_dominant_leagues(
     session: AsyncSession,
     season: str = "2025-2026",
 ) -> dict[str, int]:
-    """Return {team_name: dominant_league_api_id} — league with most stats rows per team name."""
+    """Return {team_name: effective_league_api_id}.
+
+    Effective league = dominant league if it is a target league with >= MIN_PLAYERS_FOR_TARGET_LEAGUE
+    stats rows, else -1 (Autres). This prevents 1-2-row data contamination from miscategorizing
+    non-Big5/UCL teams into target leagues.
+    """
     stmt = text("""
         WITH per_name_league AS (
             SELECT bp.current_team_name, bpss.league_api_id, COUNT(*) AS cnt
@@ -260,13 +268,17 @@ async def _get_team_dominant_leagues(
             GROUP BY bp.current_team_name, bpss.league_api_id
         ),
         ranked AS (
-            SELECT current_team_name, league_api_id,
+            SELECT current_team_name, league_api_id, cnt,
                    ROW_NUMBER() OVER (PARTITION BY current_team_name ORDER BY cnt DESC) AS rn
             FROM per_name_league
         )
-        SELECT current_team_name, league_api_id FROM ranked WHERE rn = 1
+        SELECT
+            current_team_name,
+            CASE WHEN league_api_id IN (1,3,4,5,6,7) AND cnt >= :min_cnt
+                 THEN league_api_id ELSE -1 END AS effective_league
+        FROM ranked WHERE rn = 1
     """)
-    result = await session.execute(stmt, {"season": season})
+    result = await session.execute(stmt, {"season": season, "min_cnt": _MIN_PLAYERS_FOR_TARGET_LEAGUE})
     return {row[0]: row[1] for row in result.all()}
 
 
@@ -305,10 +317,7 @@ async def list_player_teams(
     dominant = await _get_team_dominant_leagues(session)
 
     if league_api_id is not None:
-        if league_api_id == -1:
-            valid_names: set[str] | None = {n for n, lg in dominant.items() if lg not in TARGET_INTERNAL_IDS}
-        else:
-            valid_names = {n for n, lg in dominant.items() if lg == league_api_id}
+        valid_names: set[str] | None = {n for n, lg in dominant.items() if lg == league_api_id}
     else:
         valid_names = None
 
@@ -436,10 +445,7 @@ async def list_players(
 
     if league_api_id is not None:
         dominant = await _get_team_dominant_leagues(session, season)
-        if league_api_id == -1:
-            team_names = [n for n, lg in dominant.items() if lg not in TARGET_INTERNAL_IDS]
-        else:
-            team_names = [n for n, lg in dominant.items() if lg == league_api_id]
+        team_names = [n for n, lg in dominant.items() if lg == league_api_id]
         if not team_names:
             return []
         stmt = stmt.where(BzzPlayer.current_team_name.in_(team_names))
