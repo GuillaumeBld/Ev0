@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import asc, desc, select
+from sqlalchemy import asc, desc, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -27,6 +27,8 @@ router = APIRouter(prefix="/players", tags=["players"])
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+
+TARGET_INTERNAL_IDS = [1, 3, 4, 5, 6, 7]  # PL=1, LaLiga=3, SerieA=4, BL=5, L1=6, UCL=7
 
 # Canonical Bzzoiro internal IDs (post-migration) used for all new data.
 # Old SofaScore IDs kept for recent_matches query (old events still carry those IDs).
@@ -240,6 +242,35 @@ class PlayerDetail(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+async def _get_team_dominant_leagues(
+    session: AsyncSession,
+    season: str = "2025-2026",
+) -> dict[str, int]:
+    """Return {team_name: dominant_league_api_id} — league with most stats rows per team name."""
+    stmt = text("""
+        WITH per_name_league AS (
+            SELECT bp.current_team_name, bpss.league_api_id, COUNT(*) AS cnt
+            FROM bzz_players bp
+            JOIN bzz_player_season_stats bpss ON bpss.player_api_id = bp.api_id
+            WHERE bpss.season = :season AND bp.current_team_name IS NOT NULL
+            GROUP BY bp.current_team_name, bpss.league_api_id
+        ),
+        ranked AS (
+            SELECT current_team_name, league_api_id,
+                   ROW_NUMBER() OVER (PARTITION BY current_team_name ORDER BY cnt DESC) AS rn
+            FROM per_name_league
+        )
+        SELECT current_team_name, league_api_id FROM ranked WHERE rn = 1
+    """)
+    result = await session.execute(stmt, {"season": season})
+    return {row[0]: row[1] for row in result.all()}
+
+
+# ---------------------------------------------------------------------------
 # GET /players/leagues  — championnats disponibles
 # ---------------------------------------------------------------------------
 
@@ -265,32 +296,49 @@ async def list_player_leagues(
 @router.get("/teams", response_model=list[dict])
 async def list_player_teams(
     session: AsyncSession = Depends(get_db),
-    league_api_id: int | None = Query(None, description="Filter by league api_id"),
+    league_api_id: int | None = Query(None, description="Filter by league api_id; -1 = Autres"),
 ) -> list[dict[str, Any]]:
-    """Return teams derived from players with season stats in target leagues.
+    """Return teams deduplicated by name, filtered by dominant league.
 
-    Uses BzzPlayer.current_team_api_id + current_team_name (from player profiles)
-    so the returned IDs match what the list endpoint filters on. This avoids the
-    mismatch between the events API team IDs and the player profiles API team IDs.
+    league_api_id=None → all teams; league_api_id=-1 → non-Big5/UCL teams; 1-7 → specific league.
     """
-    stmt = (
-        select(BzzPlayer.current_team_api_id, BzzPlayer.current_team_name)
-        .join(BzzPlayerSeasonStat, BzzPlayerSeasonStat.player_api_id == BzzPlayer.api_id)
-        .where(
-            BzzPlayer.current_team_api_id.is_not(None),
-            BzzPlayer.current_team_name.is_not(None),
-            BzzPlayerSeasonStat.season == "2025-2026",
-        )
-    )
+    dominant = await _get_team_dominant_leagues(session)
 
     if league_api_id is not None:
-        stmt = stmt.where(BzzPlayerSeasonStat.league_api_id == league_api_id)
+        if league_api_id == -1:
+            valid_names: set[str] | None = {n for n, lg in dominant.items() if lg not in TARGET_INTERNAL_IDS}
+        else:
+            valid_names = {n for n, lg in dominant.items() if lg == league_api_id}
     else:
-        stmt = stmt.where(BzzPlayerSeasonStat.league_api_id.in_(_ALL_LEAGUE_IDS))
+        valid_names = None
 
-    stmt = stmt.distinct().order_by(BzzPlayer.current_team_name)
+    stmt = text("""
+        WITH team_counts AS (
+            SELECT bp.current_team_api_id, bp.current_team_name, COUNT(*) AS cnt
+            FROM bzz_players bp
+            JOIN bzz_player_season_stats bpss ON bpss.player_api_id = bp.api_id
+            WHERE bpss.season = '2025-2026'
+              AND bp.current_team_api_id IS NOT NULL
+              AND bp.current_team_name IS NOT NULL
+            GROUP BY bp.current_team_api_id, bp.current_team_name
+        ),
+        ranked AS (
+            SELECT current_team_api_id, current_team_name,
+                   ROW_NUMBER() OVER (PARTITION BY current_team_name ORDER BY cnt DESC) AS rn
+            FROM team_counts
+        )
+        SELECT current_team_api_id, current_team_name FROM ranked WHERE rn = 1
+        ORDER BY current_team_name
+    """)
     result = await session.execute(stmt)
-    return [{"api_id": row[0], "name": row[1]} for row in result.all()]
+    rows = result.all()
+
+    output = []
+    for api_id, name in rows:
+        if valid_names is not None and name not in valid_names:
+            continue
+        output.append({"api_id": api_id, "name": name})
+    return output
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +435,14 @@ async def list_players(
     )
 
     if league_api_id is not None:
-        stmt = stmt.where(BzzPlayerSeasonStat.league_api_id == league_api_id)
+        dominant = await _get_team_dominant_leagues(session, season)
+        if league_api_id == -1:
+            team_names = [n for n, lg in dominant.items() if lg not in TARGET_INTERNAL_IDS]
+        else:
+            team_names = [n for n, lg in dominant.items() if lg == league_api_id]
+        if not team_names:
+            return []
+        stmt = stmt.where(BzzPlayer.current_team_name.in_(team_names))
     if team_api_id is not None:
         stmt = stmt.where(BzzPlayer.current_team_api_id == team_api_id)
     if position is not None:

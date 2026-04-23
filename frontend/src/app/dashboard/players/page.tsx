@@ -12,6 +12,7 @@ type SortField =
 type PositionFilter = '' | 'G' | 'D' | 'M' | 'F'
 
 // Championnats cibles — IDs internes Bzzoiro (post-migration API)
+// api_id: null = Tous, api_id: -1 = Autres (ligue dominante hors Big5/UCL)
 const LEAGUES: { api_id: number | null; label: string; flag: string }[] = [
   { api_id: null, label: 'Tous', flag: '' },
   { api_id: 1,  label: 'Premier League', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
@@ -20,6 +21,7 @@ const LEAGUES: { api_id: number | null; label: string; flag: string }[] = [
   { api_id: 3,  label: 'La Liga', flag: '🇪🇸' },
   { api_id: 4,  label: 'Serie A', flag: '🇮🇹' },
   { api_id: 7,  label: 'UCL', flag: '🏆' },
+  { api_id: -1, label: 'Autres', flag: '🌍' },
 ]
 
 // Backend-sortable fields (server-side sort)
