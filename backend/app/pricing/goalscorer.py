@@ -218,9 +218,10 @@ PENS_PER_MATCH = 0.10
 # ── Top-down finishing multiplier (Bzzoiro) ───────────────────────
 
 GOALSCORER_POSITION_AVGS: dict[str, dict[str, float]] = {
-    "FW": {"shot_accuracy": 0.42, "xg_per_shot": 0.12, "rating": 0.69},
-    "MF": {"shot_accuracy": 0.35, "xg_per_shot": 0.09, "rating": 0.68},
-    "DF": {"shot_accuracy": 0.30, "xg_per_shot": 0.07, "rating": 0.67},
+    # Calibrated on Bzzoiro 2025-2026 (≥450 min, Big5 + UCL)
+    "FW": {"shot_accuracy": 0.515, "xg_per_shot": 0.176, "rating": 0.676},
+    "MF": {"shot_accuracy": 0.442, "xg_per_shot": 0.116, "rating": 0.683},
+    "DF": {"shot_accuracy": 0.365, "xg_per_shot": 0.105, "rating": 0.678},
 }
 _GOALSCORER_FALLBACK_AVGS: dict[str, float] = {
     "shot_accuracy": 0.37, "xg_per_shot": 0.10, "rating": 0.68,

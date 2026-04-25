@@ -105,12 +105,13 @@ CLAMP_LAMBDA_MAX = 2.0
 ASSIST_GOAL_RATE: float = 0.65
 
 ASSIST_POSITION_AVGS: dict[str, dict[str, float]] = {
-    "FW": {"xa_per_90": 0.08, "key_pass_per_90": 0.30, "accurate_cross_per_90": 0.15},
-    "MF": {"xa_per_90": 0.06, "key_pass_per_90": 0.55, "accurate_cross_per_90": 0.20},
-    "DF": {"xa_per_90": 0.03, "key_pass_per_90": 0.20, "accurate_cross_per_90": 0.40},
+    # Calibrated on Bzzoiro 2025-2026 (≥450 min, Big5 + UCL)
+    "FW": {"xa_per_90": 0.109, "key_pass_per_90": 1.164, "accurate_cross_per_90": 0.373},
+    "MF": {"xa_per_90": 0.116, "key_pass_per_90": 1.172, "accurate_cross_per_90": 0.527},
+    "DF": {"xa_per_90": 0.056, "key_pass_per_90": 0.532, "accurate_cross_per_90": 0.306},
 }
 _ASSIST_FALLBACK_AVGS: dict[str, float] = {
-    "xa_per_90": 0.06, "key_pass_per_90": 0.45, "accurate_cross_per_90": 0.22,
+    "xa_per_90": 0.093, "key_pass_per_90": 0.956, "accurate_cross_per_90": 0.402,
 }
 
 CROSS_ACC_LEAGUE_AVG: float = 0.35

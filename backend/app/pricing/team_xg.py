@@ -28,10 +28,8 @@ from app.pricing.assist import (
     ASSIST_GOAL_RATE,
     calculate_assist_lambda,
     calculate_creation_multiplier_v2,
-    calculate_xa_conversion,
 )
 from app.pricing.goalscorer import (
-    calculate_conversion_rate,
     calculate_finishing_multiplier,
     calculate_goalscorer_lambda,
 )
@@ -45,6 +43,11 @@ PENS_PER_MATCH = 0.10
 PEN_CONVERSION = 0.78
 CLAMP_MULTIPLIER_MIN = 0.5
 CLAMP_MULTIPLIER_MAX = 2.0
+
+FORM_WEIGHTS_BY_POSITION: dict[str, float] = {
+    "FW": 0.25, "MF": 0.20, "DF": 0.10,
+}
+_FORM_WEIGHT_DEFAULT = 0.20
 
 POSITION_NPXG_PRIORS: dict[str, float] = {
     "FW": 0.25, "MF": 0.08, "DF": 0.02, "GK": 0.00,
@@ -278,12 +281,14 @@ def compute_player_shares(
         exp_mins = min(90.0, max(1.0, avg_mins))
         mins_ratio = exp_mins / 90.0
 
-        # Goal weight — blend season xg_per_90 + form_xg_5
+        # Goal weight — blend season xg_per_90 + form_xg_5 (position-specific form weight)
+        pos = p.get("position")
+        form_w = FORM_WEIGHTS_BY_POSITION.get(pos or "", _FORM_WEIGHT_DEFAULT)
         xg_per_90 = p.get("npxg_per_90") or p.get("xg_per_90") or 0.0
         form_xg = p.get("form_xg_5")
         if form_xg is not None and avg_mins > 0:
             form_rate = form_xg / (5.0 * avg_mins / 90.0)
-            blended_xg = 0.60 * xg_per_90 + 0.40 * form_rate
+            blended_xg = (1 - form_w) * xg_per_90 + form_w * form_rate
         else:
             blended_xg = xg_per_90
         goal_weight = blended_xg * mins_ratio
@@ -293,7 +298,7 @@ def compute_player_shares(
         form_xa = p.get("form_assists_5")
         if form_xa is not None and avg_mins > 0:
             form_xa_rate = form_xa / (5.0 * avg_mins / 90.0)
-            blended_xa = 0.60 * xa_per_90 + 0.40 * form_xa_rate
+            blended_xa = (1 - form_w) * xa_per_90 + form_w * form_xa_rate
         else:
             blended_xa = xa_per_90
         assist_weight = blended_xa * mins_ratio
@@ -386,8 +391,7 @@ def allocate_player(
         "goals": share.goals_total,
     }
     finishing_mult = calculate_finishing_multiplier(goal_stats, share.position)
-    conversion = calculate_conversion_rate(goal_stats)
-    lambda_open_play = share.npxg_share * team_match_xg * finishing_mult * conversion
+    lambda_open_play = share.npxg_share * team_match_xg * finishing_mult
     lambda_penalty = PEN_CONVERSION * PENS_PER_MATCH * mins_ratio if is_pen_taker else 0.0
     lambda_total = max(0.001, min(lambda_open_play + lambda_penalty, 3.0))
     prob_goal = 1 - math.exp(-lambda_total)
@@ -404,8 +408,7 @@ def allocate_player(
         "assists": share.assists_total,
     }
     creation_mult = calculate_creation_multiplier_v2(assist_stats, share.position)
-    xa_conv = calculate_xa_conversion(assist_stats)
-    lambda_assist = calculate_assist_lambda(share.xa_share, budget_assists, creation_mult, xa_conv)
+    lambda_assist = calculate_assist_lambda(share.xa_share, budget_assists, creation_mult, 1.0)
     prob_assist = 1 - math.exp(-lambda_assist)
     fair_odds_assist = round(1 / prob_assist, 2) if prob_assist > 0 else 9999.0
 
