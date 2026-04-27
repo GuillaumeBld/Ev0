@@ -214,11 +214,29 @@ async def delete_fixture(
     fixture_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a fixture."""
+    """Delete a fixture and all related records (odds, recommendations, lineups, etc.)."""
+    from sqlalchemy import delete as sa_delete
+    from app.models.lineups import TeamLineup
+    from app.models.match_events import MatchEvent
+    from app.models.match_odds import MatchOddsSnapshot
+    from app.models.odds import OddsSnapshot
+    from app.models.odds_scrape_state import OddsScrapeState
+    from app.models.player_match_minutes import PlayerMatchMinutes
+    from app.models.poll_state import OddsPortalPollState
+    from app.models.recommendations import Recommendation
+    from app.models.team_xg import TeamXgEstimate
+
     result = await db.execute(select(Fixture).where(Fixture.id == fixture_id))
     fixture = result.scalar_one_or_none()
     if not fixture:
         raise HTTPException(status_code=404, detail="Fixture not found")
+
+    for model in (
+        Recommendation, MatchOddsSnapshot, OddsSnapshot, PlayerOddsSnapshot,
+        MatchEvent, TeamLineup, PlayerMatchMinutes, TeamXgEstimate, OddsScrapeState, OddsPortalPollState,
+    ):
+        await db.execute(sa_delete(model).where(model.fixture_id == fixture_id))
+
     await db.delete(fixture)
     await db.commit()
 
