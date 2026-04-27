@@ -1,7 +1,7 @@
 """Background worker for scheduled data ingestion.
 
 Runs periodic jobs via APScheduler:
-- Fixtures sync (daily at 06:00 UTC)
+- Fixtures sync (daily at 06:00 UTC) — Bzzoiro as sole calendar source
 - Player stats update (daily at 07:00 UTC)
 - Match events sync (daily at 08:00 UTC)
 - Odds snapshots (hourly for upcoming matches)
@@ -28,8 +28,8 @@ from app.ingestion.bzzoiro.sync_events import sync_events
 from app.ingestion.bzzoiro.sync_player_stats import sync_player_stats
 from app.ingestion.bzzoiro.sync_players import sync_players
 from app.ingestion.bzzoiro.sync_predictions import sync_predictions
+from app.ingestion.bzzoiro.sync_fixtures_from_bzz import sync_fixtures_from_bzz
 from app.ingestion.bzzoiro.sync_reference import sync_leagues, sync_teams
-from app.ingestion.fixture_matcher import match_event_to_fixture_by_teams
 from app.ingestion.storage import (
     store_match_events,
     store_odds_snapshot,
@@ -47,15 +47,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_LEAGUES = ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a", "champions_league"]
 CURRENT_SEASON = "2025-2026"
 
-# League key helpers (formerly in app.ingestion.odds, inlined after that module was removed)
-_SPORT_KEYS = {
-    "ligue_1":          "soccer_france_ligue_one",
-    "premier_league":   "soccer_epl",
-    "bundesliga":       "soccer_germany_bundesliga",
-    "la_liga":          "soccer_spain_la_liga",
-    "serie_a":          "soccer_italy_serie_a",
-    "champions_league": "soccer_uefa_champs_league",
-}
 _LEAGUE_ALIASES = {"ligue1": "ligue_1", "ligue-1": "ligue_1"}
 
 
@@ -64,25 +55,6 @@ def normalize_league_key(key: str) -> str:
     return _LEAGUE_ALIASES.get(key, key)
 
 
-async def fetch_events_for_league(league: str) -> list[dict]:
-    """Fetch upcoming fixtures for a league from The Odds API (used by job_sync_fixtures)."""
-    import httpx
-    from app.config import settings as _settings
-    sport_key = _SPORT_KEYS.get(league)
-    if not sport_key:
-        logger.warning("fetch_events_for_league: unknown league %s", league)
-        return []
-    if not _settings.odds_api_key:
-        return []
-    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/events"
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url, params={"apiKey": _settings.odds_api_key})
-            resp.raise_for_status()
-            return resp.json()
-    except Exception as exc:
-        logger.error("fetch_events_for_league %s: %s", league, exc)
-        return []
 
 
 async def _load_user_settings() -> dict[str, str]:
@@ -113,73 +85,25 @@ def _get_leagues(user_settings: dict[str, str]) -> list[str]:
     return DEFAULT_LEAGUES
 
 
-# ── Job 1: Fixtures Sync ─────────────────────────────────────────
+# ── Job 1: Fixtures Sync (Bzzoiro) ───────────────────────────────
 
 
 async def job_sync_fixtures():
-    """Sync fixture kickoff_utc from The Odds API.
+    """Create missing Fixtures and resolve placeholder team names from BzzEvents.
 
-    Fetches upcoming events per league and updates kickoff_utc where it
-    differs from the DB value. Matches by team names only (no date window)
-    to handle placeholder kickoffs.
+    Bzzoiro is the authoritative fixture calendar source. This job replaces
+    the legacy The Odds API sync.
     """
-    logger.info("=== Starting fixture sync ===")
-    user_settings = await _load_user_settings()
-    leagues = _get_leagues(user_settings)
-
-    total_updated = 0
-
-    for league in leagues:
-        try:
-            events = await fetch_events_for_league(league)
-            if not events:
-                logger.info("job_sync_fixtures: no events for %s", league)
-                continue
-
-            async with async_session() as session:
-                from app.models.fixtures import Fixture
-                result = await session.execute(
-                    select(Fixture).where(
-                        Fixture.league == league,
-                        Fixture.status != "finished",
-                    )
-                )
-                db_fixtures = list(result.scalars().all())
-
-                updated = 0
-                for event in events:
-                    fixture = match_event_to_fixture_by_teams(event, db_fixtures)
-                    if not fixture:
-                        continue
-
-                    api_kickoff_raw = event.get("commence_time", "")
-                    if not api_kickoff_raw:
-                        continue
-                    try:
-                        api_kickoff = datetime.fromisoformat(
-                            api_kickoff_raw.replace("Z", "+00:00")
-                        )
-                    except (ValueError, TypeError):
-                        continue
-
-                    if fixture.kickoff_utc != api_kickoff:
-                        fixture.kickoff_utc = api_kickoff
-                        session.add(fixture)
-                        updated += 1
-
-                await session.commit()
-                logger.info(
-                    "job_sync_fixtures: %d kickoffs updated for %s",
-                    updated, league,
-                )
-                total_updated += updated
-
-        except Exception as exc:
-            logger.error(
-                "job_sync_fixtures: error on %s: %s", league, exc, exc_info=True
+    logger.info("=== Starting fixture sync (Bzzoiro) ===")
+    try:
+        async with async_session() as session:
+            created, updated = await sync_fixtures_from_bzz(session)
+            logger.info(
+                "=== Fixture sync complete: %d created, %d updated ===",
+                created, updated,
             )
-
-    logger.info("=== Fixture sync complete: %d total kickoffs updated ===", total_updated)
+    except Exception as exc:
+        logger.error("job_sync_fixtures: %s", exc, exc_info=True)
 
 
 # ── Job 2: Player Stats Sync ─────────────────────────────────────
@@ -1533,12 +1457,12 @@ def create_scheduler() -> AsyncIOScheduler:
     """Create and configure the scheduler."""
     scheduler = AsyncIOScheduler()
 
-    # Fixtures: Daily at 06:00 UTC
+    # Fixtures: Daily at 06:00 UTC (Bzzoiro — create missing + fix placeholders)
     scheduler.add_job(
         job_sync_fixtures,
         CronTrigger(hour=6, minute=0),
         id="sync_fixtures",
-        name="Sync fixture kickoffs via The Odds API",
+        name="Sync fixtures from Bzzoiro (create + placeholder resolution)",
         replace_existing=True,
     )
 
