@@ -286,3 +286,13 @@ async def create_odds(
         implied_probability=round(1.0 / snapshot.odds, 6),
         snapshot_utc=str(snapshot.scraped_at),
     )
+
+
+@router.post("/admin/sync-fixtures", response_model=dict)
+async def admin_sync_fixtures(
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger sync_fixtures_from_bzz immediately (create missing + fix placeholders)."""
+    from app.ingestion.bzzoiro.sync_fixtures_from_bzz import sync_fixtures_from_bzz
+    created, updated = await sync_fixtures_from_bzz(db)
+    return {"created": created, "updated": updated}
