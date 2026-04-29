@@ -21,10 +21,14 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # player_stats references players.id — drop child first
-    op.drop_table("player_stats")
-    op.drop_table("players")
-    op.drop_table("teams")
+    # Drop FK constraints from tables that reference players.id (idempotent: IF EXISTS)
+    op.execute("ALTER TABLE match_events DROP CONSTRAINT IF EXISTS match_events_player_id_fkey")
+    op.execute("ALTER TABLE recommendations DROP CONSTRAINT IF EXISTS recommendations_player_id_fkey")
+
+    # Drop legacy tables (player_stats has FK → players so must go first)
+    op.execute("DROP TABLE IF EXISTS player_stats")
+    op.execute("DROP TABLE IF EXISTS players")
+    op.execute("DROP TABLE IF EXISTS teams")
 
 
 def downgrade() -> None:

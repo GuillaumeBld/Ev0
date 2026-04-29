@@ -18,9 +18,7 @@ class MatchEvent(Base, TimestampMixin):
 
     # Player
     player_name: Mapped[str] = mapped_column(String(200))
-    player_id: Mapped[int | None] = mapped_column(
-        ForeignKey("players.id"), nullable=True
-    )
+    player_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Event details
     event_type: Mapped[str] = mapped_column(

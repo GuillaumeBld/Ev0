@@ -17,7 +17,7 @@ class Recommendation(Base, TimestampMixin):
 
     # References
     fixture_id: Mapped[int] = mapped_column(ForeignKey("fixtures.id"), index=True)
-    player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
+    player_id: Mapped[int | None] = mapped_column(nullable=True)
     player_name: Mapped[str] = mapped_column(String(200))
 
     # Market
