@@ -1213,6 +1213,26 @@ async def job_sync_statshub_full_season():
     await job_aggregate_season_stats()
 
 
+async def job_poll_statshub_lineups():
+    """Every 15 min: poll StatsHub for confirmed/predicted lineups (J-2h → J-10min window).
+
+    Only processes fixtures without an existing official lineup.
+    Upserts team_lineups + team_lineup_players for home and away teams.
+    """
+    logger.info("=== Starting StatsHub lineup poll ===")
+    try:
+        from app.ingestion.statshub.sync_lineups import sync_statshub_lineups
+        async with async_session() as session:
+            upserted = await sync_statshub_lineups(session)
+            if upserted:
+                logger.info("StatsHub lineups: %d rows upserted", upserted)
+            else:
+                logger.debug("StatsHub lineups: nothing to upsert this tick")
+    except Exception as exc:
+        logger.error("Error in StatsHub lineup poll: %s", exc, exc_info=True)
+    logger.info("=== StatsHub lineup poll complete ===")
+
+
 async def job_sync_bzzoiro_predictions():
     """Daily at 07:00 UTC: sync Bzzoiro match predictions."""
     logger.info("=== Starting Bzzoiro predictions sync ===")
@@ -1408,6 +1428,17 @@ def create_scheduler() -> AsyncIOScheduler:
         CronTrigger(day_of_week="mon", hour=3, minute=0),
         id="sync_statshub_full_season",
         name="StatsHub: full-season gap-fill (toutes équipes)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # StatsHub lineup poll: every 15 min (J-2h → J-10min window before KO)
+    scheduler.add_job(
+        job_poll_statshub_lineups,
+        IntervalTrigger(minutes=15),
+        id="poll_statshub_lineups",
+        name="StatsHub: poll official lineups (J-2h window)",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

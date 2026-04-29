@@ -172,8 +172,6 @@ curl -s "https://www.statshub.com/api/event/lineup-status?ids=14023940" \
 
 ## Incident : compo officielle non scrappée
 
-> ⚠️ Applicable une fois `job_poll_statshub_lineups` implémenté.
-
 **Symptôme :** Le calculateur affiche le badge "Dernière connue" ou "Manuel" pour un match
 dont le KO est dans moins d'1h. Les logs ne montrent pas `StatsHub lineup: upserted official`.
 

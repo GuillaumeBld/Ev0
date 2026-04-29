@@ -227,7 +227,7 @@ async def sync_statshub_gap_fill(
             if not data:
                 continue
 
-            for _player_key, player_info in data.items():
+            for player_info in data.get("data", []):
                 if not isinstance(player_info, dict):
                     continue
 

@@ -114,9 +114,9 @@ Sans compo officielle, le pricing est calculé sur l'ensemble des joueurs connus
 
 ### Statut
 
-> ⚠️ Ce job est **en cours d'implémentation**. La spec est disponible dans
+> ✅ Ce job est **implémenté**. La spec complète est disponible dans
 > `docs/superpowers/specs/2026-04-28-statshub-lineup-scraper-design.md`.
-> En attendant, les compos peuvent être saisies manuellement via le dashboard → **Compos**.
+> Les compos peuvent également être saisies manuellement via le dashboard → **Compos** (fallback).
 
 ---
 

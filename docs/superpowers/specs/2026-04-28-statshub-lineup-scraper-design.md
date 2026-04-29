@@ -1,6 +1,6 @@
 # StatsHub — Scraper de Compositions Officielles Design Spec
 **Date:** 2026-04-28
-**Status:** À implémenter
+**Status:** Implemented
 
 ---
 

@@ -1,11 +1,12 @@
 """StatsHub public API client — no authentication required.
 
-Endpoint used: GET /api/team/{team_id}/players/performance
-               ?tournamentId={tournament_id}&seasonId={season_id}
+Endpoints:
+  GET /api/team/{team_id}/players/performance
+      ?tournamentId={tournament_id}&seasonId={season_id}
+  Returns {"data": [...players...], "events": [...], "currentFixturePlayerStats": [...]}
 
-Returns a dict keyed by player slug, each value containing:
-  - id, internalId, slug, name, position
-  - stats: dict[str, dict] keyed by eventId (SofaScore event ID as string)
+  GET /api/event/lineup-status?ids={id1},{id2},...
+  Returns {"data": {"event_id": "none"|"predicted"|"confirmed"}}
 """
 from __future__ import annotations
 
@@ -91,4 +92,45 @@ class StatshubClient:
             "statshub: all retries failed for team=%d tournament=%d season=%d",
             team_id, tournament_id, season_id,
         )
+        return {}
+
+    async def get_lineup_status(self, event_ids: list[int]) -> dict[str, str]:
+        """Poll lineup status for multiple events in one bulk request.
+
+        Returns dict[event_id_str, status] where status is "none"|"predicted"|"confirmed".
+        """
+        if not self._client:
+            raise RuntimeError("Use StatshubClient as async context manager")
+        if not event_ids:
+            return {}
+
+        ids_param = ",".join(str(eid) for eid in event_ids)
+        path = "/api/event/lineup-status"
+        params = {"ids": ids_param}
+
+        for attempt in range(4):
+            try:
+                resp = await self._client.get(path, params=params)
+                if resp.status_code == 404:
+                    return {}
+                if resp.status_code in (429, 502, 503, 504):
+                    wait = 2 ** attempt * 3
+                    logger.warning(
+                        "statshub lineup-status HTTP %d — retry %d in %ds",
+                        resp.status_code, attempt + 1, wait,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                payload = resp.json()
+                return payload.get("data", {}) if isinstance(payload, dict) else {}
+            except httpx.TimeoutException:
+                wait = 2 ** attempt * 3
+                logger.warning(
+                    "statshub lineup-status timeout — retry %d in %ds",
+                    attempt + 1, wait,
+                )
+                await asyncio.sleep(wait)
+
+        logger.error("statshub: lineup-status all retries failed (ids=%s)", ids_param)
         return {}
