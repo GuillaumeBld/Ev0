@@ -14,8 +14,9 @@ from app.models.lineups import TeamLineup, TeamLineupPlayer
 
 PRIORITY: dict[str, int] = {
     "official": 0,
-    "probable_manual": 1,
-    "last_known": 2,
+    "probable_statshub": 1,
+    "probable_manual": 2,
+    "last_known": 3,
 }
 
 
@@ -52,7 +53,7 @@ async def resolve_lineup(
         select(TeamLineup).where(
             TeamLineup.fixture_id == fixture_id,
             TeamLineup.team == team,
-            TeamLineup.lineup_type.in_(["official", "probable_manual"]),
+            TeamLineup.lineup_type.in_(["official", "probable_statshub", "probable_manual"]),
         )
     )
     rows = result.scalars().all()

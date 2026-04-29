@@ -35,7 +35,7 @@ _BZZ_POSITION_MAP: dict[str, str] = {"G": "GK", "D": "DF", "M": "MF", "F": "FW"}
 def _normalize_position(raw_position: str | None) -> str | None:
     """Map various position formats to canonical FW/MF/DF/GK.
 
-    """Handles Bzzoiro single-char (G/D/M/F) and legacy multi-char formats."""
+    Handles Bzzoiro single-char (G/D/M/F) and legacy multi-char formats."""
     if not raw_position:
         return None
     pos = raw_position.strip().upper()
