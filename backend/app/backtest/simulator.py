@@ -18,14 +18,13 @@ from app.ingestion.odds import normalize_selection_name
 from app.models.fixtures import Fixture
 from app.models.match_events import MatchEvent
 from app.models.odds import OddsSnapshot
-from app.models.players import Player, PlayerStats
+from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat
 from app.pricing.goalscorer import calculate_edge
 from app.pricing.team_xg import (
     PENS_PER_MATCH,
     POSITION_NPXG_PRIORS,
     POSITION_XA_PRIORS,
     SHRINKAGE_N,
-    compute_team_stats,
     estimate_team_match_xg,
 )
 from app.services.recommendation_service import (
@@ -86,14 +85,9 @@ async def simulate_historical(
     # 4. Build player stats index (latest stats before each fixture)
     player_stats_cache = await _load_player_stats_index(db)
 
-    # 5. Compute Top-Down team stats
-    ev0_team_stats = await compute_team_stats(db)
-    all_ts = list(ev0_team_stats.values())
-    league_avg_xg = (
-        sum(ts.attack_xg_per_match for ts in all_ts) / len(all_ts) if all_ts else 1.2
-    )
-    xga_vals = [ts.defense_xga_per_match for ts in all_ts if ts.defense_xga_per_match > 0]
-    league_avg_xga = sum(xga_vals) / len(xga_vals) if xga_vals else league_avg_xg
+    # 5. Team stats — use fixed league averages (Bzzoiro-based pricing uses MarketXgService)
+    league_avg_xg = 1.2
+    league_avg_xga = 1.2
 
     # Pre-compute team npxg/xa totals from player_stats_cache
     from collections import defaultdict
@@ -334,34 +328,31 @@ async def _load_player_stats_index(
     """Load latest player stats, keyed by player name."""
     latest_subq = (
         select(
-            PlayerStats.player_id,
-            func.max(PlayerStats.as_of_utc).label("max_date"),
+            BzzPlayerSeasonStat.player_api_id,
+            func.max(BzzPlayerSeasonStat.season).label("max_season"),
         )
-        .group_by(PlayerStats.player_id)
+        .group_by(BzzPlayerSeasonStat.player_api_id)
         .subquery()
     )
 
     result = await db.execute(
-        select(
-            PlayerStats,
-            Player.name,
-            Player.team,
-            Player.position,
-        )
-        .join(Player, Player.id == PlayerStats.player_id)
+        select(BzzPlayerSeasonStat, BzzPlayer)
+        .join(BzzPlayer, BzzPlayer.api_id == BzzPlayerSeasonStat.player_api_id)
         .join(
             latest_subq,
-            (PlayerStats.player_id == latest_subq.c.player_id)
-            & (PlayerStats.as_of_utc == latest_subq.c.max_date),
+            (BzzPlayerSeasonStat.player_api_id == latest_subq.c.player_api_id)
+            & (BzzPlayerSeasonStat.season == latest_subq.c.max_season),
         )
     )
 
+    _bzz_pos = {"G": "GK", "D": "DF", "M": "MF", "F": "FW"}
     stats_index: dict[str, dict[str, Any]] = {}
     for row in result.all():
-        ps: PlayerStats = row[0]
-        player_name: str = row[1]
-        team: str | None = row[2]
-        raw_position: str | None = row[3]
+        ps: BzzPlayerSeasonStat = row[0]
+        player: BzzPlayer = row[1]
+        player_name: str = player.name
+        team: str | None = player.current_team_name
+        raw_position: str | None = _bzz_pos.get(player.position or "", None)
 
         position = _normalize_position(raw_position)
         if position == "GK":
@@ -371,10 +362,10 @@ async def _load_player_stats_index(
         matches = ps.matches_played or 1
         expected_minutes = minutes / matches if matches > 0 else 75.0
 
-        raw_cr = (ps.goals / ps.xg) if ps.xg and ps.xg > 0 else 1.0
-        conversion_rate = (
-            max(0.5, min(2.0, raw_cr)) if (ps.matches_played or 0) >= 3 else 1.0
-        )
+        xg = ps.expected_goals or 0.0
+        goals = ps.goals or 0
+        raw_cr = (goals / xg) if xg > 0 else 1.0
+        conversion_rate = max(0.5, min(2.0, raw_cr)) if matches >= 3 else 1.0
 
         pos_defaults = (
             POSITION_DEFAULTS.get(position, DEFAULT_POSITION_FALLBACK)
@@ -387,13 +378,13 @@ async def _load_player_stats_index(
         stats_index[player_name] = {
             "xg_per_90": xg_per_90,
             "xa_per_90": xa_per_90,
-            "npxg_total": ps.npxg or 0.0,
-            "xa_total": ps.xa or 0.0,
+            "npxg_total": xg,
+            "xa_total": ps.expected_assists or 0.0,
             "expected_minutes": expected_minutes,
             "conversion_rate": conversion_rate,
             "team": team,
             "position": position,
-            "matches_played": ps.matches_played,
+            "matches_played": matches,
         }
 
     return stats_index
@@ -426,16 +417,16 @@ def _find_player_stats(
 async def _compute_team_strengths(
     db: AsyncSession,
 ) -> dict[str, dict[str, float]]:
-    """Compute average xG per match for each team."""
+    """Compute average xG per match for each team using Bzzoiro season stats."""
     result = await db.execute(
         select(
-            Player.team,
-            func.sum(PlayerStats.xg).label("total_xg"),
-            func.sum(PlayerStats.matches_played).label("total_matches"),
+            BzzPlayer.current_team_name,
+            func.sum(BzzPlayerSeasonStat.expected_goals).label("total_xg"),
+            func.max(BzzPlayerSeasonStat.matches_played).label("team_matches"),
         )
-        .join(Player, Player.id == PlayerStats.player_id)
-        .where(Player.team.isnot(None))
-        .group_by(Player.team)
+        .join(BzzPlayer, BzzPlayer.api_id == BzzPlayerSeasonStat.player_api_id)
+        .where(BzzPlayer.current_team_name.isnot(None))
+        .group_by(BzzPlayer.current_team_name)
     )
 
     strengths: dict[str, dict[str, float]] = {}

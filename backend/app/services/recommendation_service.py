@@ -20,7 +20,6 @@ from app.strategy.selector import RecommendationFilter, select_bets
 logger = logging.getLogger(__name__)
 
 # Position-based xG/xA defaults for players with stats in DB but missing per-90 values
-# Kept for backward compat: imported by simulator.py and generate_synthetic_odds.py
 POSITION_DEFAULTS: dict[str, dict[str, float]] = {
     "FW": {"xg_per_90": 0.35, "xa_per_90": 0.15},
     "MF": {"xg_per_90": 0.10, "xa_per_90": 0.12},
@@ -36,9 +35,7 @@ _BZZ_POSITION_MAP: dict[str, str] = {"G": "GK", "D": "DF", "M": "MF", "F": "FW"}
 def _normalize_position(raw_position: str | None) -> str | None:
     """Map various position formats to canonical FW/MF/DF/GK.
 
-    Handles Bzzoiro single-char (G/D/M/F) and legacy multi-char formats.
-    Kept for backward compat: imported by simulator.py and generate_synthetic_odds.py.
-    """
+    """Handles Bzzoiro single-char (G/D/M/F) and legacy multi-char formats."""
     if not raw_position:
         return None
     pos = raw_position.strip().upper()

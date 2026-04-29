@@ -109,75 +109,9 @@ async def _compute_model_xg(
     session: AsyncSession,
     event_api_id: int,
 ) -> tuple[float | None, float | None]:
-    """Compute model-based xG using team stats from team_xg.compute_team_stats().
+    """Model-based xG fallback — not available without legacy PlayerStats.
 
-    Looks up the BzzEvent to find home/away team api_ids, then maps them to
-    team names via BzzTeam, and computes Dixon-Coles style match xG.
+    The BZZOIRO primary path (BzzEvent.home_xg / away_xg) is used in production.
+    This path returns None to signal that MarketXgService should use its own fallback.
     """
-    from app.models.bzzoiro import BzzEvent, BzzTeam
-    from app.pricing.team_xg import compute_team_stats, estimate_team_match_xg
-
-    result = await session.execute(
-        select(BzzEvent).where(BzzEvent.api_id == event_api_id)
-    )
-    bzz_event = result.scalar_one_or_none()
-    if bzz_event is None:
-        return (None, None)
-
-    # Resolve home/away team names from BzzTeam
-    home_team_name: str | None = None
-    away_team_name: str | None = None
-
-    if bzz_event.home_team_api_id is not None:
-        home_team_res = await session.execute(
-            select(BzzTeam).where(BzzTeam.api_id == bzz_event.home_team_api_id)
-        )
-        home_team_obj = home_team_res.scalar_one_or_none()
-        if home_team_obj:
-            home_team_name = home_team_obj.name
-
-    if bzz_event.away_team_api_id is not None:
-        away_team_res = await session.execute(
-            select(BzzTeam).where(BzzTeam.api_id == bzz_event.away_team_api_id)
-        )
-        away_team_obj = away_team_res.scalar_one_or_none()
-        if away_team_obj:
-            away_team_name = away_team_obj.name
-
-    if home_team_name is None or away_team_name is None:
-        logger.warning(
-            "Could not resolve team names for BzzEvent api_id=%d", event_api_id
-        )
-        return (None, None)
-
-    team_stats = await compute_team_stats(session)
-    if not team_stats:
-        return (None, None)
-
-    home_stats = team_stats.get(home_team_name)
-    away_stats = team_stats.get(away_team_name)
-
-    if home_stats is None or away_stats is None:
-        logger.debug(
-            "Team stats missing for %r or %r", home_team_name, away_team_name
-        )
-        return (None, None)
-
-    league_avg_xg = sum(s.attack_xg_per_match for s in team_stats.values()) / len(team_stats)
-    league_avg_xga = sum(s.defense_xga_per_match for s in team_stats.values()) / len(team_stats)
-
-    home_xg = estimate_team_match_xg(
-        attack_xg=home_stats.attack_xg_per_match,
-        opponent_xga=away_stats.defense_xga_per_match,
-        league_avg_xg=league_avg_xg,
-        league_avg_xga=league_avg_xga,
-        is_home=True,
-    )
-    away_xg = estimate_team_match_xg(
-        attack_xg=away_stats.attack_xg_per_match,
-        opponent_xga=home_stats.defense_xga_per_match,
-        league_avg_xg=league_avg_xg,
-        league_avg_xga=league_avg_xga,
-        is_home=False,
-    )
-    return (home_xg, away_xg)
+    return (None, None)

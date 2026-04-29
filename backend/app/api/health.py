@@ -10,9 +10,9 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.models.bzzoiro import BzzPlayerMatchStat
 from app.models.fixtures import Fixture
 from app.models.player_odds_snapshot import PlayerOddsSnapshot
-from app.models.players import PlayerStats
 from app.models.recommendations import Recommendation
 
 router = APIRouter()
@@ -107,14 +107,14 @@ async def data_quality(db: AsyncSession = Depends(get_db)):
         )
     )
 
-    # Player Stats
-    result = await db.execute(select(func.count(PlayerStats.id), func.max(PlayerStats.as_of_utc)))
+    # Bzzoiro Player Match Stats
+    result = await db.execute(select(func.count(BzzPlayerMatchStat.id), func.max(BzzPlayerMatchStat.updated_at)))
     count, last = result.one()
     fresh = _freshness(last)
-    issues = [] if count and count > 0 else ["Aucune stat joueur"]
+    issues = [] if count and count > 0 else ["Aucune stat joueur Bzzoiro"]
     items.append(
         DataQualityItem(
-            source="Player Stats",
+            source="Bzzoiro Player Stats",
             last_sync=str(last) if last else None,
             record_count=count or 0,
             freshness=fresh,

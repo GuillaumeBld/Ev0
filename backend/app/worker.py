@@ -106,246 +106,6 @@ async def job_sync_fixtures():
         logger.error("job_sync_fixtures: %s", exc, exc_info=True)
 
 
-# ── Job 2: Player Stats Sync ─────────────────────────────────────
-
-
-async def job_sync_player_stats():
-    """Sync player stats from Understat + Sofascore (Model C).
-
-    Uses sync_all_players which fetches from both sources,
-    stores per-source stats, and computes averages.
-    """
-    logger.info("=== Starting player stats sync ===")
-
-    try:
-        # Try the smart_sync first (Firecrawl+LLM+API-Football)
-        # Falls back gracefully if API keys missing
-        try:
-            from app.ingestion.smart_sync import smart_sync_all
-
-            results = await smart_sync_all()
-            for r in results:
-                status = "OK" if r.get("success") else "FAIL"
-                logger.info(
-                    "Smart sync %s: %s (strategy=%s)",
-                    r.get("league"),
-                    status,
-                    r.get("strategy"),
-                )
-            logger.info("=== Player stats sync complete (smart) ===")
-            return
-        except Exception as exc:
-            logger.warning("Smart sync failed, falling back to direct sync: %s", exc)
-
-        # Fallback: direct Understat + FotMob sync
-        from app.ingestion.sync_all_players import sync_all
-
-        await sync_all()
-        logger.info("=== Player stats sync complete (direct) ===")
-
-    except Exception as exc:
-        logger.error("Error syncing player stats: %s", exc, exc_info=True)
-
-
-# ── Job 2b: Sofascore Stats Sync ─────────────────────────────────
-
-
-async def job_sync_sofascore_stats():
-    """Daily at 07:15 UTC: sync player stats from Sofascore API.
-
-    Fetches BCC, accurate crosses, through balls, SOT, TAP per player.
-    Merges with existing Understat data (source=average) via normalized name.
-    Updates player_stats rows with the new Sofascore fields.
-
-    Note: Sofascore may return 403 from VPS (Cloudflare block). In that case
-    this job completes with 0 updates — data must be imported manually.
-    """
-    logger.info("=== Starting Sofascore stats sync ===")
-
-    try:
-        from datetime import UTC, date
-
-        from app.ingestion.sofascore_scraper import LEAGUES, fetch_league_players
-        from app.ingestion.player_stats import normalize_player_name
-        from app.models.players import Player, PlayerStats
-
-        today = date.today()
-        season = f"{today.year - 1}/{today.year}" if today.month < 7 else f"{today.year}/{today.year + 1}"
-        as_of = datetime.now(UTC)
-
-        user_settings = await _load_user_settings()
-        active_leagues = _get_leagues(user_settings)
-
-        total_updated = 0
-
-        for league_key in active_leagues:
-            cfg = LEAGUES.get(league_key)
-            if not cfg:
-                continue
-
-            try:
-                ss_players = await fetch_league_players(cfg["tournament_id"], cfg["season_id"])
-                logger.info(
-                    "Sofascore: fetched %d players for %s",
-                    len(ss_players), league_key,
-                )
-            except Exception as exc:
-                logger.warning("Sofascore fetch failed for %s (blocked?): %s", league_key, exc)
-                continue
-
-            # Build lookup by normalized name
-            ss_lookup = {normalize_player_name(p.name): p for p in ss_players}
-
-            async with async_session() as session:
-                # Load all players in the DB for this league
-                result = await session.execute(
-                    select(Player).where(Player.league == league_key)
-                )
-                db_players = result.scalars().all()
-
-                updated = 0
-                for player in db_players:
-                    norm = normalize_player_name(player.name)
-                    ss = ss_lookup.get(norm)
-                    if not ss:
-                        continue
-
-                    # Find latest average snapshot for this player
-                    stats_result = await session.execute(
-                        select(PlayerStats)
-                        .where(
-                            PlayerStats.player_id == player.id,
-                            PlayerStats.source == "average",
-                            PlayerStats.season == CURRENT_SEASON,
-                        )
-                        .order_by(PlayerStats.as_of_utc.desc())
-                        .limit(1)
-                    )
-                    stat = stats_result.scalar_one_or_none()
-
-                    if stat is None:
-                        continue
-
-                    # Patch Sofascore fields
-                    stat.shots_on_target = ss.shots_on_target
-                    stat.touches_attack_pen_area = ss.touches_attack_pen_area
-                    stat.big_chances_created = ss.big_chances_created
-                    stat.accurate_crosses = ss.accurate_crosses
-                    stat.total_crosses = ss.total_crosses
-                    stat.through_balls = ss.through_balls
-                    stat.key_passes = ss.key_passes
-                    stat.sofascore_rating = ss.rating or None
-                    stat.sofascore_rating = ss.rating if ss.rating else None
-
-                    # Recompute per-90s
-                    stat.compute_per_90s()
-                    stat.as_of_utc = as_of
-
-                    updated += 1
-
-                await session.commit()
-                logger.info("Sofascore: updated %d players for %s", updated, league_key)
-                total_updated += updated
-
-        logger.info("=== Sofascore stats sync complete — %d players updated ===", total_updated)
-
-    except Exception as exc:
-        logger.error("Error in Sofascore stats sync: %s", exc, exc_info=True)
-
-
-# ── Job 2c: FPL / Opta Stats Sync ────────────────────────────────
-
-
-async def job_sync_fpl_stats():
-    """Daily at 07:30 UTC: sync Opta/FPL player stats for all PL players.
-
-    Uses the free FPL API (fantasy.premierleague.com) which is powered by
-    Opta — the same data provider used by Premier League official stats.
-    Upserts PlayerStats rows with source="fpl" for every matched PL player.
-    """
-    logger.info("=== Starting FPL stats sync ===")
-
-    try:
-        from datetime import date
-
-        from app.ingestion.fpl_client import FPLClient, _normalize as _fpl_normalize
-        from app.models.players import Player, PlayerStats
-
-        fpl = FPLClient()
-        fpl_players = await fpl.get_all_players()
-        logger.info("FPL: fetched %d players", len(fpl_players))
-
-        # Build lookup: normalized_name → FPL player dict
-        fpl_lookup: dict[str, dict] = {p["normalized_name"]: p for p in fpl_players}
-
-        today = date.today()
-        season = f"{today.year - 1}/{today.year}" if today.month < 7 else f"{today.year}/{today.year + 1}"
-        as_of = datetime.now(UTC)
-
-        async with async_session() as session:
-            # Load all players in our DB
-            result = await session.execute(select(Player))
-            players = result.scalars().all()
-
-            matched = 0
-            upserted = 0
-            for player in players:
-                norm = _fpl_normalize(player.name)
-                fpl_p = fpl_lookup.get(norm)
-                if not fpl_p:
-                    continue
-                matched += 1
-
-                minutes = fpl_p["minutes"] or 0
-                xg = fpl_p["xg"]
-                xa = fpl_p["xa"]
-
-                # Check for existing snapshot today
-                existing = await session.execute(
-                    select(PlayerStats).where(
-                        PlayerStats.player_id == player.id,
-                        PlayerStats.source == "fpl",
-                        PlayerStats.season == season,
-                    )
-                )
-                stat = existing.scalars().first()
-
-                if stat is None:
-                    stat = PlayerStats(
-                        player_id=player.id,
-                        as_of_utc=as_of,
-                        league="premier_league",
-                        season=season,
-                        source="fpl",
-                    )
-                    session.add(stat)
-
-                stat.as_of_utc = as_of
-                stat.matches_played = max(1, round(minutes / 80)) if minutes > 0 else 0  # estimated from minutes (FPL has no appearances field)
-                stat.minutes_played = minutes
-                stat.goals = fpl_p["goals"]
-                stat.assists = fpl_p["assists"]
-                stat.xg = xg
-                stat.xa = xa
-                stat.xg_per_90 = fpl_p["xg_per_90"]
-                stat.xa_per_90 = fpl_p["xa_per_90"]
-                # Store FPL-specific fields: form in npxg, ict_index in npxg_per_90
-                stat.npxg = fpl_p["form"]
-                stat.npxg_per_90 = fpl_p["ict_index"]
-                upserted += 1
-
-            await session.commit()
-            logger.info(
-                "FPL sync complete: %d/%d players matched, %d stats upserted",
-                matched, len(players), upserted,
-            )
-
-    except Exception as exc:
-        logger.error("Error syncing FPL stats: %s", exc, exc_info=True)
-
-    logger.info("=== FPL stats sync complete ===")
-
-
 # ── Job 2b: Match Events Sync ─────────────────────────────────────
 
 
@@ -457,27 +217,6 @@ async def job_sync_match_events():
         logger.error("Error syncing match events: %s", exc, exc_info=True)
 
     logger.info("=== Match events sync complete ===")
-
-
-# ── Job 3b: Weekly Player Stats Refresh ──────────────────────────
-
-
-async def job_refresh_player_stats():
-    """Weekly: refresh Understat player stats for the current season.
-
-    Keeps xG/xA rates current as the season progresses.  Upserts all
-    player stats so stale priors don't pollute recommendations.
-    """
-    logger.info("=== Starting weekly player stats refresh ===")
-    try:
-        from app.scripts.backfill import backfill_stats
-
-        current_season = "2025-2026"
-        n = await backfill_stats(leagues=["ligue_1", "premier_league", "champions_league"], season=current_season)
-        logger.info("Stats refreshed: %d player records updated (%s)", n, current_season)
-    except Exception as exc:
-        logger.error("Error refreshing player stats: %s", exc, exc_info=True)
-    logger.info("=== Player stats refresh complete ===")
 
 
 # ── Job 4: Recommendation Generation ─────────────────────────────
@@ -1435,6 +1174,45 @@ async def job_sync_bzzoiro_player_stats_full_season():
     logger.info("=== Bzzoiro full-season player stats sync complete ===")
 
 
+async def job_sync_statshub_gap_fill():
+    """Daily at 08:15 UTC: fill NULL player-match stats using StatsHub data.
+
+    Followed immediately by re-aggregation so BzzPlayerSeasonStat reflects
+    the newly filled rows before the next recommendation generation cycle.
+    """
+    logger.info("=== Starting StatsHub gap-fill sync ===")
+    try:
+        from app.ingestion.statshub.sync import sync_statshub_gap_fill
+        async with async_session() as session:
+            result = await sync_statshub_gap_fill(session, days_ahead=14)
+            logger.info("StatsHub gap-fill: %d rows upserted", result)
+    except Exception as exc:
+        logger.error("Error in StatsHub gap-fill: %s", exc, exc_info=True)
+    logger.info("=== StatsHub gap-fill complete ===")
+
+    # Re-aggregate season stats so pricing engine sees the filled data
+    await job_aggregate_season_stats()
+
+
+async def job_sync_statshub_full_season():
+    """Weekly (Mon 03:00 UTC): full-season StatsHub gap-fill for ALL teams in the 6 target leagues.
+
+    Covers teams not playing in the next 14 days (trêve internationale, etc.).
+    Followed by re-aggregation.
+    """
+    logger.info("=== Starting StatsHub full-season gap-fill ===")
+    try:
+        from app.ingestion.statshub.sync import sync_statshub_gap_fill
+        async with async_session() as session:
+            result = await sync_statshub_gap_fill(session, full_season=True)
+            logger.info("StatsHub full-season gap-fill: %d rows upserted", result)
+    except Exception as exc:
+        logger.error("Error in StatsHub full-season gap-fill: %s", exc, exc_info=True)
+    logger.info("=== StatsHub full-season gap-fill complete ===")
+
+    await job_aggregate_season_stats()
+
+
 async def job_sync_bzzoiro_predictions():
     """Daily at 07:00 UTC: sync Bzzoiro match predictions."""
     logger.info("=== Starting Bzzoiro predictions sync ===")
@@ -1466,43 +1244,7 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Player stats: Daily at 07:00 UTC
-    scheduler.add_job(
-        job_sync_player_stats,
-        CronTrigger(hour=7, minute=0),
-        id="sync_player_stats",
-        name="Sync player stats from Understat + FotMob",
-        replace_existing=True,
-    )
-
-    # Sofascore stats: Daily at 07:15 UTC (after Understat, before FPL)
-    scheduler.add_job(
-        job_sync_sofascore_stats,
-        CronTrigger(hour=7, minute=15),
-        id="sync_sofascore_stats",
-        name="Sync Sofascore player stats (BCC, SOT, TAP, crosses, TB)",
-        replace_existing=True,
-    )
-
-    # FPL/Opta stats: Daily at 07:30 UTC (after player stats sync)
-    scheduler.add_job(
-        job_sync_fpl_stats,
-        CronTrigger(hour=7, minute=30),
-        id="sync_fpl_stats",
-        name="Sync FPL/Opta player stats for PL players",
-        replace_existing=True,
-    )
-
     # Match events: handled by settle_pipeline (every 30 min)
-
-    # Weekly player stats refresh: every Monday at 06:00 UTC
-    scheduler.add_job(
-        job_refresh_player_stats,
-        CronTrigger(day_of_week="mon", hour=6, minute=0),
-        id="refresh_player_stats",
-        name="Refresh Understat player stats (current season)",
-        replace_existing=True,
-    )
 
     # Recommendations: Every 2 hours
     scheduler.add_job(
@@ -1642,13 +1384,33 @@ def create_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
 
-    # Bzzoiro predictions: daily at 07:45 UTC (offset from job_sync_player_stats at 07:00)
+    # Bzzoiro predictions: daily at 07:45 UTC
     scheduler.add_job(
         job_sync_bzzoiro_predictions,
         CronTrigger(hour=7, minute=45),
         id="sync_bzzoiro_predictions",
         name="Sync Bzzoiro match predictions",
         replace_existing=True,
+    )
+
+    # StatsHub gap-fill: daily at 08:15 UTC (after Bzzoiro player stats)
+    scheduler.add_job(
+        job_sync_statshub_gap_fill,
+        CronTrigger(hour=8, minute=15),
+        id="sync_statshub_gap_fill",
+        name="StatsHub: gap-fill NULL player-match stats",
+        replace_existing=True,
+    )
+
+    # StatsHub full-season: weekly Monday 03:00 UTC — all teams, toutes ligues
+    scheduler.add_job(
+        job_sync_statshub_full_season,
+        CronTrigger(day_of_week="mon", hour=3, minute=0),
+        id="sync_statshub_full_season",
+        name="StatsHub: full-season gap-fill (toutes équipes)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
 
     return scheduler

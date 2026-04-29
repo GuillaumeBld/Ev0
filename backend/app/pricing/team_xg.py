@@ -1,15 +1,11 @@
-"""Top-Down Match-Centric pricing engine — Model C.
+"""Top-Down Match-Centric pricing engine — Bzzoiro model.
 
-Three-stage pipeline (unchanged structure, updated player allocation):
-  Stage 1 — Team Match xG : attack_strength × defense_weakness × home_factor × league_avg
+Three-stage pipeline:
+  Stage 1 — Team Match xG : MarketXgService (market-implied or Dixon-Coles)
   Stage 2 — Player Shares : form-blended top-down shares (npxg_share / xa_share)
-  Stage 3 — Player Pricing: finishing_multiplier + creation_multiplier_v2 applied per player
+  Stage 3 — Player Pricing: finishing_multiplier + creation_multiplier_v2 per player
 
-Changes from original (FBref → Understat + Sofascore):
-  - Goalscorer λ now applies calculate_finishing_multiplier (position-normalized)
-  - Assist λ now applies calculate_creation_multiplier_v2 (profile+position)
-  - compute_player_shares uses form-blend (60% season + 40% form) top-down approach
-  - _load_team_players now reads from bzz_player_season_stats (joined to bzz_players)
+Source: Bzzoiro (bzz_player_season_stats + bzz_players)
 """
 
 from __future__ import annotations
@@ -107,18 +103,15 @@ class PlayerShare:
     expected_minutes: float
     matches_played: int
     is_pen_taker: bool = False
-    # Model C per-90 stats (Understat)
     npxg_per_90: float = 0.0
     xa_per_90: float = 0.0
     xgchain_per_90: float = 0.0
     conversion_rate: float = 1.0
-    # Model C per-90 stats (Sofascore)
     sot_per_90: float = 0.0
     tap_per_90: float = 0.0
     bcc_per_90: float = 0.0
     accurate_crosses_per_90: float = 0.0
     through_balls_per_90: float = 0.0
-    # Bzzoiro-specific stats (from bzz_player_season_stats)
     shot_accuracy: float = 0.0
     xg_per_shot: float = 0.0
     avg_rating: float = 0.0          # brut (0-10)
@@ -145,14 +138,12 @@ class PlayerAllocation:
     is_pen_taker: bool
     npxg_share: float
     xa_share: float
-    # Goalscorer (Model C)
     quality_multiplier: float
     lambda_open_play: float
     lambda_penalty: float
     lambda_total: float
     prob_goal: float
     fair_odds_goal: float
-    # Assist (Model C)
     creation_multiplier: float
     lambda_assist: float
     prob_assist: float
@@ -177,76 +168,6 @@ class MatchPricingResult:
     away_lineup_players: list[PlayerAllocation] | None = None
 
 
-# ── Stage 1: Team stats ───────────────────────────────────────────
-
-async def compute_team_stats(db: AsyncSession) -> dict[str, TeamStats]:
-    """Compute attack xG/match, defense xGA/match, and finishing per team."""
-    from app.models.fixtures import Fixture
-    from app.models.players import Player, PlayerStats
-
-    attack_res = await db.execute(
-        select(
-            Player.team,
-            func.sum(PlayerStats.npxg).label("total_npxg"),
-            func.max(PlayerStats.matches_played).label("team_matches"),
-            func.sum(PlayerStats.goals).label("total_goals"),
-            func.sum(PlayerStats.xg).label("total_xg"),
-        )
-        .join(Player, Player.id == PlayerStats.player_id)
-        .where(Player.team.isnot(None))
-        .where(PlayerStats.source == "average")
-        .group_by(Player.team)
-    )
-
-    teams: dict[str, dict[str, Any]] = {}
-    for row in attack_res.all():
-        team, total_npxg, team_matches, total_goals, total_xg = (
-            row[0], row[1] or 0.0, row[2] or 1, row[3] or 0, row[4] or 0.0
-        )
-        if team and team_matches > 0:
-            teams[team] = {
-                "attack_xg_per_match": total_npxg / team_matches,
-                "total_goals": total_goals,
-                "total_xg": total_xg,
-                "def_conceded": 0,
-                "def_matches": 0,
-            }
-
-    for _side, score_col, concede_col in [
-        ("home", "home_team", "away_score"),
-        ("away", "away_team", "home_score"),
-    ]:
-        res = await db.execute(
-            select(
-                getattr(Fixture, score_col.replace("_score", "_team")
-                        if "_score" in score_col else score_col),
-                func.sum(getattr(Fixture, concede_col)).label("conceded"),
-                func.count(Fixture.id).label("matches"),
-            )
-            .where(Fixture.status == "finished")
-            .where(Fixture.home_score.isnot(None))
-            .group_by(getattr(Fixture, score_col.replace("_score", "_team")
-                               if "_score" in score_col else score_col))
-        )
-        for row in res.all():
-            team, conceded, matches = row[0], (row[1] or 0), (row[2] or 1)
-            if team in teams:
-                teams[team]["def_conceded"] += conceded
-                teams[team]["def_matches"] += matches
-
-    result: dict[str, TeamStats] = {}
-    for team, d in teams.items():
-        xga = d["def_conceded"] / d["def_matches"] if d["def_matches"] > 0 else 0.0
-        finishing = 1.0
-        if d["total_xg"] > 0:
-            finishing = max(0.7, min(1.3, d["total_goals"] / d["total_xg"]))
-        result[team] = TeamStats(
-            team=team,
-            attack_xg_per_match=d["attack_xg_per_match"],
-            defense_xga_per_match=xga,
-            finishing=finishing,
-        )
-    return result
 
 
 def estimate_team_match_xg(

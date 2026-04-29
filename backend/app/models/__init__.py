@@ -13,7 +13,6 @@ from app.models.odds_scrape_state import OddsScrapeState
 from app.models.poll_state import OddsPortalPollState
 from app.models.player_match_minutes import PlayerMatchMinutes
 from app.models.player_odds_snapshot import PlayerOddsSnapshot
-from app.models.players import DataSource, Player, PlayerStats, Team
 from app.models.recommendations import Recommendation
 from app.models.settings import UserSettings
 from app.models.team_xg import TeamXgEstimate
@@ -23,19 +22,15 @@ __all__ = [
     "Base",
     "BankrollEntry",
     "CanonicalTeam",
-    "DataSource",
     "Fixture",
     "MatchEvent",
     "MatchOddsSnapshot",
     "OddsPortalPollState",
     "OddsSnapshot",
     "OddsScrapeState",
-    "Player",
     "PlayerMatchMinutes",
     "PlayerOddsSnapshot",
-    "PlayerStats",
     "Recommendation",
-    "Team",
     "TeamLineup",
     "TeamLineupPlayer",
     "TeamXgEstimate",

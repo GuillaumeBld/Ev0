@@ -9,9 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.ingestion.lineup_resolver import resolve_lineup
+from app.models.bzzoiro import BzzPlayer
 from app.models.fixtures import Fixture
 from app.models.lineups import TeamLineup, TeamLineupPlayer
-from app.models.players import Player
 
 router = APIRouter(tags=["lineups"])
 
@@ -59,12 +59,12 @@ class FixtureLineupsOut(BaseModel):
 async def _hydrate_strikers(
     players: list[TeamLineupPlayer], session: AsyncSession
 ) -> list[LineupPlayerOut]:
-    """Enrichit chaque joueur avec son flag is_striker depuis la table Player."""
+    """Enrichit chaque joueur avec is_striker déduit de la position Bzzoiro (F = attaquant)."""
     names = [p.player_name for p in players]
     result = await session.execute(
-        select(Player.name, Player.is_striker).where(Player.name.in_(names))
+        select(BzzPlayer.name, BzzPlayer.position).where(BzzPlayer.name.in_(names))
     )
-    striker_map = {row.name: row.is_striker for row in result}
+    striker_map = {row.name: (row.position == "F") for row in result}
     return [
         LineupPlayerOut(
             player_name=p.player_name,
@@ -128,9 +128,9 @@ async def get_fixture_lineups(
 async def get_team_players(team: str, session: AsyncSession = Depends(get_db)):
     """Retourne les noms des joueurs en DB pour cette équipe (pour le sélecteur)."""
     result = await session.execute(
-        select(Player.name)
-        .where(Player.team.ilike(f"%{team}%"))
-        .order_by(Player.name)
+        select(BzzPlayer.name)
+        .where(BzzPlayer.current_team_name.ilike(f"%{team}%"))
+        .order_by(BzzPlayer.name)
         .limit(100)
     )
     return [row[0] for row in result]

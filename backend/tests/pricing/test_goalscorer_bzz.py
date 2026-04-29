@@ -13,8 +13,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.pricing.assist import calculate_creation_multiplier
-from app.pricing.goalscorer import calculate_quality_multiplier
 
 # ---------------------------------------------------------------------------
 # Helpers
