@@ -590,14 +590,16 @@ async def export_players_csv(
 ) -> StreamingResponse:
     """Stream aggregated player stats as a UTF-8 CSV — one row per player."""
     # Fetch players with their season stats (all leagues), then aggregate per player
-    player_stmt = select(BzzPlayer).where(BzzPlayer.internal_id.is_not(None))
+    player_id_subq = select(BzzPlayer.api_id).where(BzzPlayer.internal_id.is_not(None))
     if league_api_id:
         dominant = await _get_team_dominant_leagues(session, season)
         team_names = [n for n, lg in dominant.items() if lg == league_api_id]
         if team_names:
-            player_stmt = player_stmt.where(BzzPlayer.current_team_name.in_(team_names))
+            player_id_subq = player_id_subq.where(BzzPlayer.current_team_name.in_(team_names))
 
-    players = (await session.execute(player_stmt)).scalars().all()
+    players = (await session.execute(
+        select(BzzPlayer).where(BzzPlayer.api_id.in_(player_id_subq))
+    )).scalars().all()
     if not players:
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=CSV_FIELDS, extrasaction="ignore")
@@ -610,10 +612,9 @@ async def export_players_csv(
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
-    player_ids = [p.api_id for p in players]
     stats_rows = (await session.execute(
         select(BzzPlayerSeasonStat)
-        .where(BzzPlayerSeasonStat.player_api_id.in_(player_ids), BzzPlayerSeasonStat.season == season)
+        .where(BzzPlayerSeasonStat.player_api_id.in_(player_id_subq), BzzPlayerSeasonStat.season == season)
     )).scalars().all()
 
     stats_by_player: dict[int, list] = defaultdict(list)
@@ -679,32 +680,33 @@ async def list_players(
 ) -> list[dict[str, Any]]:
     """List players — one row per player, stats aggregated across all competitions."""
 
-    # Step 1: filter players by identity (team, league, position)
-    # internal_id IS NOT NULL removes ~23k duplicate player shells (no active stats)
-    player_stmt = select(BzzPlayer).where(BzzPlayer.internal_id.is_not(None))
+    # Step 1: build player API-ID subquery with all identity filters.
+    # Using a subquery (not a Python list) avoids asyncpg's 32 767 parameter limit
+    # when the unfiltered player set is large.
+    player_id_subq = select(BzzPlayer.api_id).where(BzzPlayer.internal_id.is_not(None))
 
     if league_api_id is not None:
         dominant = await _get_team_dominant_leagues(session, season)
         team_names = [n for n, lg in dominant.items() if lg == league_api_id]
         if not team_names:
             return []
-        player_stmt = player_stmt.where(BzzPlayer.current_team_name.in_(team_names))
+        player_id_subq = player_id_subq.where(BzzPlayer.current_team_name.in_(team_names))
     if team_api_id is not None:
-        player_stmt = player_stmt.where(BzzPlayer.current_team_api_id == team_api_id)
+        player_id_subq = player_id_subq.where(BzzPlayer.current_team_api_id == team_api_id)
     if position is not None:
-        player_stmt = player_stmt.where(BzzPlayer.position == position.upper())
+        player_id_subq = player_id_subq.where(BzzPlayer.position == position.upper())
 
-    players = (await session.execute(player_stmt)).scalars().all()
+    players = (await session.execute(
+        select(BzzPlayer).where(BzzPlayer.api_id.in_(player_id_subq))
+    )).scalars().all()
     if not players:
         return []
 
-    player_ids = [p.api_id for p in players]
-
-    # Step 2: fetch ALL season stat rows for these players (any league)
+    # Step 2: fetch ALL season stat rows using the same subquery (no parameter list)
     all_stats = (await session.execute(
         select(BzzPlayerSeasonStat)
         .where(
-            BzzPlayerSeasonStat.player_api_id.in_(player_ids),
+            BzzPlayerSeasonStat.player_api_id.in_(player_id_subq),
             BzzPlayerSeasonStat.season == season,
         )
     )).scalars().all()
