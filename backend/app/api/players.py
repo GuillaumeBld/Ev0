@@ -624,8 +624,7 @@ async def export_players_csv(
     player_by_id = {p.api_id: p for p in players}
 
     rows = []
-    for pid in player_ids:
-        player = player_by_id[pid]
+    for pid, player in player_by_id.items():
         merged = _merge_season_stats(stats_by_player.get(pid, []), season)
         if not merged:
             continue
@@ -720,7 +719,7 @@ async def list_players(
 
     # Step 4: aggregate and build output — one dict per player
     results: list[dict[str, Any]] = []
-    for pid in player_ids:
+    for pid, player in player_by_id.items():
         player = player_by_id[pid]
         rows = stats_by_player.get(pid)
         if not rows:
