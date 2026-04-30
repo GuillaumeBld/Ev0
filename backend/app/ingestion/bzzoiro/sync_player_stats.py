@@ -23,10 +23,11 @@ from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_API_ID_LIST, TARGET_LEAGUE_INTERNAL_ID_LIST
+from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_INTERNAL_ID_LIST
 
-# Accept both old SofaScore api_ids and new Bzzoiro internal ids in league_api_id column
-_ALL_LEAGUE_IDS = list(set(TARGET_LEAGUE_API_ID_LIST + TARGET_LEAGUE_INTERNAL_ID_LIST))
+# Canonical Bzzoiro internal IDs only — old SofaScore api_ids (8,17,23,34,35) now
+# map to Saudi Pro League, Europa League, etc. in Bzzoiro and must be excluded.
+_ALL_LEAGUE_IDS = TARGET_LEAGUE_INTERNAL_ID_LIST  # [1,3,4,5,6,7]
 from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzTeam
 
 logger = logging.getLogger(__name__)

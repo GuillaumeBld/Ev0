@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 # StatsHub field name → BzzPlayerMatchStat column name
 _FIELD_MAP: dict[str, str] = {
+    "minutesPlayed": "minutes_played",
     "onTargetScoringAttempt": "shots_on_target",
     "shots": "total_shots",
     "expectedGoals": "expected_goals",
@@ -38,6 +39,7 @@ _FIELD_MAP: dict[str, str] = {
     "touches": "touches",
     "rating": "rating",
     "aerialWon": "aerial_won",
+    "aerialLost": "aerial_lost",
     "goalAssist": "goal_assist",
     "goals": "goals",
     "fouls": "fouls",
@@ -46,6 +48,8 @@ _FIELD_MAP: dict[str, str] = {
     "accurateCross": "accurate_cross",
     "dispossessed": "dispossessed",
     "interceptionWon": "interception",
+    "yellowCard": "yellow_card",
+    "redCard": "red_card",
 }
 
 
@@ -184,7 +188,7 @@ async def sync_statshub_gap_fill(
 
     Returns total rows upserted.
     """
-    from app.models.bzzoiro import BzzPlayer, BzzPlayerMatchStat
+    from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzPlayerMatchStat
 
     if full_season:
         triples = await _all_team_league_triples(session)
@@ -204,6 +208,16 @@ async def sync_statshub_gap_fill(
     )
     player_by_internal: dict[int, int] = {
         row.internal_id: row.api_id for row in players_result
+    }
+
+    # Preload event home/away team mapping to compute is_home without per-row DB queries
+    events_result = await session.execute(
+        select(BzzEvent.api_id, BzzEvent.home_team_api_id, BzzEvent.away_team_api_id)
+        .where(BzzEvent.league_api_id.in_(TARGET_LEAGUE_API_ID_LIST))
+    )
+    event_teams: dict[int, tuple[int | None, int | None]] = {
+        row.api_id: (row.home_team_api_id, row.away_team_api_id)
+        for row in events_result
     }
 
     table = BzzPlayerMatchStat.__table__
@@ -256,10 +270,17 @@ async def sync_statshub_gap_fill(
                     derived = compute_derived_metrics(parsed)
                     non_null_derived = {k: v for k, v in derived.items() if v is not None}
 
+                    # Derive is_home from BzzEvent lookup — avoids NULL opponent in player detail
+                    home_id, away_id = event_teams.get(event_api_id, (None, None))
+                    is_home: bool | None = None
+                    if home_id is not None:
+                        is_home = team_api_id == home_id
+
                     values: dict[str, Any] = {
                         "player_api_id": player_api_id,
                         "event_api_id": event_api_id,
                         "team_api_id": team_api_id,
+                        "is_home": is_home,
                         **parsed,
                         **non_null_derived,
                     }

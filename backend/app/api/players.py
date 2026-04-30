@@ -2,13 +2,14 @@
 
 import csv
 import io
+from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import asc, desc, select, text
+from sqlalchemy import desc, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -33,7 +34,7 @@ TARGET_INTERNAL_IDS = [1, 3, 4, 5, 6, 7]  # PL=1, LaLiga=3, SerieA=4, BL=5, L1=6
 # Canonical Bzzoiro internal IDs (post-migration) used for all new data.
 # Old SofaScore IDs kept for recent_matches query (old events still carry those IDs).
 TARGET_LEAGUE_IDS = TARGET_LEAGUE_INTERNAL_ID_LIST  # PL=1, LL=3, SA=4, BL=5, L1=6, UCL=7
-_ALL_LEAGUE_IDS = list(set(TARGET_LEAGUE_API_ID_LIST + TARGET_LEAGUE_INTERNAL_ID_LIST))
+_ALL_LEAGUE_IDS = TARGET_LEAGUE_INTERNAL_ID_LIST  # canonical Bzzoiro IDs only: [1,3,4,5,6,7]
 
 CSV_FIELDS = [
     "name",
@@ -45,63 +46,59 @@ CSV_FIELDS = [
     "goals",
     "assists",
     "xg",
-    "npxg",
     "xa",
     "shots",
     "key_passes",
     "xg_per_90",
     "xa_per_90",
-    "npxg_per_90",
 ]
 
-_SORTABLE_COLUMNS: dict[str, Any] = {
-    # Identity
-    "name": BzzPlayer.name,
-    "team": BzzTeam.name,
-    # Totals
-    "matches_played": BzzPlayerSeasonStat.matches_played,
-    "minutes_played": BzzPlayerSeasonStat.minutes_played,
-    "goals": BzzPlayerSeasonStat.goals,
-    "goal_assist": BzzPlayerSeasonStat.goal_assist,
-    "total_shots": BzzPlayerSeasonStat.total_shots,
-    "shots_on_target": BzzPlayerSeasonStat.shots_on_target,
-    "key_pass": BzzPlayerSeasonStat.key_pass,
-    "expected_goals": BzzPlayerSeasonStat.expected_goals,
-    "expected_assists": BzzPlayerSeasonStat.expected_assists,
-    "yellow_card": BzzPlayerSeasonStat.yellow_card,
-    "red_card": BzzPlayerSeasonStat.red_card,
-    "saves": BzzPlayerSeasonStat.saves,
-    # Per-90
-    "xg_per_90": BzzPlayerSeasonStat.xg_per_90,
-    "xa_per_90": BzzPlayerSeasonStat.xa_per_90,
-    "shots_per_90": BzzPlayerSeasonStat.shots_per_90,
-    "shots_on_target_per_90": BzzPlayerSeasonStat.shots_on_target_per_90,
-    "key_pass_per_90": BzzPlayerSeasonStat.key_pass_per_90,
-    "accurate_cross_per_90": BzzPlayerSeasonStat.accurate_cross_per_90,
-    "recoveries_per_90": BzzPlayerSeasonStat.recoveries_per_90,
-    "tackles_per_90": BzzPlayerSeasonStat.tackles_per_90,
-    "interceptions_per_90": BzzPlayerSeasonStat.interceptions_per_90,
-    # Efficiency
-    "avg_rating": BzzPlayerSeasonStat.avg_rating,
-    "shot_accuracy": BzzPlayerSeasonStat.shot_accuracy,
-    "xg_per_shot": BzzPlayerSeasonStat.xg_per_shot,
-    "finishing_delta": BzzPlayerSeasonStat.finishing_delta,
-    "xa_delta": BzzPlayerSeasonStat.xa_delta,
-    "pass_completion": BzzPlayerSeasonStat.pass_completion,
-    "long_ball_accuracy": BzzPlayerSeasonStat.long_ball_accuracy,
-    "cross_accuracy": BzzPlayerSeasonStat.cross_accuracy,
-    "duel_win_rate": BzzPlayerSeasonStat.duel_win_rate,
-    "aerial_win_rate": BzzPlayerSeasonStat.aerial_win_rate,
-    "tackle_success_rate": BzzPlayerSeasonStat.tackle_success_rate,
-    "avg_minutes_per_match": BzzPlayerSeasonStat.avg_minutes_per_match,
-    "starts_pct": BzzPlayerSeasonStat.starts_pct,
-    # Form
-    "form_xg_5": BzzPlayerSeasonStat.form_xg_5,
-    "form_rating_5": BzzPlayerSeasonStat.form_rating_5,
-    "form_goals_5": BzzPlayerSeasonStat.form_goals_5,
-    "form_assists_5": BzzPlayerSeasonStat.form_assists_5,
-    "rating_trend": BzzPlayerSeasonStat.rating_trend,
+# Valid sort_by keys → result dict field name
+_SORT_FIELD_MAP: dict[str, str] = {
+    "name": "name",
+    "team": "team_name",
+    "matches_played": "matches_played",
+    "minutes_played": "minutes_played",
+    "goals": "goals",
+    "goal_assist": "goal_assist",
+    "total_shots": "total_shots",
+    "shots_on_target": "shots_on_target",
+    "key_pass": "key_pass",
+    "expected_goals": "expected_goals",
+    "expected_assists": "expected_assists",
+    "yellow_card": "yellow_card",
+    "red_card": "red_card",
+    "saves": "saves",
+    "xg_per_90": "xg_per_90",
+    "xa_per_90": "xa_per_90",
+    "shots_per_90": "shots_per_90",
+    "shots_on_target_per_90": "shots_on_target_per_90",
+    "key_pass_per_90": "key_pass_per_90",
+    "accurate_cross_per_90": "accurate_cross_per_90",
+    "recoveries_per_90": "recoveries_per_90",
+    "tackles_per_90": "tackles_per_90",
+    "interceptions_per_90": "interceptions_per_90",
+    "avg_rating": "avg_rating",
+    "shot_accuracy": "shot_accuracy",
+    "xg_per_shot": "xg_per_shot",
+    "finishing_delta": "finishing_delta",
+    "xa_delta": "xa_delta",
+    "pass_completion": "pass_completion",
+    "long_ball_accuracy": "long_ball_accuracy",
+    "cross_accuracy": "cross_accuracy",
+    "duel_win_rate": "duel_win_rate",
+    "aerial_win_rate": "aerial_win_rate",
+    "tackle_success_rate": "tackle_success_rate",
+    "avg_minutes_per_match": "avg_minutes_per_match",
+    "starts_pct": "starts_pct",
+    "form_xg_5": "form_xg_5",
+    "form_rating_5": "form_rating_5",
+    "form_goals_5": "form_goals_5",
+    "form_assists_5": "form_assists_5",
+    "rating_trend": "rating_trend",
 }
+
+_STRING_SORT_FIELDS = {"name", "team_name"}
 
 
 class PlayerSummary(BaseModel):
@@ -178,10 +175,10 @@ class RecentMatch(BaseModel):
 
 
 class SeasonStatsOut(BaseModel):
-    """All fields from bzz_player_season_stats."""
+    """Aggregated season stats across all competitions."""
 
     season: str
-    league_api_id: int | None
+    league_api_id: int | None  # None when stats span multiple leagues
     matches_played: int | None
     minutes_played: int | None
     starts: int | None
@@ -245,8 +242,216 @@ class PlayerDetail(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-
 _MIN_PLAYERS_FOR_TARGET_LEAGUE = 10
+
+
+def _safe_div(num: Any, den: Any) -> float | None:
+    if den is None or den == 0:
+        return None
+    if num is None:
+        return None
+    return num / den
+
+
+def _merge_season_stats(rows: list[Any], season: str) -> dict[str, Any] | None:
+    """Merge per-league BzzPlayerSeasonStat rows into a single combined season dict.
+
+    Totals are summed across all leagues. Per-90 and efficiency ratios are
+    recalculated from the aggregated totals so they remain mathematically
+    consistent. Rating is weighted by matches played. Form stats come from
+    the league with the most matches (best proxy for current form).
+    """
+    if not rows:
+        return None
+
+    def _sum(attr: str) -> int | float | None:
+        vals = [getattr(r, attr) for r in rows if getattr(r, attr) is not None]
+        return sum(vals) if vals else None
+
+    # Integer totals
+    matches_played = _sum("matches_played")
+    minutes_played = _sum("minutes_played")
+    starts = _sum("starts")
+    goals = _sum("goals")
+    goal_assist = _sum("goal_assist")
+    expected_goals = _sum("expected_goals")
+    expected_assists = _sum("expected_assists")
+    total_shots = _sum("total_shots")
+    shots_on_target = _sum("shots_on_target")
+    key_pass = _sum("key_pass")
+    total_cross = _sum("total_cross")
+    accurate_cross = _sum("accurate_cross")
+    total_pass = _sum("total_pass")
+    accurate_pass = _sum("accurate_pass")
+    total_long_balls = _sum("total_long_balls")
+    accurate_long_balls = _sum("accurate_long_balls")
+    duel_won = _sum("duel_won")
+    duel_lost = _sum("duel_lost")
+    aerial_won = _sum("aerial_won")
+    aerial_lost = _sum("aerial_lost")
+    total_tackle = _sum("total_tackle")
+    won_tackle = _sum("won_tackle")
+    interception = _sum("interception")
+    ball_recovery = _sum("ball_recovery")
+    yellow_card = _sum("yellow_card")
+    red_card = _sum("red_card")
+    saves = _sum("saves")
+
+    # Per-90 — recalculated from aggregated totals
+    mins_per_90 = minutes_played / 90 if minutes_played else None
+    xg_per_90 = _safe_div(expected_goals, mins_per_90)
+    xa_per_90 = _safe_div(expected_assists, mins_per_90)
+    shots_per_90 = _safe_div(total_shots, mins_per_90)
+    shots_on_target_per_90 = _safe_div(shots_on_target, mins_per_90)
+    key_pass_per_90 = _safe_div(key_pass, mins_per_90)
+    accurate_cross_per_90 = _safe_div(accurate_cross, mins_per_90)
+    recoveries_per_90 = _safe_div(ball_recovery, mins_per_90)
+    tackles_per_90 = _safe_div(total_tackle, mins_per_90)
+    interceptions_per_90 = _safe_div(interception, mins_per_90)
+
+    # Efficiency ratios — recalculated from aggregated totals
+    duel_sum = ((duel_won or 0) + (duel_lost or 0)) if (duel_won is not None or duel_lost is not None) else None
+    aerial_sum = ((aerial_won or 0) + (aerial_lost or 0)) if (aerial_won is not None or aerial_lost is not None) else None
+
+    shot_accuracy = _safe_div(shots_on_target, total_shots)
+    xg_per_shot = _safe_div(expected_goals, total_shots)
+    finishing_delta = (goals - expected_goals) if goals is not None and expected_goals is not None else None
+    xa_delta = (goal_assist - expected_assists) if goal_assist is not None and expected_assists is not None else None
+    pass_completion = _safe_div(accurate_pass, total_pass)
+    long_ball_accuracy = _safe_div(accurate_long_balls, total_long_balls)
+    cross_accuracy = _safe_div(accurate_cross, total_cross)
+    duel_win_rate = _safe_div(duel_won, duel_sum)
+    aerial_win_rate = _safe_div(aerial_won, aerial_sum)
+    tackle_success_rate = _safe_div(won_tackle, total_tackle)
+
+    # Profile
+    avg_minutes_per_match = _safe_div(minutes_played, matches_played)
+    starts_pct = _safe_div(starts, matches_played)
+
+    # avg_rating: weighted average by matches played per league row
+    rating_pairs = [
+        (r.avg_rating, r.matches_played or 0)
+        for r in rows
+        if r.avg_rating is not None and r.matches_played
+    ]
+    if rating_pairs:
+        total_weighted = sum(rating * mp for rating, mp in rating_pairs)
+        total_mp_w = sum(mp for _, mp in rating_pairs)
+        avg_rating: float | None = total_weighted / total_mp_w if total_mp_w else None
+    else:
+        avg_rating = None
+
+    # Form: use the row with the most matches as the best proxy for current form
+    dominant_row = max(rows, key=lambda r: r.matches_played or 0)
+    form_xg_5 = dominant_row.form_xg_5
+    form_rating_5 = dominant_row.form_rating_5
+    form_goals_5 = dominant_row.form_goals_5
+    form_assists_5 = dominant_row.form_assists_5
+    rating_trend = dominant_row.rating_trend
+
+    # league_api_id: single value when player has stats in only one competition
+    league_api_id: int | None = rows[0].league_api_id if len(rows) == 1 else None
+
+    return {
+        "season": season,
+        "league_api_id": league_api_id,
+        "matches_played": matches_played,
+        "minutes_played": minutes_played,
+        "starts": starts,
+        "goals": goals,
+        "goal_assist": goal_assist,
+        "expected_goals": expected_goals,
+        "expected_assists": expected_assists,
+        "total_shots": total_shots,
+        "shots_on_target": shots_on_target,
+        "key_pass": key_pass,
+        "total_cross": total_cross,
+        "accurate_cross": accurate_cross,
+        "total_pass": total_pass,
+        "accurate_pass": accurate_pass,
+        "total_long_balls": total_long_balls,
+        "accurate_long_balls": accurate_long_balls,
+        "duel_won": duel_won,
+        "duel_lost": duel_lost,
+        "aerial_won": aerial_won,
+        "aerial_lost": aerial_lost,
+        "total_tackle": total_tackle,
+        "won_tackle": won_tackle,
+        "interception": interception,
+        "ball_recovery": ball_recovery,
+        "yellow_card": yellow_card,
+        "red_card": red_card,
+        "saves": saves,
+        "xg_per_90": xg_per_90,
+        "xa_per_90": xa_per_90,
+        "shots_per_90": shots_per_90,
+        "shots_on_target_per_90": shots_on_target_per_90,
+        "key_pass_per_90": key_pass_per_90,
+        "accurate_cross_per_90": accurate_cross_per_90,
+        "recoveries_per_90": recoveries_per_90,
+        "tackles_per_90": tackles_per_90,
+        "interceptions_per_90": interceptions_per_90,
+        "shot_accuracy": shot_accuracy,
+        "xg_per_shot": xg_per_shot,
+        "finishing_delta": finishing_delta,
+        "xa_delta": xa_delta,
+        "pass_completion": pass_completion,
+        "long_ball_accuracy": long_ball_accuracy,
+        "cross_accuracy": cross_accuracy,
+        "duel_win_rate": duel_win_rate,
+        "aerial_win_rate": aerial_win_rate,
+        "tackle_success_rate": tackle_success_rate,
+        "avg_rating": avg_rating,
+        "avg_minutes_per_match": avg_minutes_per_match,
+        "starts_pct": starts_pct,
+        "form_xg_5": form_xg_5,
+        "form_rating_5": form_rating_5,
+        "form_goals_5": form_goals_5,
+        "form_assists_5": form_assists_5,
+        "rating_trend": rating_trend,
+    }
+
+
+def _compute_form_from_matches(recent_matches: list[RecentMatch], overall_avg_rating: float | None) -> dict[str, Any]:
+    """Derive form stats from the 5 most recent matches (already sorted desc by date)."""
+    last5 = recent_matches[:5]
+
+    xg_vals = [m.expected_goals for m in last5 if m.expected_goals is not None]
+    rating_vals = [m.rating for m in last5 if m.rating is not None]
+    goals_vals = [m.goals for m in last5 if m.goals is not None]
+    assist_vals = [m.goal_assist for m in last5 if m.goal_assist is not None]
+
+    form_xg_5: float | None = sum(xg_vals) if xg_vals else None
+    form_rating_5: float | None = sum(rating_vals) / len(rating_vals) if rating_vals else None
+    form_goals_5: int | None = sum(goals_vals) if goals_vals else None
+    form_assists_5: int | None = sum(assist_vals) if assist_vals else None
+
+    rating_trend: float | None = None
+    if form_rating_5 is not None and overall_avg_rating is not None:
+        rating_trend = form_rating_5 - overall_avg_rating
+
+    return {
+        "form_xg_5": form_xg_5,
+        "form_rating_5": form_rating_5,
+        "form_goals_5": form_goals_5,
+        "form_assists_5": form_assists_5,
+        "rating_trend": rating_trend,
+    }
+
+
+def _python_sort(results: list[dict[str, Any]], sort_by: str, sort_order: str) -> None:
+    """Sort results in-place by sort_by field. None values always go to the end."""
+    field = _SORT_FIELD_MAP.get(sort_by, "xg_per_90")
+    reverse = sort_order.lower() == "desc"
+
+    if field in _STRING_SORT_FIELDS:
+        results.sort(key=lambda r: (r.get(field) or "").lower(), reverse=reverse)
+    else:
+        # Tuple sort: (is_none, value) — None always last regardless of direction
+        if reverse:
+            results.sort(key=lambda r: (r.get(field) is None, -(r.get(field) or 0)))
+        else:
+            results.sort(key=lambda r: (r.get(field) is None, r.get(field) or 0))
 
 
 async def _get_team_dominant_leagues(
@@ -383,38 +588,62 @@ async def export_players_csv(
     ),
     season: str = Query("2025-2026"),
 ) -> StreamingResponse:
-    """Stream all player stats as a UTF-8 CSV file from Bzzoiro."""
-    stmt = (
-        select(
-            BzzPlayer.name,
-            BzzTeam.name.label("team"),
-            BzzPlayer.position,
-            BzzLeague.name.label("league"),
-            BzzPlayerSeasonStat.matches_played.label("games"),
-            BzzPlayerSeasonStat.minutes_played.label("minutes"),
-            BzzPlayerSeasonStat.goals,
-            BzzPlayerSeasonStat.goal_assist.label("assists"),
-            BzzPlayerSeasonStat.expected_goals.label("xg"),
-            BzzPlayerSeasonStat.expected_goals.label("npxg"),
-            BzzPlayerSeasonStat.expected_assists.label("xa"),
-            BzzPlayerSeasonStat.total_shots.label("shots"),
-            BzzPlayerSeasonStat.key_pass.label("key_passes"),
-            BzzPlayerSeasonStat.xg_per_90,
-            BzzPlayerSeasonStat.xa_per_90,
-            BzzPlayerSeasonStat.xg_per_90.label("npxg_per_90"),
-        )
-        .select_from(BzzPlayerSeasonStat)
-        .join(BzzPlayer, BzzPlayerSeasonStat.player_api_id == BzzPlayer.api_id)
-        .outerjoin(BzzTeam, BzzPlayer.current_team_api_id == BzzTeam.api_id)
-        .outerjoin(BzzLeague, BzzPlayerSeasonStat.league_api_id == BzzLeague.api_id)
-        .where(BzzPlayerSeasonStat.season == season)
-    )
-
+    """Stream aggregated player stats as a UTF-8 CSV — one row per player."""
+    # Fetch players with their season stats (all leagues), then aggregate per player
+    player_stmt = select(BzzPlayer).where(BzzPlayer.internal_id.is_not(None))
     if league_api_id:
-        stmt = stmt.where(BzzPlayerSeasonStat.league_api_id == league_api_id)
+        dominant = await _get_team_dominant_leagues(session, season)
+        team_names = [n for n, lg in dominant.items() if lg == league_api_id]
+        if team_names:
+            player_stmt = player_stmt.where(BzzPlayer.current_team_name.in_(team_names))
 
-    result = await session.execute(stmt)
-    rows = [dict(zip(CSV_FIELDS, r)) for r in result.all()]
+    players = (await session.execute(player_stmt)).scalars().all()
+    if not players:
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=CSV_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        buf.seek(0)
+        filename = f"ev0_players_{datetime.now(tz=UTC).strftime('%Y%m%d_%H%M%S')}.csv"
+        return StreamingResponse(
+            iter([buf.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    player_ids = [p.api_id for p in players]
+    stats_rows = (await session.execute(
+        select(BzzPlayerSeasonStat)
+        .where(BzzPlayerSeasonStat.player_api_id.in_(player_ids), BzzPlayerSeasonStat.season == season)
+    )).scalars().all()
+
+    stats_by_player: dict[int, list] = defaultdict(list)
+    for s in stats_rows:
+        stats_by_player[s.player_api_id].append(s)
+
+    player_by_id = {p.api_id: p for p in players}
+
+    rows = []
+    for pid in player_ids:
+        player = player_by_id[pid]
+        merged = _merge_season_stats(stats_by_player.get(pid, []), season)
+        if not merged:
+            continue
+        rows.append({
+            "name": player.name,
+            "team": player.current_team_name or "",
+            "position": player.position or "",
+            "league": "",  # multi-league; no single league label
+            "games": merged["matches_played"],
+            "minutes": merged["minutes_played"],
+            "goals": merged["goals"],
+            "assists": merged["goal_assist"],
+            "xg": merged["expected_goals"],
+            "xa": merged["expected_assists"],
+            "shots": merged["total_shots"],
+            "key_passes": merged["key_pass"],
+            "xg_per_90": merged["xg_per_90"],
+            "xa_per_90": merged["xa_per_90"],
+        })
 
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=CSV_FIELDS, extrasaction="ignore")
@@ -448,61 +677,113 @@ async def list_players(
     limit: int = Query(50, le=500),
     offset: int = Query(0),
 ) -> list[dict[str, Any]]:
-    """List players with season stats from Bzzoiro tables."""
+    """List players — one row per player, stats aggregated across all competitions."""
 
-    sort_col = _SORTABLE_COLUMNS.get(sort_by, BzzPlayerSeasonStat.xg_per_90)
-    order_fn = desc if sort_order.lower() == "desc" else asc
-
-    stmt = (
-        select(
-            BzzPlayer,
-            BzzPlayerSeasonStat,
-        )
-        .join(BzzPlayerSeasonStat, BzzPlayerSeasonStat.player_api_id == BzzPlayer.api_id)
-        .where(BzzPlayerSeasonStat.season == season)
-    )
+    # Step 1: filter players by identity (team, league, position)
+    # internal_id IS NOT NULL removes ~23k duplicate player shells (no active stats)
+    player_stmt = select(BzzPlayer).where(BzzPlayer.internal_id.is_not(None))
 
     if league_api_id is not None:
         dominant = await _get_team_dominant_leagues(session, season)
         team_names = [n for n, lg in dominant.items() if lg == league_api_id]
         if not team_names:
             return []
-        stmt = stmt.where(BzzPlayer.current_team_name.in_(team_names))
+        player_stmt = player_stmt.where(BzzPlayer.current_team_name.in_(team_names))
     if team_api_id is not None:
-        stmt = stmt.where(BzzPlayer.current_team_api_id == team_api_id)
+        player_stmt = player_stmt.where(BzzPlayer.current_team_api_id == team_api_id)
     if position is not None:
-        stmt = stmt.where(BzzPlayer.position == position.upper())
-    if min_minutes > 0:
-        stmt = stmt.where(
-            BzzPlayerSeasonStat.minutes_played >= min_minutes,
+        player_stmt = player_stmt.where(BzzPlayer.position == position.upper())
+
+    players = (await session.execute(player_stmt)).scalars().all()
+    if not players:
+        return []
+
+    player_ids = [p.api_id for p in players]
+
+    # Step 2: fetch ALL season stat rows for these players (any league)
+    all_stats = (await session.execute(
+        select(BzzPlayerSeasonStat)
+        .where(
+            BzzPlayerSeasonStat.player_api_id.in_(player_ids),
+            BzzPlayerSeasonStat.season == season,
         )
+    )).scalars().all()
 
-    stmt = stmt.order_by(order_fn(sort_col).nulls_last()).limit(limit).offset(offset)
+    # Step 3: group by player
+    stats_by_player: dict[int, list] = defaultdict(list)
+    for s in all_stats:
+        stats_by_player[s.player_api_id].append(s)
 
-    result = await session.execute(stmt)
-    rows = result.all()
+    player_by_id = {p.api_id: p for p in players}
 
-    return [
-        {
+    # Step 4: aggregate and build output — one dict per player
+    results: list[dict[str, Any]] = []
+    for pid in player_ids:
+        player = player_by_id[pid]
+        rows = stats_by_player.get(pid)
+        if not rows:
+            continue  # no season stats yet
+
+        merged = _merge_season_stats(rows, season)
+        if not merged:
+            continue
+
+        if min_minutes > 0 and (merged["minutes_played"] or 0) < min_minutes:
+            continue
+
+        results.append({
             "player_api_id": player.api_id,
             "name": player.name,
             "short_name": player.short_name,
             "position": player.position,
             "team_name": player.current_team_name,
             "nationality": player.nationality,
-            "goals": stats.goals,
-            "goal_assist": stats.goal_assist,
-            "xg_per_90": stats.xg_per_90,
-            "xa_per_90": stats.xa_per_90,
-            "avg_rating": stats.avg_rating,
-            "shots_on_target_per_90": stats.shots_on_target_per_90,
-            "form_xg_5": stats.form_xg_5,
-            "matches_played": stats.matches_played,
-            "minutes_played": stats.minutes_played,
-            "season": stats.season,
-        }
-        for player, stats in rows
-    ]
+            "goals": merged["goals"],
+            "goal_assist": merged["goal_assist"],
+            "xg_per_90": merged["xg_per_90"],
+            "xa_per_90": merged["xa_per_90"],
+            "avg_rating": merged["avg_rating"],
+            "shots_on_target_per_90": merged["shots_on_target_per_90"],
+            "form_xg_5": merged["form_xg_5"],
+            "matches_played": merged["matches_played"],
+            "minutes_played": merged["minutes_played"],
+            "season": merged["season"],
+            # Extra numeric fields needed for sort but not in PlayerSummary schema
+            "total_shots": merged["total_shots"],
+            "shots_on_target": merged["shots_on_target"],
+            "key_pass": merged["key_pass"],
+            "expected_goals": merged["expected_goals"],
+            "expected_assists": merged["expected_assists"],
+            "yellow_card": merged["yellow_card"],
+            "red_card": merged["red_card"],
+            "saves": merged["saves"],
+            "shots_per_90": merged["shots_per_90"],
+            "key_pass_per_90": merged["key_pass_per_90"],
+            "accurate_cross_per_90": merged["accurate_cross_per_90"],
+            "recoveries_per_90": merged["recoveries_per_90"],
+            "tackles_per_90": merged["tackles_per_90"],
+            "interceptions_per_90": merged["interceptions_per_90"],
+            "shot_accuracy": merged["shot_accuracy"],
+            "xg_per_shot": merged["xg_per_shot"],
+            "finishing_delta": merged["finishing_delta"],
+            "xa_delta": merged["xa_delta"],
+            "pass_completion": merged["pass_completion"],
+            "long_ball_accuracy": merged["long_ball_accuracy"],
+            "cross_accuracy": merged["cross_accuracy"],
+            "duel_win_rate": merged["duel_win_rate"],
+            "aerial_win_rate": merged["aerial_win_rate"],
+            "tackle_success_rate": merged["tackle_success_rate"],
+            "avg_minutes_per_match": merged["avg_minutes_per_match"],
+            "starts_pct": merged["starts_pct"],
+            "form_rating_5": merged["form_rating_5"],
+            "form_goals_5": merged["form_goals_5"],
+            "form_assists_5": merged["form_assists_5"],
+            "rating_trend": merged["rating_trend"],
+        })
+
+    # Step 5: sort in Python, then paginate
+    _python_sort(results, sort_by, sort_order)
+    return results[offset: offset + limit]
 
 
 # ---------------------------------------------------------------------------
@@ -526,61 +807,15 @@ async def get_player(
     if player is None:
         raise HTTPException(status_code=404, detail="Player not found")
 
-    # 2. Season stats
-    stats_result = await session.execute(
+    # 2. Season stats — aggregate ALL league rows (prevents partial data from first() pick)
+    season_stat_rows = (await session.execute(
         select(BzzPlayerSeasonStat).where(
             BzzPlayerSeasonStat.player_api_id == player_api_id,
             BzzPlayerSeasonStat.season == season,
         )
-    )
-    season_stat = stats_result.scalars().first()
+    )).scalars().all()
 
-    season_stats_out: SeasonStatsOut | None = None
-    if season_stat is not None:
-        season_stats_out = SeasonStatsOut(
-            season=season_stat.season,
-            league_api_id=season_stat.league_api_id,
-            matches_played=season_stat.matches_played,
-            minutes_played=season_stat.minutes_played,
-            starts=season_stat.starts,
-            goals=season_stat.goals,
-            goal_assist=season_stat.goal_assist,
-            total_shots=season_stat.total_shots,
-            shots_on_target=season_stat.shots_on_target,
-            key_pass=season_stat.key_pass,
-            expected_goals=season_stat.expected_goals,
-            expected_assists=season_stat.expected_assists,
-            xg_per_90=season_stat.xg_per_90,
-            xa_per_90=season_stat.xa_per_90,
-            shots_per_90=season_stat.shots_per_90,
-            shots_on_target_per_90=season_stat.shots_on_target_per_90,
-            key_pass_per_90=season_stat.key_pass_per_90,
-            avg_rating=season_stat.avg_rating,
-            form_xg_5=season_stat.form_xg_5,
-            form_rating_5=season_stat.form_rating_5,
-            form_goals_5=season_stat.form_goals_5,
-            form_assists_5=season_stat.form_assists_5,
-            rating_trend=season_stat.rating_trend,
-            shot_accuracy=season_stat.shot_accuracy,
-            xg_per_shot=season_stat.xg_per_shot,
-            finishing_delta=season_stat.finishing_delta,
-            xa_delta=season_stat.xa_delta,
-            yellow_card=season_stat.yellow_card,
-            red_card=season_stat.red_card,
-            saves=season_stat.saves,
-            accurate_cross_per_90=season_stat.accurate_cross_per_90,
-            recoveries_per_90=season_stat.recoveries_per_90,
-            tackles_per_90=season_stat.tackles_per_90,
-            interceptions_per_90=season_stat.interceptions_per_90,
-            long_ball_accuracy=season_stat.long_ball_accuracy,
-            cross_accuracy=season_stat.cross_accuracy,
-            pass_completion=season_stat.pass_completion,
-            duel_win_rate=season_stat.duel_win_rate,
-            aerial_win_rate=season_stat.aerial_win_rate,
-            tackle_success_rate=season_stat.tackle_success_rate,
-            avg_minutes_per_match=season_stat.avg_minutes_per_match,
-            starts_pct=season_stat.starts_pct,
-        )
+    merged = _merge_season_stats(season_stat_rows, season)
 
     # 3. Recent matches (all available) — join to BzzEvent for date and teams
     home_team_alias = BzzTeam.__table__.alias("ht")
@@ -679,6 +914,13 @@ async def get_player(
                 tackle_success_rate=ms.tackle_success_rate,
             )
         )
+
+    # 4. Build SeasonStatsOut — override form stats with values derived from actual recent matches
+    season_stats_out: SeasonStatsOut | None = None
+    if merged:
+        form = _compute_form_from_matches(recent_matches, merged.get("avg_rating"))
+        merged.update(form)
+        season_stats_out = SeasonStatsOut(**merged)
 
     return {
         "player_api_id": player.api_id,

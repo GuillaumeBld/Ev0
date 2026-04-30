@@ -151,7 +151,7 @@ async def aggregate_season_stats(
         key_pass_per_90 = _safe_div(row_dict["key_pass"], mins_per_90)
         accurate_cross_per_90 = _safe_div(row_dict["accurate_cross"], mins_per_90)
         recoveries_per_90 = _safe_div(row_dict["ball_recovery"], mins_per_90)
-        tackles_per_90 = _safe_div(row_dict["won_tackle"], mins_per_90)
+        tackles_per_90 = _safe_div(row_dict["total_tackle"], mins_per_90)
         interceptions_per_90 = _safe_div(row_dict["interception"], mins_per_90)
 
         starts_pct = _safe_div(starts, matches_played)
@@ -266,44 +266,27 @@ async def aggregate_season_stats(
 
 
 async def aggregate_all_leagues(session: AsyncSession, season: str = "2025-2026") -> int:
-    """Aggregate season stats for all leagues with finished matches.
+    """Aggregate season stats for all 6 target leagues with finished matches.
 
-    Equivalent league IDs (SofaScore api_id vs Bzzoiro internal id for the same
-    real league) are merged into a single aggregation stored under the canonical
-    Bzzoiro internal ID. This prevents duplicate rows arising from the API migration.
+    Only canonical Bzzoiro internal IDs [1,3,4,5,6,7] are used. The old SofaScore
+    api_ids (8,17,23,34,35) now belong to completely different competitions in Bzzoiro
+    (Saudi Pro League, Europa League, etc.) and must not be merged with target leagues.
 
     Returns total count of rows upserted across all leagues.
     """
-    from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_API_IDS, TARGET_LEAGUE_INTERNAL_IDS
-
-    # Build mapping: old SofaScore api_id → canonical Bzzoiro internal id
-    old_to_canonical: dict[int, int] = {
-        TARGET_LEAGUE_API_IDS[name]: TARGET_LEAGUE_INTERNAL_IDS[name]
-        for name in TARGET_LEAGUE_API_IDS
-        if TARGET_LEAGUE_API_IDS[name] != TARGET_LEAGUE_INTERNAL_IDS[name]
-    }
+    from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_INTERNAL_ID_LIST
 
     result = await session.execute(
         select(BzzEvent.league_api_id.distinct()).where(
-            BzzEvent.league_api_id.is_not(None),
+            BzzEvent.league_api_id.in_(TARGET_LEAGUE_INTERNAL_ID_LIST),
             BzzEvent.status == "finished",
         )
     )
-    all_ids = [row[0] for row in result.fetchall()]
-
-    # Group: canonical_id → [all equivalent ids found in bzz_events]
-    groups: dict[int, list[int]] = {}
-    for lid in all_ids:
-        canonical = old_to_canonical.get(lid, lid)
-        groups.setdefault(canonical, []).append(lid)
+    target_ids = [row[0] for row in result.fetchall()]
 
     total = 0
-    for canonical_id, group_ids in groups.items():
-        aliases = [i for i in group_ids if i != canonical_id]
-        total += await aggregate_season_stats(
-            session, canonical_id, season=season,
-            league_api_id_aliases=aliases or None,
-        )
+    for lid in target_ids:
+        total += await aggregate_season_stats(session, lid, season=season)
 
-    logger.info("Aggregated season stats for %d leagues, %d total rows", len(groups), total)
+    logger.info("Aggregated season stats for %d leagues, %d total rows", len(target_ids), total)
     return total
