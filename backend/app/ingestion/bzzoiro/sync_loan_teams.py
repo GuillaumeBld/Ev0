@@ -11,6 +11,7 @@ This runs after aggregate_all_leagues so match stats are fresh.
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,7 +52,7 @@ async def sync_loan_teams(session: AsyncSession) -> int:
     """)
     result = await session.execute(
         dominant_stmt,
-        {"season_start": _SEASON_START, "league_ids": _LEAGUE_IDS},
+        {"season_start": date.fromisoformat(_SEASON_START), "league_ids": _LEAGUE_IDS},
     )
     dominant_rows = result.fetchall()
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -44,7 +44,7 @@ async def aggregate_season_stats(
     Aggregates all finished matches for the league in the season window. Returns count of rows upserted.
     """
     all_league_ids = [league_api_id] + (league_api_id_aliases or [])
-    cutoff_date = season_start or SEASON_START_DATE
+    cutoff_date = date.fromisoformat(season_start or SEASON_START_DATE)
 
     # Step 1: Query aggregated stats grouped by player
     agg_stmt = (
