@@ -28,27 +28,41 @@ async def sync_loan_teams(session: AsyncSession) -> int:
     """Update loan_team_* for all on-loan players. Returns number of rows changed."""
 
     # Step 1 — find each player's dominant team this season from match stats.
-    # DISTINCT ON keeps the highest match_count row per player.
+    #
+    # team_api_id on bzz_player_match_stats is often NULL (Bzzoiro doesn't always
+    # return it). Instead we derive the player's team from bzz_events: UNION of
+    # home_team_api_id and away_team_api_id across the player's matches. The
+    # player's own team appears in EVERY match (as home OR away); each opponent
+    # appears only once. So the highest-count team = the player's actual team.
     dominant_stmt = text("""
-        WITH season_appearances AS (
-            SELECT
-                pms.player_api_id,
-                pms.team_api_id,
-                COUNT(*) AS match_count
+        WITH event_teams AS (
+            -- Each match contributes both its home and away team for the player
+            SELECT pms.player_api_id, e.home_team_api_id AS team_api_id
             FROM bzz_player_match_stats pms
             JOIN bzz_events e ON e.api_id = pms.event_api_id
             WHERE e.event_date >= :season_start
               AND e.league_api_id = ANY(:league_ids)
               AND pms.minutes_played > 0
-              AND pms.team_api_id IS NOT NULL
-            GROUP BY pms.player_api_id, pms.team_api_id
+            UNION ALL
+            SELECT pms.player_api_id, e.away_team_api_id
+            FROM bzz_player_match_stats pms
+            JOIN bzz_events e ON e.api_id = pms.event_api_id
+            WHERE e.event_date >= :season_start
+              AND e.league_api_id = ANY(:league_ids)
+              AND pms.minutes_played > 0
+        ),
+        team_counts AS (
+            SELECT player_api_id, team_api_id, COUNT(*) AS cnt
+            FROM event_teams
+            WHERE team_api_id IS NOT NULL
+            GROUP BY player_api_id, team_api_id
         )
         SELECT DISTINCT ON (player_api_id)
             player_api_id,
             team_api_id,
-            match_count
-        FROM season_appearances
-        ORDER BY player_api_id, match_count DESC
+            cnt
+        FROM team_counts
+        ORDER BY player_api_id, cnt DESC
     """)
     result = await session.execute(
         dominant_stmt,
