@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ingestion.bzzoiro.constants import SEASON_START_DATE
 from app.models.bzzoiro import BzzEvent, BzzPlayerMatchStat, BzzPlayerSeasonStat
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ async def aggregate_season_stats(
     league_api_id: int,
     season: str,
     league_api_id_aliases: list[int] | None = None,
+    season_start: str | None = None,
 ) -> int:
     """Aggregate per-match stats into per-season stats for a league.
 
@@ -35,9 +37,14 @@ async def aggregate_season_stats(
     that map to the same real league as league_api_id post-migration). Stats are
     stored under league_api_id (the canonical ID).
 
-    Aggregates all finished matches for the league. Returns count of rows upserted.
+    season_start: ISO date string (e.g. "2025-08-01"). Only events on or after this
+    date are included. Defaults to SEASON_START_DATE from constants so historical
+    match data from prior seasons never inflates current-season aggregates.
+
+    Aggregates all finished matches for the league in the season window. Returns count of rows upserted.
     """
     all_league_ids = [league_api_id] + (league_api_id_aliases or [])
+    cutoff_date = season_start or SEASON_START_DATE
 
     # Step 1: Query aggregated stats grouped by player
     agg_stmt = (
@@ -91,6 +98,7 @@ async def aggregate_season_stats(
         .where(
             BzzEvent.league_api_id.in_(all_league_ids),
             BzzEvent.status == "finished",
+            BzzEvent.event_date >= cutoff_date,
         )
         .group_by(BzzPlayerMatchStat.player_api_id)
     )
@@ -120,6 +128,7 @@ async def aggregate_season_stats(
         .where(
             BzzEvent.league_api_id.in_(all_league_ids),
             BzzEvent.status == "finished",
+            BzzEvent.event_date >= cutoff_date,
         )
         .subquery()
     )
