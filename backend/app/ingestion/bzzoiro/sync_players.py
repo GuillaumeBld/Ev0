@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, date, datetime
 
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +35,7 @@ async def sync_players(session: AsyncSession, client: BzzoiroClient) -> int:
         nat_team = row.get("national_team") or {}
         values = {
             "api_id": api_id,
+            "internal_id": row.get("id"),
             "name": row.get("name", ""),
             "short_name": row.get("short_name"),
             "nationality": row.get("nationality"),
@@ -47,9 +49,16 @@ async def sync_players(session: AsyncSession, client: BzzoiroClient) -> int:
             "national_team_api_id": nat_team.get("api_id") or nat_team.get("id"),
             "synced_at": now,
         }
-        stmt = pg_insert(BzzPlayer).values(**values).on_conflict_do_update(
+        ins = pg_insert(BzzPlayer).values(**values)
+        update_set = {k: ins.excluded[k] for k in values if k not in ("api_id", "internal_id")}
+        # Only fill NULL internal_id — never overwrite an existing value
+        update_set["internal_id"] = func.coalesce(
+            BzzPlayer.__table__.c.internal_id,
+            ins.excluded.internal_id,
+        )
+        stmt = ins.on_conflict_do_update(
             index_elements=["api_id"],
-            set_={k: v for k, v in values.items() if k != "api_id"},
+            set_=update_set,
         )
         await session.execute(stmt)
         count += 1

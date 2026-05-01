@@ -51,7 +51,7 @@ class BzzPlayer(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     api_id: Mapped[int] = mapped_column(Integer, unique=True, index=True, nullable=False)
-    internal_id: Mapped[int | None] = mapped_column(Integer, unique=True, index=True, nullable=True)
+    internal_id: Mapped[int | None] = mapped_column(Integer, unique=False, index=True, nullable=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     short_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     nationality: Mapped[str | None] = mapped_column(String(100), nullable=True)
