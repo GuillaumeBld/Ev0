@@ -23,6 +23,7 @@ from app.config import settings
 from app.db import async_session, engine
 from app.ingestion.auto_settle import settle_approved_recommendations
 from app.ingestion.bzzoiro.aggregate import aggregate_all_leagues
+from app.ingestion.bzzoiro.sync_loan_teams import sync_loan_teams
 from app.ingestion.bzzoiro.client import BzzoiroClient
 from app.ingestion.bzzoiro.sync_events import sync_events
 from app.ingestion.bzzoiro.sync_player_stats import sync_player_stats
@@ -1104,6 +1105,18 @@ async def job_aggregate_season_stats():
     logger.info("=== Bzzoiro season stats aggregation complete ===")
 
 
+async def job_sync_loan_teams():
+    """Daily at 04:30 UTC: detect on-loan players from match stats and update loan_team_*."""
+    logger.info("=== Starting loan team sync ===")
+    try:
+        async with async_session() as session:
+            changed = await sync_loan_teams(session)
+            logger.info("Loan team sync: %d rows changed", changed)
+    except Exception as exc:
+        logger.error("Error in loan team sync: %s", exc, exc_info=True)
+    logger.info("=== Loan team sync complete ===")
+
+
 async def job_sync_bzzoiro_events():
     """Every 6h: sync Bzzoiro match events — 3 days back, 14 days forward."""
     logger.info("=== Starting Bzzoiro events sync ===")
@@ -1361,6 +1374,15 @@ def create_scheduler() -> AsyncIOScheduler:
         CronTrigger(hour=4, minute=0),
         id="aggregate_season_stats",
         name="Aggregate Bzzoiro per-match stats into season totals",
+        replace_existing=True,
+    )
+
+    # Loan team detection: daily at 04:30 UTC (after aggregation)
+    scheduler.add_job(
+        job_sync_loan_teams,
+        CronTrigger(hour=4, minute=30),
+        id="sync_loan_teams",
+        name="Detect on-loan players from match stats and update loan_team_*",
         replace_existing=True,
     )
 

@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import desc, select, text
+from sqlalchemy import desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -466,31 +466,33 @@ async def _get_team_dominant_leagues(
     """
     stmt = text("""
         WITH per_name_league AS (
-            SELECT bp.current_team_name, bpss.league_api_id, COUNT(*) AS cnt
+            SELECT COALESCE(bp.loan_team_name, bp.current_team_name) AS eff_team_name,
+                   bpss.league_api_id, COUNT(*) AS cnt
             FROM bzz_players bp
             JOIN bzz_player_season_stats bpss ON bpss.player_api_id = bp.api_id
-            WHERE bpss.season = :season AND bp.current_team_name IS NOT NULL
-            GROUP BY bp.current_team_name, bpss.league_api_id
+            WHERE bpss.season = :season
+              AND COALESCE(bp.loan_team_name, bp.current_team_name) IS NOT NULL
+            GROUP BY eff_team_name, bpss.league_api_id
         ),
         -- Best domestic Big5 league per team (excluding UCL so UCL rows don't shadow domestic)
         domestic_ranked AS (
-            SELECT current_team_name, league_api_id, cnt,
-                   ROW_NUMBER() OVER (PARTITION BY current_team_name ORDER BY cnt DESC) AS rn
+            SELECT eff_team_name, league_api_id, cnt,
+                   ROW_NUMBER() OVER (PARTITION BY eff_team_name ORDER BY cnt DESC) AS rn
             FROM per_name_league WHERE league_api_id IN (1,3,4,5,6)
         ),
         domestic_best AS (
-            SELECT current_team_name, league_api_id AS domestic_league, cnt AS domestic_cnt
+            SELECT eff_team_name, league_api_id AS domestic_league, cnt AS domestic_cnt
             FROM domestic_ranked WHERE rn = 1
         ),
         ucl_stats AS (
-            SELECT current_team_name, cnt AS ucl_cnt
+            SELECT eff_team_name, cnt AS ucl_cnt
             FROM per_name_league WHERE league_api_id = 7
         ),
         all_teams AS (
-            SELECT DISTINCT current_team_name FROM per_name_league
+            SELECT DISTINCT eff_team_name FROM per_name_league
         )
         SELECT
-            t.current_team_name,
+            t.eff_team_name,
             CASE
                 WHEN db.domestic_league IS NOT NULL AND db.domestic_cnt >= :min_cnt
                     THEN db.domestic_league
@@ -499,8 +501,8 @@ async def _get_team_dominant_leagues(
                 ELSE -1
             END AS effective_league
         FROM all_teams t
-        LEFT JOIN domestic_best db ON db.current_team_name = t.current_team_name
-        LEFT JOIN ucl_stats u ON u.current_team_name = t.current_team_name
+        LEFT JOIN domestic_best db ON db.eff_team_name = t.eff_team_name
+        LEFT JOIN ucl_stats u ON u.eff_team_name = t.eff_team_name
     """)
     result = await session.execute(stmt, {"season": season, "min_cnt": _MIN_PLAYERS_FOR_TARGET_LEAGUE})
     return {row[0]: row[1] for row in result.all()}
@@ -547,21 +549,24 @@ async def list_player_teams(
 
     stmt = text("""
         WITH team_counts AS (
-            SELECT bp.current_team_api_id, bp.current_team_name, COUNT(*) AS cnt
+            SELECT
+                COALESCE(bp.loan_team_api_id, bp.current_team_api_id) AS eff_team_api_id,
+                COALESCE(bp.loan_team_name, bp.current_team_name)      AS eff_team_name,
+                COUNT(*) AS cnt
             FROM bzz_players bp
             JOIN bzz_player_season_stats bpss ON bpss.player_api_id = bp.api_id
             WHERE bpss.season = '2025-2026'
-              AND bp.current_team_api_id IS NOT NULL
-              AND bp.current_team_name IS NOT NULL
-            GROUP BY bp.current_team_api_id, bp.current_team_name
+              AND COALESCE(bp.loan_team_api_id, bp.current_team_api_id) IS NOT NULL
+              AND COALESCE(bp.loan_team_name, bp.current_team_name) IS NOT NULL
+            GROUP BY eff_team_api_id, eff_team_name
         ),
         ranked AS (
-            SELECT current_team_api_id, current_team_name,
-                   ROW_NUMBER() OVER (PARTITION BY current_team_name ORDER BY cnt DESC) AS rn
+            SELECT eff_team_api_id, eff_team_name,
+                   ROW_NUMBER() OVER (PARTITION BY eff_team_name ORDER BY cnt DESC) AS rn
             FROM team_counts
         )
-        SELECT current_team_api_id, current_team_name FROM ranked WHERE rn = 1
-        ORDER BY current_team_name
+        SELECT eff_team_api_id, eff_team_name FROM ranked WHERE rn = 1
+        ORDER BY eff_team_name
     """)
     result = await session.execute(stmt)
     rows = result.all()
@@ -595,7 +600,8 @@ async def export_players_csv(
         dominant = await _get_team_dominant_leagues(session, season)
         team_names = [n for n, lg in dominant.items() if lg == league_api_id]
         if team_names:
-            player_id_subq = player_id_subq.where(BzzPlayer.current_team_name.in_(team_names))
+            eff_team = func.coalesce(BzzPlayer.loan_team_name, BzzPlayer.current_team_name)
+            player_id_subq = player_id_subq.where(eff_team.in_(team_names))
 
     players = (await session.execute(
         select(BzzPlayer).where(BzzPlayer.api_id.in_(player_id_subq))
@@ -630,7 +636,7 @@ async def export_players_csv(
             continue
         rows.append({
             "name": player.name,
-            "team": player.current_team_name or "",
+            "team": player.loan_team_name or player.current_team_name or "",
             "position": player.position or "",
             "league": "",  # multi-league; no single league label
             "games": merged["matches_played"],
@@ -689,9 +695,15 @@ async def list_players(
         team_names = [n for n, lg in dominant.items() if lg == league_api_id]
         if not team_names:
             return []
-        player_id_subq = player_id_subq.where(BzzPlayer.current_team_name.in_(team_names))
+        eff_team = func.coalesce(BzzPlayer.loan_team_name, BzzPlayer.current_team_name)
+        player_id_subq = player_id_subq.where(eff_team.in_(team_names))
     if team_api_id is not None:
-        player_id_subq = player_id_subq.where(BzzPlayer.current_team_api_id == team_api_id)
+        player_id_subq = player_id_subq.where(
+            or_(
+                BzzPlayer.current_team_api_id == team_api_id,
+                BzzPlayer.loan_team_api_id == team_api_id,
+            )
+        )
     if position is not None:
         player_id_subq = player_id_subq.where(BzzPlayer.position == position.upper())
 
@@ -737,7 +749,7 @@ async def list_players(
             "name": player.name,
             "short_name": player.short_name,
             "position": player.position,
-            "team_name": player.current_team_name,
+            "team_name": player.loan_team_name or player.current_team_name,
             "nationality": player.nationality,
             "goals": merged["goals"],
             "goal_assist": merged["goal_assist"],
