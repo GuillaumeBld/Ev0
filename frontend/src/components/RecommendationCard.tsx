@@ -123,7 +123,7 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
               )}
             </h3>
             <p className="text-xs text-ev-t4 mt-0.5">
-              {rec.team} <span className="text-ev-t5">vs</span> {rec.opponent}
+              <span className="text-ev-t5">vs</span> {rec.opponent}
             </p>
           </div>
 
