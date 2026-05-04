@@ -13,9 +13,10 @@ interface DashboardProps {
 }
 
 function parseOpponent(fixtureName: string, team: string): string {
+  if (!team) return ''
   const parts = fixtureName.split(' vs ')
   if (parts.length === 2) {
-    return parts[0].trim() === team ? parts[1].trim() : parts[0].trim()
+    return parts[0].trim().toLowerCase() === team.toLowerCase() ? parts[1].trim() : parts[0].trim()
   }
   return fixtureName
 }
