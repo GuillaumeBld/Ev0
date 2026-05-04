@@ -84,11 +84,20 @@ async def _hydrate_strikers(
 
 @router.get("/lineups/fixture/{fixture_id}", response_model=FixtureLineupsOut)
 async def get_fixture_lineups(
-    fixture_id: int, session: AsyncSession = Depends(get_db)
+    fixture_id: str, session: AsyncSession = Depends(get_db)
 ):
-    fx = await session.get(Fixture, fixture_id)
+    try:
+        fx = await session.get(Fixture, int(fixture_id))
+    except ValueError:
+        fx = None
+    if fx is None:
+        result = await session.execute(
+            select(Fixture).where(Fixture.external_id == fixture_id)
+        )
+        fx = result.scalar_one_or_none()
     if fx is None:
         raise HTTPException(status_code=404, detail="Fixture not found")
+    fixture_id = fx.id
 
     home_res = await resolve_lineup(fixture_id, fx.home_team, session)
     away_res = await resolve_lineup(fixture_id, fx.away_team, session)
