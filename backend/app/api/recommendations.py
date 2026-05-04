@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.bankroll import BankrollEntry
+from app.models.bzzoiro import BzzPlayer
 from app.models.fixtures import Fixture as FixtureModel
 from app.models.recommendations import Recommendation as RecommendationModel
 from app.rate_limit import limiter
@@ -23,6 +24,59 @@ from app.strategy.selector import RecommendationFilter
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _resolve_team(
+    player_name: str,
+    home_team: str,
+    away_team: str,
+    bzz_teams: dict[str, list[str]],
+    explanation: dict,
+) -> str:
+    """Return the team name for a player in a given fixture.
+
+    Priority: explanation.team → bzz_players lookup → empty string.
+    bzz_teams maps normalised player name → list of team names from bzz_players.
+    """
+    team = (explanation or {}).get("team", "")
+    if team:
+        return team
+
+    norm = player_name.strip().lower()
+    candidates = bzz_teams.get(norm, [])
+    for candidate in candidates:
+        if candidate.lower() == home_team.lower():
+            return home_team
+        if candidate.lower() == away_team.lower():
+            return away_team
+    return ""
+
+
+async def _batch_player_teams(
+    db: AsyncSession,
+    player_names: list[str],
+) -> dict[str, list[str]]:
+    """Return {normalised_name: [team_name, ...]} from bzz_players."""
+    if not player_names:
+        return {}
+    from sqlalchemy import func as sql_func, text
+    result = await db.execute(
+        select(
+            BzzPlayer.name,
+            sql_func.coalesce(BzzPlayer.loan_team_name, BzzPlayer.current_team_name).label("team"),
+        ).where(
+            BzzPlayer.name.isnot(None),
+        )
+    )
+    out: dict[str, list[str]] = {}
+    norm_names = {n.strip().lower() for n in player_names}
+    for row in result:
+        if row.team is None:
+            continue
+        norm = row.name.strip().lower()
+        if norm in norm_names:
+            out.setdefault(norm, []).append(row.team)
+    return out
 
 
 class MarketType(StrEnum):
@@ -129,6 +183,8 @@ async def get_recommendations(
         )
         rows = result.all()
 
+        bzz_teams = await _batch_player_teams(db, [rec.player_name for rec, _ in rows])
+
         recommendations = [
             Recommendation(
                 id=rec.id,
@@ -136,7 +192,7 @@ async def get_recommendations(
                 fixture_name=f"{fix.home_team} vs {fix.away_team}",
                 kickoff_utc=fix.kickoff_utc.isoformat(),
                 player_name=rec.player_name,
-                team=(rec.explanation or {}).get("team", ""),
+                team=_resolve_team(rec.player_name, fix.home_team, fix.away_team, bzz_teams, rec.explanation or {}),
                 market_type=rec.market_type,
                 fair_odds=rec.fair_odds,
                 best_bookmaker=rec.best_bookmaker,
@@ -343,6 +399,8 @@ async def get_expired_recommendations(
         )
         rows = result.all()
 
+        bzz_teams_exp = await _batch_player_teams(db, [rec.player_name for rec, _ in rows])
+
         recommendations = [
             Recommendation(
                 id=rec.id,
@@ -350,7 +408,7 @@ async def get_expired_recommendations(
                 fixture_name=f"{fix.home_team} vs {fix.away_team}",
                 kickoff_utc=fix.kickoff_utc.isoformat(),
                 player_name=rec.player_name,
-                team=(rec.explanation or {}).get("team", ""),
+                team=_resolve_team(rec.player_name, fix.home_team, fix.away_team, bzz_teams_exp, rec.explanation or {}),
                 market_type=rec.market_type,
                 fair_odds=rec.fair_odds,
                 best_bookmaker=rec.best_bookmaker,
