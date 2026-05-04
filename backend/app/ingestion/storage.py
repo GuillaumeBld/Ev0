@@ -43,19 +43,30 @@ async def store_recommendation(
     best_bookmaker: str,
     best_odds: float,
     edge: float,
+    xg_source: str | None = None,
+    is_pen_taker: bool = False,
+    confidence: float | None = None,
+    classification: str | None = None,
 ) -> Recommendation:
-    if edge >= 0.10:
-        classification = "VALUE"
-        confidence = min(0.95, 0.7 + edge)
-    elif edge >= 0.05:
-        classification = "VALUE"
-        confidence = 0.6 + edge
-    elif edge >= 0.0:
-        classification = "NO_VALUE"
-        confidence = 0.5
-    else:
-        classification = "AVOID"
-        confidence = 0.3
+    if classification is None:
+        if edge >= 0.10:
+            classification = "VALUE"
+        elif edge >= 0.05:
+            classification = "VALUE"
+        elif edge >= 0.0:
+            classification = "NO_VALUE"
+        else:
+            classification = "AVOID"
+
+    if confidence is None:
+        if edge >= 0.10:
+            confidence = min(0.95, 0.7 + edge)
+        elif edge >= 0.05:
+            confidence = 0.6 + edge
+        elif edge >= 0.0:
+            confidence = 0.5
+        else:
+            confidence = 0.3
 
     rec = Recommendation(
         fixture_id=fixture_id,
@@ -71,6 +82,8 @@ async def store_recommendation(
         confidence=confidence,
         explanation=pricing_result["explanation"],
         generated_utc=datetime.now(UTC),
+        xg_source=xg_source,
+        is_pen_taker=is_pen_taker,
     )
     session.add(rec)
     await session.commit()

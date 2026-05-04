@@ -386,6 +386,10 @@ async def job_generate_recommendations():
                             best_bookmaker=rec.get("best_bookmaker", ""),
                             best_odds=rec.get("market_odds", 0),
                             edge=rec.get("edge", 0),
+                            xg_source=rec.get("xg_source"),
+                            is_pen_taker=rec.get("is_pen_taker", False) or False,
+                            confidence=rec.get("confidence"),
+                            classification=rec.get("classification"),
                         )
                         existing_keys.add((fixture_id, player_name, market_type))
                         stored += 1

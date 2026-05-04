@@ -511,10 +511,11 @@ async def _load_team_players(
         logger.warning("_load_team_players: no bzz team found for %r", team)
         return []
 
-    # Filter by team name (case-insensitive) — avoids the mismatch between
-    # events API team IDs (bzz_teams.api_id) and player profile API team IDs
-    # (BzzPlayer.current_team_api_id), which use incompatible ID systems.
-    team_name_filter = func.lower(BzzPlayer.current_team_name) == func.lower(bzz_team.name)
+    # Filter by effective team name — COALESCE(loan_team_name, current_team_name) so that
+    # players on loan appear under their loan club (not their parent club) in pricing,
+    # consistent with how the players API and teams API work (migration v027+).
+    _eff_team = func.coalesce(BzzPlayer.loan_team_name, BzzPlayer.current_team_name)
+    team_name_filter = func.lower(_eff_team) == func.lower(bzz_team.name)
 
     # Query season stats joined to player — pick the most recent season per player
     latest_subq = (

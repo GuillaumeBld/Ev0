@@ -191,6 +191,7 @@ async def generate_recommendations(
                 "explanation": {
                     "model": "top_down_v2",
                     "xg_source": xg_source,
+                    "team": alloc.team,
                     "team_lambda": round(team_lambda, 3),
                     "expected_minutes": alloc.expected_minutes,
                     "lambda": round(lambda_val, 4),

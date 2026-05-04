@@ -136,7 +136,7 @@ async def get_recommendations(
                 fixture_name=f"{fix.home_team} vs {fix.away_team}",
                 kickoff_utc=fix.kickoff_utc.isoformat(),
                 player_name=rec.player_name,
-                team="",  # no team column in RecommendationModel; team comes from service layer in date-mode only
+                team=(rec.explanation or {}).get("team", ""),
                 market_type=rec.market_type,
                 fair_odds=rec.fair_odds,
                 best_bookmaker=rec.best_bookmaker,
@@ -350,7 +350,7 @@ async def get_expired_recommendations(
                 fixture_name=f"{fix.home_team} vs {fix.away_team}",
                 kickoff_utc=fix.kickoff_utc.isoformat(),
                 player_name=rec.player_name,
-                team="",  # no team column in RecommendationModel; team comes from service layer in date-mode only
+                team=(rec.explanation or {}).get("team", ""),
                 market_type=rec.market_type,
                 fair_odds=rec.fair_odds,
                 best_bookmaker=rec.best_bookmaker,
