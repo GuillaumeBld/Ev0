@@ -857,6 +857,69 @@ async def job_expire_recommendations():
             logger.info("Expired %d recommendations", len(recs))
 
 
+async def job_refresh_recommendation_odds():
+    """Every 30 min: update best_odds/edge on pending recs from fresh snapshots; expire EV-."""
+    from datetime import timedelta
+
+    from app.db import async_session
+    from app.models.fixtures import Fixture
+    from app.models.player_odds_snapshot import PlayerOddsSnapshot
+    from app.models.recommendations import Recommendation
+
+    now = datetime.now(UTC)
+    freshness_cutoff = now - timedelta(hours=2)
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(Recommendation)
+            .join(Fixture, Recommendation.fixture_id == Fixture.id)
+            .where(
+                Recommendation.status == "pending",
+                Fixture.kickoff_utc > now,
+            )
+        )
+        recs = result.scalars().all()
+        if not recs:
+            return
+
+        snap_result = await session.execute(
+            select(
+                PlayerOddsSnapshot.fixture_id,
+                PlayerOddsSnapshot.player_name,
+                PlayerOddsSnapshot.market_type,
+                PlayerOddsSnapshot.bookmaker,
+                PlayerOddsSnapshot.odds,
+            ).where(PlayerOddsSnapshot.scraped_at >= freshness_cutoff)
+        )
+        odds_map: dict[tuple, tuple[float, str]] = {}
+        for row in snap_result:
+            key = (row.fixture_id, row.player_name, row.market_type)
+            if key not in odds_map or row.odds > odds_map[key][0]:
+                odds_map[key] = (row.odds, row.bookmaker)
+
+        refreshed = expired_count = 0
+        for rec in recs:
+            key = (rec.fixture_id, rec.player_name, rec.market_type)
+            if key not in odds_map:
+                continue
+            best_odds, best_bookmaker = odds_map[key]
+            new_edge = best_odds * rec.fair_probability - 1
+            rec.best_odds = best_odds
+            rec.best_bookmaker = best_bookmaker
+            rec.edge = new_edge
+            if new_edge <= 0:
+                rec.status = "expired"
+                expired_count += 1
+            refreshed += 1
+
+        if refreshed:
+            await session.commit()
+            logger.info(
+                "Refreshed odds on %d pending recs (%d expired EV-)",
+                refreshed, expired_count,
+            )
+
+
 async def job_auto_settle():
     """Every 3 hours: auto-settle approved recommendations via Understat."""
     logger.info("=== Starting auto-settle job ===")
@@ -1316,6 +1379,15 @@ def create_scheduler() -> AsyncIOScheduler:
         IntervalTrigger(minutes=5),
         id="expire_recommendations",
         name="Expire pending recommendations past kickoff",
+        replace_existing=True,
+    )
+
+    # Refresh recommendation odds: Every 30 minutes
+    scheduler.add_job(
+        job_refresh_recommendation_odds,
+        IntervalTrigger(minutes=30),
+        id="refresh_recommendation_odds",
+        name="Refresh pending rec odds + expire EV-",
         replace_existing=True,
     )
 
