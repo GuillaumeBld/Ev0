@@ -26,6 +26,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+import unicodedata
+
+
+def _norm_name(name: str) -> str:
+    """Lowercase + strip diacritics + normalize hyphens/spaces for fuzzy matching."""
+    nfkd = unicodedata.normalize("NFKD", name)
+    ascii_name = "".join(c for c in nfkd if not unicodedata.combining(c))
+    return ascii_name.strip().lower().replace("-", " ")
+
+
 def _resolve_team(
     player_name: str,
     home_team: str,
@@ -42,7 +52,7 @@ def _resolve_team(
     if team:
         return team
 
-    norm = player_name.strip().lower()
+    norm = _norm_name(player_name)
     candidates = bzz_teams.get(norm, [])
     for candidate in candidates:
         if candidate.lower() == home_team.lower():
@@ -59,21 +69,19 @@ async def _batch_player_teams(
     """Return {normalised_name: [team_name, ...]} from bzz_players."""
     if not player_names:
         return {}
-    from sqlalchemy import func as sql_func, text
+    from sqlalchemy import func as sql_func
     result = await db.execute(
         select(
             BzzPlayer.name,
             sql_func.coalesce(BzzPlayer.loan_team_name, BzzPlayer.current_team_name).label("team"),
-        ).where(
-            BzzPlayer.name.isnot(None),
-        )
+        ).where(BzzPlayer.name.isnot(None))
     )
+    norm_names = {_norm_name(n) for n in player_names}
     out: dict[str, list[str]] = {}
-    norm_names = {n.strip().lower() for n in player_names}
     for row in result:
         if row.team is None:
             continue
-        norm = row.name.strip().lower()
+        norm = _norm_name(row.name)
         if norm in norm_names:
             out.setdefault(norm, []).append(row.team)
     return out
