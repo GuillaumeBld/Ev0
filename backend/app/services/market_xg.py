@@ -18,7 +18,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from scipy.optimize import brentq, minimize
 from scipy.stats import poisson as _poisson_dist
@@ -44,8 +44,8 @@ FIT_RESIDUAL_FLAG_THRESHOLD = 0.06
 class MarketXgResult:
     xg_home: float
     xg_away: float
-    xg_source: Literal["market_implied", "market_implied_flagged"]
-    data_source: str = ""          # "oddsportal" | "betclic" | "unibet" | ...
+    xg_source: Literal["market_implied", "market_implied_flagged", "bzzoiro"]
+    data_source: str = ""          # "oddsportal" | "betclic" | "unibet" | "bzzoiro"
     fallback_used: bool = False
     fit_residual: float = 0.0
     flagged: bool = False          # fit_residual > FIT_RESIDUAL_FLAG_THRESHOLD
@@ -297,30 +297,57 @@ def _fit_lambdas(
 
 
 class MarketXgService:
-    """Derive match-level xG from bookmaker odds snapshots."""
+    """Derive match-level xG from bookmaker odds snapshots.
+
+    2-level fallback chain:
+      Level 1 — market_implied : solve λh/λa from bookmaker odds (L-BFGS-B / brentq)
+      Level 2 — bzzoiro        : use expected_home/away_goals from bzz_predictions
+    """
 
     async def compute(self, fixture_id: int, session: AsyncSession) -> MarketXgResult | None:
-        """Compute market-implied xG for a fixture.
+        """Compute xG pour un fixture en utilisant la meilleure source disponible.
 
-        Returns None if:
-        - no odds snapshot available
-        - snapshot is stale (> MAX_SNAPSHOT_AGE = 3 h from now)
-        - required markets (totals + h2h) are missing
-        - solvers raise ValueError
-
-        Uses 4-constraint L-BFGS-B solver when BTTS market available,
-        otherwise falls back to 2-constraint brentq solver.
+        Returns None uniquement si les deux niveaux échouent (aucune donnée en DB).
         """
         from app.models.fixtures import Fixture
-        from app.models.match_odds import MatchOddsSnapshot
 
-        # 1. Load fixture
         fixture = await session.get(Fixture, fixture_id)
         if fixture is None:
             logger.warning("MarketXgService.compute: fixture %s not found", fixture_id)
             return None
 
-        # 2. Find freshest snapshot_utc for this fixture
+        # Niveau 1 : market-implied depuis les odds bookmaker
+        result = await self._try_market_implied(fixture_id, session)
+        if result is not None:
+            return result
+
+        # Niveau 2 : prédictions Bzzoiro (expected_home/away_goals)
+        result = await self._try_bzzoiro_predictions(fixture, session)
+        if result is not None:
+            logger.info(
+                "market_xg: fallback bzzoiro pour fixture %s (%s vs %s)",
+                fixture_id, fixture.home_team, fixture.away_team,
+            )
+            return result
+
+        logger.warning(
+            "market_xg: aucune donnée disponible pour fixture %s (%s vs %s)",
+            fixture_id, fixture.home_team, fixture.away_team,
+        )
+        return None
+
+    async def _try_market_implied(
+        self, fixture_id: int, session: AsyncSession
+    ) -> MarketXgResult | None:
+        """Level 1: derive λh/λa from bookmaker odds snapshots.
+
+        Returns None if no fresh snapshot, missing markets, or solvers fail.
+        Uses 4-constraint L-BFGS-B solver when BTTS available, otherwise
+        2-constraint brentq solver (Over-2.5 + H2H).
+        """
+        from app.models.match_odds import MatchOddsSnapshot
+
+        # Find freshest snapshot_utc for this fixture
         freshest_result = await session.execute(
             select(MatchOddsSnapshot.snapshot_utc)
             .where(MatchOddsSnapshot.fixture_id == fixture_id)
@@ -330,44 +357,35 @@ class MarketXgService:
         freshest_row = freshest_result.scalar_one_or_none()
         if freshest_row is None:
             logger.info(
-                "MarketXgService.compute: no odds snapshot for fixture %s → None",
+                "market_xg: no odds snapshot for fixture %s → trying fallbacks",
                 fixture_id,
             )
             return None
 
         freshest_snapshot_utc = freshest_row
-
-        # Ensure freshest_snapshot_utc is timezone-aware before subtraction.
         if freshest_snapshot_utc.tzinfo is None:
             freshest_snapshot_utc = freshest_snapshot_utc.replace(tzinfo=UTC)
 
-        # Staleness check: reject snapshots older than MAX_SNAPSHOT_AGE (3 h from now)
         now = datetime.now(timezone.utc)
         snapshot_age = now - freshest_snapshot_utc
         if snapshot_age > MAX_SNAPSHOT_AGE:
             logger.warning(
-                "market_xg: stale snapshot for fixture %s (age=%s)",
+                "market_xg: stale snapshot for fixture %s (age=%s) → trying fallbacks",
                 fixture_id,
                 snapshot_age,
             )
             return None
 
-        # 3. Load all rows within 15 min of the freshest snapshot.
-        # Different bookmakers in the same scrape cycle have slightly different
-        # snapshot_utc values (e.g. Betclic at HH:54:14, Unibet at HH:54:57).
-        # A 15-min window captures the full cycle without merging two separate cycles
-        # (scraper cadence is 2 h for matches >6 h out, 30 min for 2–6 h out).
+        # Load all rows within 15 min of the freshest snapshot.
         rows_result = await session.execute(
             select(MatchOddsSnapshot)
             .where(MatchOddsSnapshot.fixture_id == fixture_id)
             .where(MatchOddsSnapshot.snapshot_utc >= freshest_snapshot_utc - timedelta(minutes=15))
             .where(MatchOddsSnapshot.snapshot_utc <= freshest_snapshot_utc)
-            .order_by(MatchOddsSnapshot.snapshot_utc)  # earlier rows overwritten by later writes
+            .order_by(MatchOddsSnapshot.snapshot_utc)
         )
         rows = rows_result.scalars().all()
 
-        # Group by market_type → bookmaker → outcome → odds
-        # Structure: markets[market_type][bookmaker][outcome] = odds
         markets: dict[str, dict[str, dict[str, float]]] = {}
         snapshot_ids: list[int] = []
         snapshot_source: str = "unknown"
@@ -383,16 +401,14 @@ class MarketXgService:
             if hasattr(row, "fallback_used") and row.fallback_used:
                 snapshot_fallback_used = True
 
-        # 4. Check minimum required markets
         if "totals" not in markets or "h2h" not in markets:
             logger.info(
-                "MarketXgService.compute: missing totals or h2h for fixture %s → None",
+                "market_xg: missing totals or h2h for fixture %s → trying fallbacks",
                 fixture_id,
             )
             return None
 
-        # 5. Devig each market using preferred bookmaker
-        # --- totals ---
+        # Devig totals
         totals_bm = _preferred_bookmaker(set(markets["totals"].keys()))
         if totals_bm is None:
             return None
@@ -401,13 +417,13 @@ class MarketXgService:
         under_odds = totals_outcomes.get("under_2.5")
         if over_odds is None or under_odds is None:
             logger.info(
-                "MarketXgService.compute: missing over/under odds for fixture %s → None",
+                "market_xg: missing over/under odds for fixture %s → trying fallbacks",
                 fixture_id,
             )
             return None
         p_over_2_5, _ = multiplicative_devig([over_odds, under_odds])
 
-        # --- h2h ---
+        # Devig h2h
         h2h_bm = _preferred_bookmaker(set(markets["h2h"].keys()))
         if h2h_bm is None:
             return None
@@ -417,19 +433,18 @@ class MarketXgService:
         away_odds = h2h_outcomes.get("away")
         if home_odds is None or draw_odds is None or away_odds is None:
             logger.info(
-                "MarketXgService.compute: missing h2h outcomes for fixture %s → None",
+                "market_xg: missing h2h outcomes for fixture %s → trying fallbacks",
                 fixture_id,
             )
             return None
         h2h_clean = multiplicative_devig([home_odds, draw_odds, away_odds])
         p_home_win, p_draw_val, p_away_win = h2h_clean
 
-        # Determine preferred bookmaker name (for data_source)
         data_source = _preferred_bookmaker(
             set(markets.get("h2h", {}).keys()) | set(markets.get("totals", {}).keys())
         ) or "unknown"
 
-        # --- btts (optional) ---
+        # Devig btts (optional)
         p_btts_yes: float | None = None
         if "btts" in markets:
             btts_bm = _preferred_bookmaker(set(markets["btts"].keys()))
@@ -441,46 +456,42 @@ class MarketXgService:
                     btts_clean = multiplicative_devig([yes_odds, no_odds])
                     p_btts_yes = btts_clean[0]
 
-        # 6. Solve λh, λa
         lambda_h: float
         lambda_a: float
         fit_residual: float
 
         if p_btts_yes is not None:
-            # 4-constraint L-BFGS-B solver (uses BTTS + Over2.5 + H2H home win + draw)
             try:
                 lambda_h, lambda_a, fit_residual = _fit_lambdas(
                     p_home_win, p_draw_val, p_over_2_5, p_btts_yes
                 )
             except Exception as exc:
-                logger.warning("market_xg: solver failed for fixture %s: %s", fixture_id, exc)
+                logger.warning(
+                    "market_xg: L-BFGS-B solver failed for fixture %s: %s → trying fallbacks",
+                    fixture_id, exc,
+                )
                 return None
         else:
-            # 2-constraint solver: brentq on Over-2.5 then H2H
             try:
                 lambda_t = solve_lambda_t(p_over_2_5)
                 lambda_h = solve_lambda_home_from_h2h(lambda_t, p_home_win)
                 lambda_a = lambda_t - lambda_h
-                # Compute residual for cross-validation
                 ok, reason = cross_validate_h2h(lambda_h, lambda_a, p_over_2_5, p_home_win)
                 fit_residual = 0.0 if ok else FIT_RESIDUAL_FLAG_THRESHOLD + 0.01
             except ValueError as exc:
                 logger.warning(
-                    "market_xg: solver failed for fixture %s: %s", fixture_id, exc
+                    "market_xg: brentq solver failed for fixture %s: %s → trying fallbacks",
+                    fixture_id, exc,
                 )
                 return None
 
-        # 7. Clamp
         lambda_h = max(0.05, lambda_h)
         lambda_a = max(0.05, lambda_a)
-
-        # 8. Flag
         flagged = fit_residual > FIT_RESIDUAL_FLAG_THRESHOLD
         xg_source: Literal["market_implied", "market_implied_flagged"] = (
             "market_implied_flagged" if flagged else "market_implied"
         )
 
-        # 9. Return result
         return MarketXgResult(
             xg_home=round(lambda_h, 3),
             xg_away=round(lambda_a, 3),
@@ -493,3 +504,54 @@ class MarketXgService:
             input_snapshot_ids=snapshot_ids,
             flagged_reason=None,
         )
+
+    async def _try_bzzoiro_predictions(
+        self, fixture: Any, session: AsyncSession
+    ) -> MarketXgResult | None:
+        """Level 2: use Bzzoiro's expected_home/away_goals from bzz_predictions.
+
+        Only works for fixtures whose external_id starts with "bzz_<event_api_id>".
+        """
+        from app.models.bzzoiro import BzzPrediction
+
+        ext_id = str(fixture.external_id or "")
+        if not ext_id.startswith("bzz_"):
+            return None
+
+        try:
+            event_api_id = int(ext_id[4:])  # strip "bzz_" prefix
+        except ValueError:
+            return None
+
+        result = await session.execute(
+            select(BzzPrediction).where(BzzPrediction.event_api_id == event_api_id)
+        )
+        pred = result.scalar_one_or_none()
+
+        if pred is None:
+            logger.info(
+                "market_xg: no bzz_prediction for event_api_id %s", event_api_id
+            )
+            return None
+
+        xg_home = pred.expected_home_goals
+        xg_away = pred.expected_away_goals
+
+        if xg_home is None or xg_away is None:
+            logger.info(
+                "market_xg: bzz_prediction missing xG for event_api_id %s", event_api_id
+            )
+            return None
+
+        return MarketXgResult(
+            xg_home=round(float(xg_home), 3),
+            xg_away=round(float(xg_away), 3),
+            xg_source="bzzoiro",
+            data_source="bzzoiro",
+            fallback_used=True,
+            fit_residual=0.0,
+            flagged=False,
+            as_of_utc=datetime.now(UTC),
+            input_snapshot_ids=[],
+        )
+

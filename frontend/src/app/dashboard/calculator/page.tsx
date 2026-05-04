@@ -6,7 +6,7 @@ import { Calculator, RefreshCw, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
 import { getFixtures, priceMatch, getPenTakers, setPenTakers, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
 import { LineupPricingWidget } from '@/components/calculator/LineupPricingWidget'
-import { XgBadge } from '@/components/XgBadge'
+import { XgSourceBadge } from '@/components/XgSourceBadge'
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -78,9 +78,7 @@ function TeamTable({
           )}>
             {matchXg.toFixed(2)}
           </span>
-          {(xgSource === 'bzzoiro' || xgSource === 'model') && (
-            <XgBadge source={xgSource} />
-          )}
+          <XgSourceBadge source={xgSource} />
           <input
             type="number"
             step="0.05"

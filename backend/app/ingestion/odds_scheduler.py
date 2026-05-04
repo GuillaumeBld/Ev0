@@ -340,9 +340,17 @@ class OddsScheduler:
         )
 
         all_results = []
-        if isinstance(betclic_results, list):
+        if isinstance(betclic_results, BaseException):
+            logger.error(
+                "OddsScheduler: betclic scrape failed: %s", betclic_results, exc_info=betclic_results
+            )
+        else:
             all_results.extend(betclic_results)
-        if isinstance(unibet_results, list):
+        if isinstance(unibet_results, BaseException):
+            logger.error(
+                "OddsScheduler: unibet scrape failed: %s", unibet_results, exc_info=unibet_results
+            )
+        else:
             all_results.extend(unibet_results)
 
         # Match scraped results to fixture_ids and store
@@ -354,9 +362,10 @@ class OddsScheduler:
                 key_rev = (_normalize_team(r.away_team), _normalize_team(r.home_team))
                 fixture_id = fixture_by_teams.get(key_rev)
             if not fixture_id:
-                logger.debug(
-                    "OddsScheduler: no fixture match for %s vs %s",
+                logger.warning(
+                    "OddsScheduler: no fixture match for '%s' vs '%s' (normalized: '%s' vs '%s')",
                     r.home_team, r.away_team,
+                    _normalize_team(r.home_team), _normalize_team(r.away_team),
                 )
                 continue
             r.fixture_id = fixture_id

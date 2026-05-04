@@ -7,11 +7,11 @@ API publique, token anonyme sans compte requis.
 
 Marchés extraits :
 - markettypeId=1         : 1X2 (résultat du match)   → h2h
-- markettypeId=994001271 : Nbre total buts            → totals
+- markettypeId=994001025 : Plus / Moins X.5 But(s)   → totals (un marché par seuil)
 - markettypeId=350       : Les 2 équipes marqueront?  → btts
 - markettypeId=31        : Buteur anytime             → goalscorer
 - markettypeId=4         : 1er Buteur                 → goalscorer (dédupliqué)
-- markettypeId=100002524 : Passeur décisif            → assist
+- markettypeId=100001899 : Nbre de passes décisives   → assist (disponible PL uniquement)
 
 CLI usage (dry-run):
     python -m app.ingestion.unibet_lvs_scraper --dry-run
@@ -328,7 +328,7 @@ class UnibetLVSScraper:
                 r.raise_for_status()
                 items = r.json().get("items", {})
             except Exception as exc:
-                logger.debug("UnibetLVSScraper: ff/e%d échoué: %s", event_id, exc)
+                logger.warning("UnibetLVSScraper: ff/e%d échoué (%s vs %s): %s", event_id, home, away, exc)
                 await asyncio.sleep(_EVENT_SLEEP)
                 continue
 

@@ -6,7 +6,7 @@ import { ChevronDown, ChevronUp, Check, X, Loader2 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { patchRecommendation } from '@/lib/api'
 import { LineupDisplay, LineupData } from '@/components/lineups/LineupDisplay'
-import { XgBadge } from './XgBadge'
+import { XgSourceBadge } from './XgSourceBadge'
 
 interface Recommendation {
   id: number
@@ -27,35 +27,6 @@ interface Recommendation {
   is_pen_taker?: boolean
 }
 
-function XgSourceBadge({ source }: { source: string | null | undefined }) {
-  // New sources (bzzoiro / model) — delegate to XgBadge
-  if (source === 'bzzoiro' || source === 'model') {
-    return <XgBadge source={source} />
-  }
-  if (!source) {
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-[var(--ev-hover)] text-ev-t4 border border-ev-bd">
-        xG · indisponible
-      </span>
-    )
-  }
-  // Legacy sources (oddsportal, understat, etc.)
-  const isOddsPortal = source === 'oddsportal'
-  return (
-    <span
-      className={clsx(
-        'inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border',
-        isOddsPortal
-          ? 'bg-emerald-500/[0.08] text-emerald-500 border-emerald-500/20'
-          : 'bg-amber-500/[0.08] text-amber-500 border-amber-500/20'
-      )}
-    >
-      {isOddsPortal
-        ? 'xG · OddsPortal'
-        : `xG · ${source.charAt(0).toUpperCase() + source.slice(1)} (fallback)`}
-    </span>
-  )
-}
 
 interface RecommendationCardProps {
   recommendation: Recommendation

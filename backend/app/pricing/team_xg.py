@@ -160,7 +160,7 @@ class MatchPricingResult:
     away_team: str
     home_match_xg: float
     away_match_xg: float
-    xg_source: str = "dixon_coles"
+    xg_source: str = "market_implied"
     home_players: list[PlayerAllocation] = field(default_factory=list)
     away_players: list[PlayerAllocation] = field(default_factory=list)
     # Optional redistributed pricing when caller supplies a starter list
@@ -719,7 +719,7 @@ async def load_match_pricing(
     away_pen_taker_override: int | None = None,
     home_starters: list[str] | None = None,
     away_starters: list[str] | None = None,
-) -> MatchPricingResult:
+) -> MatchPricingResult | None:
     """Full Top-Down pricing pipeline for one fixture (Model C).
 
     home_starters / away_starters: optional list of player names. When
