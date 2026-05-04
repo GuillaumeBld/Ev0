@@ -145,23 +145,27 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
             </div>
           </div>
           <div className="text-ev-t5 text-xs">→</div>
-          <div className={clsx(
-            'flex-1 border rounded-lg p-3',
-            rec.bookmaker?.toLowerCase().includes('betclic')
-              ? 'bg-red-500/[0.06] border-red-500/20'
-              : 'bg-emerald-500/[0.06] border-emerald-500/20'
-          )}>
-            <div className={clsx(
-              'text-[10px] uppercase tracking-widest mb-1',
-              rec.bookmaker?.toLowerCase().includes('betclic') ? 'text-red-500' : 'text-emerald-600'
-            )}>{rec.bookmaker}</div>
-            <div className={clsx(
-              'text-lg font-mono font-semibold tabular-nums',
-              rec.bookmaker?.toLowerCase().includes('betclic') ? 'text-red-400' : 'text-emerald-400'
-            )}>
-              {rec.bestOdds.toFixed(2)}
-            </div>
-          </div>
+          {(() => {
+            const isBetclic = rec.bookmaker?.toLowerCase().includes('betclic')
+            const accent = isBetclic ? '#ef4444' : '#10b981'
+            return (
+              <div
+                className="flex-1 border rounded-lg p-3"
+                style={{ background: `${accent}0f`, borderColor: `${accent}33` }}
+              >
+                <div
+                  className="text-[10px] uppercase tracking-widest mb-1"
+                  style={{ color: accent }}
+                >{rec.bookmaker}</div>
+                <div
+                  className="text-lg font-mono font-semibold tabular-nums"
+                  style={{ color: accent }}
+                >
+                  {rec.bestOdds.toFixed(2)}
+                </div>
+              </div>
+            )
+          })()}
         </div>
 
         {/* Confidence bar */}
