@@ -1389,15 +1389,6 @@ def create_scheduler() -> AsyncIOScheduler:
 
     # Match events: handled by settle_pipeline (every 30 min)
 
-    # Weekly player stats refresh: every Monday at 06:00 UTC
-    scheduler.add_job(
-        job_refresh_player_stats,
-        CronTrigger(day_of_week="mon", hour=6, minute=0),
-        id="refresh_player_stats",
-        name="Refresh Understat player stats (current season)",
-        replace_existing=True,
-    )
-
     # Autopilot run: Every 2 hours (after recommendations)
     scheduler.add_job(
         job_autopilot_run,
@@ -1422,15 +1413,6 @@ def create_scheduler() -> AsyncIOScheduler:
         IntervalTrigger(minutes=5),
         id="expire_recommendations",
         name="Expire pending recommendations past kickoff",
-        replace_existing=True,
-    )
-
-    # Refresh recommendation odds: Every 30 minutes
-    scheduler.add_job(
-        job_refresh_recommendation_odds,
-        IntervalTrigger(minutes=30),
-        id="refresh_recommendation_odds",
-        name="Refresh pending rec odds + expire EV-",
         replace_existing=True,
     )
 
