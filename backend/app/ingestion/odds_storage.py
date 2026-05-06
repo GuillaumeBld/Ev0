@@ -44,7 +44,9 @@ async def store_match_scrape_result(
         stmt = (
             pg_insert(MatchOddsSnapshot)
             .values(match_rows)
-            .on_conflict_do_nothing(constraint="uq_match_odds_snapshot")
+            .on_conflict_do_nothing(
+                index_elements=["fixture_id", "bookmaker", "market_type", "outcome", "snapshot_utc"]
+            )
         )
         res = await session.execute(stmt)
         match_inserted = res.rowcount or 0
@@ -71,7 +73,7 @@ async def store_match_scrape_result(
         insert_stmt = pg_insert(PlayerOddsSnapshot).values(player_rows)
         excluded = insert_stmt.excluded
         stmt2 = insert_stmt.on_conflict_do_update(
-            constraint="uq_player_odds",
+            index_elements=["fixture_id", "bookmaker", "market_type", "player_name"],
             set_={"odds": excluded.odds, "scraped_at": excluded.scraped_at},
         )
         res2 = await session.execute(stmt2)
