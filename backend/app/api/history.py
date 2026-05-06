@@ -28,12 +28,14 @@ class HistoryItem(BaseModel):
     player_name: str
     market_type: str
     best_odds: float
+    fair_odds: float | None
     edge: float
     best_bookmaker: str
     status: str
     result: str | None
     pnl: float | None
     stake: float | None
+    decided_utc: str | None
 
 
 class HistoryResponse(BaseModel):
@@ -127,12 +129,14 @@ async def get_history(
                 player_name=rec.player_name,
                 market_type=rec.market_type,
                 best_odds=rec.best_odds,
+                fair_odds=rec.fair_odds,
                 edge=rec.edge,
                 best_bookmaker=rec.best_bookmaker,
                 status=display_status,
                 result=rec.result,
                 pnl=rec.pnl if rec.result else None,
                 stake=stake_map.get(rec.id),
+                decided_utc=rec.decided_utc.isoformat() if rec.decided_utc else None,
             )
         )
 
@@ -193,12 +197,14 @@ async def get_autoflat_history(
                 player_name=rec.player_name,
                 market_type=rec.market_type,
                 best_odds=rec.best_odds,
+                fair_odds=rec.fair_odds,
                 edge=rec.edge,
                 best_bookmaker=rec.best_bookmaker,
                 status=display_status,
                 result=computed_result,
                 pnl=computed_pnl,
                 stake=10.0,
+                decided_utc=None,
             )
         )
 

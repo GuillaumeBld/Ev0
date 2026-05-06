@@ -247,12 +247,14 @@ export interface HistoryItem {
   player_name: string
   market_type: string
   best_odds: number
+  fair_odds: number | null
   edge: number
   best_bookmaker: string
   status: string
   result: string | null
   pnl: number | null
   stake: number | null
+  decided_utc: string | null
 }
 
 export interface HistoryResponse {
