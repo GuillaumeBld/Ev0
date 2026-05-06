@@ -1111,18 +1111,61 @@ _odds_scheduler = None  # initialized lazily
 
 
 async def job_odds_scheduler_tick() -> None:
-    """Adaptive odds scraper — fires Betclic + Unibet for fixtures due based on KO distance."""
+    """Adaptive odds scraper — fires Betclic + Unibet for fixtures due based on KO distance.
+
+    After each scrape, immediately runs the recommendation pipeline on scraped fixtures:
+    market xG recomputation, edge comparison, create/update/expire/resurrect recs.
+    """
     global _odds_scheduler
     from app.ingestion.odds_scheduler import OddsScheduler
     if _odds_scheduler is None:
         _odds_scheduler = OddsScheduler()
+
+    scraped_fixture_ids: list[int] = []
     async with async_session() as session:
         try:
-            n = await _odds_scheduler.tick(session)
+            n, scraped_fixture_ids = await _odds_scheduler.tick(session)
             if n:
                 logger.info("job_odds_scheduler_tick: scraped %d fixtures", n)
         except Exception as exc:
             logger.error("job_odds_scheduler_tick error: %s", exc, exc_info=True)
+            return
+
+    if not scraped_fixture_ids:
+        return
+
+    try:
+        from app.services.recommendation_service import process_scraped_fixtures
+        from app.strategy.selector import RecommendationFilter
+
+        user_settings = await _load_user_settings()
+        filter_config = RecommendationFilter(
+            min_edge=float(user_settings.get("min_edge", settings.min_edge_threshold)),
+            min_confidence=float(user_settings.get("min_confidence", 0.50)),
+            min_odds=float(user_settings.get("min_odds", 1.3)),
+            max_odds=float(user_settings.get("max_odds", 15.0)),
+            leagues=_get_leagues(user_settings),
+        )
+
+        async with async_session() as session:
+            rec_stats = await process_scraped_fixtures(
+                scraped_fixture_ids, session, filter_config
+            )
+
+        if any(v > 0 for v in rec_stats.values()):
+            logger.info(
+                "Recommendations — created=%d resurrected=%d updated=%d expired=%d",
+                rec_stats["created"],
+                rec_stats["resurrected"],
+                rec_stats["updated"],
+                rec_stats["expired"],
+            )
+    except Exception as exc:
+        logger.error(
+            "job_odds_scheduler_tick: recommendation pipeline error: %s",
+            exc,
+            exc_info=True,
+        )
 
 
 # ── Bzzoiro Jobs ─────────────────────────────────────────────────
@@ -1346,12 +1389,12 @@ def create_scheduler() -> AsyncIOScheduler:
 
     # Match events: handled by settle_pipeline (every 30 min)
 
-    # Recommendations: Every 2 hours
+    # Weekly player stats refresh: every Monday at 06:00 UTC
     scheduler.add_job(
-        job_generate_recommendations,
-        IntervalTrigger(hours=2),
-        id="generate_recommendations",
-        name="Generate betting recommendations",
+        job_refresh_player_stats,
+        CronTrigger(day_of_week="mon", hour=6, minute=0),
+        id="refresh_player_stats",
+        name="Refresh Understat player stats (current season)",
         replace_existing=True,
     )
 

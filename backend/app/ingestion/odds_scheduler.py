@@ -268,8 +268,8 @@ def _league_key(league_name: str | None) -> str | None:
 class OddsScheduler:
     """Drives adaptive scraping of Betclic + Unibet for upcoming fixtures."""
 
-    async def tick(self, session: AsyncSession) -> int:
-        """Process all fixtures due for a scrape. Returns count of fixtures scraped."""
+    async def tick(self, session: AsyncSession) -> tuple[int, list[int]]:
+        """Process all fixtures due for a scrape. Returns (count_due, stored_fixture_ids)."""
         from app.ingestion.betclic_grpc_scraper import scrape_betclic_leagues
         from app.ingestion.odds_storage import store_match_scrape_result
         from app.ingestion.unibet_lvs_scraper import scrape_all_unibet
@@ -292,7 +292,7 @@ class OddsScheduler:
         )
         fixtures = result.scalars().all()
         if not fixtures:
-            return 0
+            return 0, []
 
         # Load scrape states
         states_result = await session.execute(
@@ -315,7 +315,7 @@ class OddsScheduler:
 
         if not due:
             logger.debug("OddsScheduler.tick: 0 fixtures due")
-            return 0
+            return 0, []
 
         logger.info("OddsScheduler.tick: %d fixtures due for scraping", len(due))
 
@@ -330,7 +330,7 @@ class OddsScheduler:
 
         if not leagues_needed:
             logger.warning("OddsScheduler.tick: no recognized leagues in due fixtures")
-            return 0
+            return 0, []
 
         # Scrape both books in parallel
         betclic_results, unibet_results = await asyncio.gather(
@@ -355,6 +355,7 @@ class OddsScheduler:
 
         # Match scraped results to fixture_ids and store
         scraped = 0
+        stored_fixture_ids: set[int] = set()
         for r in all_results:
             key = (_normalize_team(r.home_team), _normalize_team(r.away_team))
             fixture_id = fixture_by_teams.get(key)
@@ -370,6 +371,7 @@ class OddsScheduler:
                 continue
             r.fixture_id = fixture_id
             await store_match_scrape_result(r, session)
+            stored_fixture_ids.add(fixture_id)
             scraped += 1
 
         # Update odds_scrape_state for all due fixtures
@@ -409,4 +411,4 @@ class OddsScheduler:
             "OddsScheduler.tick: stored %d results for %d fixtures",
             scraped, len(due),
         )
-        return len(due)
+        return len(due), list(stored_fixture_ids)
