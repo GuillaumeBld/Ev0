@@ -40,12 +40,16 @@ services:
     networks:
       - dokploy-network
     labels:
+      - traefik.http.routers.ev0-compose-z5hvqt-4-web.rule=Host(`ev0-api-213-130-144-204.sslip.io`)
+      - traefik.http.routers.ev0-compose-z5hvqt-4-web.entrypoints=web
+      - traefik.http.services.ev0-compose-z5hvqt-4-web.loadbalancer.server.port=8000
+      - traefik.http.routers.ev0-compose-z5hvqt-4-web.service=ev0-compose-z5hvqt-4-web
       - traefik.docker.network=dokploy-network
       - traefik.enable=true
-      - traefik.http.routers.ev0-compose-z5hvqt-4-web.rule=Host(`ev0-compose-z5hvqt-e34c1d-213-130-144-204.traefik.me`)
+      - traefik.http.routers.ev0-compose-z5hvqt-4-web.rule=Host(`ev0-api-213-130-144-204.sslip.io`)
       - traefik.http.routers.ev0-compose-z5hvqt-4-web.entrypoints=web
       - traefik.http.routers.ev0-compose-z5hvqt-4-web.middlewares=ev0-https-redirect
-      - traefik.http.routers.ev0-compose-z5hvqt-4-websecure.rule=Host(`ev0-compose-z5hvqt-e34c1d-213-130-144-204.traefik.me`)
+      - traefik.http.routers.ev0-compose-z5hvqt-4-websecure.rule=Host(`ev0-api-213-130-144-204.sslip.io`)
       - traefik.http.routers.ev0-compose-z5hvqt-4-websecure.entrypoints=websecure
       - traefik.http.routers.ev0-compose-z5hvqt-4-websecure.tls=true
       - traefik.http.routers.ev0-compose-z5hvqt-4-websecure.service=ev0-compose-z5hvqt-4-web
@@ -126,12 +130,16 @@ services:
     networks:
       - dokploy-network
     labels:
+      - traefik.http.routers.ev0-compose-z5hvqt-3-web.rule=Host(`ev0-213-130-144-204.sslip.io`)
+      - traefik.http.routers.ev0-compose-z5hvqt-3-web.entrypoints=web
+      - traefik.http.services.ev0-compose-z5hvqt-3-web.loadbalancer.server.port=3000
+      - traefik.http.routers.ev0-compose-z5hvqt-3-web.service=ev0-compose-z5hvqt-3-web
       - traefik.docker.network=dokploy-network
       - traefik.enable=true
-      - traefik.http.routers.ev0-compose-z5hvqt-3-web.rule=Host(`ev0-compose-z5hvqt-a4f9a7-213-130-144-204.traefik.me`)
+      - traefik.http.routers.ev0-compose-z5hvqt-3-web.rule=Host(`ev0-213-130-144-204.sslip.io`)
       - traefik.http.routers.ev0-compose-z5hvqt-3-web.entrypoints=web
       - traefik.http.routers.ev0-compose-z5hvqt-3-web.middlewares=ev0-https-redirect
-      - traefik.http.routers.ev0-compose-z5hvqt-3-websecure.rule=Host(`ev0-compose-z5hvqt-a4f9a7-213-130-144-204.traefik.me`)
+      - traefik.http.routers.ev0-compose-z5hvqt-3-websecure.rule=Host(`ev0-213-130-144-204.sslip.io`)
       - traefik.http.routers.ev0-compose-z5hvqt-3-websecure.entrypoints=websecure
       - traefik.http.routers.ev0-compose-z5hvqt-3-websecure.tls=true
       - traefik.http.routers.ev0-compose-z5hvqt-3-websecure.service=ev0-compose-z5hvqt-3-web
