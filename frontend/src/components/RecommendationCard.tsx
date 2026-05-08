@@ -21,7 +21,8 @@ interface Recommendation {
   confidence: number
   kickoff: string
   explanation?: Record<string, any>
-  status?: 'pending' | 'approved' | 'rejected'
+  status?: 'pending' | 'approved' | 'rejected' | 'expired'
+  decided_utc?: string | null
   lineup?: LineupData | null
   xg_source?: string | null
   is_pen_taker?: boolean
@@ -34,16 +35,18 @@ interface RecommendationCardProps {
 
 export function RecommendationCard({ recommendation: rec }: RecommendationCardProps) {
   const [expanded, setExpanded] = useState(false)
-  const [status, setStatus] = useState<'pending' | 'approved' | 'rejected'>(
-    (rec.status as 'pending' | 'approved' | 'rejected') ?? 'pending'
+  const [status, setStatus] = useState<'pending' | 'approved' | 'rejected' | 'expired'>(
+    rec.status ?? 'pending'
   )
+  const [decidedAt, setDecidedAt] = useState<string | null>(rec.decided_utc ?? null)
   const queryClient = useQueryClient()
 
   const mutation = useMutation({
     mutationFn: (newStatus: 'approved' | 'rejected') =>
       patchRecommendation(rec.id, { status: newStatus }),
-    onSuccess: (_data, newStatus) => {
+    onSuccess: (data, newStatus) => {
       setStatus(newStatus)
+      setDecidedAt(data?.decided_utc ?? new Date().toISOString())
       queryClient.invalidateQueries({ queryKey: ['history'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
       queryClient.invalidateQueries({ queryKey: ['recommendations'] })
@@ -55,8 +58,10 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
   const handleCancel = () => {
     patchRecommendation(rec.id, { status: 'pending' as any }).then(() => {
       setStatus('pending')
+      setDecidedAt(null)
       queryClient.invalidateQueries({ queryKey: ['history'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['recommendations'] })
     })
   }
 
@@ -219,19 +224,33 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
         )}
 
         {status !== 'pending' && (
-          <div className="mt-4 flex items-center justify-between">
-            <span className={clsx(
-              'text-xs font-medium uppercase tracking-widest',
-              status === 'approved' ? 'text-emerald-500' : 'text-ev-t4'
-            )}>
-              {status === 'approved' ? 'Approuvé' : 'Rejeté'}
-            </span>
-            <button
-              onClick={handleCancel}
-              className="text-[11px] text-ev-t4 hover:text-ev-t3 transition-colors"
-            >
-              Annuler
-            </button>
+          <div className="mt-4 flex items-center justify-between gap-2">
+            <div className="flex flex-col gap-0.5 min-w-0">
+              <span className={clsx(
+                'text-xs font-medium uppercase tracking-widest',
+                status === 'approved' ? 'text-emerald-500' :
+                status === 'rejected' ? 'text-rose-400' :
+                'text-ev-t4'
+              )}>
+                {status === 'approved' ? 'Approuvé' : status === 'rejected' ? 'Rejeté' : 'Expiré'}
+              </span>
+              {decidedAt && status !== 'expired' && (
+                <span className="text-[10px] text-ev-t5 font-mono">
+                  {new Date(decidedAt).toLocaleString('fr-FR', {
+                    day: '2-digit', month: '2-digit',
+                    hour: '2-digit', minute: '2-digit',
+                  })}
+                </span>
+              )}
+            </div>
+            {status !== 'expired' && (
+              <button
+                onClick={handleCancel}
+                className="text-[11px] text-ev-t4 hover:text-ev-t3 transition-colors shrink-0"
+              >
+                Annuler
+              </button>
+            )}
           </div>
         )}
       </div>

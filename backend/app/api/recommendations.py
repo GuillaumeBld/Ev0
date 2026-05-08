@@ -130,6 +130,7 @@ class Recommendation(BaseModel):
     confidence: float
     explanation: dict
     status: RecommendationStatus = RecommendationStatus.PENDING
+    decided_utc: str | None = None
     xg_source: str | None = None
     is_pen_taker: bool = False
 
@@ -155,16 +156,27 @@ async def get_recommendations(
     market_type: Annotated[MarketType | None, Query(description="Filter by market type")] = None,
     league: Annotated[str | None, Query(description="Filter by league (ligue_1, premier_league)")] = None,
     min_edge: Annotated[float, Query(description="Minimum edge threshold")] = 0.05,
+    status_filter: Annotated[str | None, Query(description="Filter by status: pending, approved, rejected, all")] = None,
     page: Annotated[int, Query(ge=1, description="Page number (view-all only)")] = 1,
     page_size: Annotated[int, Query(ge=1, le=200, description="Items per page (view-all only)")] = 50,
 ) -> RecommendationsResponse:
     """Get betting recommendations for a given date."""
     # ── View All mode (no target_date) ─────────────────────────────────
     if target_date is None:
-        filters = [
-            RecommendationModel.status.in_(["pending", "approved"]),
-            FixtureModel.kickoff_utc >= datetime.now(UTC),
-        ]
+        effective_status = status_filter or "pending"
+        if effective_status == "all":
+            status_clause = RecommendationModel.status.in_(["pending", "approved", "rejected"])
+            kickoff_clause = None
+        elif effective_status in ("approved", "rejected"):
+            status_clause = RecommendationModel.status == effective_status
+            kickoff_clause = None
+        else:
+            status_clause = RecommendationModel.status == "pending"
+            kickoff_clause = FixtureModel.kickoff_utc >= datetime.now(UTC)
+
+        filters = [status_clause]
+        if kickoff_clause is not None:
+            filters.append(kickoff_clause)
         if market_type:
             filters.append(RecommendationModel.market_type == market_type.value)
         if league:
@@ -210,6 +222,7 @@ async def get_recommendations(
                 confidence=rec.confidence,
                 explanation=rec.explanation or {},
                 status=rec.status,
+                decided_utc=rec.decided_utc.isoformat() if rec.decided_utc else None,
                 xg_source=rec.xg_source,
                 is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
             )
@@ -426,6 +439,7 @@ async def get_expired_recommendations(
                 confidence=rec.confidence,
                 explanation=rec.explanation or {},
                 status=rec.status,
+                decided_utc=rec.decided_utc.isoformat() if rec.decided_utc else None,
                 xg_source=rec.xg_source,
                 is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
             )
@@ -473,6 +487,7 @@ async def get_expired_recommendations(
             confidence=rec.confidence,
             explanation=rec.explanation or {},
             status=rec.status,
+            decided_utc=rec.decided_utc.isoformat() if rec.decided_utc else None,
             xg_source=rec.xg_source,
             is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
         )

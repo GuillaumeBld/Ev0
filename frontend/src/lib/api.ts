@@ -51,6 +51,7 @@ export interface Recommendation {
   confidence: number
   explanation: Record<string, any>
   status?: string
+  decided_utc?: string | null
   error?: string | null
   xg_source?: string | null
   is_pen_taker?: boolean
@@ -122,6 +123,7 @@ export async function getRecommendations(params?: {
   date?: string
   market_type?: string
   min_edge?: number
+  status?: string
   page?: number
   page_size?: number
 }): Promise<RecommendationsApiResponse> {
@@ -129,6 +131,7 @@ export async function getRecommendations(params?: {
   if (params?.date) queryParams.target_date = params.date
   if (params?.market_type) queryParams.market_type = params.market_type
   if (params?.min_edge != null) queryParams.min_edge = params.min_edge
+  if (params?.status) queryParams.status_filter = params.status
   if (params?.page != null) queryParams.page = params.page
   if (params?.page_size != null) queryParams.page_size = params.page_size
   const { data } = await api.get('/api/v1/recommendations', { params: queryParams })
