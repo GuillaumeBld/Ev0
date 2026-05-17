@@ -24,6 +24,7 @@ from app.pricing.assist import (
     ASSIST_GOAL_RATE,
     calculate_assist_lambda,
     calculate_creation_multiplier_v2,
+    calculate_xa_conversion,
 )
 from app.pricing.goalscorer import (
     calculate_finishing_multiplier,
@@ -328,7 +329,8 @@ def allocate_player(
         "assists": share.assists_total,
     }
     creation_mult = calculate_creation_multiplier_v2(assist_stats, share.position)
-    lambda_assist = calculate_assist_lambda(share.xa_share, budget_assists, creation_mult, 1.0)
+    xa_conversion = calculate_xa_conversion(assist_stats)
+    lambda_assist = calculate_assist_lambda(share.xa_share, budget_assists, creation_mult, xa_conversion)
     prob_assist = 1 - math.exp(-lambda_assist)
     fair_odds_assist = round(1 / prob_assist, 2) if prob_assist > 0 else 9999.0
 
@@ -748,6 +750,19 @@ async def load_match_pricing(
 
     home_players_db = await _load_team_players(db, home_team)
     away_players_db = await _load_team_players(db, away_team)
+
+    if not home_players_db:
+        logger.warning(
+            "load_match_pricing: 0 players found for home team %r (fixture %s) — "
+            "check bzz_players/bzz_player_season_stats and loan_team_name values",
+            home_team, getattr(fixture, "id", "?"),
+        )
+    if not away_players_db:
+        logger.warning(
+            "load_match_pricing: 0 players found for away team %r (fixture %s) — "
+            "check bzz_players/bzz_player_season_stats and loan_team_name values",
+            away_team, getattr(fixture, "id", "?"),
+        )
 
     home_shares = compute_player_shares(home_players_db, home_team, lambda_team=home_match_xg)
     away_shares = compute_player_shares(away_players_db, away_team, lambda_team=away_match_xg)

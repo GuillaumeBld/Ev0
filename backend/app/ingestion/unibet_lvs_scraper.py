@@ -11,7 +11,7 @@ Marchés extraits :
 - markettypeId=350       : Les 2 équipes marqueront?  → btts
 - markettypeId=31        : Buteur anytime             → goalscorer
 - markettypeId=4         : 1er Buteur                 → goalscorer (dédupliqué)
-- markettypeId=100001899 : Nbre de passes décisives   → assist (disponible PL uniquement)
+- markettypeId=100001899 : Nbre de passes décisives   → assist (disponible sur tous les Big 5)
 
 CLI usage (dry-run):
     python -m app.ingestion.unibet_lvs_scraper --dry-run
@@ -334,6 +334,12 @@ class UnibetLVSScraper:
 
             result = self._parse_match_items(items, league)
             if result and (result.h2h or result.totals or result.btts or result.goalscorer or result.assist):
+                if not result.assist:
+                    logger.warning(
+                        "UnibetLVSScraper: 0 assist odds for %s vs %s [%s] — "
+                        "markettypeId=100001899 absent from LVS response",
+                        result.home_team, result.away_team, league,
+                    )
                 results.append(result)
 
             await asyncio.sleep(_EVENT_SLEEP)

@@ -697,8 +697,13 @@ class BetclicGrpcScraper:
             )
             if result:
                 result.kickoff_utc = mx.get("kickoff_utc")
-                # Include any match with at least one market (h2h, totals, btts or goalscorer)
-                if result.h2h or result.totals or result.btts or result.goalscorer:
+                if result.h2h or result.totals or result.btts or result.goalscorer or result.assist:
+                    if not result.assist:
+                        logger.warning(
+                            "BetclicGrpcScraper: 0 assist odds for %s vs %s [%s] — "
+                            "market 'Joueur passeur décisif' absent from GetMatchWithNotification endpoint",
+                            mx["home_team"], mx["away_team"], league,
+                        )
                     results.append(result)
             if i < len(matches) - 1:
                 await asyncio.sleep(_MATCH_SLEEP)
