@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from sqlalchemy import select
 
 router = APIRouter()
 
@@ -53,6 +54,7 @@ class MatchPriceResponse(BaseModel):
     # Populated only when starters were supplied in the request
     home_lineup_players: list[PlayerAllocationOut] | None = None
     away_lineup_players: list[PlayerAllocationOut] | None = None
+    last_scraped_at: str | None = None  # ISO timestamp of freshest bookmaker odds snapshot
 
 
 @router.post("/price/match", response_model=MatchPriceResponse)
@@ -65,9 +67,8 @@ async def price_match(
     Returns fair odds for both Anytime Goalscorer and Anytime Assist
     markets for every player in both squads.
     """
-    from sqlalchemy import select
-
     from app.models.fixtures import Fixture
+    from app.models.match_odds import MatchOddsSnapshot
     from app.pricing.team_xg import load_match_pricing
 
     result = await db.execute(select(Fixture).where(Fixture.id == request.fixture_id))
@@ -86,7 +87,20 @@ async def price_match(
         away_starters=request.away_starters,
     )
     if pricing is None:
-        raise HTTPException(status_code=503, detail="No market odds available for this fixture")
+        snap_result = await db.execute(
+            select(MatchOddsSnapshot.snapshot_utc)
+            .where(MatchOddsSnapshot.fixture_id == request.fixture_id)
+            .order_by(MatchOddsSnapshot.snapshot_utc.desc())
+            .limit(1)
+        )
+        last_ts = snap_result.scalar_one_or_none()
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "No market odds available for this fixture",
+                "last_scraped_at": last_ts.isoformat() if last_ts else None,
+            },
+        )
 
     def _to_out(allocs: list) -> list[PlayerAllocationOut]:
         return [
@@ -122,4 +136,5 @@ async def price_match(
         away_players=_to_out(pricing.away_players),
         home_lineup_players=_to_out(pricing.home_lineup_players) if pricing.home_lineup_players else None,
         away_lineup_players=_to_out(pricing.away_lineup_players) if pricing.away_lineup_players else None,
+        last_scraped_at=pricing.last_scraped_at.isoformat() if pricing.last_scraped_at else None,
     )

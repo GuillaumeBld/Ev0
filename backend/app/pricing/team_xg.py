@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -167,6 +168,7 @@ class MatchPricingResult:
     # Optional redistributed pricing when caller supplies a starter list
     home_lineup_players: list[PlayerAllocation] | None = None
     away_lineup_players: list[PlayerAllocation] | None = None
+    last_scraped_at: datetime | None = None
 
 
 
@@ -731,13 +733,15 @@ async def load_match_pricing(
     """
     home_team = fixture.home_team
     away_team = fixture.away_team
+    market_result: MarketXgResult | None = None
 
     if home_xg_override is not None and away_xg_override is not None:
         home_match_xg = home_xg_override
         away_match_xg = away_xg_override
         xg_source = "override"
     else:
-        market_result: MarketXgResult | None = await MarketXgService().compute(fixture.id, db)
+        _svc = MarketXgService()
+        market_result = await _svc.compute(fixture.id, db)
         if market_result is None:
             return None
         xg_source = market_result.xg_source
@@ -806,4 +810,5 @@ async def load_match_pricing(
         away_players=away_allocs,
         home_lineup_players=home_lineup or None,
         away_lineup_players=away_lineup or None,
+        last_scraped_at=market_result.last_snapshot_at if market_result is not None else None,
     )

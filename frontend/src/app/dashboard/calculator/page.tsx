@@ -14,6 +14,16 @@ function fmtOdds(o: number): string {
   return o >= 100 ? '—' : o.toFixed(2)
 }
 
+function fmtAge(isoTs: string | null | undefined): string {
+  if (!isoTs) return 'inconnu'
+  const diffMs = Date.now() - new Date(isoTs).getTime()
+  const mins = Math.floor(diffMs / 60000)
+  if (mins < 60) return `il y a ${mins} min`
+  const hours = Math.floor(mins / 60)
+  const rem = mins % 60
+  return rem > 0 ? `il y a ${hours}h${String(rem).padStart(2, '0')}` : `il y a ${hours}h`
+}
+
 function fmtPct(p: number): string {
   return `${(p * 100).toFixed(1)}%`
 }
@@ -227,6 +237,7 @@ function CalculatorInner() {
   const [loading, setLoading] = useState(false)
   const [loadingFixtures, setLoadingFixtures] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [lastScrapedAt, setLastScrapedAt] = useState<string | null>(null)
 
   // Overrides
   const [homeXgOverride, setHomeXgOverride] = useState('')
@@ -274,8 +285,16 @@ function CalculatorInner() {
         away_starters: awayStartersRef.current,
       })
       setPricing(result)
+      setLastScrapedAt(result.last_scraped_at ?? null)
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? 'Erreur lors du chargement du pricing')
+      const detail = e?.response?.data?.detail
+      if (detail && typeof detail === 'object' && detail.message) {
+        setError(detail.message)
+        setLastScrapedAt(detail.last_scraped_at ?? null)
+      } else {
+        setError(typeof detail === 'string' ? detail : 'Erreur lors du chargement du pricing')
+        setLastScrapedAt(null)
+      }
     } finally {
       setLoading(false)
     }
@@ -296,6 +315,8 @@ function CalculatorInner() {
     setAwayXgOverride('')
     setHomePenTaker(null)
     setAwayPenTaker(null)
+    setLastScrapedAt(null)
+    setError(null)
     homeStartersRef.current = null
     awayStartersRef.current = null
     if (id) {
@@ -407,8 +428,23 @@ function CalculatorInner() {
         </div>
       )}
 
-      {/* Error */}
-      {error && (
+      {/* Scrape freshness banner — shown whenever we have the timestamp */}
+      {lastScrapedAt && !loading && (
+        <div className={clsx(
+          'mb-4 flex items-center gap-2 px-3 py-2 rounded-lg border text-xs w-fit',
+          error
+            ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+            : 'bg-gray-800/60 border-gray-700/50 text-gray-400',
+        )}>
+          <span className={error ? 'text-amber-400' : 'text-gray-500'}>⏱</span>
+          <span>Dernier scraping des cotes :</span>
+          <span className="font-medium text-white">{fmtAge(lastScrapedAt)}</span>
+          {error && <span className="text-amber-400">· cotes trop anciennes, calcul impossible</span>}
+        </div>
+      )}
+
+      {/* Error (only when no lastScrapedAt to show context) */}
+      {error && !lastScrapedAt && (
         <div className="mb-6 bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-red-400 text-sm">
           {error}
         </div>
@@ -416,7 +452,7 @@ function CalculatorInner() {
 
       {/* Legend */}
       {pricing && !loading && (
-        <div className="mb-4 flex items-center gap-4 text-xs text-gray-500">
+        <div className="mb-4 flex items-center gap-4 text-xs text-gray-500 flex-wrap">
           <span className="flex items-center gap-1">
             <span className="text-amber-400 font-bold">⬡P</span>
             Tireur de penalty (auto-détecté · cliquer pour changer)
@@ -427,6 +463,14 @@ function CalculatorInner() {
             <span className="text-blue-400">MF</span> ·
             <span className="text-gray-400">DF</span>
           </span>
+          {pricing.xg_source === 'bzzoiro' && lastScrapedAt && (
+            <>
+              <span className="w-px h-3 bg-gray-700" />
+              <span className="text-amber-400/80">
+                ⚠ xG via Bzzoiro · cotes {fmtAge(lastScrapedAt)}
+              </span>
+            </>
+          )}
         </div>
       )}
 

@@ -99,6 +99,7 @@ export interface MatchPriceResponse {
   away_players: PlayerAllocationOut[]
   home_lineup_players: PlayerAllocationOut[] | null
   away_lineup_players: PlayerAllocationOut[] | null
+  last_scraped_at?: string | null
 }
 
 export async function priceMatch(request: MatchPriceRequest): Promise<MatchPriceResponse> {

@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-MAX_SNAPSHOT_AGE = timedelta(hours=8)  # scraper runs every 2h for matches >6h out; 8h allows 3 missed cycles before fallback
+MAX_SNAPSHOT_AGE = timedelta(hours=4)  # scraper runs every 2h for matches >6h out
 FIT_RESIDUAL_FLAG_THRESHOLD = 0.06
 
 
@@ -52,6 +52,7 @@ class MarketXgResult:
     as_of_utc: datetime | None = None
     input_snapshot_ids: list[int] = field(default_factory=list)
     flagged_reason: str | None = None   # kept for backward-compat
+    last_snapshot_at: datetime | None = None  # freshest scraped_at, even if stale
 
 
 # ---------------------------------------------------------------------------
@@ -304,10 +305,15 @@ class MarketXgService:
       Level 2 — bzzoiro        : use expected_home/away_goals from bzz_predictions
     """
 
+    def __init__(self) -> None:
+        self._last_snapshot_at: datetime | None = None
+
     async def compute(self, fixture_id: int, session: AsyncSession) -> MarketXgResult | None:
         """Compute xG pour un fixture en utilisant la meilleure source disponible.
 
         Returns None uniquement si les deux niveaux échouent (aucune donnée en DB).
+        result.last_snapshot_at est toujours rempli si un snapshot existe en DB,
+        même si trop vieux pour être utilisé.
         """
         from app.models.fixtures import Fixture
 
@@ -324,6 +330,7 @@ class MarketXgService:
         # Niveau 2 : prédictions Bzzoiro (expected_home/away_goals)
         result = await self._try_bzzoiro_predictions(fixture, session)
         if result is not None:
+            result.last_snapshot_at = self._last_snapshot_at  # attach last scrape time
             logger.info(
                 "market_xg: fallback bzzoiro pour fixture %s (%s vs %s)",
                 fixture_id, fixture.home_team, fixture.away_team,
@@ -365,6 +372,8 @@ class MarketXgService:
         freshest_snapshot_utc = freshest_row
         if freshest_snapshot_utc.tzinfo is None:
             freshest_snapshot_utc = freshest_snapshot_utc.replace(tzinfo=UTC)
+
+        self._last_snapshot_at = freshest_snapshot_utc  # always record, even if stale
 
         now = datetime.now(timezone.utc)
         snapshot_age = now - freshest_snapshot_utc
@@ -503,6 +512,7 @@ class MarketXgService:
             as_of_utc=freshest_snapshot_utc,
             input_snapshot_ids=snapshot_ids,
             flagged_reason=None,
+            last_snapshot_at=freshest_snapshot_utc,
         )
 
     async def _try_bzzoiro_predictions(
