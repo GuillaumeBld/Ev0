@@ -727,7 +727,20 @@ async def list_players(
     for s in all_stats:
         stats_by_player[s.player_api_id].append(s)
 
-    player_by_id = {p.api_id: p for p in players}
+    # Deduplicate by internal_id — same real player may have multiple api_ids
+    # (sync_players.py uses api_id=row.get("api_id") or row.get("id"))
+    from collections import defaultdict as _dd
+    _by_internal: dict[int, list] = _dd(list)
+    for _p in players:
+        if _p.internal_id is not None:
+            _by_internal[_p.internal_id].append(_p)
+    player_by_id: dict[int, Any] = {}
+    for _group in _by_internal.values():
+        if len(_group) == 1:
+            _best = _group[0]
+        else:
+            _best = max(_group, key=lambda _p: len(stats_by_player.get(_p.api_id, [])))
+        player_by_id[_best.api_id] = _best
 
     # Step 4: aggregate and build output — one dict per player
     results: list[dict[str, Any]] = []
