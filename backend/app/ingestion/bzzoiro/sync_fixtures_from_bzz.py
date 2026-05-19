@@ -21,15 +21,21 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.bzzoiro.constants import CURRENT_SEASON, TARGET_LEAGUE_API_IDS
+from app.ingestion.bzzoiro.constants import CURRENT_SEASON, TARGET_LEAGUE_API_IDS, TARGET_LEAGUE_INTERNAL_IDS
 from app.ingestion.fixture_matcher import normalize_team_name
 from app.models.bzzoiro import BzzEvent, BzzTeam
 from app.models.fixtures import Fixture
 
 logger = logging.getLogger(__name__)
 
-# Reverse map: bzz league api_id → our league key
+# Reverse map: bzz league id → our league key.
+# Covers both external api_ids (17 for PL) and internal ids (1 for PL) because
+# sync_events.py stores league.get("api_id") or league.get("id") — newer BzzAPI
+# responses may omit api_id and return only the internal id.
 _LEAGUE_API_ID_TO_KEY: dict[int, str] = {v: k for k, v in TARGET_LEAGUE_API_IDS.items()}
+for _key, _internal_id in TARGET_LEAGUE_INTERNAL_IDS.items():
+    if _internal_id not in _LEAGUE_API_ID_TO_KEY:
+        _LEAGUE_API_ID_TO_KEY[_internal_id] = _key
 
 # How far ahead to look for upcoming fixtures
 _DAYS_FORWARD = 30
