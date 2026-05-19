@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 _LEAGUE_API_ID_TO_KEY: dict[int, str] = {v: k for k, v in TARGET_LEAGUE_API_IDS.items()}
 
 # How far ahead to look for upcoming fixtures
-_DAYS_FORWARD = 14
+_DAYS_FORWARD = 30
 
 # A team name is a placeholder when it matches these patterns
 _PLACEHOLDER_RE = re.compile(
@@ -155,6 +155,14 @@ async def sync_fixtures_from_bzz(
                 fixture.external_id = ext_id
                 changed = True
 
+            # Backfill bzz_team_ids if not set yet (also fixes pre-migration fixtures)
+            if fixture.home_bzz_team_id is None and ev.home_team_api_id:
+                fixture.home_bzz_team_id = ev.home_team_api_id
+                changed = True
+            if fixture.away_bzz_team_id is None and ev.away_team_api_id:
+                fixture.away_bzz_team_id = ev.away_team_api_id
+                changed = True
+
             if changed:
                 session.add(fixture)
                 updated += 1
@@ -174,6 +182,8 @@ async def sync_fixtures_from_bzz(
                 kickoff_utc=ev.event_date,
                 status="scheduled",
                 matchweek=ev.round_number,
+                home_bzz_team_id=ev.home_team_api_id,
+                away_bzz_team_id=ev.away_team_api_id,
             )
             session.add(new_fixture)
             created += 1
