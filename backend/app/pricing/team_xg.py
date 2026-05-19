@@ -482,10 +482,11 @@ async def _load_team_players(
 
     # --- Build the player filter ---
     if bzz_team_id is not None:
-        team_id_filter = or_(
-            BzzPlayer.current_team_api_id == bzz_team_id,
-            BzzPlayer.loan_team_api_id == bzz_team_id,
-        )
+        # COALESCE(loan_team_api_id, current_team_api_id): a player on loan belongs
+        # to their loan club, not their parent club — using OR would double-count them.
+        team_id_filter = func.coalesce(
+            BzzPlayer.loan_team_api_id, BzzPlayer.current_team_api_id
+        ) == bzz_team_id
     else:
         # Fallback: resolve team name → bzz_teams row → name filter
         resolved = _TEAM_NAME_ALIASES.get(team, team)
