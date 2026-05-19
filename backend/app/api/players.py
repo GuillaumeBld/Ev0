@@ -729,8 +729,7 @@ async def list_players(
 
     # Deduplicate by internal_id — same real player may have multiple api_ids
     # (sync_players.py uses api_id=row.get("api_id") or row.get("id"))
-    from collections import defaultdict as _dd
-    _by_internal: dict[int, list] = _dd(list)
+    _by_internal: dict[int, list] = defaultdict(list)
     for _p in players:
         if _p.internal_id is not None:
             _by_internal[_p.internal_id].append(_p)
@@ -745,7 +744,6 @@ async def list_players(
     # Step 4: aggregate and build output — one dict per player
     results: list[dict[str, Any]] = []
     for pid, player in player_by_id.items():
-        player = player_by_id[pid]
         rows = stats_by_player.get(pid)
         if not rows:
             continue  # no season stats yet
