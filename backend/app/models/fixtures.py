@@ -40,6 +40,8 @@ class Fixture(Base, TimestampMixin):
         nullable=True,
         index=True,
     )
+    home_bzz_team_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    away_bzz_team_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
     # Timing
     kickoff_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
