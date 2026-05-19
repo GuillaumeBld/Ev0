@@ -562,14 +562,22 @@ async def _load_team_players(
 
     players = []
     seen_ids: set[int] = set()
+    seen_internal_ids: set[int] = set()
     seen_names: set[str] = set()
     for row in res.all():
         stat, player = row[0], row[1]
         name = player.name
         name_key = (name or "").strip().lower()
-        if player.api_id in seen_ids or name_key in seen_names:
+        internal_id = player.internal_id
+        if player.api_id in seen_ids:
+            continue
+        if internal_id is not None and internal_id in seen_internal_ids:
+            continue
+        if name_key in seen_names:
             continue
         seen_ids.add(player.api_id)
+        if internal_id is not None:
+            seen_internal_ids.add(internal_id)
         seen_names.add(name_key)
 
         # Map bzz position (G/D/M/F) to pricing engine format (GK/DF/MF/FW)
@@ -633,6 +641,9 @@ async def _load_team_players(
     for player in all_roster_result.scalars().all():
         if player.api_id in seen_ids:
             continue
+        internal_id = player.internal_id
+        if internal_id is not None and internal_id in seen_internal_ids:
+            continue
         name = player.name
         name_key = (name or "").strip().lower()
         if name_key in seen_names:
@@ -644,6 +655,8 @@ async def _load_team_players(
             continue
 
         seen_ids.add(player.api_id)
+        if internal_id is not None:
+            seen_internal_ids.add(internal_id)
         seen_names.add(name_key)
         players.append({
             "player_id": player.api_id,
