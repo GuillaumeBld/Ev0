@@ -18,7 +18,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from sqlalchemy import func, literal, select
+from sqlalchemy import func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.pricing.assist import (
@@ -468,58 +468,65 @@ async def _load_team_players(
     db: AsyncSession,
     team: str,
     league: str | None = None,
+    bzz_team_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """Load player season stats from bzz_player_season_stats for a team.
 
-    Lookup order (stops at first hit):
-    1. Alias map (_TEAM_NAME_ALIASES) — for accent/abbreviation mismatches.
-    2. Exact case-insensitive match.
-    3. bzz name CONTAINS fixture name  (e.g. "FC Augsburg" ⊇ "Augsburg").
-    4. Fixture name CONTAINS bzz name  (e.g. "Wolverhampton Wanderers" ⊇ "Wolverhampton").
+    When bzz_team_id is provided (preferred path), filters players by
+    current_team_api_id OR loan_team_api_id — no string matching needed.
 
-    Falls back to [] if no BzzTeam found for the team name.
+    Fallback (bzz_team_id=None): resolves team name via alias map + fuzzy
+    match, then filters by COALESCE(loan_team_name, current_team_name).
     """
     from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat, BzzTeam
 
-    resolved = _TEAM_NAME_ALIASES.get(team, team)
+    # --- Build the player filter ---
+    if bzz_team_id is not None:
+        team_id_filter = or_(
+            BzzPlayer.current_team_api_id == bzz_team_id,
+            BzzPlayer.loan_team_api_id == bzz_team_id,
+        )
+    else:
+        # Fallback: resolve team name → bzz_teams row → name filter
+        resolved = _TEAM_NAME_ALIASES.get(team, team)
 
-    # Step 1+2: alias-resolved exact match
-    team_res = await db.execute(
-        select(BzzTeam)
-        .where(func.lower(BzzTeam.name) == func.lower(resolved))
-        .limit(1)
-    )
-    bzz_team = team_res.scalar_one_or_none()
-
-    # Step 3: bzz name contains fixture name (e.g. "FC Bayern München" ⊇ "Bayern München")
-    if bzz_team is None:
+        # Step 1+2: alias-resolved exact match
         team_res = await db.execute(
             select(BzzTeam)
-            .where(func.lower(BzzTeam.name).contains(func.lower(resolved)))
-            .order_by(func.length(BzzTeam.name))
+            .where(func.lower(BzzTeam.name) == func.lower(resolved))
             .limit(1)
         )
         bzz_team = team_res.scalar_one_or_none()
 
-    # Step 4: fixture name contains bzz name (e.g. "Wolverhampton Wanderers" ⊇ "Wolverhampton")
-    if bzz_team is None:
-        team_res = await db.execute(
-            select(BzzTeam)
-            .where(literal(resolved.lower()).contains(func.lower(BzzTeam.name)))
-            .order_by(func.length(BzzTeam.name).desc())  # prefer longest bzz name (more specific)
-            .limit(1)
-        )
-        bzz_team = team_res.scalar_one_or_none()
+        # Step 3: bzz name contains fixture name (e.g. "FC Bayern München" ⊇ "Bayern München")
+        if bzz_team is None:
+            team_res = await db.execute(
+                select(BzzTeam)
+                .where(func.lower(BzzTeam.name).contains(func.lower(resolved)))
+                .order_by(func.length(BzzTeam.name))
+                .limit(1)
+            )
+            bzz_team = team_res.scalar_one_or_none()
 
-    if bzz_team is None:
-        logger.warning("_load_team_players: no bzz team found for %r", team)
-        return []
+        # Step 4: fixture name contains bzz name (e.g. "Wolverhampton Wanderers" ⊇ "Wolverhampton")
+        if bzz_team is None:
+            team_res = await db.execute(
+                select(BzzTeam)
+                .where(literal(resolved.lower()).contains(func.lower(BzzTeam.name)))
+                .order_by(func.length(BzzTeam.name).desc())  # prefer longest bzz name (more specific)
+                .limit(1)
+            )
+            bzz_team = team_res.scalar_one_or_none()
 
-    # Filter by effective team name — COALESCE(loan_team_name, current_team_name) so that
-    # players on loan appear under their loan club (not their parent club) in pricing,
-    # consistent with how the players API and teams API work (migration v027+).
-    _eff_team = func.coalesce(BzzPlayer.loan_team_name, BzzPlayer.current_team_name)
-    team_name_filter = func.lower(_eff_team) == func.lower(bzz_team.name)
+        if bzz_team is None:
+            logger.warning("_load_team_players: no bzz team found for %r", team)
+            return []
+
+        # Filter by effective team name — COALESCE(loan_team_name, current_team_name) so that
+        # players on loan appear under their loan club (not their parent club) in pricing,
+        # consistent with how the players API and teams API work (migration v027+).
+        _eff_team = func.coalesce(BzzPlayer.loan_team_name, BzzPlayer.current_team_name)
+        team_id_filter = func.lower(_eff_team) == func.lower(bzz_team.name)
 
     # Query season stats joined to player — pick the most recent season per player
     latest_subq = (
@@ -528,7 +535,7 @@ async def _load_team_players(
             func.max(BzzPlayerSeasonStat.season).label("max_season"),
         )
         .join(BzzPlayer, BzzPlayer.api_id == BzzPlayerSeasonStat.player_api_id)
-        .where(team_name_filter)
+        .where(team_id_filter)
         .group_by(BzzPlayerSeasonStat.player_api_id)
         .subquery()
     )
@@ -541,7 +548,7 @@ async def _load_team_players(
             (BzzPlayerSeasonStat.player_api_id == latest_subq.c.player_api_id)
             & (BzzPlayerSeasonStat.season == latest_subq.c.max_season),
         )
-        .where(team_name_filter)
+        .where(team_id_filter)
         # Ensure the row with the most matches is seen first so seen_ids dedup
         # keeps the full-season row rather than a sparse migration artifact.
         .order_by(
@@ -620,7 +627,7 @@ async def _load_team_players(
     # and append missing ones with zero stats — positional priors handle them.
     all_roster_result = await db.execute(
         select(BzzPlayer)
-        .where(team_name_filter)
+        .where(team_id_filter)
     )
     for player in all_roster_result.scalars().all():
         if player.api_id in seen_ids:
@@ -752,8 +759,10 @@ async def load_match_pricing(
         if home_xg_override is not None or away_xg_override is not None:
             xg_source = "override"
 
-    home_players_db = await _load_team_players(db, home_team)
-    away_players_db = await _load_team_players(db, away_team)
+    home_bzz_team_id = getattr(fixture, "home_bzz_team_id", None)
+    away_bzz_team_id = getattr(fixture, "away_bzz_team_id", None)
+    home_players_db = await _load_team_players(db, home_team, bzz_team_id=home_bzz_team_id)
+    away_players_db = await _load_team_players(db, away_team, bzz_team_id=away_bzz_team_id)
 
     if not home_players_db:
         logger.warning(
