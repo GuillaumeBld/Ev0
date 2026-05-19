@@ -1228,14 +1228,14 @@ async def job_sync_loan_teams():
 
 
 async def job_sync_bzzoiro_events():
-    """Every 6h: sync Bzzoiro match events — 3 days back, 14 days forward."""
+    """Every 6h: sync Bzzoiro match events — 3 days back, 30 days forward."""
     logger.info("=== Starting Bzzoiro events sync ===")
     if not settings.bzzoiro_api_key:
         logger.warning("BZZOIRO_API_KEY not configured, skipping events sync")
         return
     try:
         async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
-            result = await sync_events(session, client, days_back=3, days_forward=14)
+            result = await sync_events(session, client, days_back=3, days_forward=30)
             logger.info("Bzzoiro events synced: %s", result)
     except Exception as exc:
         logger.error("Error in Bzzoiro events sync: %s", exc, exc_info=True)
@@ -1584,8 +1584,10 @@ async def main():
     for job in scheduler.get_jobs():
         logger.info("  - %s: %s", job.name, job.trigger)
 
-    # Run initial sync on startup
+    # Run initial sync on startup — events FIRST so fixture sync finds fresh BzzEvent rows
     logger.info("Running initial sync...")
+    if settings.bzzoiro_api_key:
+        await job_sync_bzzoiro_events()
     await job_sync_fixtures()
     from app.ingestion.bzzoiro.sync_fixture_status import sync_fixture_status_from_bzz
     async with async_session() as session:
