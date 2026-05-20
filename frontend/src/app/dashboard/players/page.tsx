@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { RefreshCw, Search, ChevronDown, ChevronUp, User, AlertCircle } from 'lucide-react'
 import { clsx } from 'clsx'
 import { PlayerSummary, BzzTeam } from '@/lib/api'
+import { getTeamId } from '@/lib/teamLogos'
 
 type SortField =
   | 'name' | 'team' | 'goals' | 'goal_assist' | 'xg_per_90' | 'xa_per_90'
@@ -13,14 +14,14 @@ type PositionFilter = '' | 'G' | 'D' | 'M' | 'F'
 
 // Championnats cibles — IDs internes Bzzoiro (post-migration API)
 // api_id: null = Tous, api_id: -1 = Autres (ligue dominante hors Big5/UCL)
-const LEAGUES: { api_id: number | null; label: string; flag: string }[] = [
+const LEAGUES: { api_id: number | null; label: string; flag: string; finished?: boolean }[] = [
   { api_id: null, label: 'Tous', flag: '' },
   { api_id: 1,  label: 'Premier League', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
-  { api_id: 6,  label: 'Ligue 1', flag: '🇫🇷' },
-  { api_id: 5,  label: 'Bundesliga', flag: '🇩🇪' },
+  { api_id: 6,  label: 'Ligue 1', flag: '🇫🇷', finished: true },
+  { api_id: 5,  label: 'Bundesliga', flag: '🇩🇪', finished: true },
   { api_id: 3,  label: 'La Liga', flag: '🇪🇸' },
   { api_id: 4,  label: 'Serie A', flag: '🇮🇹' },
-  { api_id: 7,  label: 'UCL', flag: '🏆' },
+  { api_id: 7,  label: 'UCL', flag: '🏆', finished: true },
   { api_id: -1, label: 'Autres', flag: '🌍' },
 ]
 
@@ -228,18 +229,24 @@ export default function PlayersPage() {
 
       {/* Ligne 1 — Championnats */}
       <div className="flex flex-wrap gap-2 mb-3">
-        {LEAGUES.map(({ api_id, label, flag }) => (
+        {LEAGUES.map(({ api_id, label, flag, finished }) => (
           <button
             key={api_id ?? 'all'}
             onClick={() => setLeagueApiId(api_id)}
             className={clsx(
-              'px-3 py-1.5 rounded-full text-sm font-medium transition-colors border',
+              'px-3 py-1.5 rounded-full text-sm font-medium transition-colors border flex items-center gap-1.5',
               leagueApiId === api_id
                 ? 'bg-brand-600 border-brand-600 text-white'
                 : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white'
             )}
           >
-            {flag && <span className="mr-1">{flag}</span>}{label}
+            {flag && <span>{flag}</span>}
+            {label}
+            {finished && (
+              <span className="text-[10px] font-semibold px-1 py-0.5 rounded bg-gray-600/60 text-gray-400 leading-none">
+                FIN
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -337,7 +344,22 @@ export default function PlayersPage() {
                       <p className="text-sm font-medium text-white leading-tight">{player.name}</p>
                       {player.nationality && <p className="text-xs text-gray-500">{player.nationality}</p>}
                     </td>
-                    <td className="px-3 py-3 text-sm text-gray-300 max-w-[120px] truncate">{player.team_name ?? '—'}</td>
+                    <td className="px-3 py-3">
+                      <div className="flex items-center gap-1.5 max-w-[140px]">
+                        {(() => {
+                          const lid = player.team_name ? getTeamId(player.team_name) : null
+                          return lid ? (
+                            <img
+                              src={`https://media.api-sports.io/football/teams/${lid}.png`}
+                              alt=""
+                              className="w-5 h-5 object-contain shrink-0"
+                              onError={(e) => { e.currentTarget.style.display = 'none' }}
+                            />
+                          ) : null
+                        })()}
+                        <span className="text-sm text-gray-300 truncate">{player.team_name ?? '—'}</span>
+                      </div>
+                    </td>
                     <td className="px-3 py-3 text-center hidden md:table-cell">
                       <span className={clsx('px-2 py-0.5 rounded text-xs font-medium', positionColor(player.position))}>
                         {player.position ?? '?'}

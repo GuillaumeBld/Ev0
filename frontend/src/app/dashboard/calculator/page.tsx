@@ -7,6 +7,7 @@ import { clsx } from 'clsx'
 import { getFixtures, priceMatch, getPenTakers, setPenTakers, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
 import { LineupPricingWidget } from '@/components/calculator/LineupPricingWidget'
 import { XgSourceBadge } from '@/components/XgSourceBadge'
+import { getTeamId } from '@/lib/teamLogos'
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -63,6 +64,9 @@ function TeamTable({
   onPenTakerClick,
   isHome,
 }: TeamTableProps) {
+  const [logoFailed, setLogoFailed] = useState(false)
+  const logoId = getTeamId(teamName)
+
   return (
     <div className="bg-gray-800 rounded-xl overflow-hidden">
       {/* Header */}
@@ -71,6 +75,14 @@ function TeamTable({
         isHome ? 'bg-orange-500/10 border-b border-orange-500/20' : 'bg-blue-500/10 border-b border-blue-500/20',
       )}>
         <div className="flex items-center gap-2 flex-wrap">
+          {logoId && !logoFailed && (
+            <img
+              src={`https://media.api-sports.io/football/teams/${logoId}.png`}
+              alt={teamName}
+              className="w-7 h-7 object-contain shrink-0"
+              onError={() => setLogoFailed(true)}
+            />
+          )}
           <span className="font-semibold text-white text-sm">{teamName}</span>
           <span className={clsx(
             'text-xs font-medium px-2 py-0.5 rounded',
