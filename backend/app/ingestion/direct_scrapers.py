@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import logging
 import re
 import sys
@@ -171,25 +170,63 @@ def _extract_list(body: Any, *candidate_keys: str) -> list:
 
 
 class BetclicScraper:
-    """Scrape Betclic competition pages via Playwright network interception.
+    """Scrape Betclic match pages via Playwright DOM extraction.
 
-    Betclic uses a CDN API (offer.cdn.betclic.fr) that the page fetches
-    automatically on load. We capture all JSON responses from Betclic domains
-    and parse events + markets from them.
+    Betclic uses gRPC-web (not JSON REST) for its odds API, making network
+    interception ineffective. Instead we navigate each match page individually,
+    click the "Stats équipes et joueurs" tab, expand passeur market rows, and
+    parse the page innerText.
+
+    A dedicated browser context with a passthrough context.route handler is
+    created per scrape_league call — this is required for Betclic pages to
+    render full content (likely related to Angular service worker handling).
     """
 
     BOOKMAKER = "betclic"
-
-    # URL patterns whose JSON responses we want to capture
-    # Capture JSON from betclic.fr or begmedia CDN
-    _CAPTURE_RE = re.compile(
-        r"(betclic\.fr|begmedia\.com|cdn\.betclic|offer\.cdn)",
-        re.IGNORECASE,
-    )
     PAGE_TIMEOUT_MS = 35_000
+    MAX_MATCHES_PER_LEAGUE = 8
 
-    def __init__(self) -> None:
-        self._captured: list[dict[str, Any]] = []
+    _JS_DISMISS_COOKIES = "document.querySelector('#popin_tc_privacy_button_2')?.click()"
+    _JS_REMOVE_COOKIE_BANNER = "document.querySelector('#tc-privacy-wrapper')?.remove()"
+
+    # Click the "Stats équipes et joueurs" tab
+    _JS_CLICK_STATS_TAB = """
+        () => {
+            var t = [...document.querySelectorAll("a, li, [class*='tab']")]
+                .find(function(el) {
+                    return el.textContent.includes("Stats") &&
+                           el.textContent.includes("quipes") &&
+                           el.textContent.trim().length < 60;
+                });
+            if (t) { t.click(); return true; }
+            return false;
+        }
+    """
+
+    # Click every "voir plus" triangle inside passeur market containers only
+    _JS_CLICK_SEE_MORE = """
+        () => {
+            var allEls = [...document.querySelectorAll("*")];
+            var passeurTitles = allEls.filter(function(el) {
+                var t = (el.textContent || "").trim();
+                return t.includes("Joueur passeur d") && !t.includes("buteur") && t.length < 80;
+            });
+            var clicked = 0;
+            for (var pi = 0; pi < passeurTitles.length; pi++) {
+                var titleEl = passeurTitles[pi];
+                var box = titleEl.parentElement;
+                for (var d = 0; d < 25 && box; d++) {
+                    var cls = box.className || "";
+                    if (cls.includes("marketBox") || box.tagName.toLowerCase().startsWith("sports-market")) break;
+                    box = box.parentElement;
+                }
+                if (!box) continue;
+                var seeMores = [...box.querySelectorAll(".is-seeMore, [class*='seeMore']")];
+                seeMores.forEach(function(btn) { try { btn.click(); clicked++; } catch(e) {} });
+            }
+            return clicked;
+        }
+    """
 
     async def scrape_league(self, league: str, page: Any) -> list[MatchOdds]:
         url = BETCLIC_URLS.get(league)
@@ -197,162 +234,259 @@ class BetclicScraper:
             logger.warning("BetclicScraper: unknown league %s", league)
             return []
 
-        self._captured = []
-
-        async def _on_response(response: Any) -> None:
-            try:
-                if "json" not in response.headers.get("content-type", ""):
-                    return
-                if not self._CAPTURE_RE.search(response.url):
-                    return
-                body = await response.json()
-                self._captured.append({"url": response.url, "body": body})
-                logger.info("Betclic captured: %s", response.url)
-            except Exception:
-                pass
-
-        page.on("response", _on_response)
+        # Dedicated context required: context.route passthrough is what makes
+        # Betclic pages render full content instead of only ~47 sidebar lines.
+        ctx = await page.context.browser.new_context(
+            locale="fr-FR",
+            viewport={"width": 1280, "height": 900},
+            user_agent=_BROWSER_UA,
+            extra_http_headers={"Accept-Language": "fr-FR,fr;q=0.9"},
+        )
         try:
-            # Use domcontentloaded to avoid waiting for infinite background XHRs
-            await page.goto(url, wait_until="domcontentloaded", timeout=self.PAGE_TIMEOUT_MS)
-            await page.wait_for_timeout(8_000)  # let lazy API calls fire
+            p = await ctx.new_page()
+            await p.add_init_script(
+                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
+            )
+
+            async def _passthrough(route: Any) -> None:
+                await route.continue_()
+
+            await ctx.route("**/*", _passthrough)
+
+            match_links = await self._get_match_links(p, url)
+            logger.info("BetclicScraper %s: %d match links found", league, len(match_links))
+
+            all_matches: list[MatchOdds] = []
+            for match_url in match_links[: self.MAX_MATCHES_PER_LEAGUE]:
+                try:
+                    mo = await self._scrape_match_page(p, match_url, league)
+                    if mo:
+                        all_matches.append(mo)
+                except Exception as exc:
+                    logger.warning("BetclicScraper: error on %s: %s", match_url, exc)
+                await asyncio.sleep(1)
+
+            logger.info(
+                "BetclicScraper %s: %d matches, %d selections",
+                league,
+                len(all_matches),
+                sum(len(m.selections) for m in all_matches),
+            )
+            return all_matches
+        finally:
+            await ctx.close()
+
+    async def _get_match_links(self, page: Any, comp_url: str) -> list[str]:
+        """Extract individual match URLs from a Betclic competition list page."""
+        try:
+            await page.goto(comp_url, wait_until="domcontentloaded", timeout=self.PAGE_TIMEOUT_MS)
         except Exception as exc:
-            logger.warning("BetclicScraper page load error (%s): %s", league, exc)
+            logger.warning("BetclicScraper: comp page load error: %s", exc)
+            return []
+        await page.wait_for_timeout(2000)
+        await page.evaluate(self._JS_DISMISS_COOKIES)
+        await page.evaluate(self._JS_REMOVE_COOKIE_BANNER)
+        await page.wait_for_timeout(8000)
 
-        matches = self._parse_captured(league)
-        logger.info(
-            "BetclicScraper %s: %d matches, %d selections",
-            league,
-            len(matches),
-            sum(len(m.selections) for m in matches),
-        )
-        return matches
+        links: list[str] = await page.evaluate("""
+            () => {
+                var seen = new Set();
+                var results = [];
+                [...document.querySelectorAll("a[href]")].forEach(function(a) {
+                    var href = a.href;
+                    if (seen.has(href)) return;
+                    if (/betclic\\.fr.*\\/football[^/]*\\/[^/]+-m\\d{8,}/.test(href)) {
+                        seen.add(href);
+                        results.push(href);
+                    }
+                });
+                return results;
+            }
+        """)
+        return links
 
-    # ── Parsing ──
-
-    def _parse_captured(self, league: str) -> list[MatchOdds]:
-        matches: dict[str, MatchOdds] = {}
-        for item in self._captured:
-            events = _extract_list(item["body"], "events", "data", "items", "results", "competitions")
-            for ev in events:
-                if not isinstance(ev, dict):
-                    continue
-                mo = self._parse_event(ev, league)
-                if mo is None:
-                    continue
-                key = f"{mo.home_team}|{mo.away_team}"
-                if key not in matches:
-                    matches[key] = mo
-                else:
-                    matches[key].selections.extend(mo.selections)
-        return list(matches.values())
-
-    def _parse_event(self, event: dict, league: str) -> MatchOdds | None:
-        # Extract team names — Betclic uses multiple shapes
-        home_team = (
-            _deep_get(event, "homeTeam", "name")
-            or _deep_get(event, "home_team")
-            or _deep_get(event, "competitors", 0, "name")
-            or event.get("home")
-        )
-        away_team = (
-            _deep_get(event, "awayTeam", "name")
-            or _deep_get(event, "away_team")
-            or _deep_get(event, "competitors", 1, "name")
-            or event.get("away")
-        )
-        if not home_team or not away_team:
-            # Try splitting "TeamA / TeamB" style names
-            name_field = event.get("name") or event.get("label") or ""
-            for sep in (" / ", " - ", " vs ", " VS "):
-                if sep in name_field:
-                    parts = name_field.split(sep, 1)
-                    home_team, away_team = parts[0].strip(), parts[1].strip()
-                    break
-        if not home_team or not away_team:
+    async def _scrape_match_page(self, page: Any, url: str, league: str) -> MatchOdds | None:
+        """Navigate to a match page and extract passeur (assist) odds from the DOM."""
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.PAGE_TIMEOUT_MS)
+        except Exception as exc:
+            logger.warning("BetclicScraper: match page load error (%s): %s", url, exc)
             return None
 
-        kickoff = _parse_datetime(
-            event.get("startDate") or event.get("start_date") or event.get("date") or event.get("startTime")
+        await page.wait_for_timeout(2000)
+        await page.evaluate(self._JS_DISMISS_COOKIES)
+        await page.evaluate(self._JS_REMOVE_COOKIE_BANNER)
+        await page.wait_for_timeout(12000)
+
+        await page.evaluate(self._JS_CLICK_STATS_TAB)
+        await page.wait_for_timeout(6000)
+
+        # First scroll: load lazy content
+        for y in range(0, 8000, 200):
+            await page.evaluate(f"window.scrollTo(0, {y})")
+            await page.wait_for_timeout(50)
+        await page.wait_for_timeout(1000)
+
+        # Expand hidden player rows in passeur market containers
+        n = await page.evaluate(self._JS_CLICK_SEE_MORE)
+        logger.info("BetclicScraper: %d see-more buttons clicked for %s", n, url)
+        await page.wait_for_timeout(4000)
+
+        # Re-scroll after expansion to load newly revealed rows
+        for y in range(0, 12000, 200):
+            await page.evaluate(f"window.scrollTo(0, {y})")
+            await page.wait_for_timeout(50)
+        await page.wait_for_timeout(1000)
+
+        text: str = await page.evaluate(
+            "document.body.innerText || document.body.textContent"
         )
+        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
 
-        mo = MatchOdds(
-            home_team=str(home_team),
-            away_team=str(away_team),
-            kickoff_utc=kickoff,
-            league=league,
-        )
+        if len(lines) < 50:
+            logger.warning(
+                "BetclicScraper: only %d lines from %s — page may not have rendered",
+                len(lines),
+                url,
+            )
+            return None
 
-        # Parse markets array
-        markets = event.get("markets") or event.get("prices") or []
-        if isinstance(markets, dict):
-            markets = list(markets.values())
+        home_team = away_team = ""
+        selections: list[SelectionOdds] = []
+        seen_markets: set[str] = set()
 
-        for market in markets:
-            if not isinstance(market, dict):
-                continue
-            label = market.get("label") or market.get("name") or market.get("type") or ""
-            market_type = _normalize_market(str(label))
-
-            # Shortcut: detect 1X2 from direct price keys
-            if not market_type and all(k in market for k in ("homeOdds", "drawOdds", "awayOdds")):
-                market_type = "1x2"
-            if not market_type:
-                continue
-
-            if market_type == "1x2" and not market.get("selections") and not market.get("outcomes"):
-                for odds_key, pname in [("homeOdds", "home_win"), ("drawOdds", "draw"), ("awayOdds", "away_win")]:
-                    val = market.get(odds_key)
-                    if val:
-                        with contextlib.suppress(ValueError, TypeError):
-                            mo.selections.append(
-                                SelectionOdds("1x2", pname, float(val), self.BOOKMAKER, {"label": label})
+        for i, line in enumerate(lines):
+            if (
+                "Joueur passeur décisif" in line
+                and "buteur ou" not in line
+                and line not in seen_markets
+            ):
+                seen_markets.add(line)
+                teams_data = self._parse_passeur_section(lines, i, line)
+                team_names = list(teams_data.keys())
+                if not home_team and team_names:
+                    home_team = team_names[0]
+                    away_team = team_names[1] if len(team_names) > 1 else ""
+                for tname in team_names:
+                    for entry in teams_data[tname]:
+                        selections.append(
+                            SelectionOdds(
+                                market_type="assist",
+                                player_name=entry["player"],
+                                odds=entry["odds_1"],
+                                bookmaker=self.BOOKMAKER,
+                                raw_data={
+                                    "market": line,
+                                    "team": tname,
+                                    "is_home": tname == home_team,
+                                },
                             )
-            else:
-                outcomes = market.get("selections") or market.get("outcomes") or market.get("choices") or []
-                for sel in outcomes:
-                    if not isinstance(sel, dict):
-                        continue
-                    name = str(sel.get("name") or sel.get("label") or "")
-                    odds_raw = sel.get("odds") or sel.get("price") or sel.get("value")
-                    if not name or not odds_raw:
-                        continue
-                    if market_type == "1x2":
-                        nl = name.lower()
-                        if "home" in nl or str(home_team).lower() in nl:
-                            name = "home_win"
-                        elif "away" in nl or str(away_team).lower() in nl:
-                            name = "away_win"
-                        elif "draw" in nl or "nul" in nl or nl == "x":
-                            name = "draw"
-                    with contextlib.suppress(ValueError, TypeError):
-                        mo.selections.append(
-                            SelectionOdds(market_type, name, float(odds_raw), self.BOOKMAKER, {"label": label})
                         )
 
-        # Fallback: look for 1X2 directly on event-level keys
-        if not any(s.market_type == "1x2" for s in mo.selections):
-            for h_key, d_key, a_key in [
-                ("odds1", "oddsX", "odds2"),
-                ("homePrice", "drawPrice", "awayPrice"),
-                ("cote1", "coteN", "cote2"),
-                ("priceHome", "priceDraw", "priceAway"),
-            ]:
-                h = event.get(h_key)
-                d = event.get(d_key)
-                a = event.get(a_key)
-                if h and d and a:
-                    try:
-                        mo.selections.extend([
-                            SelectionOdds("1x2", "home_win", float(h), self.BOOKMAKER),
-                            SelectionOdds("1x2", "draw", float(d), self.BOOKMAKER),
-                            SelectionOdds("1x2", "away_win", float(a), self.BOOKMAKER),
-                        ])
-                        break
-                    except (ValueError, TypeError):
-                        pass
+        if not home_team:
+            home_team, away_team = self._detect_teams_from_url(url)
 
-        return mo if mo.selections else None
+        if not selections:
+            logger.info("BetclicScraper: no passeur selections found for %s", url)
+            return None
+
+        mo = MatchOdds(
+            home_team=home_team,
+            away_team=away_team,
+            kickoff_utc=None,
+            league=league,
+        )
+        mo.selections = selections
+        return mo
+
+    def _detect_teams_from_url(self, url: str) -> tuple[str, str]:
+        """Best-effort team name extraction from the match URL slug."""
+        slug = url.rstrip("/").split("/")[-1]
+        m = re.match(r"^(.+?)-m\d+$", slug)
+        if not m:
+            return "", ""
+        teams_part = m.group(1)
+        if "-vs-" in teams_part:
+            parts = teams_part.split("-vs-", 1)
+        else:
+            words = teams_part.split("-")
+            mid = max(1, len(words) // 2)
+            parts = ["-".join(words[:mid]), "-".join(words[mid:])]
+        home = " ".join(w.capitalize() for w in parts[0].split("-"))
+        away = " ".join(w.capitalize() for w in parts[1].split("-")) if len(parts) > 1 else ""
+        return home, away
+
+    def _parse_passeur_section(
+        self, lines: list[str], start_idx: int, market_name: str
+    ) -> dict[str, list[dict]]:
+        """Parse the innerText lines of a passeur market section.
+
+        Returns {team_name: [{"player": str, "odds_1": float, "odds_2": float|None}]}.
+        The first team key is home, the second is away (Betclic DOM order).
+        """
+        teams: dict[str, list[dict]] = {}
+        cur_team: str | None = None
+        cur_player: str | None = None
+        players_seen: set[str] = set()
+        i = start_idx + 1
+        skip_set = {"1 fois ou +", "2 fois ou +", "SuperSub 90'", "1", "2", market_name}
+        end_keywords = [
+            "Buteur et passeur",
+            "Double chance",
+            "Triple chance",
+            "Score exact",
+            "Joueur passeur décisif",
+            "Joueur décisif",
+        ]
+
+        while i < len(lines):
+            line = lines[i]
+            if any(line.startswith(k) for k in end_keywords) and i > start_idx + 3:
+                break
+            if line in skip_set:
+                i += 1
+                continue
+            try:
+                val = float(line.replace(",", "."))
+                if 1.01 <= val <= 500 and cur_team and cur_player:
+                    entry = next(
+                        (e for e in teams[cur_team] if e["player"] == cur_player), None
+                    )
+                    if not entry:
+                        teams[cur_team].append(
+                            {"player": cur_player, "odds_1": val, "odds_2": None}
+                        )
+                    elif entry["odds_2"] is None and val > entry["odds_1"]:
+                        entry["odds_2"] = val
+                i += 1
+                continue
+            except ValueError:
+                pass
+            bad_words = [
+                "décisif", "fois", "équipe", "passeur",
+                "voir plus", "toute", "viennent",
+            ]
+            if 2 < len(line) < 50 and not any(kw in line.lower() for kw in bad_words):
+                if cur_team is None:
+                    # First name after market header = team 1 (home)
+                    cur_team = line
+                    teams[cur_team] = []
+                    cur_player = None
+                elif (
+                    line not in players_seen
+                    and len(teams) < 2
+                    and len(teams.get(cur_team, [])) >= 1
+                ):
+                    # Current team has at least one player; unseen name = team 2 (away)
+                    cur_team = line
+                    teams[cur_team] = []
+                    cur_player = None
+                else:
+                    cur_player = line
+                    players_seen.add(line)
+            i += 1
+
+        return teams
 
 
 # ── UnibetScraper ──────────────────────────────────────────────────────────────
@@ -761,8 +895,10 @@ async def scrape_all_direct(
     """Scrape Betclic, Unibet, and ParionsSport for the given leagues.
 
     ParionsSport is attempted via HTTP first (no browser page needed).
-    Betclic and Unibet use Playwright with a shared browser context
-    (one page navigated sequentially to avoid fingerprinting).
+    Unibet uses JSON interception on a shared browser context.
+    Betclic uses DOM scraping (gRPC-web prevents JSON interception) and
+    creates its own dedicated context per scrape_league call via the shared
+    page's browser reference.
 
     Args:
         leagues: e.g. ["ligue_1", "premier_league"]

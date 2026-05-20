@@ -77,7 +77,8 @@ _ASSIST_LABELS = (
     "joueur passeur decisif",         # sans accent
     "passeur d\u00e9cisif",           # fragment générique
     "passeur decisif",
-)  # "joueur décisif" exclu : c'est le combo buteur OU passeur, pas un marché assist pur
+)
+# "rempla" exclusion in _classify_market blocks the "+son remplaçant" variant (substitutes)
 _H2H_LABELS = ("résultat du match",)
 _TOTALS_LABELS = ("nombre total de buts",)
 _BTTS_LABELS = ("les 2 équipes marquent",)
@@ -191,7 +192,7 @@ def _classify_market(name: str) -> str | None:
     lower = name.lower()
     if any(x in lower for x in _GOALSCORER_LABELS):
         return "goalscorer"
-    if any(x in lower for x in _ASSIST_LABELS):
+    if "rempla" not in lower and "buteur ou" not in lower and any(x in lower for x in _ASSIST_LABELS):
         return "assist"
     if any(x in lower for x in _H2H_LABELS):
         return "h2h"
@@ -355,18 +356,33 @@ def _parse_match_proto(
         market_type = _classify_market(market_name)
         if not market_type:
             continue
-        if market.get(9, [0])[0] == 3:  # suspended
-            continue
 
         sels: list[tuple[str, float]] = []
 
         if market_type in ("goalscorer", "assist"):
-            # Player markets: market.field11[] → group.field2[] → sel
+            # Standard path: market.field11[] → group.field2[] → sel
+            # Extended path (Joueur décisif / state-3 enhanced markets):
+            #   market.field13[] → outer.field11[] → group.field2[] → sel
+            source_groups: list[dict] = []
             for group_bytes in market.get(11, []):
                 try:
-                    group = _proto_fields(group_bytes)
+                    source_groups.append(_proto_fields(group_bytes))
                 except Exception:
                     continue
+            if not source_groups:
+                for outer_bytes in market.get(13, []):
+                    try:
+                        outer = _proto_fields(outer_bytes)
+                    except Exception:
+                        continue
+                    for inner_bytes in outer.get(11, []):
+                        try:
+                            source_groups.append(_proto_fields(inner_bytes))
+                        except Exception:
+                            continue
+
+            seen_sel_names: set[str] = set()
+            for group in source_groups:
                 for sel_bytes in group.get(2, []):
                     try:
                         sel = _proto_fields(sel_bytes)
@@ -376,11 +392,14 @@ def _parse_match_proto(
                     if not name_b:
                         continue
                     sel_name = name_b.decode("utf-8", errors="replace").strip()
+                    if sel_name in seen_sel_names:
+                        continue
+                    seen_sel_names.add(sel_name)
                     odds_raw = (sel.get(12) or [None])[0]
                     if not odds_raw or len(odds_raw) != 8:
                         continue
                     try:
-                        val = struct.unpack("<d", odds_raw)[0]  # raw bytes from wire type 1 — LE, unlike decode_odds_float64 which takes an int
+                        val = struct.unpack("<d", odds_raw)[0]  # raw bytes from wire type 1 — LE
                         if 1.01 <= val <= 1000.0:
                             sels.append((sel_name, round(val, 2)))
                     except struct.error:
@@ -700,8 +719,7 @@ class BetclicGrpcScraper:
                 if result.h2h or result.totals or result.btts or result.goalscorer or result.assist:
                     if not result.assist:
                         logger.warning(
-                            "BetclicGrpcScraper: 0 assist odds for %s vs %s [%s] — "
-                            "market 'Joueur passeur décisif' absent from GetMatchWithNotification endpoint",
+                            "BetclicGrpcScraper: 0 assist odds for %s vs %s [%s]",
                             mx["home_team"], mx["away_team"], league,
                         )
                     results.append(result)
