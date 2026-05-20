@@ -40,11 +40,15 @@ class FixtureOut(BaseModel):
     matchweek: int | None
     home_team: str
     away_team: str
+    home_team_id: str | None
+    away_team_id: str | None
     kickoff_utc: str
     status: str
     home_score: int | None
     away_score: int | None
     odds_count: int
+    goalscorer_count: int
+    assist_count: int
     odds: list[OddsSnapshotOut]
 
 
@@ -97,16 +101,35 @@ async def list_fixtures(
         else Fixture.kickoff_utc.desc()
     )
 
-    # Count odds per fixture in a single subquery — never load all rows
+    # Count odds per fixture — total, goalscorer, and assist — in parallel subqueries
     odds_count_subq = (
         select(PlayerOddsSnapshot.fixture_id, func.count().label("cnt"))
         .group_by(PlayerOddsSnapshot.fixture_id)
         .subquery()
     )
+    goalscorer_subq = (
+        select(PlayerOddsSnapshot.fixture_id, func.count().label("gcnt"))
+        .where(PlayerOddsSnapshot.market_type == "goalscorer")
+        .group_by(PlayerOddsSnapshot.fixture_id)
+        .subquery()
+    )
+    assist_subq = (
+        select(PlayerOddsSnapshot.fixture_id, func.count().label("acnt"))
+        .where(PlayerOddsSnapshot.market_type == "assist")
+        .group_by(PlayerOddsSnapshot.fixture_id)
+        .subquery()
+    )
 
     stmt = (
-        select(Fixture, func.coalesce(odds_count_subq.c.cnt, 0).label("odds_count"))
+        select(
+            Fixture,
+            func.coalesce(odds_count_subq.c.cnt, 0).label("odds_count"),
+            func.coalesce(goalscorer_subq.c.gcnt, 0).label("goalscorer_count"),
+            func.coalesce(assist_subq.c.acnt, 0).label("assist_count"),
+        )
         .outerjoin(odds_count_subq, Fixture.id == odds_count_subq.c.fixture_id)
+        .outerjoin(goalscorer_subq, Fixture.id == goalscorer_subq.c.fixture_id)
+        .outerjoin(assist_subq, Fixture.id == assist_subq.c.fixture_id)
         .order_by(order_col)
         .limit(limit)
     )
@@ -134,8 +157,8 @@ async def list_fixtures(
     # Resolve French names for canonical teams
     ct_ids = {
         ct_id
-        for f, _ in rows
-        for ct_id in (f.home_canonical_team_id, f.away_canonical_team_id)
+        for row in rows
+        for ct_id in (row.Fixture.home_canonical_team_id, row.Fixture.away_canonical_team_id)
         if ct_id
     }
     canonical_names: dict[int, str] = {}
@@ -150,21 +173,25 @@ async def list_fixtures(
 
     items = [
         FixtureOut(
-            id=f.id,
-            external_id=f.external_id,
-            league=f.league,
-            season=f.season,
-            matchweek=f.matchweek,
-            home_team=_team_name(f.home_team, f.home_canonical_team_id),
-            away_team=_team_name(f.away_team, f.away_canonical_team_id),
-            kickoff_utc=str(f.kickoff_utc),
-            status=f.status,
-            home_score=f.home_score,
-            away_score=f.away_score,
-            odds_count=count,
+            id=row.Fixture.id,
+            external_id=row.Fixture.external_id,
+            league=row.Fixture.league,
+            season=row.Fixture.season,
+            matchweek=row.Fixture.matchweek,
+            home_team=_team_name(row.Fixture.home_team, row.Fixture.home_canonical_team_id),
+            away_team=_team_name(row.Fixture.away_team, row.Fixture.away_canonical_team_id),
+            home_team_id=row.Fixture.home_team_id,
+            away_team_id=row.Fixture.away_team_id,
+            kickoff_utc=str(row.Fixture.kickoff_utc),
+            status=row.Fixture.status,
+            home_score=row.Fixture.home_score,
+            away_score=row.Fixture.away_score,
+            odds_count=row.odds_count,
+            goalscorer_count=row.goalscorer_count,
+            assist_count=row.assist_count,
             odds=[],
         )
-        for f, count in rows
+        for row in rows
     ]
 
     return FixturesResponse(count=len(items), fixtures=items)
@@ -200,11 +227,15 @@ async def create_fixture(
         matchweek=fixture.matchweek,
         home_team=fixture.home_team,
         away_team=fixture.away_team,
+        home_team_id=fixture.home_team_id,
+        away_team_id=fixture.away_team_id,
         kickoff_utc=str(fixture.kickoff_utc),
         status=fixture.status,
         home_score=fixture.home_score,
         away_score=fixture.away_score,
         odds_count=0,
+        goalscorer_count=0,
+        assist_count=0,
         odds=[],
     )
 

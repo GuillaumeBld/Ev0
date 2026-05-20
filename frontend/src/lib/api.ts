@@ -182,11 +182,15 @@ export interface FixtureOut {
   matchweek: number | null
   home_team: string
   away_team: string
+  home_team_id: string | null
+  away_team_id: string | null
   kickoff_utc: string
   status: string
   home_score: number | null
   away_score: number | null
   odds_count: number
+  goalscorer_count: number
+  assist_count: number
   odds: OddsSnapshotOut[]
 }
 
