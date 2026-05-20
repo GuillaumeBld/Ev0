@@ -180,6 +180,8 @@ export const TEAM_LOGO_IDS: Record<string, number> = {
   'Real Valladolid':       725,
   'Valladolid':            725,
   'Elche':                 742,
+  'Real Oviedo':           718,
+  'Oviedo':                718,
 
   // ── Serie A ────────────────────────────────────────────────────────────────
   'Juventus':              496,
