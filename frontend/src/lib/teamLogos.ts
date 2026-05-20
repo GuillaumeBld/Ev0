@@ -226,7 +226,6 @@ export const TEAM_LOGO_IDS: Record<string, number> = {
   'Venezia':               519,
   'FC Venezia':            519,
   'Como':                  500, // Note: approx for Como Calcio 1907
-  'Pisa':                  7141,
 
   // ── Champions League (non-Big-5 clubs) ─────────────────────────────────────
   'Ajax':                  194,
@@ -282,7 +281,6 @@ export const TEAM_LOGO_IDS: Record<string, number> = {
   'Red Bull Salzbourg':    1062,
   'Shakhtar':              440,
   'Rodez':                 1082,
-  'Athletic Bilbao':       531,
 }
 
 /** Returns the API-Football team ID for a given name, or null if unknown. */
