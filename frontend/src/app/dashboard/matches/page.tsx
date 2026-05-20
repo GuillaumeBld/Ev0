@@ -8,6 +8,7 @@ import { clsx } from 'clsx'
 import type { ReactNode } from 'react'
 import { getFixtures, createFixture, deleteFixture, createOdds } from '@/lib/api'
 import type { FixtureOut } from '@/lib/api'
+import { getTeamId } from '@/lib/teamLogos'
 
 interface Match {
   id: string
@@ -103,10 +104,12 @@ function TeamLogo({
     .toUpperCase()
     .slice(0, 2)
 
-  if (teamId && !imgFailed) {
+  const resolvedId = teamId ?? getTeamId(teamName)
+
+  if (resolvedId && !imgFailed) {
     return (
       <img
-        src={`https://media.api-sports.io/football/teams/${teamId}.png`}
+        src={`https://media.api-sports.io/football/teams/${resolvedId}.png`}
         alt={teamName}
         className={`${sizeClass} object-contain`}
         onError={() => setImgFailed(true)}
