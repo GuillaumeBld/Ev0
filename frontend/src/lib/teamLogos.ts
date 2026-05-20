@@ -226,6 +226,7 @@ export const TEAM_LOGO_IDS: Record<string, number> = {
   'Venezia':               519,
   'FC Venezia':            519,
   'Como':                  500, // Note: approx for Como Calcio 1907
+  'Pisa':                  801,
 
   // ── Champions League (non-Big-5 clubs) ─────────────────────────────────────
   'Ajax':                  194,
