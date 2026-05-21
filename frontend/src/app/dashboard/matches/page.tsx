@@ -463,6 +463,8 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
     matchweek: null as number | null,
     homeTeamId: null as string | null,
     awayTeamId: null as string | null,
+    homeApiFootballId: null as number | null,
+    awayApiFootballId: null as number | null,
     odds: [] as Match['odds'],
   })
 
