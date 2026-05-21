@@ -13,5 +13,6 @@ class CanonicalTeam(Base):
     name_fr = Column(String(200), nullable=False, unique=True)
     name_en = Column(String(200), nullable=True)
     api_football_id = Column(Integer, nullable=True, unique=True)
-    # All known raw spellings from various sources (Understat, FotMob, API-Football…)
+    bzz_team_id = Column(Integer, nullable=True, unique=True)
+    sofascore_team_id = Column(Integer, nullable=True, unique=True)
     aliases = Column(ARRAY(Text), nullable=False, server_default="{}")

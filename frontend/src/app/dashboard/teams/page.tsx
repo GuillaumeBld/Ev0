@@ -10,6 +10,8 @@ interface CanonicalTeam {
   name_fr: string
   name_en: string | null
   api_football_id: number | null
+  bzz_team_id: number | null
+  sofascore_team_id: number | null
   aliases: string[]
 }
 
@@ -19,7 +21,7 @@ async function fetchTeams(): Promise<CanonicalTeam[]> {
   return res.json()
 }
 
-async function patchTeam(id: number, body: Partial<Pick<CanonicalTeam, 'name_fr' | 'name_en' | 'api_football_id' | 'aliases'>>) {
+async function patchTeam(id: number, body: Partial<Pick<CanonicalTeam, 'name_fr' | 'name_en' | 'api_football_id' | 'bzz_team_id' | 'sofascore_team_id' | 'aliases'>>) {
   const res = await fetch(`/api/v1/canonical-teams/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -182,7 +184,9 @@ export default function TeamsPage() {
                   <th className="px-3 py-3 text-left w-10">Logo</th>
                   <th className="px-3 py-3 text-left">Nom FR</th>
                   <th className="px-3 py-3 text-left">Nom EN</th>
-                  <th className="px-3 py-3 text-left w-32">API-Football ID</th>
+                  <th className="px-3 py-3 text-left w-28">API-Football</th>
+                  <th className="px-3 py-3 text-left w-24">Bzzoiro</th>
+                  <th className="px-3 py-3 text-left w-24">Sofascore</th>
                   <th className="px-3 py-3 text-left">Aliases</th>
                 </tr>
               </thead>
@@ -215,6 +219,22 @@ export default function TeamsPage() {
                         onSave={v => mutation.mutate({ id: team.id, body: { api_football_id: v ? Number(v) : undefined } })}
                       />
                     </td>
+                    <td className="px-3 py-3">
+                      <InlineEdit
+                        value={team.bzz_team_id}
+                        placeholder="ID"
+                        type="number"
+                        onSave={v => mutation.mutate({ id: team.id, body: { bzz_team_id: v ? Number(v) : undefined } })}
+                      />
+                    </td>
+                    <td className="px-3 py-3">
+                      <InlineEdit
+                        value={team.sofascore_team_id}
+                        placeholder="ID"
+                        type="number"
+                        onSave={v => mutation.mutate({ id: team.id, body: { sofascore_team_id: v ? Number(v) : undefined } })}
+                      />
+                    </td>
                     <td className="px-3 py-3 text-gray-500 text-xs max-w-xs">
                       <div className="flex flex-wrap gap-1">
                         {team.aliases.slice(0, 5).map(a => (
@@ -229,7 +249,7 @@ export default function TeamsPage() {
                 ))}
                 {displayed.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-4 py-10 text-center text-gray-600 italic">
+                    <td colSpan={8} className="px-4 py-10 text-center text-gray-600 italic">
                       Aucune équipe trouvée
                     </td>
                   </tr>

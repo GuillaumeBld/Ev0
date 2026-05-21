@@ -133,11 +133,19 @@ async def main(dry_run: bool, api_key: str) -> None:
 
     if not dry_run and updates:
         print(f"\nApplying {len(updates)} updates...")
-        for ct_id, new_id, name_fr, via in updates:
-            await conn.execute(
-                "UPDATE canonical_teams SET api_football_id = $1 WHERE id = $2",
-                new_id, ct_id,
-            )
+        async with conn.transaction():
+            # Nullify all IDs first to avoid unique constraint conflicts during shuffle
+            for ct_id, _, _, _ in updates:
+                await conn.execute(
+                    "UPDATE canonical_teams SET api_football_id = NULL WHERE id = $1",
+                    ct_id,
+                )
+            # Then assign correct IDs
+            for ct_id, new_id, _, _ in updates:
+                await conn.execute(
+                    "UPDATE canonical_teams SET api_football_id = $1 WHERE id = $2",
+                    new_id, ct_id,
+                )
         print("Done.")
     elif dry_run:
         print("\n[DRY RUN — no changes written]")

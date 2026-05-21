@@ -16,6 +16,8 @@ class CanonicalTeamOut(BaseModel):
     name_fr: str
     name_en: str | None
     api_football_id: int | None
+    bzz_team_id: int | None
+    sofascore_team_id: int | None
     aliases: list[str]
 
 
@@ -23,6 +25,8 @@ class CanonicalTeamUpdate(BaseModel):
     name_fr: str | None = None
     name_en: str | None = None
     api_football_id: int | None = None
+    bzz_team_id: int | None = None
+    sofascore_team_id: int | None = None
     aliases: list[str] | None = None
 
 
@@ -37,6 +41,8 @@ async def list_canonical_teams(db: AsyncSession = Depends(get_db)):
             name_fr=ct.name_fr,
             name_en=ct.name_en,
             api_football_id=ct.api_football_id,
+            bzz_team_id=ct.bzz_team_id,
+            sofascore_team_id=ct.sofascore_team_id,
             aliases=ct.aliases or [],
         )
         for ct in rows
@@ -61,6 +67,10 @@ async def update_canonical_team(
         ct.name_en = body.name_en
     if body.api_football_id is not None:
         ct.api_football_id = body.api_football_id
+    if body.bzz_team_id is not None:
+        ct.bzz_team_id = body.bzz_team_id
+    if body.sofascore_team_id is not None:
+        ct.sofascore_team_id = body.sofascore_team_id
     if body.aliases is not None:
         ct.aliases = body.aliases
 
@@ -71,5 +81,7 @@ async def update_canonical_team(
         name_fr=ct.name_fr,
         name_en=ct.name_en,
         api_football_id=ct.api_football_id,
+        bzz_team_id=ct.bzz_team_id,
+        sofascore_team_id=ct.sofascore_team_id,
         aliases=ct.aliases or [],
     )
