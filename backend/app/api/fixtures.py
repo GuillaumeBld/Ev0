@@ -42,6 +42,8 @@ class FixtureOut(BaseModel):
     away_team: str
     home_team_id: str | None
     away_team_id: str | None
+    home_api_football_id: int | None
+    away_api_football_id: int | None
     kickoff_utc: str
     status: str
     home_score: int | None
@@ -154,22 +156,29 @@ async def list_fixtures(
     result = await db.execute(stmt)
     rows = result.all()
 
-    # Resolve French names for canonical teams
+    # Resolve canonical team data (name_fr + api_football_id)
     ct_ids = {
         ct_id
         for row in rows
         for ct_id in (row.Fixture.home_canonical_team_id, row.Fixture.away_canonical_team_id)
         if ct_id
     }
-    canonical_names: dict[int, str] = {}
+    canonical_data: dict[int, CanonicalTeam] = {}
     if ct_ids:
         ct_rows = (await db.execute(
             select(CanonicalTeam).where(CanonicalTeam.id.in_(ct_ids))
         )).scalars().all()
-        canonical_names = {ct.id: ct.name_fr for ct in ct_rows}
+        canonical_data = {ct.id: ct for ct in ct_rows}
 
     def _team_name(raw: str, ct_id: int | None) -> str:
-        return canonical_names.get(ct_id, raw) if ct_id else raw
+        if ct_id and ct_id in canonical_data:
+            return canonical_data[ct_id].name_fr
+        return raw
+
+    def _api_football_id(ct_id: int | None) -> int | None:
+        if ct_id and ct_id in canonical_data:
+            return canonical_data[ct_id].api_football_id
+        return None
 
     items = [
         FixtureOut(
@@ -182,6 +191,8 @@ async def list_fixtures(
             away_team=_team_name(row.Fixture.away_team, row.Fixture.away_canonical_team_id),
             home_team_id=row.Fixture.home_team_id,
             away_team_id=row.Fixture.away_team_id,
+            home_api_football_id=_api_football_id(row.Fixture.home_canonical_team_id),
+            away_api_football_id=_api_football_id(row.Fixture.away_canonical_team_id),
             kickoff_utc=str(row.Fixture.kickoff_utc),
             status=row.Fixture.status,
             home_score=row.Fixture.home_score,
@@ -229,6 +240,8 @@ async def create_fixture(
         away_team=fixture.away_team,
         home_team_id=fixture.home_team_id,
         away_team_id=fixture.away_team_id,
+        home_api_football_id=None,
+        away_api_football_id=None,
         kickoff_utc=str(fixture.kickoff_utc),
         status=fixture.status,
         home_score=fixture.home_score,

@@ -11,5 +11,7 @@ class CanonicalTeam(Base):
 
     id = Column(Integer, primary_key=True)
     name_fr = Column(String(200), nullable=False, unique=True)
+    name_en = Column(String(200), nullable=True)
+    api_football_id = Column(Integer, nullable=True, unique=True)
     # All known raw spellings from various sources (Understat, FotMob, API-Football…)
     aliases = Column(ARRAY(Text), nullable=False, server_default="{}")

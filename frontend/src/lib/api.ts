@@ -184,6 +184,8 @@ export interface FixtureOut {
   away_team: string
   home_team_id: string | null
   away_team_id: string | null
+  home_api_football_id: number | null
+  away_api_football_id: number | null
   kickoff_utc: string
   status: string
   home_score: number | null

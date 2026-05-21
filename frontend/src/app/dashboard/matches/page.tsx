@@ -17,6 +17,8 @@ interface Match {
   awayTeam: string
   homeTeamId: string | null
   awayTeamId: string | null
+  homeApiFootballId: number | null
+  awayApiFootballId: number | null
   league: string
   matchweek: number | null
   status: 'upcoming' | 'live' | 'finished'
@@ -48,6 +50,8 @@ function fixtureToMatch(f: FixtureOut): Match {
     awayTeam: f.away_team,
     homeTeamId: f.home_team_id,
     awayTeamId: f.away_team_id,
+    homeApiFootballId: f.home_api_football_id,
+    awayApiFootballId: f.away_api_football_id,
     league: f.league,
     matchweek: f.matchweek,
     status: statusMap[f.status] ?? 'upcoming',
@@ -84,11 +88,11 @@ function formatKickoff(utcStr: string): string {
 // ── Team logo with initials fallback ───────────────────────────────────────────
 
 function TeamLogo({
-  teamId,
+  apiFootballId,
   teamName,
   size = 'md',
 }: {
-  teamId?: string | null
+  apiFootballId?: number | null
   teamName: string
   size?: 'sm' | 'md' | 'lg'
 }) {
@@ -104,7 +108,8 @@ function TeamLogo({
     .toUpperCase()
     .slice(0, 2)
 
-  const resolvedId = teamId ?? getTeamId(teamName)
+  // Priority: DB canonical id → static map fallback
+  const resolvedId = apiFootballId ?? getTeamId(teamName)
 
   if (resolvedId && !imgFailed) {
     return (
@@ -172,7 +177,7 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
 
           {/* Home team */}
           <div className="flex flex-col items-center gap-1.5 flex-1 min-w-0">
-            <TeamLogo teamId={match.homeTeamId} teamName={match.homeTeam} size="lg" />
+            <TeamLogo apiFootballId={match.homeApiFootballId} teamName={match.homeTeam} size="lg" />
             <span className="text-sm font-medium text-white text-center leading-tight line-clamp-2">
               {match.homeTeam}
             </span>
@@ -199,7 +204,7 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
 
           {/* Away team */}
           <div className="flex flex-col items-center gap-1.5 flex-1 min-w-0">
-            <TeamLogo teamId={match.awayTeamId} teamName={match.awayTeam} size="lg" />
+            <TeamLogo apiFootballId={match.awayApiFootballId} teamName={match.awayTeam} size="lg" />
             <span className="text-sm font-medium text-white text-center leading-tight line-clamp-2">
               {match.awayTeam}
             </span>
