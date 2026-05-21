@@ -12,6 +12,7 @@ from app.api import (
     autopilot,
     backtest,
     bankroll,
+    canonical_teams_api,
     config as config_api,
     fixtures,
     health,
@@ -64,6 +65,7 @@ app.add_middleware(
 
 # Routers
 app.include_router(health.router, tags=["health"])
+app.include_router(canonical_teams_api.router, prefix="/api/v1", tags=["canonical-teams"])
 app.include_router(players.router, prefix="/api/v1", tags=["players"])
 app.include_router(pricing.router, prefix="/api/v1", tags=["pricing"])
 app.include_router(recommendations.router, prefix="/api/v1", tags=["recommendations"])

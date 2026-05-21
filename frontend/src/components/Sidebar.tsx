@@ -18,6 +18,7 @@ import {
   Brain,
   BookOpen,
   ClipboardList,
+  Shield,
   X
 } from 'lucide-react'
 import { clsx } from 'clsx'
@@ -42,6 +43,7 @@ const navGroups = [
     items: [
       { name: 'Joueurs', href: '/dashboard/players', icon: Users },
       { name: 'Matchs', href: '/dashboard/matches', icon: Calendar },
+      { name: 'Équipes', href: '/dashboard/teams', icon: Shield },
       { name: 'Compos', href: '/dashboard/lineups', icon: ClipboardList },
       { name: 'Backtest', href: '/dashboard/backtest', icon: TrendingUp },
       { name: 'Historique', href: '/dashboard/history', icon: History },
