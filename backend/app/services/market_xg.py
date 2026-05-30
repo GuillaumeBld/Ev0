@@ -45,7 +45,7 @@ class MarketXgResult:
     xg_home: float
     xg_away: float
     xg_source: Literal["market_implied", "market_implied_flagged", "bzzoiro"]
-    data_source: str = ""          # "oddsportal" | "betclic" | "unibet" | "bzzoiro"
+    data_source: str = ""          # "oddsportal" | "betclic" | "unibet" | "pmu" | "bzzoiro"
     fallback_used: bool = False
     fit_residual: float = 0.0
     flagged: bool = False          # fit_residual > FIT_RESIDUAL_FLAG_THRESHOLD
@@ -203,7 +203,7 @@ def cross_validate_h2h(
 # Bookmaker preference helpers
 # ---------------------------------------------------------------------------
 
-_BOOKMAKER_PRIORITY = ["oddsportal", "betfair", "pinnacle", "betclic", "unibet"]
+_BOOKMAKER_PRIORITY = ["oddsportal", "betfair", "pinnacle", "betclic", "unibet", "pmu"]
 
 
 def _preferred_bookmaker(available: set[str]) -> str | None:
