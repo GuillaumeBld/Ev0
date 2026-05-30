@@ -272,13 +272,13 @@ async def get_recommendations(
             )
             fixture_map: dict[str, int] = {row.external_id: row.id for row in fix_result}
 
-            # Load today's already-stored recs
-            today_start = datetime.combine(effective_date, datetime.min.time(), tzinfo=UTC)
-            today_end = datetime.combine(effective_date, datetime.max.time(), tzinfo=UTC)
+            # Load all existing recs for these fixtures (any date) —
+            # the UniqueConstraint is on (fixture_id, player_name, market_type),
+            # not scoped to a date, so we must look across all dates.
+            fixture_db_ids = list(fixture_map.values())
             existing_result = await db.execute(
                 select(RecommendationModel).where(
-                    RecommendationModel.generated_utc >= today_start,
-                    RecommendationModel.generated_utc <= today_end,
+                    RecommendationModel.fixture_id.in_(fixture_db_ids)
                 )
             )
             existing_by_key: dict[tuple, int] = {
@@ -329,8 +329,7 @@ async def get_recommendations(
                     await db.rollback()
                     refetch_result = await db.execute(
                         select(RecommendationModel).where(
-                            RecommendationModel.generated_utc >= today_start,
-                            RecommendationModel.generated_utc <= today_end,
+                            RecommendationModel.fixture_id.in_(fixture_db_ids)
                         )
                     )
                     refetched: dict[tuple, int] = {
