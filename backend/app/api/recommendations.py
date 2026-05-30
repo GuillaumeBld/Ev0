@@ -195,9 +195,16 @@ async def get_recommendations(
         )
         total = count_result.scalar() or 0
 
+        if effective_status == "pending":
+            order_clause = FixtureModel.kickoff_utc.asc()
+        elif effective_status in ("approved", "rejected"):
+            order_clause = RecommendationModel.decided_utc.desc()
+        else:  # "all"
+            order_clause = FixtureModel.kickoff_utc.desc()
+
         result = await db.execute(
             base_query
-            .order_by(FixtureModel.kickoff_utc.asc())
+            .order_by(order_clause)
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
