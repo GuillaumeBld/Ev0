@@ -23,3 +23,4 @@ class OddsScrapeState(Base):
     )
     betclic_ok: Mapped[bool] = mapped_column(Boolean, default=False)
     unibet_ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    pmu_ok: Mapped[bool] = mapped_column(Boolean, default=False)

@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ingestion.bzzoiro.constants import CURRENT_SEASON, TARGET_LEAGUE_API_IDS, TARGET_LEAGUE_INTERNAL_IDS
 from app.ingestion.fixture_matcher import normalize_team_name
 from app.models.bzzoiro import BzzEvent, BzzTeam
+from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,17 @@ async def sync_fixtures_from_bzz(
         )
         for t in teams_result.scalars().all():
             team_map[t.api_id] = t.name
+
+    # Build bzz_team_id → canonical_team_id lookup
+    canonical_map: dict[int, int] = {}
+    if team_ids:
+        ct_result = await session.execute(
+            select(CanonicalTeam.id, CanonicalTeam.bzz_team_id).where(
+                CanonicalTeam.bzz_team_id.in_(team_ids)
+            )
+        )
+        for ct_id, bzz_id in ct_result.all():
+            canonical_map[bzz_id] = ct_id
 
     # 3. Load all non-finished Fixtures in the same window (for dedup)
     fixtures_result = await session.execute(
@@ -169,6 +181,16 @@ async def sync_fixtures_from_bzz(
                 fixture.away_bzz_team_id = ev.away_team_api_id
                 changed = True
 
+            # Resolve canonical team IDs via bzz_team_id (replaces text matching)
+            h_bzz = fixture.home_bzz_team_id
+            a_bzz = fixture.away_bzz_team_id
+            if fixture.home_canonical_team_id is None and h_bzz and h_bzz in canonical_map:
+                fixture.home_canonical_team_id = canonical_map[h_bzz]
+                changed = True
+            if fixture.away_canonical_team_id is None and a_bzz and a_bzz in canonical_map:
+                fixture.away_canonical_team_id = canonical_map[a_bzz]
+                changed = True
+
             if changed:
                 session.add(fixture)
                 updated += 1
@@ -190,6 +212,8 @@ async def sync_fixtures_from_bzz(
                 matchweek=ev.round_number,
                 home_bzz_team_id=ev.home_team_api_id,
                 away_bzz_team_id=ev.away_team_api_id,
+                home_canonical_team_id=canonical_map.get(ev.home_team_api_id) if ev.home_team_api_id else None,
+                away_canonical_team_id=canonical_map.get(ev.away_team_api_id) if ev.away_team_api_id else None,
             )
             session.add(new_fixture)
             created += 1

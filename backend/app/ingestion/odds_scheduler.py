@@ -237,6 +237,34 @@ _TEAM_ALIASES: dict[str, str] = {
     # DB "Pisa" → "pisa"
     # Betclic FR "Pise" → "pise"
     "pise":                     "pisa",
+
+    # ── PMU / Kambi (pmusportsfr) ─────────────────────────────────────────────
+    # Kambi uses English names but with some French variants on the FR market
+    # DB "Paris Saint-Germain" — "PSG" already covered above
+    # DB "Atletico Madrid" → "atletico madrid"
+    "atletico":                 "atletico madrid",
+    # DB "Athletic Club" → "athletic club"
+    "athletic club bilbao":     "athletic club",
+    # DB "Real Betis" → "real betis"
+    "real betis balompie":      "real betis",
+    # DB "Deportivo Alaves" → "deportivo alaves"
+    "deportivo alaves":         "deportivo alaves",  # exact match via normalize
+    # DB "Borussia Mönchengladbach" → "borussia monchengladbach"
+    "m'gladbach":               "borussia monchengladbach",
+    # DB "Wolverhampton Wanderers" — Kambi may shorten
+    "wolverhampton w":          "wolverhampton wanderers",
+    # DB "Nottingham Forest" — Kambi variant
+    "nottm forest":             "nottingham forest",
+    # DB "Napoli" — Kambi EN
+    "ssc napoli":               "napoli",
+    # DB "Lazio" — Kambi EN
+    "ss lazio":                 "lazio",
+    # DB "Fiorentina" — Kambi EN
+    "acf fiorentina":           "fiorentina",
+    # DB "Inter" — Kambi EN
+    "internazionale":           "inter",
+    # DB "Milan" — Kambi EN
+    "ac milan":                 "milan",
 }
 
 
@@ -266,12 +294,13 @@ def _league_key(league_name: str | None) -> str | None:
 
 
 class OddsScheduler:
-    """Drives adaptive scraping of Betclic + Unibet for upcoming fixtures."""
+    """Drives adaptive scraping of Betclic + Unibet + PMU for upcoming fixtures."""
 
     async def tick(self, session: AsyncSession) -> tuple[int, list[int]]:
         """Process all fixtures due for a scrape. Returns (count_due, stored_fixture_ids)."""
         from app.ingestion.betclic_grpc_scraper import scrape_betclic_leagues
         from app.ingestion.odds_storage import store_match_scrape_result
+        from app.ingestion.pmu_scraper import scrape_all_pmu
         from app.ingestion.unibet_lvs_scraper import scrape_all_unibet
         from app.models.fixtures import Fixture
         from app.models.odds_scrape_state import OddsScrapeState
@@ -332,10 +361,11 @@ class OddsScheduler:
             logger.warning("OddsScheduler.tick: no recognized leagues in due fixtures")
             return 0, []
 
-        # Scrape both books in parallel
-        betclic_results, unibet_results = await asyncio.gather(
+        # Scrape les 3 books en parallèle
+        betclic_results, unibet_results, pmu_results = await asyncio.gather(
             scrape_betclic_leagues(list(leagues_needed)),
             scrape_all_unibet(list(leagues_needed)),
+            scrape_all_pmu(list(leagues_needed)),
             return_exceptions=True,
         )
 
@@ -352,6 +382,12 @@ class OddsScheduler:
             )
         else:
             all_results.extend(unibet_results)
+        if isinstance(pmu_results, BaseException):
+            logger.error(
+                "OddsScheduler: pmu scrape failed: %s", pmu_results, exc_info=pmu_results
+            )
+        else:
+            all_results.extend(pmu_results)
 
         # Match scraped results to fixture_ids and store
         scraped = 0
@@ -384,6 +420,10 @@ class OddsScheduler:
                 r.fixture_id == f.id and r.bookmaker == "unibet"
                 for r in all_results
             )
+            pmu_ok = any(
+                r.fixture_id == f.id and r.bookmaker == "pmu"
+                for r in all_results
+            )
             interval = scrape_interval_seconds(f.kickoff_utc)
             stmt = (
                 pg_insert(OddsScrapeState)
@@ -393,6 +433,7 @@ class OddsScheduler:
                     next_scrape_at=now + timedelta(seconds=interval),
                     betclic_ok=betclic_ok,
                     unibet_ok=unibet_ok,
+                    pmu_ok=pmu_ok,
                 )
                 .on_conflict_do_update(
                     index_elements=["fixture_id"],
@@ -401,6 +442,7 @@ class OddsScheduler:
                         "next_scrape_at": now + timedelta(seconds=interval),
                         "betclic_ok": betclic_ok,
                         "unibet_ok": unibet_ok,
+                        "pmu_ok": pmu_ok,
                     },
                 )
             )

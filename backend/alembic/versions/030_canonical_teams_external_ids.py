@@ -80,6 +80,21 @@ def upgrade() -> None:
 
     print(f"  bzz_team_id: {matched}/{len(canonical)} canonical teams matched")
 
+    # Manual corrections: auto-matching picked wrong bzz api_id for these teams
+    # (bzz_teams has multiple entries; the correct one is the UCL/international-facing ID)
+    overrides = {
+        "Atlético Madrid": 54,
+        "Bayern Munich":   79,
+        "Porto":           35,
+        "Betis":           56,
+        "Wolfsbourg":      82,
+    }
+    for name_fr, bzz_id in overrides.items():
+        conn.execute(sa.text(
+            "UPDATE canonical_teams SET bzz_team_id = :bzz_id WHERE name_fr = :name"
+        ), {"bzz_id": bzz_id, "name": name_fr})
+    print(f"  bzz_team_id: {len(overrides)} manual overrides applied")
+
 
 def downgrade() -> None:
     op.drop_constraint("uq_canonical_teams_sofascore_team_id", "canonical_teams")
