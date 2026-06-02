@@ -27,19 +27,62 @@ jobs:
       - name: Configure SSH
         env:
           SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
+          set -euo pipefail
+
+          if [ -z "${VPS_HOST}" ]; then
+            echo "::error::VPS_HOST secret is empty"
+            exit 1
+          fi
+
+          if [ -z "${SSH_KEY}" ]; then
+            echo "::error::VPS_SSH_KEY secret is empty"
+            exit 1
+          fi
+
           mkdir -p ~/.ssh
-          echo "$SSH_KEY" | base64 -d > ~/.ssh/vps_key
+          if ! printf '%s' "$SSH_KEY" | base64 -d > ~/.ssh/vps_key; then
+            echo "::error::VPS_SSH_KEY is not valid base64"
+            exit 1
+          fi
           chmod 600 ~/.ssh/vps_key
-          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+          if ! timeout 10 bash -c "cat < /dev/null > /dev/tcp/${VPS_HOST}/22"; then
+            echo "::error::Cannot reach VPS_HOST on port 22 from GitHub Actions"
+            exit 1
+          fi
+
+          if ! ssh-keyscan -T 10 -H "$VPS_HOST" >> ~/.ssh/known_hosts; then
+            echo "::error::ssh-keyscan failed for VPS_HOST"
+            exit 1
+          fi
+
+      - name: Resolve VPS containers
+        id: containers
+        run: |
+          set -euo pipefail
+
+          BACKEND_CONTAINER=$(ssh -i ~/.ssh/vps_key root@"${{ secrets.VPS_HOST }}" \
+            "docker ps --format '{{.Names}}' | grep -E '(^|_)ev0-compose-z5hvqt-backend-1$' | head -n 1")
+
+          if [ -z "$BACKEND_CONTAINER" ]; then
+            echo "::error::Could not find running backend container"
+            ssh -i ~/.ssh/vps_key root@"${{ secrets.VPS_HOST }}" "docker ps --format '{{.Names}}'"
+            exit 1
+          fi
+
+          echo "backend=$BACKEND_CONTAINER" >> "$GITHUB_OUTPUT"
+          echo "Resolved backend container: $BACKEND_CONTAINER"
 
       - name: Get pending fixtures
         id: pending
         run: |
+          BACKEND_CONTAINER="${{ steps.containers.outputs.backend }}"
           scp -i ~/.ssh/vps_key ops/get_pending_fixtures.py root@"${{ secrets.VPS_HOST }}":/tmp/get_pending_fixtures.py
           ssh -i ~/.ssh/vps_key root@"${{ secrets.VPS_HOST }}" \
-            "docker cp /tmp/get_pending_fixtures.py ev0-compose-z5hvqt-backend-1:/tmp/ && \
-             docker exec -e PYTHONPATH=/app ev0-compose-z5hvqt-backend-1 python3 /tmp/get_pending_fixtures.py" \
+            "docker cp /tmp/get_pending_fixtures.py \"$BACKEND_CONTAINER\":/tmp/ && \
+             docker exec -e PYTHONPATH=/app \"$BACKEND_CONTAINER\" python3 /tmp/get_pending_fixtures.py" \
             > /tmp/pending_fixtures.json
           COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/pending_fixtures.json'))))" 2>/dev/null || echo "0")
           echo "count=$COUNT" >> $GITHUB_OUTPUT
@@ -54,16 +97,18 @@ jobs:
       - name: Import rosters into DB
         if: steps.pending.outputs.count != '0'
         run: |
+          BACKEND_CONTAINER="${{ steps.containers.outputs.backend }}"
           scp -i ~/.ssh/vps_key /tmp/understat_rosters.json root@"${{ secrets.VPS_HOST }}":/tmp/understat_rosters.json
           scp -i ~/.ssh/vps_key ops/import_understat_rosters.py root@"${{ secrets.VPS_HOST }}":/tmp/import_understat_rosters.py
           ssh -i ~/.ssh/vps_key root@"${{ secrets.VPS_HOST }}" \
-            "docker cp /tmp/understat_rosters.json ev0-compose-z5hvqt-backend-1:/tmp/ && \
-             docker cp /tmp/import_understat_rosters.py ev0-compose-z5hvqt-backend-1:/tmp/ && \
-             docker exec -e PYTHONPATH=/app ev0-compose-z5hvqt-backend-1 python3 /tmp/import_understat_rosters.py"
+            "docker cp /tmp/understat_rosters.json \"$BACKEND_CONTAINER\":/tmp/ && \
+             docker cp /tmp/import_understat_rosters.py \"$BACKEND_CONTAINER\":/tmp/ && \
+             docker exec -e PYTHONPATH=/app \"$BACKEND_CONTAINER\" python3 /tmp/import_understat_rosters.py"
 
       - name: Trigger auto-settle
         if: steps.pending.outputs.count != '0'
         run: |
+          BACKEND_CONTAINER="${{ steps.containers.outputs.backend }}"
           ssh -i ~/.ssh/vps_key root@"${{ secrets.VPS_HOST }}" \
-            "docker exec ev0-compose-z5hvqt-backend-1 python3 -c \
+            "docker exec \"$BACKEND_CONTAINER\" python3 -c \
             \"import urllib.request, sys; req = urllib.request.Request('http://localhost:8000/api/v1/history/settle', data=b'', method='POST', headers={'Content-Type': 'application/json'}); resp = urllib.request.urlopen(req, timeout=30); print(resp.status); sys.exit(0 if resp.status < 300 else 1)\""
