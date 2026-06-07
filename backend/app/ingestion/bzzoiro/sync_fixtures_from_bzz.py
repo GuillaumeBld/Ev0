@@ -21,7 +21,13 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.bzzoiro.constants import CURRENT_SEASON, TARGET_LEAGUE_API_IDS, TARGET_LEAGUE_INTERNAL_IDS
+from app.ingestion.bzzoiro.constants import (
+    CURRENT_SEASON,
+    INTERNATIONAL_LEAGUE_API_IDS,
+    INTERNATIONAL_LEAGUE_INTERNAL_IDS,
+    TARGET_LEAGUE_API_IDS,
+    TARGET_LEAGUE_INTERNAL_IDS,
+)
 from app.ingestion.fixture_matcher import normalize_team_name
 from app.models.bzzoiro import BzzEvent, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
@@ -37,6 +43,13 @@ _LEAGUE_API_ID_TO_KEY: dict[int, str] = {v: k for k, v in TARGET_LEAGUE_API_IDS.
 for _key, _internal_id in TARGET_LEAGUE_INTERNAL_IDS.items():
     if _internal_id not in _LEAGUE_API_ID_TO_KEY:
         _LEAGUE_API_ID_TO_KEY[_internal_id] = _key
+
+# International competitions
+for _key, _id in INTERNATIONAL_LEAGUE_API_IDS.items():
+    _LEAGUE_API_ID_TO_KEY[_id] = _key
+for _key, _id in INTERNATIONAL_LEAGUE_INTERNAL_IDS.items():
+    if _id not in _LEAGUE_API_ID_TO_KEY:
+        _LEAGUE_API_ID_TO_KEY[_id] = _key
 
 # How far ahead to look for upcoming fixtures
 _DAYS_FORWARD = 30
