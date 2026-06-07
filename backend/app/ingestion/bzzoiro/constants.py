@@ -33,9 +33,26 @@ TARGET_LEAGUE_INTERNAL_IDS: dict[str, int] = {
     "champions_league": 7,
 }
 
+# International competition internal IDs (confirmed 2026-06-08 via /api/leagues/)
+INTERNATIONAL_LEAGUE_INTERNAL_IDS: dict[str, int] = {
+    "world_cup_2026": 27,
+    "friendly_international": 31,
+    "nations_league_uefa": 64,
+    "nations_league_concacaf": 65,
+}
+
+INTERNATIONAL_LEAGUE_API_IDS: dict[str, int] = {
+    "world_cup_2026": 27,       # api_id == internal_id for international comps
+    "friendly_international": 31,
+    "nations_league_uefa": 64,
+    "nations_league_concacaf": 65,
+}
+
 # Convenience lists
 TARGET_LEAGUE_API_ID_LIST: list[int] = list(TARGET_LEAGUE_API_IDS.values())
 TARGET_LEAGUE_INTERNAL_ID_LIST: list[int] = list(TARGET_LEAGUE_INTERNAL_IDS.values())
+INTERNATIONAL_LEAGUE_API_ID_LIST: list[int] = list(INTERNATIONAL_LEAGUE_API_IDS.values())
+INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST: list[int] = list(INTERNATIONAL_LEAGUE_INTERNAL_IDS.values())
 
 # Season identifier used throughout the codebase
 CURRENT_SEASON = "2025-2026"
