@@ -31,6 +31,9 @@ from app.ingestion.bzzoiro.sync_players import sync_players
 from app.ingestion.bzzoiro.sync_predictions import sync_predictions
 from app.ingestion.bzzoiro.sync_fixtures_from_bzz import sync_fixtures_from_bzz
 from app.ingestion.bzzoiro.sync_reference import sync_leagues, sync_teams
+from app.ingestion.bzzoiro.sync_bzzoiro_odds import sync_bzzoiro_odds
+from app.ingestion.bzzoiro.sync_bzzoiro_lineups import sync_bzzoiro_lineups
+from app.ingestion.bzzoiro.constants import INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST
 from app.ingestion.storage import (
     store_match_events,
     store_odds_snapshot,
@@ -1237,6 +1240,13 @@ async def job_sync_bzzoiro_events():
         async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
             result = await sync_events(session, client, days_back=3, days_forward=30)
             logger.info("Bzzoiro events synced: %s", result)
+            intl_count = await sync_events(
+                session,
+                client,
+                days_forward=30,
+                league_internal_ids=INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST,
+            )
+            logger.info("job_sync_events: %d international events synced", intl_count)
     except Exception as exc:
         logger.error("Error in Bzzoiro events sync: %s", exc, exc_info=True)
 
@@ -1369,6 +1379,29 @@ async def job_sync_bzzoiro_predictions():
     except Exception as exc:
         logger.error("Error in Bzzoiro predictions sync: %s", exc, exc_info=True)
     logger.info("=== Bzzoiro predictions sync complete ===")
+
+
+async def job_sync_bzzoiro_odds() -> None:
+    """Sync Pinnacle odds from Bzzoiro into match_odds_snapshots."""
+    logger.info("job_sync_bzzoiro_odds: start")
+    try:
+        async with async_session() as session:
+            async with BzzoiroClient(settings.bzzoiro_api_key) as client:
+                count = await sync_bzzoiro_odds(session, client, bookmakers=["pinnacle"])
+        logger.info("job_sync_bzzoiro_odds: %d rows upserted", count)
+    except Exception as exc:
+        logger.exception("job_sync_bzzoiro_odds failed: %s", exc)
+
+
+async def job_sync_bzzoiro_lineups() -> None:
+    """Sync lineups from bzz_events JSONB into TeamLineup."""
+    logger.info("job_sync_bzzoiro_lineups: start")
+    try:
+        async with async_session() as session:
+            count = await sync_bzzoiro_lineups(session)
+        logger.info("job_sync_bzzoiro_lineups: %d lineups written", count)
+    except Exception as exc:
+        logger.exception("job_sync_bzzoiro_lineups failed: %s", exc)
 
 
 # ── Scheduler Setup ───────────────────────────────────────────────
@@ -1534,6 +1567,24 @@ def create_scheduler() -> AsyncIOScheduler:
         id="sync_bzzoiro_predictions",
         name="Sync Bzzoiro match predictions",
         replace_existing=True,
+    )
+
+    # Bzzoiro odds sync — toutes les heures
+    scheduler.add_job(
+        job_sync_bzzoiro_odds,
+        trigger=IntervalTrigger(hours=1),
+        id="sync_bzzoiro_odds",
+        replace_existing=True,
+        max_instances=1,
+    )
+
+    # Bzzoiro lineups sync — toutes les 30 min
+    scheduler.add_job(
+        job_sync_bzzoiro_lineups,
+        trigger=IntervalTrigger(minutes=30),
+        id="sync_bzzoiro_lineups",
+        replace_existing=True,
+        max_instances=1,
     )
 
     # StatsHub gap-fill: daily at 08:15 UTC (after Bzzoiro player stats)
