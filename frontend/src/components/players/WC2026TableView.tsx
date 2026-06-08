@@ -22,6 +22,35 @@ function fmtCell(v: number | null, decimals = 1): string {
   return v == null ? '—' : v.toFixed(decimals)
 }
 
+interface SortThProps {
+  field: WCSortField
+  label: string
+  className?: string
+  sortBy: WCSortField
+  sortOrder: 'asc' | 'desc'
+  onSort: (field: WCSortField) => void
+}
+
+function SortTh({ field, label, className, sortBy, sortOrder, onSort }: SortThProps) {
+  return (
+    <th
+      onClick={() => onSort(field)}
+      className={clsx(
+        'px-3 py-3 text-sm font-medium cursor-pointer select-none whitespace-nowrap transition-colors',
+        sortBy === field ? 'text-brand-400' : 'text-gray-400 hover:text-white',
+        className,
+      )}
+    >
+      <div className={clsx('flex items-center gap-1', className?.includes('text-right') ? 'justify-end' : '')}>
+        {label}
+        {sortBy === field && (
+          <span className="text-brand-400">{sortOrder === 'desc' ? ' ↓' : ' ↑'}</span>
+        )}
+      </div>
+    </th>
+  )
+}
+
 interface Props {
   onSwitchToCards: (nation: string | null) => void
 }
@@ -37,6 +66,7 @@ export function WC2026TableView({ onSwitchToCards }: Props) {
   const [page, setPage] = useState<number>(1)
   const [data, setData] = useState<WCPlayersPage | null>(null)
   const [loading, setLoading] = useState<boolean>(false)
+  const [error, setError] = useState<string | null>(null)
 
   // Debounce search
   useEffect(() => {
@@ -56,6 +86,7 @@ export function WC2026TableView({ onSwitchToCards }: Props) {
   }, [])
 
   const fetchPlayers = useCallback(async () => {
+    setError(null)
     setLoading(true)
     try {
       const params = new URLSearchParams()
@@ -69,6 +100,7 @@ export function WC2026TableView({ onSwitchToCards }: Props) {
       setData(await res.json())
     } catch (e) {
       console.error(e)
+      setError('Erreur de chargement des joueurs.')
     } finally {
       setLoading(false)
     }
@@ -84,24 +116,6 @@ export function WC2026TableView({ onSwitchToCards }: Props) {
       setSortOrder('desc')
     }
   }
-
-  const SortTh = ({ field, label, className }: { field: WCSortField; label: string; className?: string }) => (
-    <th
-      onClick={() => handleSort(field)}
-      className={clsx(
-        'px-3 py-3 text-sm font-medium cursor-pointer select-none whitespace-nowrap transition-colors',
-        sortBy === field ? 'text-brand-400' : 'text-gray-400 hover:text-white',
-        className,
-      )}
-    >
-      <div className={clsx('flex items-center gap-1', className?.includes('text-right') ? 'justify-end' : '')}>
-        {label}
-        {sortBy === field && (
-          <span className="text-brand-400">{sortOrder === 'desc' ? ' ↓' : ' ↑'}</span>
-        )}
-      </div>
-    </th>
-  )
 
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0
 
@@ -156,6 +170,12 @@ export function WC2026TableView({ onSwitchToCards }: Props) {
         </button>
       </div>
 
+      {error && (
+        <div className="mb-4 px-4 py-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">
+          {error}
+        </div>
+      )}
+
       {/* Table */}
       <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
         <div className="overflow-x-auto">
@@ -166,12 +186,12 @@ export function WC2026TableView({ onSwitchToCards }: Props) {
                 <th className="px-3 py-3 text-left text-sm font-medium text-gray-400 hidden sm:table-cell">Nation</th>
                 <th className="px-3 py-3 text-left text-sm font-medium text-gray-400 hidden md:table-cell">Club</th>
                 <th className="px-3 py-3 text-center text-sm font-medium text-gray-400 hidden md:table-cell">Pos</th>
-                <SortTh field="goals" label="Buts" className="text-right hidden sm:table-cell" />
-                <SortTh field="assists" label="PD" className="text-right hidden sm:table-cell" />
-                <SortTh field="xg_per90" label="xG/90" className="text-right hidden sm:table-cell" />
-                <SortTh field="xa_per90" label="xA/90" className="text-right hidden sm:table-cell" />
-                <SortTh field="avg_rating" label="Rating" className="text-right hidden md:table-cell" />
-                <SortTh field="form_xg_5" label="Forme" className="text-right hidden lg:table-cell" />
+                <SortTh field="goals" label="Buts" className="text-right hidden sm:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
+                <SortTh field="assists" label="PD" className="text-right hidden sm:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
+                <SortTh field="xg_per90" label="xG/90" className="text-right hidden sm:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
+                <SortTh field="xa_per90" label="xA/90" className="text-right hidden sm:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
+                <SortTh field="avg_rating" label="Rating" className="text-right hidden md:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
+                <SortTh field="form_xg_5" label="Forme" className="text-right hidden lg:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
               </tr>
             </thead>
             <tbody>
