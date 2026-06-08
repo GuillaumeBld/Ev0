@@ -343,6 +343,21 @@ _TEAM_ALIASES: dict[str, str] = {
     "etats-unis":               "etats unis",
     "republique tcheque":       "tcheque",
     "rep tcheque":              "tcheque",
+
+    # ── Unibet LVS — noms compacts (sans espace, abréviations) ───────────────
+    # Unibet colle certains noms composés sans espace dans le champ desc
+    "irlandedunord":            "irlande du nord",
+    "arabiesaoudite":           "arabie saoudite",
+    "nlle zelande":             "nouvelle zelande",   # "Nlle Zélande" abbreviation
+    "bosnie herzeg":            "bosnie herzegovine", # "Bosnie Herzég." → truncated
+
+    # ── PMU / Kambi — noms anglais supplémentaires ───────────────────────────
+    "jordan":                   "jordanie",
+    "congo dr":                 "rd congo",
+    "dem rep congo":            "rd congo",
+    "democratic republic of congo": "rd congo",
+    "dr congo":                 "rd congo",
+    "cape verde":               "cap vert",
 }
 
 
