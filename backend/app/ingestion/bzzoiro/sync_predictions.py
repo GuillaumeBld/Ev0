@@ -48,9 +48,9 @@ async def sync_predictions(
     count = 0
     for row in rows:
         event = row.get("event") or {}
-        event_api_id = event.get("api_id")
+        event_api_id = event.get("api_id") or event.get("id")
         if event_api_id is None:
-            logger.warning("Prediction row missing event.api_id — skipping: %r", row)
+            logger.warning("Prediction row missing event id — skipping: %r", row)
             continue
 
         if upcoming_event_ids and event_api_id not in upcoming_event_ids:
