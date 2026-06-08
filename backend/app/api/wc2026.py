@@ -170,8 +170,9 @@ agg_stats AS (
             THEN SUM(bss.expected_assists) / SUM(bss.minutes_played) * 90
             ELSE NULL
         END                                                                  AS xa_per90,
-        SUM(bss.avg_rating * bss.matches_played)
-            / NULLIF(SUM(bss.matches_played), 0)                            AS avg_rating,
+        SUM(bss.avg_rating * bss.matches_played) FILTER (WHERE bss.avg_rating IS NOT NULL)
+            / NULLIF(SUM(bss.matches_played) FILTER (WHERE bss.avg_rating IS NOT NULL), 0)
+                                                                     AS avg_rating,
         SUM(bss.saves)                                                       AS saves
     FROM bzz_player_season_stats bss
     WHERE bss.season = '2025-2026'
