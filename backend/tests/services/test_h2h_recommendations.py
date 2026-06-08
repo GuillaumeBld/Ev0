@@ -125,3 +125,86 @@ class TestGenerateH2hRecs:
         assert home_rec is not None
         assert home_rec["best_odds"] == 2.30
         assert home_rec["best_bookmaker"] == "unibet"
+
+
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from app.services.recommendation_service import process_scraped_fixtures
+
+
+class TestProcessScrapedFixturesH2h:
+    """Integration-level test: process_scraped_fixtures creates h2h recs."""
+
+    def _make_fixture(self, fixture_id: int = 42):
+        fx = MagicMock()
+        fx.id = fixture_id
+        fx.home_team = "PSG"
+        fx.away_team = "Lyon"
+        return fx
+
+    def _make_pricing(self, home_xg: float = 1.5, away_xg: float = 1.0):
+        pricing = MagicMock()
+        pricing.home_match_xg = home_xg
+        pricing.away_match_xg = away_xg
+        pricing.xg_source = "market_implied"
+        pricing.home_players = []
+        pricing.away_players = []
+        return pricing
+
+    def _make_h2h_snap(self, bookmaker: str, outcome: str, odds: float):
+        snap = MagicMock(spec=["bookmaker", "market_type", "outcome", "odds"])
+        snap.bookmaker = bookmaker
+        snap.market_type = "h2h"
+        snap.outcome = outcome
+        snap.odds = odds
+        return snap
+
+    @pytest.mark.asyncio
+    async def test_h2h_recs_created_for_value_outcomes(self):
+        fixture = self._make_fixture(42)
+        pricing = self._make_pricing(1.5, 1.0)
+
+        # lh=1.5, la=1.0 → p_home ≈ 0.494 → fair ≈ 2.02 → 2.25 gives edge ~11%
+        h2h_snaps = [
+            self._make_h2h_snap("betclic", "home", 2.25),
+            self._make_h2h_snap("unibet", "draw", 3.40),
+            self._make_h2h_snap("betclic", "away", 3.60),
+        ]
+
+        session = AsyncMock()
+        added_recs: list = []
+        session.add = lambda rec: added_recs.append(rec)
+        session.commit = AsyncMock()
+
+        call_count = 0
+
+        async def fake_execute(stmt):
+            nonlocal call_count
+            call_count += 1
+            mock_res = MagicMock()
+            if call_count == 1:  # SELECT Fixture
+                mock_res.scalars.return_value.all.return_value = [fixture]
+            elif call_count == 2:  # SELECT Recommendation (all_recs)
+                mock_res.scalars.return_value.all.return_value = []
+            elif call_count == 3:  # SELECT AppConfig (pen takers)
+                mock_res.scalars.return_value.all.return_value = []
+            elif call_count == 4:  # SELECT PlayerOddsSnapshot (player pipeline)
+                mock_res.scalars.return_value.all.return_value = []
+            elif call_count == 5:  # SELECT MatchOddsSnapshot (h2h)
+                mock_res.scalars.return_value.all.return_value = h2h_snaps
+            else:
+                mock_res.scalars.return_value.all.return_value = []
+            return mock_res
+
+        session.execute = fake_execute
+
+        with patch(
+            "app.services.recommendation_service.load_match_pricing",
+            new=AsyncMock(return_value=pricing),
+        ):
+            stats = await process_scraped_fixtures([42], session)
+
+        assert stats["created"] >= 1
+        outcomes_created = {r.player_name for r in added_recs if r.market_type == "h2h"}
+        assert "home" in outcomes_created

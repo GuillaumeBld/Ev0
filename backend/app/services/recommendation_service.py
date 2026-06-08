@@ -500,9 +500,6 @@ async def process_scraped_fixtures(
                     "bookmaker": o.bookmaker,
                 }
 
-        if not best_odds_map:
-            continue
-
         seen_value_keys: set[tuple] = set()
 
         for (player_name, market_type), odds_entry in best_odds_map.items():
@@ -634,6 +631,66 @@ async def process_scraped_fixtures(
             if (rec.player_name, rec.market_type) in best_odds_map:
                 rec.status = "expired"
                 stats["expired"] += 1
+
+        # --- H2H recommendations (Poisson / team xG) ---
+        h2h_recs = await _generate_h2h_recs(
+            fixture_id=fixture_orm.id,
+            lh=pricing.home_match_xg,
+            la=pricing.away_match_xg,
+            session=session,
+        )
+        for h2h in h2h_recs:
+            outcome = h2h["outcome"]
+            rec_key = (fixture_orm.id, outcome, "h2h")
+            existing_rec = rec_by_key.get(rec_key)
+            seen_value_keys.add(rec_key)
+
+            if existing_rec is None:
+                new_rec = Recommendation(
+                    fixture_id=fixture_orm.id,
+                    player_name=outcome,
+                    market_type="h2h",
+                    lambda_intensity=h2h["lambda_intensity"],
+                    fair_probability=h2h["fair_prob"],
+                    fair_odds=h2h["fair_odds"],
+                    best_bookmaker=h2h["best_bookmaker"],
+                    best_odds=h2h["best_odds"],
+                    edge=h2h["edge"],
+                    classification=h2h["classification"],
+                    confidence=0.0,
+                    xg_source=pricing.xg_source,
+                    is_pen_taker=False,
+                    explanation={
+                        "model": "poisson_h2h",
+                        "xg_source": pricing.xg_source,
+                        "lambda_home": round(pricing.home_match_xg, 4),
+                        "lambda_away": round(pricing.away_match_xg, 4),
+                        "outcome": outcome,
+                    },
+                    generated_utc=now,
+                    status="pending",
+                )
+                session.add(new_rec)
+                rec_by_key[rec_key] = new_rec
+                stats["created"] += 1
+
+            elif existing_rec.status == "expired":
+                existing_rec.status = "pending"
+                existing_rec.best_odds = h2h["best_odds"]
+                existing_rec.best_bookmaker = h2h["best_bookmaker"]
+                existing_rec.edge = h2h["edge"]
+                existing_rec.generated_utc = now
+                stats["resurrected"] += 1
+
+            else:
+                if (
+                    abs(h2h["best_odds"] - existing_rec.best_odds) > 0.001
+                    or abs(h2h["edge"] - existing_rec.edge) > 0.001
+                ):
+                    existing_rec.best_odds = h2h["best_odds"]
+                    existing_rec.best_bookmaker = h2h["best_bookmaker"]
+                    existing_rec.edge = h2h["edge"]
+                    stats["updated"] += 1
 
     await session.commit()
 
