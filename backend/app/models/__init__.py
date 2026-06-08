@@ -16,6 +16,7 @@ from app.models.player_odds_snapshot import PlayerOddsSnapshot
 from app.models.recommendations import Recommendation
 from app.models.settings import UserSettings
 from app.models.team_xg import TeamXgEstimate
+from app.models.wc2026 import WC2026SquadPlayer
 
 __all__ = [
     "AutopilotDecision",
@@ -35,4 +36,5 @@ __all__ = [
     "TeamLineupPlayer",
     "TeamXgEstimate",
     "UserSettings",
+    "WC2026SquadPlayer",
 ]
