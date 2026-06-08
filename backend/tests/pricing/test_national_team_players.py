@@ -183,3 +183,175 @@ class TestLoadNationalTeamPlayers:
         result = await _load_national_team_players(db, national_team_api_id=9999)
 
         assert result == []
+
+
+class TestInternationalFixtureDetection:
+    """Tests for international league detection and BzzEvent lookup in load_match_pricing."""
+
+    def _make_fixture(
+        self,
+        league: str,
+        external_id: str,
+        home_team: str = "France",
+        away_team: str = "Northern Ireland",
+        home_bzz_team_id: int | None = None,
+        away_bzz_team_id: int | None = None,
+    ):
+        f = MagicMock()
+        f.id = 1110181
+        f.league = league
+        f.external_id = external_id
+        f.home_team = home_team
+        f.away_team = away_team
+        f.home_bzz_team_id = home_bzz_team_id
+        f.away_bzz_team_id = away_bzz_team_id
+        return f
+
+    def _make_bzz_event(self, home_team_api_id: int, away_team_api_id: int):
+        ev = MagicMock()
+        ev.home_team_api_id = home_team_api_id
+        ev.away_team_api_id = away_team_api_id
+        return ev
+
+    @pytest.mark.asyncio
+    async def test_international_league_calls_national_team_loader(self):
+        """When league is friendly_international, _load_national_team_players is called."""
+        fixture = self._make_fixture(
+            league="friendly_international",
+            external_id="bzz_206695",
+        )
+        bzz_event = self._make_bzz_event(home_team_api_id=485, away_team_api_id=1150)
+
+        with (
+            patch(
+                "app.pricing.team_xg._load_national_team_players",
+                new_callable=AsyncMock,
+            ) as mock_nat,
+            patch(
+                "app.pricing.team_xg._load_team_players",
+                new_callable=AsyncMock,
+            ) as mock_club,
+            patch(
+                "app.pricing.team_xg.MarketXgService",
+            ) as mock_svc_cls,
+        ):
+            # MarketXgService.compute returns a valid result to avoid early return
+            mock_market = AsyncMock()
+            mock_market.xg_home = 1.2
+            mock_market.xg_away = 0.9
+            mock_market.xg_source = "market"
+            mock_market.last_snapshot_at = None
+            mock_svc_cls.return_value.compute = AsyncMock(return_value=mock_market)
+
+            mock_nat.return_value = []
+
+            db = AsyncMock()
+            # BzzEvent lookup result
+            bzz_result = MagicMock()
+            bzz_result.scalar_one_or_none.return_value = bzz_event
+            db.execute = AsyncMock(return_value=bzz_result)
+
+            from app.pricing.team_xg import load_match_pricing
+            await load_match_pricing(db, fixture)
+
+            # _load_national_team_players must have been called with the IDs from bzz_event
+            assert mock_nat.call_count == 2
+            call_kwargs = [call.kwargs for call in mock_nat.call_args_list]
+            api_ids_used = {kw["national_team_api_id"] for kw in call_kwargs}
+            assert 485 in api_ids_used
+            assert 1150 in api_ids_used
+
+            # _load_team_players must NOT have been called
+            mock_club.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_club_league_calls_team_players_loader(self):
+        """When league is ligue1, _load_team_players is called (unchanged behaviour)."""
+        fixture = self._make_fixture(
+            league="ligue1",
+            external_id="bzz_999",
+            home_team="PSG",
+            away_team="OM",
+        )
+
+        with (
+            patch(
+                "app.pricing.team_xg._load_national_team_players",
+                new_callable=AsyncMock,
+            ) as mock_nat,
+            patch(
+                "app.pricing.team_xg._load_team_players",
+                new_callable=AsyncMock,
+            ) as mock_club,
+            patch(
+                "app.pricing.team_xg.MarketXgService",
+            ) as mock_svc_cls,
+        ):
+            mock_market = AsyncMock()
+            mock_market.xg_home = 1.5
+            mock_market.xg_away = 1.0
+            mock_market.xg_source = "market"
+            mock_market.last_snapshot_at = None
+            mock_svc_cls.return_value.compute = AsyncMock(return_value=mock_market)
+
+            mock_club.return_value = []
+
+            db = AsyncMock()
+
+            from app.pricing.team_xg import load_match_pricing
+            await load_match_pricing(db, fixture)
+
+            mock_nat.assert_not_called()
+            assert mock_club.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_missing_bzz_event_falls_back_to_team_players(self):
+        """If BzzEvent not found, falls back to _load_team_players with a warning."""
+        fixture = self._make_fixture(
+            league="world_cup_2026",
+            external_id="bzz_999999",
+        )
+
+        with (
+            patch(
+                "app.pricing.team_xg._load_national_team_players",
+                new_callable=AsyncMock,
+            ) as mock_nat,
+            patch(
+                "app.pricing.team_xg._load_team_players",
+                new_callable=AsyncMock,
+            ) as mock_club,
+            patch(
+                "app.pricing.team_xg.MarketXgService",
+            ) as mock_svc_cls,
+        ):
+            mock_market = AsyncMock()
+            mock_market.xg_home = 1.0
+            mock_market.xg_away = 0.8
+            mock_market.xg_source = "market"
+            mock_market.last_snapshot_at = None
+            mock_svc_cls.return_value.compute = AsyncMock(return_value=mock_market)
+
+            mock_club.return_value = []
+
+            db = AsyncMock()
+            # BzzEvent lookup returns None → event not found
+            bzz_result = MagicMock()
+            bzz_result.scalar_one_or_none.return_value = None
+            db.execute = AsyncMock(return_value=bzz_result)
+
+            from app.pricing.team_xg import load_match_pricing
+            await load_match_pricing(db, fixture)
+
+            mock_nat.assert_not_called()
+            assert mock_club.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_all_four_international_leagues_detected(self):
+        """All four INTERNATIONAL_LEAGUES values trigger the national team path."""
+        from app.pricing.team_xg import INTERNATIONAL_LEAGUES
+
+        assert "world_cup_2026" in INTERNATIONAL_LEAGUES
+        assert "friendly_international" in INTERNATIONAL_LEAGUES
+        assert "nations_league_uefa" in INTERNATIONAL_LEAGUES
+        assert "nations_league_concacaf" in INTERNATIONAL_LEAGUES

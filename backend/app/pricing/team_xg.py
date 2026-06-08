@@ -53,6 +53,12 @@ POSITION_XA_PRIORS: dict[str, float] = {
     "FW": 0.10, "MF": 0.15, "DF": 0.03, "GK": 0.00,
 }
 
+INTERNATIONAL_LEAGUES: frozenset[str] = frozenset({
+    "world_cup_2026",
+    "friendly_international",
+    "nations_league_uefa",
+    "nations_league_concacaf",
+})
 
 
 # ── Position normalisation ────────────────────────────────────────
@@ -955,8 +961,35 @@ async def load_match_pricing(
 
     home_bzz_team_id = getattr(fixture, "home_bzz_team_id", None)
     away_bzz_team_id = getattr(fixture, "away_bzz_team_id", None)
-    home_players_db = await _load_team_players(db, home_team, bzz_team_id=home_bzz_team_id)
-    away_players_db = await _load_team_players(db, away_team, bzz_team_id=away_bzz_team_id)
+
+    if fixture.league in INTERNATIONAL_LEAGUES:
+        from app.models.bzzoiro import BzzEvent
+        bzz_api_id_str = (fixture.external_id or "").removeprefix("bzz_")
+        bzz_event = None
+        if bzz_api_id_str.isdigit():
+            ev_res = await db.execute(
+                select(BzzEvent).where(BzzEvent.api_id == int(bzz_api_id_str))
+            )
+            bzz_event = ev_res.scalar_one_or_none()
+
+        if bzz_event is not None and bzz_event.home_team_api_id and bzz_event.away_team_api_id:
+            home_players_db = await _load_national_team_players(
+                db, national_team_api_id=bzz_event.home_team_api_id
+            )
+            away_players_db = await _load_national_team_players(
+                db, national_team_api_id=bzz_event.away_team_api_id
+            )
+        else:
+            logger.warning(
+                "load_match_pricing: international fixture %s (league=%r, external_id=%r) "
+                "— BzzEvent not found or missing team IDs, falling back to _load_team_players",
+                getattr(fixture, "id", "?"), fixture.league, fixture.external_id,
+            )
+            home_players_db = await _load_team_players(db, home_team, bzz_team_id=home_bzz_team_id)
+            away_players_db = await _load_team_players(db, away_team, bzz_team_id=away_bzz_team_id)
+    else:
+        home_players_db = await _load_team_players(db, home_team, bzz_team_id=home_bzz_team_id)
+        away_players_db = await _load_team_players(db, away_team, bzz_team_id=away_bzz_team_id)
 
     if not home_players_db:
         logger.warning(
