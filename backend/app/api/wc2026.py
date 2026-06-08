@@ -223,7 +223,7 @@ LEFT JOIN norm_bzz nb
     ON lower(regexp_replace(unaccent(wsp.player_name), '[^a-z0-9 ]', '', 'g')) = nb.normalized_name
 LEFT JOIN agg_stats agg ON agg.player_api_id = nb.api_id
 LEFT JOIN form_stats fs  ON fs.player_api_id  = nb.api_id
-WHERE (:nation::text IS NULL OR wsp.nation = :nation)
+WHERE (:nation::text IS NULL OR wsp.nation = :nation::text)
   AND (:position = '' OR wsp.position = :position)
   AND (:search = '' OR lower(wsp.player_name) LIKE lower('%' || :search || '%'))
 """
