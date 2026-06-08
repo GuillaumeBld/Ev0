@@ -14,8 +14,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.odds import normalize_selection_name
+from app.models.match_odds import MatchOddsSnapshot
 from app.pricing.goalscorer import calculate_edge
 from app.pricing.team_xg import load_match_pricing
+from app.services.market_xg import p_poisson_away_win, p_poisson_draw, p_poisson_home_win
 from app.strategy.selector import RecommendationFilter, select_bets
 
 logger = logging.getLogger(__name__)
@@ -325,6 +327,80 @@ async def get_recommendations_for_date(
         "recommendations_count": len(recs),
     }
     return recs, metadata
+
+
+FR_H2H_BOOKMAKERS = ["betclic", "unibet", "pmu"]
+
+
+async def _generate_h2h_recs(
+    fixture_id: int,
+    lh: float,
+    la: float,
+    session: AsyncSession,
+) -> list[dict]:
+    """Compute h2h recommendations for a single fixture.
+
+    Returns a list of dicts (one per outcome with edge >= 0), each containing:
+      outcome, fair_prob, fair_odds, lambda_intensity,
+      best_bookmaker, best_odds, edge, classification
+    """
+    p_home = p_poisson_home_win(lh, la)
+    p_draw = p_poisson_draw(lh, la)
+    p_away = p_poisson_away_win(lh, la)
+
+    outcomes = {
+        "home": (p_home, lh),
+        "draw": (p_draw, (lh + la) / 2),
+        "away": (p_away, la),
+    }
+
+    snap_result = await session.execute(
+        select(MatchOddsSnapshot).where(
+            MatchOddsSnapshot.fixture_id == fixture_id,
+            MatchOddsSnapshot.market_type == "h2h",
+            MatchOddsSnapshot.bookmaker.in_(FR_H2H_BOOKMAKERS),
+        )
+    )
+    snapshots = list(snap_result.scalars().all())
+
+    best_by_outcome: dict[str, dict] = {}
+    for snap in snapshots:
+        existing = best_by_outcome.get(snap.outcome)
+        if existing is None or snap.odds > existing["odds"]:
+            best_by_outcome[snap.outcome] = {
+                "bookmaker": snap.bookmaker,
+                "odds": snap.odds,
+            }
+
+    recs: list[dict] = []
+    for outcome, (fair_prob, lambda_intensity) in outcomes.items():
+        if fair_prob <= 0:
+            continue
+        if outcome not in best_by_outcome:
+            continue
+
+        fair_odds = 1.0 / fair_prob
+        market_entry = best_by_outcome[outcome]
+        market_odds = market_entry["odds"]
+        edge = calculate_edge(fair_odds, market_odds)
+
+        if edge < 0:
+            continue
+
+        classification = "VALUE" if edge >= 0.05 else "NO_VALUE"
+
+        recs.append({
+            "outcome": outcome,
+            "fair_prob": round(fair_prob, 4),
+            "fair_odds": round(fair_odds, 4),
+            "lambda_intensity": round(lambda_intensity, 4),
+            "best_bookmaker": market_entry["bookmaker"],
+            "best_odds": market_odds,
+            "edge": round(edge, 4),
+            "classification": classification,
+        })
+
+    return recs
 
 
 async def process_scraped_fixtures(
