@@ -5,6 +5,7 @@ import unicodedata
 from unittest.mock import MagicMock
 
 from app.api.wc2026 import (
+    _WC_SORT_FIELD_MAP,
     _build_squad_response,
     _group_by_position,
     _normalize_name,
@@ -154,9 +155,6 @@ def test_row_to_player_dict_gk_saves():
     d = _row_to_player_dict(row)
     assert d["saves"] == 89
     assert d["position"] == "GK"
-
-
-from app.api.wc2026 import _WC_SORT_FIELD_MAP
 
 
 def test_wc_sort_field_map_has_expected_keys():
