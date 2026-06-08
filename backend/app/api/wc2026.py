@@ -224,8 +224,8 @@ LEFT JOIN norm_bzz nb
 LEFT JOIN agg_stats agg ON agg.player_api_id = nb.api_id
 LEFT JOIN form_stats fs  ON fs.player_api_id  = nb.api_id
 WHERE (:nation::text IS NULL OR wsp.nation = :nation::text)
-  AND (:position = '' OR wsp.position = :position)
-  AND (:search = '' OR lower(wsp.player_name) LIKE lower('%' || :search || '%'))
+  AND (:position::text = '' OR wsp.position = :position::text)
+  AND (:search::text = '' OR lower(wsp.player_name) LIKE lower('%' || :search::text || '%'))
 """
 
 _SQUAD_SQL = text(_WC_CTE + """
