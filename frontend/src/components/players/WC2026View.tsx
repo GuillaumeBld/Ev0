@@ -10,6 +10,7 @@ interface Props {
   squad: WCSquad | null
   loading: boolean
   onSelectNation: (nation: string) => void
+  onSwitchToTable?: () => void
 }
 
 function fmt(v: number | null, decimals = 1): string | null {
@@ -80,7 +81,7 @@ function PositionSection({ emoji, label, players }: { emoji: string; label: stri
   )
 }
 
-export function WC2026View({ nations, selectedNation, squad, loading, onSelectNation }: Props) {
+export function WC2026View({ nations, selectedNation, squad, loading, onSelectNation, onSwitchToTable }: Props) {
   const grouped = useMemo(() => {
     const map: Record<string, WCNation[]> = {}
     for (const n of nations) {
@@ -93,67 +94,79 @@ export function WC2026View({ nations, selectedNation, squad, loading, onSelectNa
   const groups = useMemo(() => Object.keys(grouped).sort(), [grouped])
 
   return (
-    <div className="flex gap-0 border border-gray-700 rounded-xl overflow-hidden min-h-[500px]">
-      {/* Sidebar */}
-      <div className="w-44 shrink-0 border-r border-gray-700 overflow-y-auto bg-gray-900">
-        {groups.map((letter) => (
-          <div key={letter}>
-            <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-500 bg-gray-800/60">
-              Groupe {letter}
-            </div>
-            {grouped[letter].map((n) => (
-              <button
-                key={n.nation}
-                onClick={() => onSelectNation(n.nation)}
-                className={clsx(
-                  'w-full text-left px-3 py-2 text-sm flex items-center gap-2 transition-colors border-l-2',
-                  selectedNation === n.nation
-                    ? 'bg-brand-600/20 border-brand-500 text-white'
-                    : 'border-transparent text-gray-400 hover:bg-gray-800 hover:text-white'
-                )}
-              >
-                <span>{n.flag_emoji ?? '🌍'}</span>
-                <span className="truncate">{n.nation}</span>
-              </button>
-            ))}
-          </div>
-        ))}
-      </div>
-
-      {/* Main panel */}
-      <div className="flex-1 p-5 overflow-y-auto bg-gray-900/50">
-        {!selectedNation && (
-          <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-            Sélectionne une nation
-          </div>
-        )}
-        {selectedNation && loading && (
-          <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-            Chargement…
-          </div>
-        )}
-        {selectedNation && !loading && squad && (
-          <>
-            <div className="flex items-center gap-2 mb-5">
-              <span className="text-2xl">{squad.flag_emoji ?? '🌍'}</span>
-              <div>
-                <h2 className="text-white font-bold text-lg leading-tight">{squad.nation}</h2>
-                <span className="text-gray-400 text-xs">
-                  Groupe {squad.group_letter} · {squad.gk.length + squad.def_.length + squad.mid.length + squad.fwd.length} joueurs
-                </span>
+    <div>
+      {onSwitchToTable && (
+        <div className="flex justify-end mb-3">
+          <button
+            onClick={onSwitchToTable}
+            className="px-3 py-2 rounded-lg text-sm font-medium border border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-500 hover:text-white transition-colors"
+          >
+            ▦ Tableau
+          </button>
+        </div>
+      )}
+      <div className="flex gap-0 border border-gray-700 rounded-xl overflow-hidden min-h-[500px]">
+        {/* Sidebar */}
+        <div className="w-44 shrink-0 border-r border-gray-700 overflow-y-auto bg-gray-900">
+          {groups.map((letter) => (
+            <div key={letter}>
+              <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-gray-500 bg-gray-800/60">
+                Groupe {letter}
               </div>
+              {grouped[letter].map((n) => (
+                <button
+                  key={n.nation}
+                  onClick={() => onSelectNation(n.nation)}
+                  className={clsx(
+                    'w-full text-left px-3 py-2 text-sm flex items-center gap-2 transition-colors border-l-2',
+                    selectedNation === n.nation
+                      ? 'bg-brand-600/20 border-brand-500 text-white'
+                      : 'border-transparent text-gray-400 hover:bg-gray-800 hover:text-white'
+                  )}
+                >
+                  <span>{n.flag_emoji ?? '🌍'}</span>
+                  <span className="truncate">{n.nation}</span>
+                </button>
+              ))}
             </div>
-            <PositionSection emoji="🧤" label="Gardiens" players={squad.gk} />
-            <PositionSection emoji="🛡" label="Défenseurs" players={squad.def_} />
-            <PositionSection emoji="⚙" label="Milieux" players={squad.mid} />
-            <PositionSection emoji="⚽" label="Attaquants" players={squad.fwd} />
-          </>
-        )}
-        {selectedNation && !loading && !squad && (
-          <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-            Données non disponibles pour cette nation
-          </div>
-        )}
+          ))}
+        </div>
+
+        {/* Main panel */}
+        <div className="flex-1 p-5 overflow-y-auto bg-gray-900/50">
+          {!selectedNation && (
+            <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+              Sélectionne une nation
+            </div>
+          )}
+          {selectedNation && loading && (
+            <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+              Chargement…
+            </div>
+          )}
+          {selectedNation && !loading && squad && (
+            <>
+              <div className="flex items-center gap-2 mb-5">
+                <span className="text-2xl">{squad.flag_emoji ?? '🌍'}</span>
+                <div>
+                  <h2 className="text-white font-bold text-lg leading-tight">{squad.nation}</h2>
+                  <span className="text-gray-400 text-xs">
+                    Groupe {squad.group_letter} · {squad.gk.length + squad.def_.length + squad.mid.length + squad.fwd.length} joueurs
+                  </span>
+                </div>
+              </div>
+              <PositionSection emoji="🧤" label="Gardiens" players={squad.gk} />
+              <PositionSection emoji="🛡" label="Défenseurs" players={squad.def_} />
+              <PositionSection emoji="⚙" label="Milieux" players={squad.mid} />
+              <PositionSection emoji="⚽" label="Attaquants" players={squad.fwd} />
+            </>
+          )}
+          {selectedNation && !loading && !squad && (
+            <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+              Données non disponibles pour cette nation
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

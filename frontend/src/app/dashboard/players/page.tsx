@@ -312,6 +312,7 @@ export default function PlayersPage() {
             squad={wcSquad}
             loading={wcLoading}
             onSelectNation={(n) => setWcSelectedNation(n)}
+            onSwitchToTable={() => setWcCardMode(false)}
           />
         ) : (
           <WC2026TableView
