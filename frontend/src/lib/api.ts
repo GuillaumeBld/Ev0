@@ -775,3 +775,40 @@ export async function setPenTakers(
   })
   return data
 }
+
+export interface WCNation {
+  nation: string
+  group_letter: string
+  flag_emoji: string | null
+  player_count: number
+}
+
+export interface WCPlayer {
+  player_name: string
+  club: string | null
+  position: string
+  shirt_number: number | null
+  matches_played: number | null
+  minutes_played: number | null
+  goals: number | null
+  assists: number | null
+  xg: number | null
+  xa: number | null
+  xg_per90: number | null
+  xa_per90: number | null
+  avg_rating: number | null
+  saves: number | null
+  form_goals_5: number | null
+  form_xg_5: number | null
+  form_rating_5: number | null
+}
+
+export interface WCSquad {
+  nation: string
+  group_letter: string
+  flag_emoji: string | null
+  gk: WCPlayer[]
+  def_: WCPlayer[]
+  mid: WCPlayer[]
+  fwd: WCPlayer[]
+}
