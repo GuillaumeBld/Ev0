@@ -25,6 +25,8 @@ def _normalize_name(name: str) -> str:
 def _row_to_player_dict(row: dict) -> dict:
     return {
         "player_name": row["player_name"],
+        "nation": row.get("nation"),
+        "group_letter": row.get("group_letter"),
         "club": row["club"],
         "position": row["position"],
         "shirt_number": row["shirt_number"],
@@ -46,6 +48,8 @@ def _row_to_player_dict(row: dict) -> dict:
 
 class WCPlayerOut(BaseModel):
     player_name: str
+    nation: str | None = None
+    group_letter: str | None = None
     club: str | None
     position: str
     shirt_number: int | None
@@ -62,6 +66,13 @@ class WCPlayerOut(BaseModel):
     form_goals_5: int | None = None
     form_xg_5: float | None = None
     form_rating_5: float | None = None
+
+
+class WCPlayersPageOut(BaseModel):
+    players: list[WCPlayerOut]
+    total: int
+    page: int
+    page_size: int
 
 
 class WCNationOut(BaseModel):
@@ -143,7 +154,23 @@ async def get_nations(session: AsyncSession = Depends(get_db)) -> list[WCNationO
     ]
 
 
-_SQUAD_SQL = text("""
+_WC_SORT_FIELD_MAP: dict[str, str] = {
+    "goals": "agg.goals",
+    "assists": "agg.assists",
+    "xg": "agg.xg",
+    "xa": "agg.xa",
+    "xg_per90": "agg.xg_per90",
+    "xa_per90": "agg.xa_per90",
+    "avg_rating": "agg.avg_rating",
+    "matches_played": "agg.matches_played",
+    "minutes_played": "agg.minutes_played",
+    "saves": "agg.saves",
+    "form_xg_5": "fs.form_xg_5",
+    "form_goals_5": "fs.form_goals_5",
+    "form_rating_5": "fs.form_rating_5",
+}
+
+_WC_CTE = """
 WITH norm_bzz AS (
     SELECT DISTINCT ON (lower(regexp_replace(unaccent(name), '[^a-z0-9 ]', '', 'g')))
         api_id,
@@ -172,7 +199,7 @@ agg_stats AS (
         END                                                                  AS xa_per90,
         SUM(bss.avg_rating * bss.matches_played) FILTER (WHERE bss.avg_rating IS NOT NULL)
             / NULLIF(SUM(bss.matches_played) FILTER (WHERE bss.avg_rating IS NOT NULL), 0)
-                                                                     AS avg_rating,
+                                                                             AS avg_rating,
         SUM(bss.saves)                                                       AS saves
     FROM bzz_player_season_stats bss
     WHERE bss.season = '2025-2026'
@@ -188,6 +215,20 @@ form_stats AS (
     WHERE bss.season = '2025-2026'
     ORDER BY bss.player_api_id, bss.minutes_played DESC NULLS LAST
 )
+"""
+
+_WC_PLAYERS_BODY = """
+FROM wc2026_squad_players wsp
+LEFT JOIN norm_bzz nb
+    ON lower(regexp_replace(unaccent(wsp.player_name), '[^a-z0-9 ]', '', 'g')) = nb.normalized_name
+LEFT JOIN agg_stats agg ON agg.player_api_id = nb.api_id
+LEFT JOIN form_stats fs  ON fs.player_api_id  = nb.api_id
+WHERE (:nation IS NULL OR wsp.nation = :nation)
+  AND (:position = '' OR wsp.position = :position)
+  AND (:search = '' OR lower(wsp.player_name) LIKE lower('%' || :search || '%'))
+"""
+
+_SQUAD_SQL = text(_WC_CTE + """
 SELECT
     wsp.player_name,
     wsp.club,
@@ -247,4 +288,71 @@ async def get_squad(
         def_=grouped["def_"],
         mid=grouped["mid"],
         fwd=grouped["fwd"],
+    )
+
+
+@router.get("/players", response_model=WCPlayersPageOut)
+async def list_wc_players(
+    nation: str | None = Query(None),
+    position: str = Query(""),
+    search: str = Query(""),
+    sort_by: str = Query("xg_per90"),
+    sort_order: str = Query("desc"),
+    page: int = Query(1, ge=1),
+    session: AsyncSession = Depends(get_db),
+) -> WCPlayersPageOut:
+    """List all WC2026 players with optional filters and pagination."""
+    sort_col = _WC_SORT_FIELD_MAP.get(sort_by, "agg.xg_per90")
+    order_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
+    page_size = 50
+
+    params: dict[str, Any] = {
+        "nation": nation,
+        "position": position,
+        "search": search,
+    }
+
+    count_result = await session.execute(
+        text(_WC_CTE + "SELECT COUNT(*) " + _WC_PLAYERS_BODY),
+        params,
+    )
+    total: int = count_result.scalar_one()
+
+    data_result = await session.execute(
+        text(f"""
+        {_WC_CTE}
+        SELECT
+            wsp.player_name,
+            wsp.nation,
+            wsp.group_letter,
+            wsp.flag_emoji,
+            wsp.club,
+            wsp.position,
+            wsp.shirt_number,
+            agg.matches_played,
+            agg.minutes_played,
+            agg.goals,
+            agg.assists,
+            agg.xg,
+            agg.xa,
+            agg.xg_per90,
+            agg.xa_per90,
+            agg.avg_rating,
+            agg.saves,
+            fs.form_goals_5,
+            fs.form_xg_5,
+            fs.form_rating_5
+        {_WC_PLAYERS_BODY}
+        ORDER BY {sort_col} {order_dir} NULLS LAST, wsp.player_name ASC
+        LIMIT :page_size OFFSET :offset
+        """),
+        {**params, "page_size": page_size, "offset": (page - 1) * page_size},
+    )
+    rows = data_result.mappings().all()
+
+    return WCPlayersPageOut(
+        players=[WCPlayerOut(**_row_to_player_dict(dict(r))) for r in rows],
+        total=total,
+        page=page,
+        page_size=page_size,
     )

@@ -154,3 +154,48 @@ def test_row_to_player_dict_gk_saves():
     d = _row_to_player_dict(row)
     assert d["saves"] == 89
     assert d["position"] == "GK"
+
+
+from app.api.wc2026 import _WC_SORT_FIELD_MAP
+
+
+def test_wc_sort_field_map_has_expected_keys():
+    expected = {
+        "goals", "assists", "xg", "xa", "xg_per90", "xa_per90",
+        "avg_rating", "matches_played", "minutes_played", "saves",
+        "form_xg_5", "form_goals_5", "form_rating_5",
+    }
+    assert expected.issubset(set(_WC_SORT_FIELD_MAP.keys()))
+
+
+def test_wc_sort_field_map_values_are_safe_sql():
+    for key, val in _WC_SORT_FIELD_MAP.items():
+        assert " " not in val, f"Unsafe value for key {key!r}: {val!r}"
+        assert ";" not in val, f"SQL injection risk for key {key!r}: {val!r}"
+
+
+def test_row_to_player_dict_includes_nation_when_present():
+    row = {
+        "player_name": "Mbappé", "club": "Real Madrid", "position": "FWD",
+        "shirt_number": 10, "nation": "France", "group_letter": "E",
+        "matches_played": 30, "minutes_played": 2500, "goals": 25,
+        "assists": 8, "xg": 22.5, "xa": 6.1, "xg_per90": 0.81,
+        "xa_per90": 0.22, "avg_rating": 7.4, "saves": None,
+        "form_goals_5": 3, "form_xg_5": 2.1, "form_rating_5": 7.8,
+    }
+    d = _row_to_player_dict(row)
+    assert d["nation"] == "France"
+    assert d["group_letter"] == "E"
+
+
+def test_row_to_player_dict_nation_defaults_none_when_absent():
+    row = {
+        "player_name": "Mbappé", "club": "Real Madrid", "position": "FWD",
+        "shirt_number": 10, "matches_played": None, "minutes_played": None,
+        "goals": None, "assists": None, "xg": None, "xa": None,
+        "xg_per90": None, "xa_per90": None, "avg_rating": None, "saves": None,
+        "form_goals_5": None, "form_xg_5": None, "form_rating_5": None,
+    }
+    d = _row_to_player_dict(row)
+    assert d["nation"] is None
+    assert d["group_letter"] is None
