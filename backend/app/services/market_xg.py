@@ -236,6 +236,26 @@ def _p_poisson_draw(lh: float, la: float, max_goals: int = 10) -> float:
     return float(sum(_poisson_dist.pmf(k, lh) * _poisson_dist.pmf(k, la) for k in range(max_goals + 1)))
 
 
+# ---------------------------------------------------------------------------
+# Public aliases for external callers (h2h recommendation pipeline)
+# ---------------------------------------------------------------------------
+
+
+def p_poisson_home_win(lh: float, la: float, max_goals: int = 10) -> float:
+    """P(Home > Away) under independent Poisson(lh) vs Poisson(la)."""
+    return _p_poisson_home_win(lh, la, max_goals)
+
+
+def p_poisson_draw(lh: float, la: float, max_goals: int = 10) -> float:
+    """P(Home == Away) under independent Poisson(lh) vs Poisson(la)."""
+    return _p_poisson_draw(lh, la, max_goals)
+
+
+def p_poisson_away_win(lh: float, la: float, max_goals: int = 10) -> float:
+    """P(Away > Home) = 1 - P(home win) - P(draw)."""
+    return 1.0 - _p_poisson_home_win(lh, la, max_goals) - _p_poisson_draw(lh, la, max_goals)
+
+
 def _p_poisson_over_2_5(lt: float) -> float:
     """P(Total > 2.5) = 1 - e^{-lt}(1 + lt + lt^2/2)."""
     return 1.0 - math.exp(-lt) * (1.0 + lt + lt ** 2 / 2.0)
