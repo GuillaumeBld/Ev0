@@ -1,8 +1,15 @@
 """Tests for /wc2026 API endpoints."""
 
+import re
+import unicodedata
 from unittest.mock import MagicMock
 
-from app.api.wc2026 import _build_squad_response, _group_by_position
+from app.api.wc2026 import (
+    _build_squad_response,
+    _group_by_position,
+    _normalize_name,
+    _row_to_player_dict,
+)
 
 
 def _make_player(
@@ -59,12 +66,6 @@ def test_build_squad_response_structure():
     assert resp["gk"][0]["player_name"] == "Maignan"
     assert resp["gk"][0]["club"] == "Real Madrid"
     assert resp["gk"][0]["shirt_number"] == 10
-
-
-import re
-import unicodedata
-
-from app.api.wc2026 import _normalize_name, _row_to_player_dict
 
 
 def test_normalize_name_accents():
