@@ -7,6 +7,7 @@ import { clsx } from 'clsx'
 import { PlayerSummary, BzzTeam, WCNation, WCSquad } from '@/lib/api'
 import { getTeamId } from '@/lib/teamLogos'
 import { WC2026View } from '@/components/players/WC2026View'
+import { WC2026TableView } from '@/components/players/WC2026TableView'
 
 type SortField =
   | 'name' | 'team' | 'goals' | 'goal_assist' | 'xg_per_90' | 'xa_per_90'
@@ -85,6 +86,7 @@ export default function PlayersPage() {
   const [wcSelectedNation, setWcSelectedNation] = useState<string | null>(null)
   const [wcSquad, setWcSquad] = useState<WCSquad | null>(null)
   const [wcLoading, setWcLoading] = useState(false)
+  const [wcCardMode, setWcCardMode] = useState(false)
 
   // Keep URL in sync with filter state so browser back restores exactly this view
   useEffect(() => {
@@ -290,7 +292,7 @@ export default function PlayersPage() {
           </button>
         ))}
         <button
-          onClick={() => setMode(mode === 'cdm2026' ? 'leagues' : 'cdm2026')}
+          onClick={() => { setMode('cdm2026'); setWcCardMode(false) }}
           className={clsx(
             'px-3 py-1.5 rounded-full text-sm font-medium transition-colors border flex items-center gap-1.5',
             mode === 'cdm2026'
@@ -303,13 +305,22 @@ export default function PlayersPage() {
       </div>
 
       {mode === 'cdm2026' ? (
-        <WC2026View
-          nations={wcNations}
-          selectedNation={wcSelectedNation}
-          squad={wcSquad}
-          loading={wcLoading}
-          onSelectNation={(n) => setWcSelectedNation(n)}
-        />
+        wcCardMode ? (
+          <WC2026View
+            nations={wcNations}
+            selectedNation={wcSelectedNation}
+            squad={wcSquad}
+            loading={wcLoading}
+            onSelectNation={(n) => setWcSelectedNation(n)}
+          />
+        ) : (
+          <WC2026TableView
+            onSwitchToCards={(nation) => {
+              setWcCardMode(true)
+              if (nation) setWcSelectedNation(nation)
+            }}
+          />
+        )
       ) : (
         <>
           {/* Ligne 2 — Recherche, équipes, position */}
