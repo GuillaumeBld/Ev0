@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func as sa_func, select
+from sqlalchemy import func as sa_func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -49,6 +49,19 @@ class WCPlayerOut(BaseModel):
     club: str | None
     position: str
     shirt_number: int | None
+    matches_played: int | None = None
+    minutes_played: int | None = None
+    goals: int | None = None
+    assists: int | None = None
+    xg: float | None = None
+    xa: float | None = None
+    xg_per90: float | None = None
+    xa_per90: float | None = None
+    avg_rating: float | None = None
+    saves: int | None = None
+    form_goals_5: int | None = None
+    form_xg_5: float | None = None
+    form_rating_5: float | None = None
 
 
 class WCNationOut(BaseModel):
@@ -130,28 +143,107 @@ async def get_nations(session: AsyncSession = Depends(get_db)) -> list[WCNationO
     ]
 
 
+_SQUAD_SQL = text("""
+WITH norm_bzz AS (
+    SELECT DISTINCT ON (lower(regexp_replace(unaccent(name), '[^a-z0-9 ]', '', 'g')))
+        api_id,
+        lower(regexp_replace(unaccent(name), '[^a-z0-9 ]', '', 'g')) AS normalized_name
+    FROM bzz_players
+    ORDER BY lower(regexp_replace(unaccent(name), '[^a-z0-9 ]', '', 'g')), api_id ASC
+),
+agg_stats AS (
+    SELECT
+        bss.player_api_id,
+        SUM(bss.matches_played)                                              AS matches_played,
+        SUM(bss.minutes_played)                                              AS minutes_played,
+        SUM(bss.goals)                                                       AS goals,
+        SUM(bss.goal_assist)                                                 AS assists,
+        SUM(bss.expected_goals)                                              AS xg,
+        SUM(bss.expected_assists)                                            AS xa,
+        CASE
+            WHEN SUM(bss.minutes_played) > 0
+            THEN SUM(bss.expected_goals) / SUM(bss.minutes_played) * 90
+            ELSE NULL
+        END                                                                  AS xg_per90,
+        CASE
+            WHEN SUM(bss.minutes_played) > 0
+            THEN SUM(bss.expected_assists) / SUM(bss.minutes_played) * 90
+            ELSE NULL
+        END                                                                  AS xa_per90,
+        SUM(bss.avg_rating * bss.matches_played)
+            / NULLIF(SUM(bss.matches_played), 0)                            AS avg_rating,
+        SUM(bss.saves)                                                       AS saves
+    FROM bzz_player_season_stats bss
+    WHERE bss.season = '2025-2026'
+    GROUP BY bss.player_api_id
+),
+form_stats AS (
+    SELECT DISTINCT ON (bss.player_api_id)
+        bss.player_api_id,
+        bss.form_goals_5,
+        bss.form_xg_5,
+        bss.form_rating_5
+    FROM bzz_player_season_stats bss
+    WHERE bss.season = '2025-2026'
+    ORDER BY bss.player_api_id, bss.minutes_played DESC NULLS LAST
+)
+SELECT
+    wsp.player_name,
+    wsp.club,
+    wsp.position,
+    wsp.shirt_number,
+    wsp.flag_emoji,
+    wsp.nation,
+    wsp.group_letter,
+    agg.matches_played,
+    agg.minutes_played,
+    agg.goals,
+    agg.assists,
+    agg.xg,
+    agg.xa,
+    agg.xg_per90,
+    agg.xa_per90,
+    agg.avg_rating,
+    agg.saves,
+    fs.form_goals_5,
+    fs.form_xg_5,
+    fs.form_rating_5
+FROM wc2026_squad_players wsp
+LEFT JOIN norm_bzz nb
+    ON lower(regexp_replace(unaccent(wsp.player_name), '[^a-z0-9 ]', '', 'g')) = nb.normalized_name
+LEFT JOIN agg_stats agg ON agg.player_api_id = nb.api_id
+LEFT JOIN form_stats fs  ON fs.player_api_id  = nb.api_id
+WHERE wsp.nation = :nation
+ORDER BY wsp.shirt_number
+""")
+
+
 @router.get("/squads", response_model=WCSquadOut)
 async def get_squad(
     nation: str = Query(..., description="Nation name (French), e.g. 'France'"),
     session: AsyncSession = Depends(get_db),
 ) -> WCSquadOut:
-    """Return squad grouped by position for a given nation."""
-    rows = await session.execute(
-        select(WC2026SquadPlayer)
-        .where(WC2026SquadPlayer.nation == nation)
-        .order_by(WC2026SquadPlayer.shirt_number)
-    )
-    players = list(rows.scalars().all())
-    if not players:
+    """Return squad grouped by position for a given nation, enriched with club stats."""
+    result = await session.execute(_SQUAD_SQL, {"nation": nation})
+    rows = result.mappings().all()
+    if not rows:
         raise HTTPException(status_code=404, detail=f"Nation '{nation}' not found")
 
-    data = _build_squad_response(nation, players[0].group_letter, players)
+    grouped: dict[str, list[WCPlayerOut]] = {"gk": [], "def_": [], "mid": [], "fwd": []}
+    pos_map = {"GK": "gk", "DEF": "def_", "MID": "mid", "FWD": "fwd"}
+    flag = rows[0]["flag_emoji"]
+    group_letter = rows[0]["group_letter"]
+
+    for row in rows:
+        key = pos_map.get(row["position"], "mid")
+        grouped[key].append(WCPlayerOut(**_row_to_player_dict(dict(row))))
+
     return WCSquadOut(
-        nation=data["nation"],
-        group_letter=data["group_letter"],
-        flag_emoji=data["flag_emoji"],
-        gk=[WCPlayerOut(**p) for p in data["gk"]],
-        def_=[WCPlayerOut(**p) for p in data["def_"]],
-        mid=[WCPlayerOut(**p) for p in data["mid"]],
-        fwd=[WCPlayerOut(**p) for p in data["fwd"]],
+        nation=nation,
+        group_letter=group_letter,
+        flag_emoji=flag,
+        gk=grouped["gk"],
+        def_=grouped["def_"],
+        mid=grouped["mid"],
+        fwd=grouped["fwd"],
     )
