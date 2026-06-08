@@ -217,16 +217,42 @@ form_stats AS (
 )
 """
 
-_WC_PLAYERS_BODY = """
+_WC_PLAYERS_FROM = """
 FROM wc2026_squad_players wsp
 LEFT JOIN norm_bzz nb
     ON lower(regexp_replace(unaccent(wsp.player_name), '[^a-z0-9 ]', '', 'g')) = nb.normalized_name
 LEFT JOIN agg_stats agg ON agg.player_api_id = nb.api_id
 LEFT JOIN form_stats fs  ON fs.player_api_id  = nb.api_id
-WHERE (:nation::text IS NULL OR wsp.nation = :nation::text)
-  AND (:position::text = '' OR wsp.position = :position::text)
-  AND (:search::text = '' OR lower(wsp.player_name) LIKE lower('%' || :search::text || '%'))
 """
+
+
+def _build_where(
+    nation: str | None,
+    position: str,
+    search: str,
+) -> tuple[str, dict[str, Any]]:
+    """Return (WHERE clause SQL, params dict) for the players query.
+
+    Named params are limited to non-null text values so asyncpg can always
+    infer their types without explicit casts.
+    """
+    conditions: list[str] = []
+    params: dict[str, Any] = {}
+
+    if nation is not None:
+        conditions.append("wsp.nation = :nation")
+        params["nation"] = nation
+
+    if position:
+        conditions.append("wsp.position = :position")
+        params["position"] = position
+
+    if search:
+        conditions.append("lower(wsp.player_name) LIKE lower('%' || :search || '%')")
+        params["search"] = search
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    return where, params
 
 _SQUAD_SQL = text(_WC_CTE + """
 SELECT
@@ -306,14 +332,10 @@ async def list_wc_players(
     order_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
     page_size = 50
 
-    params: dict[str, Any] = {
-        "nation": nation,
-        "position": position,
-        "search": search,
-    }
+    where, params = _build_where(nation, position, search)
 
     count_result = await session.execute(
-        text(_WC_CTE + "SELECT COUNT(*) " + _WC_PLAYERS_BODY),
+        text(_WC_CTE + "SELECT COUNT(*) " + _WC_PLAYERS_FROM + where),
         params,
     )
     total: int = count_result.scalar_one()
@@ -342,7 +364,8 @@ async def list_wc_players(
             fs.form_goals_5,
             fs.form_xg_5,
             fs.form_rating_5
-        {_WC_PLAYERS_BODY}
+        {_WC_PLAYERS_FROM}
+        {where}
         ORDER BY {sort_col} {order_dir} NULLS LAST, wsp.player_name ASC
         LIMIT :page_size OFFSET :offset
         """),
