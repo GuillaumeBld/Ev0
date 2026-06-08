@@ -785,6 +785,8 @@ export interface WCNation {
 
 export interface WCPlayer {
   player_name: string
+  nation: string | null
+  group_letter: string | null
   club: string | null
   position: string
   shirt_number: number | null
@@ -801,6 +803,13 @@ export interface WCPlayer {
   form_goals_5: number | null
   form_xg_5: number | null
   form_rating_5: number | null
+}
+
+export interface WCPlayersPage {
+  players: WCPlayer[]
+  total: number
+  page: number
+  page_size: number
 }
 
 export interface WCSquad {
