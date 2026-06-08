@@ -38,15 +38,17 @@ GRPC_COMPETITION_ENDPOINT = (
 # Maps scheduler league key → Betclic competition_id (int).
 # Used by fetch_competition_matches to call GetMatchesByCompetitionWithNotifications.
 BETCLIC_COMPETITION_IDS: dict[str, int] = {
-    "ligue_1":          4,
-    "premier_league":   3,
-    "la_liga":          7,
-    "bundesliga":       5,
-    "serie_a":          6,
-    "champions_league": 8,
-    "europa_league":    3453,
-    "ligue_2":          19,
-    "coupe_de_france":  36,
+    "ligue_1":               4,
+    "premier_league":        3,
+    "la_liga":               7,
+    "bundesliga":            5,
+    "serie_a":               6,
+    "champions_league":      8,
+    "europa_league":         3453,
+    "ligue_2":               19,
+    "coupe_de_france":       36,
+    "friendly_international": 79,
+    "world_cup_2026":        1,
 }
 
 _GRPC_HEADERS = {

@@ -36,12 +36,14 @@ LVS_BASE = "https://www.unibet.fr"
 BOOKMAKER = "unibet"
 
 LVS_NODE_IDS: dict[str, int] = {
-    "ligue_1":          58531576,
-    "premier_league":   58532401,
-    "bundesliga":       58529612,
-    "la_liga":          58532237,
-    "serie_a":          58529754,
-    "champions_league": 58532497,
+    "ligue_1":               58531576,
+    "premier_league":        58532401,
+    "bundesliga":            58529612,
+    "la_liga":               58532237,
+    "serie_a":               58529754,
+    "champions_league":      58532497,
+    "friendly_international": 58541367,
+    "world_cup_2026":        59096156,
 }
 
 # markettypeId → market_type Ev0

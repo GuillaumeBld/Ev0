@@ -46,15 +46,17 @@ _CONCURRENCY = 8
 
 # Kambi group englishName → notre league key
 _KAMBI_LEAGUE_MAP: dict[str, str] = {
-    "Ligue 1":               "ligue_1",
-    "Premier League":        "premier_league",
-    "Bundesliga":            "bundesliga",
-    "1. Bundesliga":         "bundesliga",
-    "La Liga":               "la_liga",
-    "Serie A":               "serie_a",
-    "Serie A TIM":           "serie_a",
-    "Champions League":      "champions_league",
-    "UEFA Champions League": "champions_league",
+    "Ligue 1":                       "ligue_1",
+    "Premier League":                "premier_league",
+    "Bundesliga":                    "bundesliga",
+    "1. Bundesliga":                 "bundesliga",
+    "La Liga":                       "la_liga",
+    "Serie A":                       "serie_a",
+    "Serie A TIM":                   "serie_a",
+    "Champions League":              "champions_league",
+    "UEFA Champions League":         "champions_league",
+    "International Friendly Matches": "friendly_international",
+    "World Cup 2026":                "world_cup_2026",
 }
 
 _HEADERS = {
