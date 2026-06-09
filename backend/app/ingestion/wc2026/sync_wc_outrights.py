@@ -341,3 +341,52 @@ async def scrape_betclic_wc_outrights() -> list[dict]:
 
     logger.info("Betclic outrights WC2026: %d cotes scrappées", len(results))
     return results
+
+
+# ── Storage ───────────────────────────────────────────────────────────────────
+
+
+async def store_wc_outrights(session: AsyncSession, outrights: list[dict]) -> None:
+    """Upsert les outrights dans wc2026_outright_odds.
+
+    Stratégie : INSERT ... ON CONFLICT ... DO UPDATE SET odds = EXCLUDED.odds, scraped_at = now().
+    Utilise raw SQL pour l'upsert PostgreSQL sans charger les objets en mémoire.
+    """
+    if not outrights:
+        return
+
+    await session.execute(
+        text("""
+            INSERT INTO wc2026_outright_odds (nation, player_name, market_type, bookmaker, odds, scraped_at)
+            VALUES (:nation, :player_name, :market_type, :bookmaker, :odds, now())
+            ON CONFLICT (nation, player_name, market_type, bookmaker)
+            DO UPDATE SET odds = EXCLUDED.odds, scraped_at = now()
+        """),
+        outrights,
+    )
+    await session.commit()
+    logger.info("store_wc_outrights: %d lignes upsertées", len(outrights))
+
+
+async def sync_all_wc_outrights(session: AsyncSession) -> int:
+    """Lance les 3 scrapers en parallèle et stocke les résultats.
+
+    Returns: nombre total de cotes upsertées.
+    """
+    import asyncio
+
+    pmu_results, unibet_results, betclic_results = await asyncio.gather(
+        scrape_pmu_wc_outrights(),
+        scrape_unibet_wc_outrights(),
+        scrape_betclic_wc_outrights(),
+    )
+
+    all_results = pmu_results + unibet_results + betclic_results
+    if all_results:
+        await store_wc_outrights(session, all_results)
+
+    logger.info(
+        "sync_all_wc_outrights: pmu=%d unibet=%d betclic=%d total=%d",
+        len(pmu_results), len(unibet_results), len(betclic_results), len(all_results),
+    )
+    return len(all_results)

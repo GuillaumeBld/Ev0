@@ -186,3 +186,46 @@ async def test_scrape_betclic_wc_outrights_empty_on_error():
         mock_client.get.side_effect = Exception("timeout")
         result = await scrape_betclic_wc_outrights()
     assert result == []
+
+
+from app.ingestion.wc2026.sync_wc_outrights import store_wc_outrights, sync_all_wc_outrights
+
+
+@pytest.mark.asyncio
+async def test_store_wc_outrights_upsert():
+    """store_wc_outrights doit appeler session.execute avec upsert."""
+    session = AsyncMock()
+    session.execute = AsyncMock()
+    session.commit = AsyncMock()
+
+    outrights = [
+        {"nation": "France", "player_name": None, "market_type": "winner", "bookmaker": "pmu", "odds": 4.0},
+        {"nation": "Brésil", "player_name": None, "market_type": "winner", "bookmaker": "pmu", "odds": 5.0},
+    ]
+    await store_wc_outrights(session, outrights)
+    assert session.execute.called
+    assert session.commit.called
+
+
+@pytest.mark.asyncio
+async def test_store_wc_outrights_empty():
+    """store_wc_outrights ne crash pas avec une liste vide."""
+    session = AsyncMock()
+    session.execute = AsyncMock()
+    session.commit = AsyncMock()
+    await store_wc_outrights(session, [])
+    session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sync_all_wc_outrights_aggregates():
+    """sync_all_wc_outrights appelle les 3 scrapers et retourne le total."""
+    with (
+        patch("app.ingestion.wc2026.sync_wc_outrights.scrape_pmu_wc_outrights", AsyncMock(return_value=[{"odds": 1}])),
+        patch("app.ingestion.wc2026.sync_wc_outrights.scrape_unibet_wc_outrights", AsyncMock(return_value=[{"odds": 2}])),
+        patch("app.ingestion.wc2026.sync_wc_outrights.scrape_betclic_wc_outrights", AsyncMock(return_value=[{"odds": 3}])),
+        patch("app.ingestion.wc2026.sync_wc_outrights.store_wc_outrights", AsyncMock()),
+    ):
+        session = AsyncMock()
+        total = await sync_all_wc_outrights(session)
+    assert total == 3
