@@ -57,3 +57,23 @@ def test_default_minutes_sub_tactical():
 
 def test_default_minutes_reserve():
     assert default_minutes_for_role("reserve") == 0
+
+
+def test_validate_ok_343():
+    players = [{"line_index": 0}]
+    for li, count in enumerate([3, 4, 3], start=1):
+        for _ in range(count):
+            players.append({"line_index": li})
+    validate_lineup_formation("3-4-3", players)
+
+
+def test_validate_ok_42222():
+    players = [{"line_index": 0}]
+    for li, count in enumerate([4, 2, 2, 2], start=1):
+        for _ in range(count):
+            players.append({"line_index": li})
+    validate_lineup_formation("4-2-2-2", players)
+
+
+def test_default_minutes_unknown_role():
+    assert default_minutes_for_role("unknown_role") == 0

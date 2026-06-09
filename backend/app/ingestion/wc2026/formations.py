@@ -47,9 +47,9 @@ def parse_formation(formation: str) -> list[int]:
 
 
 def validate_lineup_formation(formation: str, players: list[dict]) -> None:
-    """Raise ValueError if outfield starters don't match the formation's total (10).
+    """Raise ValueError if outfield player count doesn't equal 10.
 
-    Only validates is_starter=True players (or all players if is_starter key absent).
+    Counts all players with line_index > 0 (GK is line_index=0 and excluded).
     """
     outfield = [p for p in players if p.get("line_index", 0) > 0]
     if len(outfield) != 10:
