@@ -39,7 +39,7 @@ class WC2026ExpectedLineupPlayer(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    lineup_id: Mapped[int] = mapped_column(ForeignKey("wc2026_expected_lineups.id", ondelete="CASCADE"))
+    lineup_id: Mapped[int] = mapped_column(ForeignKey("wc2026_expected_lineups.id", ondelete="CASCADE"), index=True)
     player_name: Mapped[str] = mapped_column(String(100), nullable=False)
     position: Mapped[str] = mapped_column(String(4), nullable=False)  # GK / DEF / MID / FWD
     # 0=GK row, 1=first outfield line (DEF), 2=next line, etc.
