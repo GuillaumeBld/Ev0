@@ -43,6 +43,17 @@ def _row_to_player_dict(row: dict) -> dict:
         "form_goals_5": row["form_goals_5"],
         "form_xg_5": row["form_xg_5"],
         "form_rating_5": row["form_rating_5"],
+        # ScoutingStats fields
+        "sc_rating": row.get("sc_rating"),
+        "key_passes_p90": row.get("key_passes_p90"),
+        "tackles_p90": row.get("tackles_p90"),
+        "dribbles_p90": row.get("dribbles_p90"),
+        "dribble_success_rate": row.get("dribble_success_rate"),
+        "shots_on_target_p90": row.get("shots_on_target_p90"),
+        "pass_accuracy": row.get("pass_accuracy"),
+        "player_image": row.get("player_image"),
+        "detailed_position": row.get("detailed_position"),
+        "sc_appearances": row.get("sc_appearances"),
     }
 
 
@@ -66,6 +77,17 @@ class WCPlayerOut(BaseModel):
     form_goals_5: int | None = None
     form_xg_5: float | None = None
     form_rating_5: float | None = None
+    # ScoutingStats enrichment
+    sc_rating: float | None = None
+    key_passes_p90: float | None = None
+    tackles_p90: float | None = None
+    dribbles_p90: float | None = None
+    dribble_success_rate: float | None = None
+    shots_on_target_p90: float | None = None
+    pass_accuracy: float | None = None
+    player_image: str | None = None
+    detailed_position: str | None = None
+    sc_appearances: int | None = None
 
 
 class WCPlayersPageOut(BaseModel):
@@ -168,6 +190,13 @@ _WC_SORT_FIELD_MAP: dict[str, str] = {
     "form_xg_5": "fs.form_xg_5",
     "form_goals_5": "fs.form_goals_5",
     "form_rating_5": "fs.form_rating_5",
+    # ScoutingStats sortable fields
+    "sc_rating": "sc.sc_rating",
+    "key_passes_p90": "sc.key_passes_p90",
+    "tackles_p90": "sc.tackles_p90",
+    "dribbles_p90": "sc.dribbles_p90",
+    "shots_on_target_p90": "sc.shots_on_target_p90",
+    "pass_accuracy": "sc.pass_accuracy",
 }
 
 _WC_CTE = """
@@ -217,12 +246,34 @@ form_stats AS (
 )
 """
 
+_WC_SCOUTING_CTE = """,
+scouting AS (
+    SELECT DISTINCT ON (normalized_name)
+        normalized_name,
+        (stats->>'rating')::float            AS sc_rating,
+        (stats->>'key_passes_p90')::float    AS key_passes_p90,
+        (stats->>'tackles_p90')::float       AS tackles_p90,
+        (stats->>'dribbles_p90')::float      AS dribbles_p90,
+        (stats->>'dribble_success_rate')::float AS dribble_success_rate,
+        (stats->>'shots_on_target_p90')::float AS shots_on_target_p90,
+        (stats->>'pass_accuracy')::float     AS pass_accuracy,
+        stats->>'player_image'               AS player_image,
+        stats->>'detailed_position'          AS detailed_position,
+        (stats->>'appearances')::int         AS sc_appearances
+    FROM wc2026_scouting_stats
+    WHERE season = '2025-2026'
+    ORDER BY normalized_name, id ASC
+)
+"""
+
 _WC_PLAYERS_FROM = """
 FROM wc2026_squad_players wsp
 LEFT JOIN norm_bzz nb
     ON lower(regexp_replace(unaccent(wsp.player_name), '[^a-z0-9 ]', '', 'g')) = nb.normalized_name
 LEFT JOIN agg_stats agg ON agg.player_api_id = nb.api_id
 LEFT JOIN form_stats fs  ON fs.player_api_id  = nb.api_id
+LEFT JOIN scouting sc
+    ON sc.normalized_name = lower(regexp_replace(unaccent(wsp.player_name), '[^a-z0-9 ]', '', 'g'))
 """
 
 
@@ -254,7 +305,7 @@ def _build_where(
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     return where, params
 
-_SQUAD_SQL = text(_WC_CTE + """
+_SQUAD_SQL = text(_WC_CTE + _WC_SCOUTING_CTE + """
 SELECT
     wsp.player_name,
     wsp.club,
@@ -275,12 +326,24 @@ SELECT
     agg.saves,
     fs.form_goals_5,
     fs.form_xg_5,
-    fs.form_rating_5
+    fs.form_rating_5,
+    sc.sc_rating,
+    sc.key_passes_p90,
+    sc.tackles_p90,
+    sc.dribbles_p90,
+    sc.dribble_success_rate,
+    sc.shots_on_target_p90,
+    sc.pass_accuracy,
+    sc.player_image,
+    sc.detailed_position,
+    sc.sc_appearances
 FROM wc2026_squad_players wsp
 LEFT JOIN norm_bzz nb
     ON lower(regexp_replace(unaccent(wsp.player_name), '[^a-z0-9 ]', '', 'g')) = nb.normalized_name
 LEFT JOIN agg_stats agg ON agg.player_api_id = nb.api_id
 LEFT JOIN form_stats fs  ON fs.player_api_id  = nb.api_id
+LEFT JOIN scouting sc
+    ON sc.normalized_name = lower(regexp_replace(unaccent(wsp.player_name), '[^a-z0-9 ]', '', 'g'))
 WHERE wsp.nation = :nation
 ORDER BY wsp.shirt_number
 """)
@@ -334,15 +397,17 @@ async def list_wc_players(
 
     where, params = _build_where(nation, position, search)
 
+    full_cte = _WC_CTE + _WC_SCOUTING_CTE
+
     count_result = await session.execute(
-        text(_WC_CTE + "SELECT COUNT(*) " + _WC_PLAYERS_FROM + where),
+        text(full_cte + "SELECT COUNT(*) " + _WC_PLAYERS_FROM + where),
         params,
     )
     total: int = count_result.scalar_one()
 
     data_result = await session.execute(
         text(f"""
-        {_WC_CTE}
+        {full_cte}
         SELECT
             wsp.player_name,
             wsp.nation,
@@ -363,7 +428,17 @@ async def list_wc_players(
             agg.saves,
             fs.form_goals_5,
             fs.form_xg_5,
-            fs.form_rating_5
+            fs.form_rating_5,
+            sc.sc_rating,
+            sc.key_passes_p90,
+            sc.tackles_p90,
+            sc.dribbles_p90,
+            sc.dribble_success_rate,
+            sc.shots_on_target_p90,
+            sc.pass_accuracy,
+            sc.player_image,
+            sc.detailed_position,
+            sc.sc_appearances
         {_WC_PLAYERS_FROM}
         {where}
         ORDER BY {sort_col} {order_dir} NULLS LAST, wsp.player_name ASC

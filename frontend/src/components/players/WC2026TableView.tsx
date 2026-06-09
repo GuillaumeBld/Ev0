@@ -10,6 +10,7 @@ const PAGE_SIZE = 50
 type WCSortField =
   | 'goals' | 'assists' | 'xg_per90' | 'xa_per90' | 'avg_rating'
   | 'matches_played' | 'saves' | 'form_xg_5'
+  | 'sc_rating' | 'key_passes_p90' | 'tackles_p90' | 'shots_on_target_p90'
 
 type WCPosition = '' | 'GK' | 'DEF' | 'MID' | 'FWD'
 
@@ -190,18 +191,21 @@ export function WC2026TableView({ onSwitchToCards }: Props) {
                 <SortTh field="assists" label="PD" className="text-right hidden sm:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
                 <SortTh field="xg_per90" label="xG/90" className="text-right hidden sm:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
                 <SortTh field="xa_per90" label="xA/90" className="text-right hidden sm:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
-                <SortTh field="avg_rating" label="Rating" className="text-right hidden md:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
-                <SortTh field="form_xg_5" label="Forme" className="text-right hidden lg:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
+                <SortTh field="sc_rating" label="Note" className="text-right hidden md:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
+                <SortTh field="key_passes_p90" label="KP/90" className="text-right hidden lg:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
+                <SortTh field="tackles_p90" label="Tck/90" className="text-right hidden lg:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
+                <SortTh field="shots_on_target_p90" label="SOT/90" className="text-right hidden xl:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
+                <SortTh field="form_xg_5" label="Forme" className="text-right hidden xl:table-cell" sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={10} className="text-center py-20 text-gray-500 text-sm">Chargement…</td>
+                  <td colSpan={13} className="text-center py-20 text-gray-500 text-sm">Chargement…</td>
                 </tr>
               ) : !data || data.players.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="text-center py-20 text-gray-500 text-sm">Aucun joueur trouvé</td>
+                  <td colSpan={13} className="text-center py-20 text-gray-500 text-sm">Aucun joueur trouvé</td>
                 </tr>
               ) : (
                 data.players.map((p: WCPlayer, i: number) => (
@@ -210,7 +214,17 @@ export function WC2026TableView({ onSwitchToCards }: Props) {
                     className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors"
                   >
                     <td className="px-4 py-3">
-                      <span className="text-white text-sm font-medium">{p.player_name}</span>
+                      <div className="flex items-center gap-2">
+                        {p.player_image && (
+                          <img
+                            src={p.player_image}
+                            alt=""
+                            className="w-7 h-7 rounded-full object-cover shrink-0 bg-gray-700"
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                          />
+                        )}
+                        <span className="text-white text-sm font-medium">{p.player_name}</span>
+                      </div>
                     </td>
                     <td className="px-3 py-3 hidden sm:table-cell">
                       <span className="text-gray-300 text-sm">{p.nation ?? '—'}</span>
@@ -234,9 +248,18 @@ export function WC2026TableView({ onSwitchToCards }: Props) {
                       {fmtCell(p.xa_per90, 2)}
                     </td>
                     <td className="px-3 py-3 text-right text-sm text-gray-300 hidden md:table-cell">
-                      {fmtCell(p.avg_rating)}
+                      {fmtCell(p.sc_rating)}
                     </td>
                     <td className="px-3 py-3 text-right text-sm text-gray-300 hidden lg:table-cell">
+                      {fmtCell(p.key_passes_p90, 2)}
+                    </td>
+                    <td className="px-3 py-3 text-right text-sm text-gray-300 hidden lg:table-cell">
+                      {fmtCell(p.tackles_p90, 2)}
+                    </td>
+                    <td className="px-3 py-3 text-right text-sm text-gray-300 hidden xl:table-cell">
+                      {fmtCell(p.shots_on_target_p90, 2)}
+                    </td>
+                    <td className="px-3 py-3 text-right text-sm text-gray-300 hidden xl:table-cell">
                       {fmtCell(p.form_xg_5)}
                     </td>
                   </tr>

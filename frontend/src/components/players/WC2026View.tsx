@@ -20,11 +20,24 @@ function fmt(v: number | null, decimals = 1): string | null {
 function PlayerCard({ player }: { player: WCPlayer }) {
   const isGK = player.position === 'GK'
   const hasStats = player.matches_played != null
+  const hasScouting = player.sc_rating != null
 
   return (
     <div className="bg-gray-800 border border-gray-700 rounded-lg p-3 flex flex-col gap-1">
-      <span className="text-white text-sm font-medium leading-tight">{player.player_name}</span>
-      <span className="text-gray-400 text-xs">{player.club ?? '—'}</span>
+      <div className="flex items-center gap-2">
+        {player.player_image && (
+          <img
+            src={player.player_image}
+            alt=""
+            className="w-8 h-8 rounded-full object-cover shrink-0 bg-gray-700"
+            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+          />
+        )}
+        <div className="min-w-0">
+          <div className="text-white text-sm font-medium leading-tight truncate">{player.player_name}</div>
+          <div className="text-gray-400 text-xs truncate">{player.detailed_position ?? player.club ?? '—'}</div>
+        </div>
+      </div>
 
       {hasStats && isGK && (
         <>
@@ -52,6 +65,15 @@ function PlayerCard({ player }: { player: WCPlayer }) {
             {player.avg_rating != null && <span>· ★ {fmt(player.avg_rating)}</span>}
           </div>
         </>
+      )}
+
+      {hasScouting && !isGK && (
+        <div className="text-gray-500 text-xs flex gap-2 flex-wrap border-t border-gray-700/50 pt-1 mt-0.5">
+          {player.key_passes_p90 != null && <span>KP {fmt(player.key_passes_p90, 2)}</span>}
+          {player.tackles_p90 != null && <span>Tck {fmt(player.tackles_p90, 2)}</span>}
+          {player.shots_on_target_p90 != null && <span>SOT {fmt(player.shots_on_target_p90, 2)}</span>}
+          {player.sc_rating != null && <span>⭐ {fmt(player.sc_rating)}</span>}
+        </div>
       )}
 
       {hasStats && player.form_goals_5 != null && (

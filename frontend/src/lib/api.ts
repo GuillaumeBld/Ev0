@@ -803,6 +803,17 @@ export interface WCPlayer {
   form_goals_5: number | null
   form_xg_5: number | null
   form_rating_5: number | null
+  // ScoutingStats enrichment
+  sc_rating: number | null
+  key_passes_p90: number | null
+  tackles_p90: number | null
+  dribbles_p90: number | null
+  dribble_success_rate: number | null
+  shots_on_target_p90: number | null
+  pass_accuracy: number | null
+  player_image: string | null
+  detailed_position: string | null
+  sc_appearances: number | null
 }
 
 export interface WCPlayersPage {
