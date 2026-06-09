@@ -51,6 +51,7 @@ _NATION_META: dict[str, dict[str, str]] = {
     "United States":             {"fr": "États-Unis",           "flag": "🇺🇸"},
     "Portugal":                  {"fr": "Portugal",             "flag": "🇵🇹"},
     "Argentina":                 {"fr": "Argentine",            "flag": "🇦🇷"},
+    "Curaçao":                   {"fr": "Curaçao",              "flag": "🇨🇼"},
     "Ecuador":                   {"fr": "Équateur",             "flag": "🇪🇨"},
     "Egypt":                     {"fr": "Égypte",               "flag": "🇪🇬"},
     "Japan":                     {"fr": "Japon",                "flag": "🇯🇵"},
