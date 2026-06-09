@@ -50,6 +50,12 @@ const navGroups = [
     ],
   },
   {
+    label: 'CDM 2026',
+    items: [
+      { name: 'Compos', href: '/dashboard/wc2026/lineups', icon: ClipboardList },
+    ],
+  },
+  {
     label: 'Système',
     items: [
       { name: 'Autopilot', href: '/dashboard/autopilot', icon: Brain },
