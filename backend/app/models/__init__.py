@@ -17,6 +17,7 @@ from app.models.recommendations import Recommendation
 from app.models.settings import UserSettings
 from app.models.team_xg import TeamXgEstimate
 from app.models.wc2026 import WC2026SquadPlayer
+from app.models.wc2026_lineups import WC2026ExpectedLineup, WC2026ExpectedLineupPlayer  # noqa: F401
 
 __all__ = [
     "AutopilotDecision",
@@ -36,5 +37,7 @@ __all__ = [
     "TeamLineupPlayer",
     "TeamXgEstimate",
     "UserSettings",
+    "WC2026ExpectedLineup",
+    "WC2026ExpectedLineupPlayer",
     "WC2026SquadPlayer",
 ]
