@@ -110,3 +110,79 @@ async def test_scrape_pmu_wc_outrights_parses_winner():
     assert france["market_type"] == "winner"
     assert france["odds"] == pytest.approx(4.0)
     assert france["bookmaker"] == "pmu"
+
+
+from app.ingestion.wc2026.sync_wc_outrights import (
+    scrape_unibet_wc_outrights,
+    scrape_betclic_wc_outrights,
+    _parse_lvs_price,
+)
+
+
+def test_parse_lvs_price_valid():
+    assert _parse_lvs_price("4,50") == pytest.approx(4.5)
+    assert _parse_lvs_price("2") == pytest.approx(2.0)
+
+
+def test_parse_lvs_price_invalid():
+    assert _parse_lvs_price(None) is None
+    assert _parse_lvs_price("null") is None
+    assert _parse_lvs_price("0,90") is None  # < 1.01
+
+
+@pytest.mark.asyncio
+async def test_scrape_unibet_wc_outrights_empty_on_error():
+    with patch("app.ingestion.wc2026.sync_wc_outrights.httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        mock_client.get.side_effect = Exception("timeout")
+        result = await scrape_unibet_wc_outrights()
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_scrape_unibet_wc_outrights_parses_winner():
+    # LVS outright response: flat dict with m{id} market entries and o{id} outcomes
+    fake_token_resp = MagicMock()
+    fake_token_resp.raise_for_status = MagicMock()
+    fake_token_resp.json.return_value = {"hsToken": "test-token"}
+
+    fake_events_resp = MagicMock()
+    fake_events_resp.raise_for_status = MagicMock()
+    fake_events_resp.json.return_value = {
+        "items": {
+            "e1001": {
+                "a": "Vainqueur CDM 2026",
+                "b": "",
+                "start": "2607230000",
+            },
+        }
+    }
+
+    fake_ff_resp = MagicMock()
+    fake_ff_resp.raise_for_status = MagicMock()
+    fake_ff_resp.json.return_value = {
+        "items": {
+            "m1": {"markettypeId": 14, "n": "Vainqueur"},
+            "o1": {"marketId": "m1", "a": "France", "pr": "4,00"},
+            "o2": {"marketId": "m1", "a": "Brésil", "pr": "5,00"},
+        }
+    }
+
+    with patch("app.ingestion.wc2026.sync_wc_outrights.httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        mock_client.get.side_effect = [fake_token_resp, fake_events_resp, fake_ff_resp]
+        result = await scrape_unibet_wc_outrights()
+
+    assert any(r["nation"] == "France" and r["market_type"] == "winner" for r in result)
+
+
+@pytest.mark.asyncio
+async def test_scrape_betclic_wc_outrights_empty_on_error():
+    with patch("app.ingestion.wc2026.sync_wc_outrights.httpx.AsyncClient") as mock_cls:
+        mock_client = AsyncMock()
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        mock_client.get.side_effect = Exception("timeout")
+        result = await scrape_betclic_wc_outrights()
+    assert result == []
