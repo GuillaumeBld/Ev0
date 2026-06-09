@@ -102,8 +102,8 @@ async def scrape_pmu_wc_outrights() -> list[dict]:
     try:
         async with httpx.AsyncClient(headers=_KAMBI_HEADERS, timeout=20.0) as client:
             r = await client.get(url, params=params)
-            await r.raise_for_status()
-            data = await r.json()
+            r.raise_for_status()
+            data = r.json()
     except Exception as exc:
         logger.error("PMU outrights: erreur fetch: %s", exc)
         return []

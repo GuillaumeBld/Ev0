@@ -1,6 +1,6 @@
 # backend/tests/ingestion/test_sync_wc_outrights.py
 """Tests unitaires pour sync_wc_outrights.py."""
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -95,8 +95,8 @@ async def test_scrape_pmu_wc_outrights_parses_winner():
             }
         ]
     }
-    mock_resp = AsyncMock()
-    mock_resp.raise_for_status = AsyncMock()
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
     mock_resp.json.return_value = fake_response
 
     with patch("app.ingestion.wc2026.sync_wc_outrights.httpx.AsyncClient") as mock_cls:
