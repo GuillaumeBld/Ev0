@@ -129,6 +129,7 @@ export function LineupPitchEditor({
       filtered.push({
         player_name: squadPlayer.player_name,
         position: squadPlayer.position,
+        shirt_number: squadPlayer.shirt_number,
         line_index: line,
         slot_index: slot,
         is_starter: true,
@@ -143,6 +144,7 @@ export function LineupPitchEditor({
         {
           player_name: squadPlayer.player_name,
           position: squadPlayer.position,
+          shirt_number: squadPlayer.shirt_number,
           line_index: -1,
           slot_index: prev.filter((p) => !p.is_starter).length,
           is_starter: false,
