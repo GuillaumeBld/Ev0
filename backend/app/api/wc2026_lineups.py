@@ -86,7 +86,7 @@ async def list_nations(session: AsyncSession = Depends(get_db)) -> list[NationSt
             WC2026SquadPlayer.nation,
             WC2026SquadPlayer.group_letter,
             WC2026SquadPlayer.flag_emoji,
-        ).distinct(WC2026SquadPlayer.nation).order_by(
+        ).distinct(WC2026SquadPlayer.group_letter, WC2026SquadPlayer.nation).order_by(
             WC2026SquadPlayer.group_letter, WC2026SquadPlayer.nation
         )
     )
