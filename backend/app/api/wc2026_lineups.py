@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from app.db import get_db
 from app.ingestion.wc2026.formations import FORMATIONS, default_minutes_for_role, parse_formation, validate_lineup_formation
+from app.ingestion.wc2026.sync_rotowire_lineups import seed_from_rotowire
 from app.models.wc2026 import WC2026SquadPlayer
 from app.models.wc2026_lineups import WC2026ExpectedLineup, WC2026ExpectedLineupPlayer
 
@@ -291,3 +292,13 @@ async def upsert_lineup(
             for p in players
         ],
     )
+
+
+@router.post("/sync-rotowire")
+async def sync_rotowire(session: AsyncSession = Depends(get_db)) -> dict:
+    """Scrape Rotowire and pre-populate missing lineups (skips manual lineups)."""
+    statuses = await seed_from_rotowire(session)
+    seeded = sum(1 for s in statuses.values() if s == "seeded")
+    skipped = sum(1 for s in statuses.values() if s == "skipped_manual")
+    no_match = sum(1 for s in statuses.values() if s == "no_match")
+    return {"seeded": seeded, "skipped_manual": skipped, "no_match": no_match, "detail": statuses}
