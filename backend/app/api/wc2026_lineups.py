@@ -10,9 +10,16 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+import unicodedata
+
 from app.db import get_db
 from app.ingestion.wc2026.formations import FORMATIONS, default_minutes_for_role, parse_formation, validate_lineup_formation
 from app.ingestion.wc2026.sync_rotowire_lineups import seed_from_rotowire
+
+
+def _norm_name(name: str) -> str:
+    n = unicodedata.normalize("NFKD", name.lower().strip())
+    return "".join(c for c in n if not unicodedata.combining(c))
 from app.models.wc2026 import WC2026SquadPlayer
 from app.models.wc2026_lineups import WC2026ExpectedLineup, WC2026ExpectedLineupPlayer
 
@@ -154,7 +161,7 @@ async def get_nation_lineups(
     )
     lineups = lineups_result.scalars().all()
 
-    shirt_numbers = {p.player_name: p.shirt_number for p in squad}
+    shirt_numbers = {_norm_name(p.player_name): p.shirt_number for p in squad}
 
     # Load players for each lineup
     lineups_out: dict[str, LineupOut] = {}
@@ -182,7 +189,7 @@ async def get_nation_lineups(
                     is_starter=p.is_starter,
                     role=p.role,
                     expected_minutes=p.expected_minutes,
-                    shirt_number=shirt_numbers.get(p.player_name),
+                    shirt_number=shirt_numbers.get(_norm_name(p.player_name)),
                 )
                 for p in players
             ],
@@ -283,7 +290,7 @@ async def upsert_lineup(
             WC2026SquadPlayer.nation == nation
         )
     )
-    shirt_numbers = {row.player_name: row.shirt_number for row in squad_result.all()}
+    shirt_numbers = {_norm_name(row.player_name): row.shirt_number for row in squad_result.all()}
 
     return LineupOut(
         nation=lineup.nation,
@@ -299,7 +306,7 @@ async def upsert_lineup(
                 is_starter=p.is_starter,
                 role=p.role,
                 expected_minutes=p.expected_minutes,
-                shirt_number=shirt_numbers.get(p.player_name),
+                shirt_number=shirt_numbers.get(_norm_name(p.player_name)),
             )
             for p in players
         ],
