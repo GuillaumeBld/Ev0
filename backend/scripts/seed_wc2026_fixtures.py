@@ -20,7 +20,6 @@ import unicodedata
 from datetime import datetime, timezone
 
 import psycopg2
-import psycopg2.extras
 
 # ---------------------------------------------------------------------------
 # Approximate kickoff times per (group_letter, round_number)
