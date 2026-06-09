@@ -146,7 +146,10 @@ export default function WC2026LineupsPage() {
               flagEmoji={nationData.flag_emoji}
               squad={nationData.squad}
               initialLineups={nationData.lineups}
-              onSaved={loadNations}
+              onSaved={async () => {
+                await loadNations()
+                if (selectedNation) await selectNation(selectedNation)
+              }}
             />
           </>
         )}
