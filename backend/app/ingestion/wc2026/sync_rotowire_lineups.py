@@ -63,34 +63,42 @@ async def scrape_rotowire_lineups() -> dict[str, list[dict]]:
     soup = BeautifulSoup(resp.text, "html.parser")
     result: dict[str, list[dict]] = {}
 
-    # Each lineup block has class "lineup" with a team name and player list
-    for lineup_div in soup.select(".lineup__list"):
-        parent = lineup_div.find_parent(class_="lineup")
-        if parent is None:
-            continue
-        team_header = parent.select_one(".lineup__team-name")
-        if team_header is None:
-            continue
-        team_name = team_header.get_text(strip=True)
-
-        players = []
-        for player_el in lineup_div.select(".lineup__player"):
-            name_el = player_el.select_one(".lineup__name")
-            pos_el = player_el.select_one(".lineup__pos")
-            if name_el is None:
+    for match_div in soup.select(".lineup"):
+        for side in ("is-home", "is-visit"):
+            team_el = match_div.select_one(f".lineup__mteam.{side}")
+            list_el = match_div.select_one(f".lineup__list.{side}")
+            if team_el is None or list_el is None:
                 continue
-            player_name = name_el.get_text(strip=True)
-            pos_abbr = pos_el.get_text(strip=True) if pos_el else "MC"
-            position = _POS_MAP.get(pos_abbr, "MID")
-            line_index = _LINE_MAP.get(pos_abbr, 2)
-            players.append({
-                "player_name": player_name,
-                "position": position,
-                "line_index": line_index,
-            })
+            # Strip inline <span> (e.g. win/loss record)
+            team_name = team_el.find(string=True, recursive=False)
+            if team_name:
+                team_name = team_name.strip()
+            else:
+                team_name = team_el.get_text(strip=True)
+            if not team_name:
+                continue
 
-        if players:
-            result[team_name] = players
+            players = []
+            for player_el in list_el.select(".lineup__player"):
+                # Full name in <a title="..."> ; fallback to text
+                a_tag = player_el.select_one("a")
+                pos_el = player_el.select_one(".lineup__pos")
+                if a_tag is None:
+                    continue
+                player_name = a_tag.get("title") or a_tag.get_text(strip=True)
+                if not player_name:
+                    continue
+                pos_abbr = pos_el.get_text(strip=True) if pos_el else "MC"
+                position = _POS_MAP.get(pos_abbr, "MID")
+                line_index = _LINE_MAP.get(pos_abbr, 2)
+                players.append({
+                    "player_name": player_name,
+                    "position": position,
+                    "line_index": line_index,
+                })
+
+            if players:
+                result[team_name] = players
 
     return result
 
