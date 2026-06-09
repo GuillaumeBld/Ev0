@@ -167,9 +167,13 @@ def test_wc_sort_field_map_has_expected_keys():
 
 
 def test_wc_sort_field_map_values_are_safe_sql():
+    import re
     for key, val in _WC_SORT_FIELD_MAP.items():
-        assert " " not in val, f"Unsafe value for key {key!r}: {val!r}"
         assert ";" not in val, f"SQL injection risk for key {key!r}: {val!r}"
+        # Allow COALESCE expressions (spaces in function calls are fine);
+        # reject dangerous patterns like DROP, DELETE, --, etc.
+        assert not re.search(r'\b(drop|delete|insert|update|truncate|--)\b', val, re.I), \
+            f"Dangerous keyword in sort value for key {key!r}: {val!r}"
 
 
 def test_row_to_player_dict_includes_nation_when_present():

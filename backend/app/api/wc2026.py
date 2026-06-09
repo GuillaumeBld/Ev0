@@ -177,26 +177,27 @@ async def get_nations(session: AsyncSession = Depends(get_db)) -> list[WCNationO
 
 
 _WC_SORT_FIELD_MAP: dict[str, str] = {
-    "goals": "agg.goals",
-    "assists": "agg.assists",
-    "xg": "agg.xg",
-    "xa": "agg.xa",
-    "xg_per90": "agg.xg_per90",
-    "xa_per90": "agg.xa_per90",
-    "avg_rating": "agg.avg_rating",
-    "matches_played": "agg.matches_played",
-    "minutes_played": "agg.minutes_played",
-    "saves": "agg.saves",
-    "form_xg_5": "fs.form_xg_5",
-    "form_goals_5": "fs.form_goals_5",
+    # COALESCE: Bzzoiro preferred, ScoutingStats fallback
+    "goals":         "COALESCE(agg.goals, sc.sc_goals)",
+    "assists":       "COALESCE(agg.assists, sc.sc_assists)",
+    "xg":            "COALESCE(agg.xg, sc.sc_xg)",
+    "xa":            "COALESCE(agg.xa, sc.sc_xa)",
+    "xg_per90":      "COALESCE(agg.xg_per90, sc.sc_xg_per90)",
+    "xa_per90":      "COALESCE(agg.xa_per90, sc.sc_xa_per90)",
+    "avg_rating":    "COALESCE(agg.avg_rating, sc.sc_rating)",
+    "matches_played":"COALESCE(agg.matches_played, sc.sc_appearances)",
+    "minutes_played":"COALESCE(agg.minutes_played, sc.sc_minutes_played)",
+    "saves":         "COALESCE(agg.saves, sc.sc_saves)",
+    "form_xg_5":     "fs.form_xg_5",
+    "form_goals_5":  "fs.form_goals_5",
     "form_rating_5": "fs.form_rating_5",
-    # ScoutingStats sortable fields
-    "sc_rating": "sc.sc_rating",
-    "key_passes_p90": "sc.key_passes_p90",
-    "tackles_p90": "sc.tackles_p90",
-    "dribbles_p90": "sc.dribbles_p90",
+    # ScoutingStats-only sortable fields
+    "sc_rating":           "sc.sc_rating",
+    "key_passes_p90":      "sc.key_passes_p90",
+    "tackles_p90":         "sc.tackles_p90",
+    "dribbles_p90":        "sc.dribbles_p90",
     "shots_on_target_p90": "sc.shots_on_target_p90",
-    "pass_accuracy": "sc.pass_accuracy",
+    "pass_accuracy":       "sc.pass_accuracy",
 }
 
 _WC_CTE = """
@@ -250,7 +251,18 @@ _WC_SCOUTING_CTE = """,
 scouting AS (
     SELECT DISTINCT ON (normalized_name)
         normalized_name,
+        -- Fallback stats (used via COALESCE when Bzzoiro has no data)
+        (stats->>'goals')::int               AS sc_goals,
+        (stats->>'assists')::int             AS sc_assists,
+        (stats->>'xg')::float                AS sc_xg,
+        (stats->>'xa')::float                AS sc_xa,
+        (stats->>'xg_p90')::float            AS sc_xg_per90,
+        (stats->>'xa_p90')::float            AS sc_xa_per90,
         (stats->>'rating')::float            AS sc_rating,
+        (stats->>'appearances')::int         AS sc_appearances,
+        (stats->>'minutes_played')::int      AS sc_minutes_played,
+        (stats->>'saves')::int               AS sc_saves,
+        -- Scouting-specific fields
         (stats->>'key_passes_p90')::float    AS key_passes_p90,
         (stats->>'tackles_p90')::float       AS tackles_p90,
         (stats->>'dribbles_p90')::float      AS dribbles_p90,
@@ -258,8 +270,7 @@ scouting AS (
         (stats->>'shots_on_target_p90')::float AS shots_on_target_p90,
         (stats->>'pass_accuracy')::float     AS pass_accuracy,
         stats->>'player_image'               AS player_image,
-        stats->>'detailed_position'          AS detailed_position,
-        (stats->>'appearances')::int         AS sc_appearances
+        stats->>'detailed_position'          AS detailed_position
     FROM wc2026_scouting_stats
     WHERE season = '2025-2026'
     ORDER BY normalized_name, id ASC
@@ -314,16 +325,16 @@ SELECT
     wsp.flag_emoji,
     wsp.nation,
     wsp.group_letter,
-    agg.matches_played,
-    agg.minutes_played,
-    agg.goals,
-    agg.assists,
-    agg.xg,
-    agg.xa,
-    agg.xg_per90,
-    agg.xa_per90,
-    agg.avg_rating,
-    agg.saves,
+    COALESCE(agg.matches_played, sc.sc_appearances)   AS matches_played,
+    COALESCE(agg.minutes_played, sc.sc_minutes_played) AS minutes_played,
+    COALESCE(agg.goals,          sc.sc_goals)          AS goals,
+    COALESCE(agg.assists,        sc.sc_assists)        AS assists,
+    COALESCE(agg.xg,             sc.sc_xg)             AS xg,
+    COALESCE(agg.xa,             sc.sc_xa)             AS xa,
+    COALESCE(agg.xg_per90,       sc.sc_xg_per90)       AS xg_per90,
+    COALESCE(agg.xa_per90,       sc.sc_xa_per90)       AS xa_per90,
+    COALESCE(agg.avg_rating,     sc.sc_rating)         AS avg_rating,
+    COALESCE(agg.saves,          sc.sc_saves)          AS saves,
     fs.form_goals_5,
     fs.form_xg_5,
     fs.form_rating_5,
@@ -391,7 +402,7 @@ async def list_wc_players(
     session: AsyncSession = Depends(get_db),
 ) -> WCPlayersPageOut:
     """List all WC2026 players with optional filters and pagination."""
-    sort_col = _WC_SORT_FIELD_MAP.get(sort_by, "agg.xg_per90")
+    sort_col = _WC_SORT_FIELD_MAP.get(sort_by, "COALESCE(agg.xg_per90, sc.sc_xg_per90)")
     order_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
     page_size = 50
 
@@ -416,16 +427,16 @@ async def list_wc_players(
             wsp.club,
             wsp.position,
             wsp.shirt_number,
-            agg.matches_played,
-            agg.minutes_played,
-            agg.goals,
-            agg.assists,
-            agg.xg,
-            agg.xa,
-            agg.xg_per90,
-            agg.xa_per90,
-            agg.avg_rating,
-            agg.saves,
+            COALESCE(agg.matches_played, sc.sc_appearances)   AS matches_played,
+            COALESCE(agg.minutes_played, sc.sc_minutes_played) AS minutes_played,
+            COALESCE(agg.goals,          sc.sc_goals)          AS goals,
+            COALESCE(agg.assists,        sc.sc_assists)        AS assists,
+            COALESCE(agg.xg,             sc.sc_xg)             AS xg,
+            COALESCE(agg.xa,             sc.sc_xa)             AS xa,
+            COALESCE(agg.xg_per90,       sc.sc_xg_per90)       AS xg_per90,
+            COALESCE(agg.xa_per90,       sc.sc_xa_per90)       AS xa_per90,
+            COALESCE(agg.avg_rating,     sc.sc_rating)         AS avg_rating,
+            COALESCE(agg.saves,          sc.sc_saves)          AS saves,
             fs.form_goals_5,
             fs.form_xg_5,
             fs.form_rating_5,
