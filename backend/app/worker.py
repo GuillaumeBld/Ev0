@@ -34,6 +34,7 @@ from app.ingestion.bzzoiro.sync_reference import sync_leagues, sync_teams
 from app.ingestion.bzzoiro.sync_bzzoiro_odds import sync_bzzoiro_odds
 from app.ingestion.bzzoiro.sync_bzzoiro_lineups import sync_bzzoiro_lineups
 from app.ingestion.bzzoiro.constants import INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST
+from app.ingestion.wc2026.sync_wc_outrights import sync_all_wc_outrights
 from app.ingestion.storage import (
     store_match_events,
     store_odds_snapshot,
@@ -1404,6 +1405,20 @@ async def job_sync_bzzoiro_lineups() -> None:
         logger.exception("job_sync_bzzoiro_lineups failed: %s", exc)
 
 
+# ── WC2026 Outrights Job ──────────────────────────────────────────
+
+
+async def job_sync_wc_outright_odds() -> None:
+    """Scrape les outrights CDM (vainqueur, top4, top8, buteur) sur PMU/Unibet/Betclic."""
+    logger.info("job_sync_wc_outright_odds: start")
+    try:
+        async with async_session() as session:
+            total = await sync_all_wc_outrights(session)
+        logger.info("job_sync_wc_outright_odds: %d cotes upsertées", total)
+    except Exception as exc:
+        logger.exception("job_sync_wc_outright_odds failed: %s", exc)
+
+
 # ── Scheduler Setup ───────────────────────────────────────────────
 
 
@@ -1613,6 +1628,17 @@ def create_scheduler() -> AsyncIOScheduler:
         IntervalTrigger(minutes=15),
         id="poll_statshub_lineups",
         name="StatsHub: poll official lineups (J-2h window)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # WC2026 outright odds: every 6 hours
+    scheduler.add_job(
+        job_sync_wc_outright_odds,
+        IntervalTrigger(hours=6),
+        id="sync_wc_outright_odds",
+        name="Sync WC2026 outright odds (winner/top4/top8/scorer) sur PMU+Unibet+Betclic",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
