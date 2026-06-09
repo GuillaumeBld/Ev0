@@ -32,13 +32,57 @@ UNIQUE (nation, context)
 id                SERIAL PK
 lineup_id         INT        NOT NULL   REFERENCES wc2026_expected_lineups(id) ON DELETE CASCADE
 player_name       VARCHAR(100) NOT NULL -- doit matcher wc2026_squad_players.player_name
-position          VARCHAR(4) NOT NULL   -- GK / DEF / MID / FWD
+position          VARCHAR(4) NOT NULL   -- GK / DEF / MID / FWD (pour le pricing engine)
+line_index        SMALLINT   NOT NULL   -- ligne sur le terrain : 0=GK, 1=1ère ligne déf, 2=2ème ligne…
 slot_index        SMALLINT   NOT NULL   -- ordre gauche→droite dans la ligne (0, 1, 2…)
 is_starter        BOOLEAN    NOT NULL   DEFAULT true
 role              VARCHAR(20) NOT NULL  -- "starter" | "sub_planned" | "sub_tactical" | "reserve"
 expected_minutes  SMALLINT   NOT NULL   -- défaut selon rôle (voir ci-dessous)
 UNIQUE (lineup_id, player_name)
 ```
+
+**Pourquoi `line_index` :** `position` (GK/DEF/MID/FWD) est trop coarse pour le rendu pitch. Un 4-2-3-1 a 5 lignes — 2 lignes de milieux impossibles à distinguer sans `line_index`. Le pitch est rendu ligne par ligne : `line_index=0` (GK) en bas, lignes croissantes vers le haut jusqu'aux attaquants.
+
+### Formations supportées
+
+Le `formation` est une chaîne parsée de gauche à droite = du fond vers l'avant. Le GK est implicite (toujours `line_index=0`).
+
+```python
+FORMATIONS = {
+    # ── 4 défenseurs ──────────────────────────────────────────────
+    "4-4-2":     [4, 4, 2],        # lignes : DEF×4 | MID×4 | FWD×2
+    "4-4-2d":    [4, 1, 2, 1, 2],  # diamond : DEF×4 | DM×1 | CM×2 | AM×1 | FWD×2
+    "4-3-3":     [4, 3, 3],
+    "4-2-3-1":   [4, 2, 3, 1],
+    "4-3-2-1":   [4, 3, 2, 1],     # Christmas tree
+    "4-5-1":     [4, 5, 1],
+    "4-1-4-1":   [4, 1, 4, 1],
+    "4-1-3-2":   [4, 1, 3, 2],
+    "4-2-2-2":   [4, 2, 2, 2],
+    "4-6-0":     [4, 6, 0],        # rare
+    # ── 3 défenseurs ──────────────────────────────────────────────
+    "3-5-2":     [3, 5, 2],
+    "3-4-3":     [3, 4, 3],
+    "3-4-2-1":   [3, 4, 2, 1],
+    "3-3-4":     [3, 3, 4],
+    "3-6-1":     [3, 6, 1],
+    "3-4-1-2":   [3, 4, 1, 2],
+    # ── 5 défenseurs (back 5) ─────────────────────────────────────
+    "5-3-2":     [5, 3, 2],
+    "5-4-1":     [5, 4, 1],
+    "5-2-3":     [5, 2, 3],
+    "5-2-2-1":   [5, 2, 2, 1],
+    "5-1-2-2":   [5, 1, 2, 2],
+    # ── 4-3-3 variantes ───────────────────────────────────────────
+    "4-3-1-2":   [4, 3, 1, 2],
+}
+```
+
+La somme des valeurs de chaque formation vaut toujours 10 (+ le GK implicite = 11).
+
+**Parsing :** `"4-2-3-1".split("-")` → `[4, 2, 3, 1]`. Les joueurs de `line_index=1` sont les 4 DEF, `line_index=2` les 2 DM, `line_index=3` les 3 AM, `line_index=4` le CF. Les formations avec `d` (diamond) sont gérées comme cas spéciaux.
+
+**Validation à la sauvegarde :** la somme des `line_index > 0` players = 10 exactement. Sinon erreur 422.
 
 **Minutes par défaut selon rôle :**
 
@@ -61,7 +105,7 @@ GET  /api/v1/wc2026/lineups/{nation}
      → { default: LineupOut, overrides: { matchday_1?: LineupOut, … } }
 
 PUT  /api/v1/wc2026/lineups/{nation}/{context}
-     Body: { formation: str, players: [{ player_name, position, slot_index, is_starter, role, expected_minutes }] }
+     Body: { formation: str, players: [{ player_name, position, line_index, slot_index, is_starter, role, expected_minutes }] }
      → upsert complet de la compo (remplace tous les joueurs existants)
 
 POST /api/v1/wc2026/lineups/sync-rotowire
@@ -88,7 +132,7 @@ Utilisé une seule fois avant le début du tournoi pour pré-peupler. Pas de job
 ```
 ┌──────────────────────────────────────────────────┬────────────────────────┐
 │  🇫🇷 France  [Compo type ▼]  [Sync Rotowire]     │  Effectif disponible   │
-│  Formation : 4-3-3                                │  ────────────────────  │
+│  Formation : [4-3-3 ▼]                            │  ────────────────────  │
 │  ┌────────────────────────────────────────────┐  │  GK                    │
 │  │  [Dembélé 85'] [Mbappé 85'] [Kanté 85']   │  │  · Lloris              │
 │  │     [Tchou. 85']  [Camav. 85'] [Rab. 85'] │  │                        │
@@ -100,6 +144,16 @@ Utilisé une seule fois avant le début du tournoi pour pré-peupler. Pas de job
 │  Tabs: [Buteur] [Passeur] [Décisif]               │  MID                   │
 └──────────────────────────────────────────────────┴────────────────────────┘
 ```
+
+**Sélecteur de formation :** dropdown groupé par famille de défenseurs :
+
+```
+4 défenseurs  → 4-4-2 | 4-3-3 | 4-2-3-1 | 4-3-2-1 | 4-5-1 | 4-1-4-1 | 4-1-3-2 | 4-4-2d
+3 défenseurs  → 3-5-2 | 3-4-3 | 3-4-2-1 | 3-4-1-2 | 3-3-4
+5 défenseurs  → 5-3-2 | 5-4-1 | 5-2-3 | 5-2-2-1
+```
+
+Quand la formation change, le terrain se réorganise immédiatement. Les joueurs déjà placés sont redistribués ligne par ligne en respectant le nouvel effectif par ligne. Les joueurs en excès (ligne supprimée ou réduite) sont renvoyés dans le panel droit.
 
 **Composant jersey card :**
 
