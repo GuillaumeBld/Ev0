@@ -37,6 +37,51 @@ _LINE_MAP = {
 }
 
 
+# Rotowire English name → French nation name as stored in wc2026_squad_players
+_RW_TO_FR: dict[str, str] = {
+    "Mexico": "Mexique",
+    "South Africa": "Afrique du Sud",
+    "South Korea": "Corée du Sud",
+    "Czech Republic": "République Tchèque",
+    "Bosnia and Herzegovina": "Bosnie-Herzégovine",
+    "USA": "États-Unis",
+    "United States": "États-Unis",
+    "Switzerland": "Suisse",
+    "Brazil": "Brésil",
+    "Morocco": "Maroc",
+    "Scotland": "Écosse",
+    "Australia": "Australie",
+    "Turkey": "Turquie",
+    "Germany": "Allemagne",
+    "Curacao": "Curaçao",
+    "Netherlands": "Pays-Bas",
+    "Japan": "Japon",
+    "Ecuador": "Équateur",
+    "Sweden": "Suède",
+    "Tunisia": "Tunisie",
+    "Spain": "Espagne",
+    "Cape Verde": "Cap-Vert",
+    "Belgium": "Belgique",
+    "Egypt": "Égypte",
+    "Saudi Arabia": "Arabie Saoudite",
+    "New Zealand": "Nouvelle-Zélande",
+    "Iraq": "Irak",
+    "Norway": "Norvège",
+    "Argentina": "Argentine",
+    "Algeria": "Algérie",
+    "Austria": "Autriche",
+    "Jordan": "Jordanie",
+    "DR Congo": "RD Congo",
+    "England": "Angleterre",
+    "Croatia": "Croatie",
+    "Uzbekistan": "Ouzbékistan",
+    "Colombia": "Colombie",
+    "Ivory Coast": "Côte d'Ivoire",
+    "Senegal": "Sénégal",
+    "Haiti": "Haïti",
+}
+
+
 def _normalize(name: str) -> str:
     n = name.lower().strip()
     n = unicodedata.normalize("NFKD", n)
@@ -120,10 +165,13 @@ async def seed_from_rotowire(session: AsyncSession) -> dict[str, str]:
     db_nations = {_normalize(n): n for n in (row[0] for row in nations_result.all())}
 
     for rw_team, players in raw.items():
-        norm = _normalize(rw_team)
-        db_nation = db_nations.get(norm)
+        # Try explicit mapping first, then normalized fuzzy match
+        db_nation = _RW_TO_FR.get(rw_team)
         if db_nation is None:
-            logger.warning("Rotowire: no DB match for %r (normalized: %r)", rw_team, norm)
+            norm = _normalize(rw_team)
+            db_nation = db_nations.get(norm)
+        if db_nation is None:
+            logger.warning("Rotowire: no DB match for %r", rw_team)
             statuses[rw_team] = "no_match"
             continue
 
