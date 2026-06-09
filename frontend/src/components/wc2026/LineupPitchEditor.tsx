@@ -241,7 +241,7 @@ export function LineupPitchEditor({
                       {starter ? (
                         <JerseyCard
                           playerName={starter.player_name}
-                          shirtNumber={squad.find((s) => s.player_name === starter.player_name)?.shirt_number ?? null}
+                          shirtNumber={starter.shirt_number ?? null}
                           expectedMinutes={starter.expected_minutes}
                           isSelected={isSelected}
                           role={starter.role as 'starter'}
@@ -276,7 +276,7 @@ export function LineupPitchEditor({
               return gk ? (
                 <JerseyCard
                   playerName={gk.player_name}
-                  shirtNumber={squad.find((s) => s.player_name === gk.player_name)?.shirt_number ?? null}
+                  shirtNumber={gk.shirt_number ?? null}
                   expectedMinutes={gk.expected_minutes}
                   isSelected={isSelected}
                   role="starter"
@@ -310,7 +310,7 @@ export function LineupPitchEditor({
                 <JerseyCard
                   key={p.player_name}
                   playerName={p.player_name}
-                  shirtNumber={squad.find((s) => s.player_name === p.player_name)?.shirt_number ?? null}
+                  shirtNumber={p.shirt_number ?? null}
                   expectedMinutes={p.expected_minutes}
                   isSelected={false}
                   role={p.role as 'sub_planned' | 'sub_tactical' | 'reserve'}
