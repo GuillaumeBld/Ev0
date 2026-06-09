@@ -6,8 +6,9 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db import get_db
 from app.ingestion.wc2026.formations import FORMATIONS, default_minutes_for_role, parse_formation, validate_lineup_formation
@@ -98,17 +99,22 @@ async def list_nations(session: AsyncSession = Depends(get_db)) -> list[NationSt
         l.nation: l for l in lineups_result.scalars().all()
     }
 
-    # Load starter counts for default lineups
+    # Load starter counts for default lineups in one query
     starters_count: dict[str, int] = {}
     if lineups_by_nation:
-        for nation, lineup in lineups_by_nation.items():
-            players_result = await session.execute(
-                select(WC2026ExpectedLineupPlayer).where(
-                    WC2026ExpectedLineupPlayer.lineup_id == lineup.id,
-                    WC2026ExpectedLineupPlayer.is_starter.is_(True),
-                )
+        lineup_ids = [l.id for l in lineups_by_nation.values()]
+        id_to_nation = {l.id: n for n, l in lineups_by_nation.items()}
+        counts_result = await session.execute(
+            select(WC2026ExpectedLineupPlayer.lineup_id, func.count())
+            .where(
+                WC2026ExpectedLineupPlayer.lineup_id.in_(lineup_ids),
+                WC2026ExpectedLineupPlayer.is_starter.is_(True),
             )
-            starters_count[nation] = len(players_result.scalars().all())
+            .group_by(WC2026ExpectedLineupPlayer.lineup_id)
+        )
+        for lineup_id, count in counts_result.all():
+            nation = id_to_nation[lineup_id]
+            starters_count[nation] = count
 
     out = []
     for row in nations:
@@ -206,18 +212,24 @@ async def upsert_lineup(
     if body.formation not in FORMATIONS:
         raise HTTPException(status_code=422, detail=f"Unknown formation: {body.formation!r}")
 
-    # Validate starter count (outfield players with line_index > 0)
+    # Validate starter count — 10 outfield + exactly 1 GK
+    starters = [p for p in body.players if p.is_starter]
+    gk_count = sum(1 for p in starters if p.line_index == 0)
+    if gk_count != 1:
+        raise HTTPException(status_code=422, detail=f"Expected exactly 1 GK (line_index=0), got {gk_count}")
     try:
         validate_lineup_formation(
             body.formation,
-            [p.model_dump() for p in body.players if p.is_starter and p.line_index > 0],
+            [p.model_dump() for p in starters if p.line_index > 0],
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    # Upsert lineup header
+    # Upsert lineup header — eager-load players to avoid MissingGreenlet in async
     result = await session.execute(
-        select(WC2026ExpectedLineup).where(
+        select(WC2026ExpectedLineup)
+        .options(selectinload(WC2026ExpectedLineup.players))
+        .where(
             WC2026ExpectedLineup.nation == nation,
             WC2026ExpectedLineup.context == context,
         )
@@ -231,7 +243,6 @@ async def upsert_lineup(
         lineup.formation = body.formation
         lineup.source = "manual"
         lineup.updated_at = datetime.now(timezone.utc)
-        # Delete existing players
         for player in lineup.players:
             await session.delete(player)
         await session.flush()
