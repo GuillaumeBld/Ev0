@@ -34,6 +34,11 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "nation", "player_name", "market_type", "bookmaker",
             name="uq_wc2026_outright",
+            postgresql_nulls_not_distinct=True,
+        ),
+        sa.CheckConstraint(
+            "(nation IS NOT NULL AND player_name IS NULL) OR (nation IS NULL AND player_name IS NOT NULL)",
+            name="ck_wc2026_outright_participant",
         ),
     )
     op.create_index("ix_wc2026_outright_nation", "wc2026_outright_odds", ["nation"])
