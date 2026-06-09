@@ -843,7 +843,7 @@ export interface WCLineupPlayer {
   is_starter: boolean
   role: 'starter' | 'sub_planned' | 'sub_tactical' | 'reserve'
   expected_minutes: number
-  shirt_number: number | null
+  shirt_number?: number | null
 }
 
 export interface WCLineup {
