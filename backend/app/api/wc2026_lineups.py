@@ -57,6 +57,7 @@ class LineupPlayerOut(BaseModel):
     is_starter: bool
     role: str
     expected_minutes: int
+    shirt_number: int | None = None
 
 
 class LineupOut(BaseModel):
@@ -153,6 +154,8 @@ async def get_nation_lineups(
     )
     lineups = lineups_result.scalars().all()
 
+    shirt_numbers = {p.player_name: p.shirt_number for p in squad}
+
     # Load players for each lineup
     lineups_out: dict[str, LineupOut] = {}
     for lineup in lineups:
@@ -179,6 +182,7 @@ async def get_nation_lineups(
                     is_starter=p.is_starter,
                     role=p.role,
                     expected_minutes=p.expected_minutes,
+                    shirt_number=shirt_numbers.get(p.player_name),
                 )
                 for p in players
             ],
@@ -274,6 +278,13 @@ async def upsert_lineup(
     )
     players = players_result.scalars().all()
 
+    squad_result = await session.execute(
+        select(WC2026SquadPlayer.player_name, WC2026SquadPlayer.shirt_number).where(
+            WC2026SquadPlayer.nation == nation
+        )
+    )
+    shirt_numbers = {row.player_name: row.shirt_number for row in squad_result.all()}
+
     return LineupOut(
         nation=lineup.nation,
         context=lineup.context,
@@ -288,6 +299,7 @@ async def upsert_lineup(
                 is_starter=p.is_starter,
                 role=p.role,
                 expected_minutes=p.expected_minutes,
+                shirt_number=shirt_numbers.get(p.player_name),
             )
             for p in players
         ],
