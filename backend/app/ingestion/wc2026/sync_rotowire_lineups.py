@@ -12,7 +12,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.wc2026.formations import FORMATIONS, default_minutes_for_role
-from app.models.wc2026 import WC2026SquadPlayer
 from app.models.wc2026_lineups import WC2026ExpectedLineup, WC2026ExpectedLineupPlayer
 
 logger = logging.getLogger(__name__)
@@ -46,17 +45,26 @@ def _normalize(name: str) -> str:
 
 
 async def scrape_rotowire_lineups() -> dict[str, list[dict]]:
-    """Fetch Rotowire WC lineups page. Returns {team_name: [player_dicts]}."""
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(ROTOWIRE_URL, headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
+    """Fetch Rotowire WC lineups page. Returns {team_name: [player_dicts]}.
+
+    Raises httpx.HTTPError on network/HTTP failure.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(ROTOWIRE_URL, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+    except httpx.TimeoutException as exc:
+        logger.error("Rotowire scrape timed out: %s", exc)
+        raise
+    except httpx.HTTPStatusError as exc:
+        logger.error("Rotowire HTTP error %s: %s", exc.response.status_code, exc)
+        raise
 
     soup = BeautifulSoup(resp.text, "html.parser")
     result: dict[str, list[dict]] = {}
 
     # Each lineup block has class "lineup" with a team name and player list
     for lineup_div in soup.select(".lineup__list"):
-        # Team name is in the parent .lineup block header
         parent = lineup_div.find_parent(class_="lineup")
         if parent is None:
             continue
@@ -88,7 +96,12 @@ async def scrape_rotowire_lineups() -> dict[str, list[dict]]:
 
 
 async def seed_from_rotowire(session: AsyncSession) -> dict[str, str]:
-    """Seed wc2026_expected_lineups from Rotowire. Returns {nation: status}."""
+    """Seed wc2026_expected_lineups from Rotowire. Returns {nation: status}.
+
+    Status values: "seeded" | "skipped_manual" | "no_match" | "invalid_formation" | "missing_gk"
+    """
+    from app.models.wc2026 import WC2026SquadPlayer  # local import avoids circular
+
     raw = await scrape_rotowire_lineups()
     statuses: dict[str, str] = {}
 
@@ -107,24 +120,39 @@ async def seed_from_rotowire(session: AsyncSession) -> dict[str, str]:
             continue
 
         # Skip if a manual lineup already exists
-        existing = await session.execute(
+        existing_result = await session.execute(
             select(WC2026ExpectedLineup).where(
                 WC2026ExpectedLineup.nation == db_nation,
                 WC2026ExpectedLineup.context == "default",
             )
         )
-        existing_lineup = existing.scalar_one_or_none()
+        existing_lineup = existing_result.scalar_one_or_none()
         if existing_lineup is not None and existing_lineup.source == "manual":
             statuses[db_nation] = "skipped_manual"
             continue
 
+        # Validate GK presence
+        gk_players = [p for p in players if p["position"] == "GK"][:1]
+        if not gk_players:
+            logger.warning("Rotowire: no GK found for %r, skipping", db_nation)
+            statuses[db_nation] = "missing_gk"
+            continue
+
         # Determine formation from player positions
-        defs = sum(1 for p in players if p["position"] == "DEF")
-        mids = sum(1 for p in players if p["position"] == "MID")
-        fwds = sum(1 for p in players if p["position"] == "FWD")
+        outfield = [p for p in players if p["position"] != "GK"][:10]
+        defs = sum(1 for p in outfield if p["position"] == "DEF")
+        mids = sum(1 for p in outfield if p["position"] == "MID")
+        fwds = sum(1 for p in outfield if p["position"] == "FWD")
         formation_str = f"{defs}-{mids}-{fwds}"
         if formation_str not in FORMATIONS:
-            formation_str = "4-3-3"  # fallback
+            logger.warning(
+                "Rotowire: inferred formation %r not in FORMATIONS for %r, skipping",
+                formation_str, db_nation,
+            )
+            statuses[db_nation] = "invalid_formation"
+            continue
+
+        all_starters = gk_players + outfield
 
         if existing_lineup is None:
             lineup = WC2026ExpectedLineup(
@@ -139,21 +167,16 @@ async def seed_from_rotowire(session: AsyncSession) -> dict[str, str]:
             lineup = existing_lineup
             lineup.formation = formation_str
             lineup.source = "rotowire"
-            # Delete existing players
-            players_result = await session.execute(
+            existing_players = await session.execute(
                 select(WC2026ExpectedLineupPlayer).where(
                     WC2026ExpectedLineupPlayer.lineup_id == lineup.id
                 )
             )
-            for p in players_result.scalars().all():
+            for p in existing_players.scalars().all():
                 await session.delete(p)
             await session.flush()
 
-        # Insert players — group by line_index for slot assignment
-        gk_players = [p for p in players if p["position"] == "GK"][:1]
-        outfield = [p for p in players if p["position"] != "GK"][:10]
-        all_starters = gk_players + outfield
-
+        # Group by line_index for slot assignment
         by_line: dict[int, list[dict]] = defaultdict(list)
         for p in all_starters:
             by_line[p["line_index"]].append(p)
@@ -174,4 +197,12 @@ async def seed_from_rotowire(session: AsyncSession) -> dict[str, str]:
         statuses[db_nation] = "seeded"
 
     await session.commit()
+    logger.info(
+        "Rotowire seed complete: seeded=%d, skipped_manual=%d, no_match=%d, invalid=%d, missing_gk=%d",
+        sum(1 for s in statuses.values() if s == "seeded"),
+        sum(1 for s in statuses.values() if s == "skipped_manual"),
+        sum(1 for s in statuses.values() if s == "no_match"),
+        sum(1 for s in statuses.values() if s == "invalid_formation"),
+        sum(1 for s in statuses.values() if s == "missing_gk"),
+    )
     return statuses
