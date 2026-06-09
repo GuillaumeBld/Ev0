@@ -832,3 +832,75 @@ export interface WCSquad {
   mid: WCPlayer[]
   fwd: WCPlayer[]
 }
+
+// ── WC2026 Lineups ─────────────────────────────────────────────────────────
+
+export interface WCLineupPlayer {
+  player_name: string
+  position: string        // GK / DEF / MID / FWD
+  line_index: number      // 0=GK row, 1=DEF line, 2+=next lines
+  slot_index: number      // left-to-right order in the line
+  is_starter: boolean
+  role: 'starter' | 'sub_planned' | 'sub_tactical' | 'reserve'
+  expected_minutes: number
+}
+
+export interface WCLineup {
+  nation: string
+  context: string
+  formation: string
+  source: 'manual' | 'rotowire'
+  players: WCLineupPlayer[]
+}
+
+export interface WCNationStatus {
+  nation: string
+  group_letter: string
+  flag_emoji: string | null
+  complete: boolean
+  starters_count: number
+}
+
+export interface WCSquadPlayer {
+  player_name: string
+  position: string
+  shirt_number: number | null
+}
+
+export interface WCNationLineups {
+  nation: string
+  flag_emoji: string | null
+  squad: WCSquadPlayer[]
+  lineups: Record<string, WCLineup>
+}
+
+export async function getWCLineupNations(): Promise<WCNationStatus[]> {
+  const { data } = await api.get('/api/v1/wc2026/lineups')
+  return data
+}
+
+export async function getWCNationLineups(nation: string): Promise<WCNationLineups> {
+  const { data } = await api.get(`/api/v1/wc2026/lineups/${encodeURIComponent(nation)}`)
+  return data
+}
+
+export async function upsertWCLineup(
+  nation: string,
+  context: string,
+  body: { formation: string; players: WCLineupPlayer[] },
+): Promise<WCLineup> {
+  const { data } = await api.put(
+    `/api/v1/wc2026/lineups/${encodeURIComponent(nation)}/${context}`,
+    body,
+  )
+  return data
+}
+
+export async function syncRotowireLineups(): Promise<{
+  seeded: number
+  skipped_manual: number
+  no_match: number
+}> {
+  const { data } = await api.post('/api/v1/wc2026/lineups/sync-rotowire')
+  return data
+}
