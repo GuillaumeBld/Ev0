@@ -94,7 +94,7 @@ export function JerseyCard({
             />
           ) : (
             <span className="text-[11px] text-gray-400 hover:text-white cursor-text">
-              {expectedMinutes}'
+              {expectedMinutes}&apos;
             </span>
           )}
         </div>
