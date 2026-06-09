@@ -27,6 +27,7 @@ from app.api import (
 )
 from app.api import settings as settings_api
 from app.api import wc2026 as wc2026_api
+from app.api import wc2026_lineups as wc2026_lineups_api
 from app.cache import close_redis
 from app.config import settings
 from app.db import engine
@@ -79,4 +80,5 @@ app.include_router(autopilot.router, prefix="/api/v1", tags=["autopilot"])
 app.include_router(lineups_api.router, prefix="/api/v1", tags=["lineups"])
 app.include_router(pen_takers.router, prefix="/api/v1", tags=["pen-takers"])
 app.include_router(wc2026_api.router, prefix="/api/v1", tags=["wc2026"])
+app.include_router(wc2026_lineups_api.router, prefix="/api/v1", tags=["wc2026"])
 app.include_router(config_api.router, prefix="/api", tags=["config"])
