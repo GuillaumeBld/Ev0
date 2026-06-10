@@ -9,7 +9,7 @@ interface FlagImgProps {
 }
 
 function emojiToIso(emoji: string): string | null {
-  const chars = [...emoji]
+  const chars = Array.from(emoji)
   if (chars.length !== 2) return null
   const a = chars[0].codePointAt(0) ?? 0
   const b = chars[1].codePointAt(0) ?? 0
