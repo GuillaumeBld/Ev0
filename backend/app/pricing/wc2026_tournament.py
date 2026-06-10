@@ -69,7 +69,7 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
 
     Same logic for assists with xa_per_90 and BM × _ASSIST_GOAL_RATE.
     """
-    from app.ingestion.wc2026.team_bm import TEAM_BM, WC2026_NATION_NAME_ALIASES
+    from app.ingestion.wc2026.team_bm import TEAM_BM, WC2026_NATION_NAME_ALIASES, WC2026_LINEUP_NATION_MAP
     from app.models.bzzoiro import BzzTeam
     from app.models.wc2026_lineups import WC2026ExpectedLineup, WC2026ExpectedLineupPlayer
     from app.pricing.team_xg import _load_national_team_players
@@ -77,10 +77,11 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
     all_entries: list[dict[str, Any]] = []
 
     for nation, bm in TEAM_BM.items():
-        # 1. Load default lineup
+        # 1. Load default lineup (DB stores nation names in French)
+        lineup_nation = WC2026_LINEUP_NATION_MAP.get(nation, nation)
         lineup_result = await db.execute(
             select(WC2026ExpectedLineup).where(
-                WC2026ExpectedLineup.nation == nation,
+                WC2026ExpectedLineup.nation == lineup_nation,
                 WC2026ExpectedLineup.context == "default",
             )
         )

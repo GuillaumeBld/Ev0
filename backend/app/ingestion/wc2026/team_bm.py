@@ -56,6 +56,49 @@ TEAM_BM: dict[str, float] = {
     "Iraq":                  1.53,
 }
 
+# Maps TEAM_BM English names → French names used in wc2026_expected_lineups.
+# Nations not listed here have identical names in both languages.
+WC2026_LINEUP_NATION_MAP: dict[str, str] = {
+    "Spain":              "Espagne",
+    "Brazil":             "Brésil",
+    "Germany":            "Allemagne",
+    "England":            "Angleterre",
+    "Argentina":          "Argentine",
+    "Belgium":            "Belgique",
+    "Switzerland":        "Suisse",
+    "Netherlands":        "Pays-Bas",
+    "Colombia":           "Colombie",
+    "Norway":             "Norvège",
+    "Mexico":             "Mexique",
+    "Ecuador":            "Équateur",
+    "United States":      "États-Unis",
+    "Croatia":            "Croatie",
+    "Morocco":            "Maroc",
+    "Ivory Coast":        "Côte d'Ivoire",
+    "Austria":            "Autriche",
+    "Turkey":             "Turquie",
+    "Japan":              "Japon",
+    "Senegal":            "Sénégal",
+    "Egypt":              "Égypte",
+    "Scotland":           "Écosse",
+    "South Korea":        "Corée du Sud",
+    "Czechia":            "République Tchèque",
+    "Sweden":             "Suède",
+    "Bosnia-Herzegovina": "Bosnie-Herzégovine",
+    "Algeria":            "Algérie",
+    "Australia":          "Australie",
+    "Congo DR":           "RD Congo",
+    "New Zealand":        "Nouvelle-Zélande",
+    "South Africa":       "Afrique du Sud",
+    "Uzbekistan":         "Ouzbékistan",
+    "Tunisia":            "Tunisie",
+    "Cape Verde Islands": "Cap-Vert",
+    "Saudi Arabia":       "Arabie Saoudite",
+    "Haiti":              "Haïti",
+    "Jordan":             "Jordanie",
+    "Iraq":               "Irak",
+}
+
 # Maps TEAM_BM nation names → Bzzoiro national_team_name when they diverge.
 WC2026_NATION_NAME_ALIASES: dict[str, str] = {
     "United States":      "USA",
