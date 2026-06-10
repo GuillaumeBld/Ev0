@@ -103,7 +103,7 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
         # 3. Resolve Bzzoiro team
         bzz_name = WC2026_NATION_NAME_ALIASES.get(nation, nation)
         team_result = await db.execute(
-            select(BzzTeam).where(BzzTeam.name == bzz_name)
+            select(BzzTeam).where(BzzTeam.name == bzz_name).limit(1)
         )
         bzz_team = team_result.scalar_one_or_none()
         if bzz_team is None:
