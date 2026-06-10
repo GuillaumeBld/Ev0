@@ -125,7 +125,7 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
         # 4. Match scouting rows to lineup by normalised name
         matched: list[dict[str, Any]] = []
         for row in rows:
-            norm = row["normalized_name"] or _norm_name(row["player_name"])
+            norm = _norm_name(row["player_name"])
             mins = lineup_minutes.get(norm)
             if mins is None:
                 continue
