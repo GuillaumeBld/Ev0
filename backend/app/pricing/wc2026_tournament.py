@@ -16,13 +16,6 @@ logger = logging.getLogger(__name__)
 N_MONTE_CARLO = 50_000
 _MC_SEED = 42
 
-# WC2026 has 8 group-stage + knockout matches for a champion; ~7 avg for a deep run.
-# We estimate expected matches per team as a tournament-wide average.
-# A standard model: group stage = 3 matches guaranteed per team.
-# To produce lambda_goals over the whole tournament we scale per-match xG.
-# The BM xG in TEAM_BM is total tournament expected goals (pre-tournament estimate).
-# We convert to per-match: TEAM_BM[nation] / WC_AVG_MATCHES_PER_TEAM
-WC_AVG_MATCHES_PER_TEAM = 4.0  # realistic expectation across all 48 teams
 
 
 def _norm_name(name: str) -> str:
@@ -160,35 +153,29 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
             )
             continue
 
-        # Step 5: Per-match xG for this nation
-        per_match_xg = team_bm_xg / WC_AVG_MATCHES_PER_TEAM
+        # Step 5: compute_player_shares — pass BM directly, no per-match conversion
+        bm = team_bm_xg
+        shares = compute_player_shares(matched_players, nation, lambda_team=bm)
 
-        # Step 6: compute_player_shares
-        shares = compute_player_shares(matched_players, nation, per_match_xg)
-
-        # Step 7: detect penalty taker
+        # Step 6: detect penalty taker
         pen_taker_id = detect_penalty_taker(matched_players)
 
-        # Step 8: allocate_player for each share
-        budget_assists = per_match_xg * ASSIST_GOAL_RATE
+        # Step 7: allocate_player for each share
+        budget_assists = bm * ASSIST_GOAL_RATE
         for share in shares:
             is_pen_taker = (share.player_id == pen_taker_id)
             allocation = allocate_player(
                 share,
-                per_match_xg,
+                bm,
                 is_pen_taker,
                 budget_assists,
             )
-            # Scale per-match lambdas to tournament totals
-            lambda_goals_tournament   = allocation.lambda_total  * WC_AVG_MATCHES_PER_TEAM
-            lambda_assists_tournament = allocation.lambda_assist * WC_AVG_MATCHES_PER_TEAM
-
             all_entries.append({
                 "nation":           nation,
                 "player_name":      share.player_name,
                 "position":         share.position,
-                "lambda_goals":     lambda_goals_tournament,
-                "lambda_assists":   lambda_assists_tournament,
+                "lambda_goals":     allocation.lambda_total,
+                "lambda_assists":   allocation.lambda_assist,
             })
 
     if not all_entries:
