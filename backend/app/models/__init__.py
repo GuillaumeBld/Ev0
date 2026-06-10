@@ -19,6 +19,7 @@ from app.models.team_xg import TeamXgEstimate
 from app.models.wc2026 import WC2026SquadPlayer
 from app.models.wc2026_lineups import WC2026ExpectedLineup, WC2026ExpectedLineupPlayer  # noqa: F401
 from app.models.wc2026_odds import WC2026OutrightOdd  # noqa: F401
+from app.models.wc2026_pricing import WC2026PlayerPricing  # noqa: F401
 
 __all__ = [
     "AutopilotDecision",
@@ -41,5 +42,6 @@ __all__ = [
     "WC2026ExpectedLineup",
     "WC2026ExpectedLineupPlayer",
     "WC2026OutrightOdd",
+    "WC2026PlayerPricing",
     "WC2026SquadPlayer",
 ]
