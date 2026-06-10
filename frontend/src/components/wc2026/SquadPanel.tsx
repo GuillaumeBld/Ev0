@@ -6,8 +6,10 @@ import { type WCSquadPlayer } from '@/lib/api'
 
 interface SquadPanelProps {
   squad: WCSquadPlayer[]
-  usedNames: Set<string>
+  usedNamesNorm: Set<string>
+  selectedPlayerName: string | null
   onPlayerClick: (player: WCSquadPlayer) => void
+  onAddAsSub: (player: WCSquadPlayer) => void
 }
 
 const POS_ORDER = ['GK', 'DEF', 'MID', 'FWD'] as const
@@ -18,8 +20,13 @@ const POS_COLOR: Record<string, string> = {
   FWD: 'text-orange-400',
 }
 
-export function SquadPanel({ squad, usedNames, onPlayerClick }: SquadPanelProps) {
-  const available = squad.filter((p) => !usedNames.has(p.player_name))
+const normName = (n: string) =>
+  n.normalize('NFKD').replace(/\p{Mn}/gu, '').toLowerCase().trim()
+
+export function SquadPanel({
+  squad, usedNamesNorm, selectedPlayerName, onPlayerClick, onAddAsSub,
+}: SquadPanelProps) {
+  const available = squad.filter((p) => !usedNamesNorm.has(normName(p.player_name)))
 
   const byPos: Record<string, WCSquadPlayer[]> = { GK: [], DEF: [], MID: [], FWD: [] }
   for (const p of available) {
@@ -40,18 +47,40 @@ export function SquadPanel({ squad, usedNames, onPlayerClick }: SquadPanelProps)
             <div className={clsx('text-[10px] font-bold uppercase mb-1', POS_COLOR[pos])}>
               {pos}
             </div>
-            {players.map((p) => (
-              <button
-                key={p.player_name}
-                onClick={() => onPlayerClick(p)}
-                className="w-full text-left px-2 py-1 text-xs rounded hover:bg-gray-700 text-gray-300 hover:text-white transition-colors truncate"
-              >
-                {p.shirt_number != null && (
-                  <span className="text-gray-500 mr-1 text-[10px]">#{p.shirt_number}</span>
-                )}
-                {p.player_name}
-              </button>
-            ))}
+            {players.map((p) => {
+              const isSelected = p.player_name === selectedPlayerName
+              return (
+                <div
+                  key={p.player_name}
+                  className={clsx(
+                    'group flex items-center rounded transition-colors',
+                    isSelected ? 'bg-orange-500/20' : 'hover:bg-gray-700/50',
+                  )}
+                >
+                  <button
+                    onClick={() => onPlayerClick(p)}
+                    className={clsx(
+                      'flex-1 text-left px-2 py-1 text-xs truncate transition-colors',
+                      isSelected ? 'text-orange-300 font-medium' : 'text-gray-300 group-hover:text-white',
+                    )}
+                  >
+                    {p.shirt_number != null && (
+                      <span className="text-gray-500 mr-1 text-[10px]">#{p.shirt_number}</span>
+                    )}
+                    {p.player_name}
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onAddAsSub(p) }}
+                    className="opacity-0 group-hover:opacity-100 px-1.5 py-1 text-gray-500 hover:text-orange-400 transition-opacity shrink-0"
+                    title="Ajouter en remplaçant"
+                  >
+                    <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M6 1v8M3 6l3 3 3-3" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </button>
+                </div>
+              )
+            })}
           </div>
         )
       })}

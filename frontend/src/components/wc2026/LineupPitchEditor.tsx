@@ -1,14 +1,13 @@
 // frontend/src/components/wc2026/LineupPitchEditor.tsx
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { clsx } from 'clsx'
-import { Save, RefreshCw } from 'lucide-react'
+import { Save } from 'lucide-react'
 import { JerseyCard } from './JerseyCard'
 import { SquadPanel } from './SquadPanel'
 import { type WCLineup, type WCLineupPlayer, type WCSquadPlayer, upsertWCLineup } from '@/lib/api'
 
-// Formation definitions: keys = formation string, values = players per line (excl. GK)
 const FORMATIONS: Record<string, number[]> = {
   '4-4-2':   [4, 4, 2],
   '4-4-2d':  [4, 1, 2, 1, 2],
@@ -50,6 +49,10 @@ const ROLE_MINUTES: Record<string, number> = {
   starter: 85, sub_planned: 30, sub_tactical: 12, reserve: 0,
 }
 
+// Normalize accents for cross-source name matching
+const normName = (n: string) =>
+  n.normalize('NFKD').replace(/\p{Mn}/gu, '').toLowerCase().trim()
+
 interface LineupPitchEditorProps {
   nation: string
   flagEmoji: string | null
@@ -69,8 +72,20 @@ export function LineupPitchEditor({
     initialLineups['default']?.players ?? []
   )
   const [selectedSlot, setSelectedSlot] = useState<{ line: number; slot: number } | null>(null)
+  const [selectedPlayer, setSelectedPlayer] = useState<WCSquadPlayer | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setSelectedPlayer(null)
+        setSelectedSlot(null)
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
 
   function loadContext(ctx: string) {
     setContext(ctx)
@@ -84,6 +99,7 @@ export function LineupPitchEditor({
       setPlayers(def?.players ?? [])
     }
     setSelectedSlot(null)
+    setSelectedPlayer(null)
   }
 
   function changeFormation(newFmt: string) {
@@ -117,19 +133,45 @@ export function LineupPitchEditor({
     return players.find((p) => p.is_starter && p.line_index === line && p.slot_index === slot)
   }
 
-  function placePlayer(squadPlayer: WCSquadPlayer) {
-    const existing = players.find((p) => p.player_name === squadPlayer.player_name)
-    if (existing) return
+  // Click a player in the sidebar: select (highlight) or deselect
+  function handlePlayerSelect(squadPlayer: WCSquadPlayer) {
+    if (players.some((p) => normName(p.player_name) === normName(squadPlayer.player_name))) return
+    setSelectedPlayer((prev) =>
+      prev?.player_name === squadPlayer.player_name ? null : squadPlayer
+    )
+    setSelectedSlot(null)
+  }
 
-    if (selectedSlot) {
-      const { line, slot } = selectedSlot
+  // Directly add a player to the bench without going through slot selection
+  function addAsSub(squadPlayer: WCSquadPlayer) {
+    if (players.some((p) => normName(p.player_name) === normName(squadPlayer.player_name))) return
+    setPlayers((prev) => [
+      ...prev,
+      {
+        player_name: squadPlayer.player_name,
+        position: squadPlayer.position,
+        shirt_number: squadPlayer.shirt_number,
+        line_index: -1,
+        slot_index: prev.filter((p) => !p.is_starter).length,
+        is_starter: false,
+        role: 'reserve',
+        expected_minutes: 0,
+      },
+    ])
+    setSelectedPlayer(null)
+  }
+
+  // Click a slot on the pitch
+  function handleSlotClick(line: number, slot: number) {
+    if (selectedPlayer) {
+      // Place the selected player here (replacing whoever was there)
       const filtered = players.filter(
         (p) => !(p.is_starter && p.line_index === line && p.slot_index === slot)
       )
       filtered.push({
-        player_name: squadPlayer.player_name,
-        position: squadPlayer.position,
-        shirt_number: squadPlayer.shirt_number,
+        player_name: selectedPlayer.player_name,
+        position: selectedPlayer.position,
+        shirt_number: selectedPlayer.shirt_number,
         line_index: line,
         slot_index: slot,
         is_starter: true,
@@ -137,21 +179,10 @@ export function LineupPitchEditor({
         expected_minutes: ROLE_MINUTES['starter'],
       })
       setPlayers(filtered)
-      setSelectedSlot(null)
+      setSelectedPlayer(null)
     } else {
-      setPlayers((prev) => [
-        ...prev,
-        {
-          player_name: squadPlayer.player_name,
-          position: squadPlayer.position,
-          shirt_number: squadPlayer.shirt_number,
-          line_index: -1,
-          slot_index: prev.filter((p) => !p.is_starter).length,
-          is_starter: false,
-          role: 'reserve',
-          expected_minutes: 0,
-        },
-      ])
+      const isSelected = selectedSlot?.line === line && selectedSlot?.slot === slot
+      setSelectedSlot(isSelected ? null : { line, slot })
     }
   }
 
@@ -175,7 +206,8 @@ export function LineupPitchEditor({
     }
   }
 
-  const usedNames = new Set(players.map((p) => p.player_name))
+  // Normalize names for dedup check so accented variants are recognised as placed
+  const usedNamesNorm = new Set(players.map((p) => normName(p.player_name)))
   const lines = FORMATIONS[formation] ?? [4, 3, 3]
   const subs = players.filter((p) => !p.is_starter)
 
@@ -229,6 +261,19 @@ export function LineupPitchEditor({
           </div>
         </div>
 
+        {/* Selection hint */}
+        {selectedPlayer && (
+          <div className="flex items-center gap-2 text-xs text-orange-300 bg-orange-500/10 border border-orange-500/30 rounded-lg px-3 py-2">
+            <span>Cliquez un slot pour placer <strong>{selectedPlayer.player_name}</strong></span>
+            <button
+              onClick={() => setSelectedPlayer(null)}
+              className="ml-auto text-gray-500 hover:text-white leading-none"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Pitch */}
         <div className="relative bg-green-900/30 border border-green-800/40 rounded-xl p-4 flex flex-col gap-4">
           {[...lines].reverse().map((count, revIdx) => {
@@ -247,15 +292,17 @@ export function LineupPitchEditor({
                           expectedMinutes={starter.expected_minutes}
                           isSelected={isSelected}
                           role={starter.role as 'starter'}
-                          onClick={() => setSelectedSlot(isSelected ? null : { line: lineIdx, slot: slotIdx })}
+                          onClick={() => handleSlotClick(lineIdx, slotIdx)}
                           onMinutesChange={(m) => updateMinutes(starter.player_name, m)}
                         />
                       ) : (
                         <button
-                          onClick={() => setSelectedSlot(isSelected ? null : { line: lineIdx, slot: slotIdx })}
+                          onClick={() => handleSlotClick(lineIdx, slotIdx)}
                           className={clsx(
                             'w-16 h-20 rounded-md border-2 border-dashed flex items-center justify-center text-xs transition-colors',
-                            isSelected
+                            selectedPlayer
+                              ? 'border-orange-400/60 text-orange-400/60 hover:border-orange-400 hover:text-orange-400'
+                              : isSelected
                               ? 'border-orange-400 text-orange-400'
                               : 'border-gray-600 text-gray-600 hover:border-gray-400',
                           )}
@@ -282,15 +329,19 @@ export function LineupPitchEditor({
                   expectedMinutes={gk.expected_minutes}
                   isSelected={isSelected}
                   role="starter"
-                  onClick={() => setSelectedSlot(isSelected ? null : { line: 0, slot: 0 })}
+                  onClick={() => handleSlotClick(0, 0)}
                   onMinutesChange={(m) => updateMinutes(gk.player_name, m)}
                 />
               ) : (
                 <button
-                  onClick={() => setSelectedSlot(isSelected ? null : { line: 0, slot: 0 })}
+                  onClick={() => handleSlotClick(0, 0)}
                   className={clsx(
                     'w-16 h-20 rounded-md border-2 border-dashed flex items-center justify-center text-xs transition-colors',
-                    isSelected ? 'border-orange-400 text-orange-400' : 'border-gray-600 text-gray-600 hover:border-gray-400',
+                    selectedPlayer
+                      ? 'border-orange-400/60 text-orange-400/60 hover:border-orange-400 hover:text-orange-400'
+                      : isSelected
+                      ? 'border-orange-400 text-orange-400'
+                      : 'border-gray-600 text-gray-600 hover:border-gray-400',
                   )}
                 >
                   GK
@@ -328,7 +379,13 @@ export function LineupPitchEditor({
 
       {/* Right: squad panel */}
       <div className="w-44 shrink-0 border-l border-gray-700 pl-3">
-        <SquadPanel squad={squad} usedNames={usedNames} onPlayerClick={placePlayer} />
+        <SquadPanel
+          squad={squad}
+          usedNamesNorm={usedNamesNorm}
+          selectedPlayerName={selectedPlayer?.player_name ?? null}
+          onPlayerClick={handlePlayerSelect}
+          onAddAsSub={addAsSub}
+        />
       </div>
     </div>
   )
