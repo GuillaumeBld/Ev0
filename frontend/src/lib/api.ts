@@ -905,3 +905,59 @@ export async function syncRotowireLineups(): Promise<{
   const { data } = await api.post('/api/v1/wc2026/lineups/sync-rotowire')
   return data
 }
+
+// ── WC2026 Tournament Pricing ────────────────────────────────────────────────
+
+export interface WCPlayerPricing {
+  nation: string
+  player_name: string
+  position: string | null
+  lambda_goals: number
+  lambda_assists: number
+  // cuts — goals
+  p_1g: number | null
+  p_2g: number | null
+  p_3g: number | null
+  p_4g: number | null
+  fair_1g: number | null
+  fair_2g: number | null
+  fair_3g: number | null
+  fair_4g: number | null
+  // cuts — assists
+  p_1a: number | null
+  p_2a: number | null
+  p_3a: number | null
+  fair_1a: number | null
+  fair_2a: number | null
+  fair_3a: number | null
+  // outrights
+  p_top_scorer: number | null
+  p_top_assister: number | null
+  fair_top_scorer: number | null
+  fair_top_assister: number | null
+  // bookmaker edge
+  bk_top_scorer: number | null
+  bk_top_assister: number | null
+  edge_top_scorer: number | null
+  edge_top_assister: number | null
+}
+
+export interface WCComputeResult {
+  players_computed: number
+  nations_computed: number
+  duration_s: number
+}
+
+export async function computeWCPricing(): Promise<WCComputeResult> {
+  const { data } = await api.post('/api/v1/wc2026/pricing/compute')
+  return data
+}
+
+export async function getWCPricingPlayers(params?: {
+  nation?: string
+  position?: string
+  min_lambda?: number
+}): Promise<WCPlayerPricing[]> {
+  const { data } = await api.get('/api/v1/wc2026/pricing/players', { params })
+  return data
+}
