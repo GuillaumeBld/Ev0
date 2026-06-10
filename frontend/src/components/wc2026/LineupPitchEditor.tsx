@@ -377,7 +377,7 @@ export function LineupPitchEditor({
       </div>
 
       {/* Right: squad panel */}
-      <div className="w-44 shrink-0 border-l border-gray-700 pl-3">
+      <div className="w-72 shrink-0 border-l border-gray-700 pl-4">
         <SquadPanel
           squad={squad}
           usedNamesNorm={usedNamesNorm}

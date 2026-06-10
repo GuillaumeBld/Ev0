@@ -54,7 +54,7 @@ export function SquadPanel({
                 >
                   <button
                     onClick={() => onPlayerClick(p)}
-                    className="flex-1 text-left px-2 py-1 text-xs truncate text-gray-300 group-hover:text-white transition-colors"
+                    className="flex-1 text-left px-2 py-1 text-sm text-gray-300 group-hover:text-white transition-colors"
                   >
                     {p.shirt_number != null && (
                       <span className="text-gray-500 mr-1 text-[10px]">#{p.shirt_number}</span>
