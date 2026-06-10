@@ -186,6 +186,10 @@ export function LineupPitchEditor({
     }
   }
 
+  function removePlayer(playerName: string) {
+    setPlayers((prev) => prev.filter((p) => p.player_name !== playerName))
+  }
+
   function updateMinutes(playerName: string, minutes: number) {
     setPlayers((prev) =>
       prev.map((p) => p.player_name === playerName ? { ...p, expected_minutes: minutes } : p)
@@ -294,6 +298,7 @@ export function LineupPitchEditor({
                           role={starter.role as 'starter'}
                           onClick={() => handleSlotClick(lineIdx, slotIdx)}
                           onMinutesChange={(m) => updateMinutes(starter.player_name, m)}
+                          onRemove={() => removePlayer(starter.player_name)}
                         />
                       ) : (
                         <button
@@ -331,6 +336,7 @@ export function LineupPitchEditor({
                   role="starter"
                   onClick={() => handleSlotClick(0, 0)}
                   onMinutesChange={(m) => updateMinutes(gk.player_name, m)}
+                  onRemove={() => removePlayer(gk.player_name)}
                 />
               ) : (
                 <button
@@ -369,6 +375,7 @@ export function LineupPitchEditor({
                   role={p.role as 'sub_planned' | 'sub_tactical' | 'reserve'}
                   onClick={() => {}}
                   onMinutesChange={(m) => updateMinutes(p.player_name, m)}
+                  onRemove={() => removePlayer(p.player_name)}
                   compact
                 />
               ))}

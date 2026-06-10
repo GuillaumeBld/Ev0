@@ -11,6 +11,7 @@ interface JerseyCardProps {
   role: 'starter' | 'sub_planned' | 'sub_tactical' | 'reserve'
   onClick: () => void
   onMinutesChange: (minutes: number) => void
+  onRemove?: () => void
   stat?: number | null  // future: Buteur/Passeur/Décisif cote
   compact?: boolean     // for subs row
 }
@@ -23,6 +24,7 @@ export function JerseyCard({
   role,
   onClick,
   onMinutesChange,
+  onRemove,
   stat,
   compact = false,
 }: JerseyCardProps) {
@@ -50,7 +52,7 @@ export function JerseyCard({
     <div
       onClick={onClick}
       className={clsx(
-        'flex flex-col items-center cursor-pointer select-none transition-transform',
+        'group flex flex-col items-center cursor-pointer select-none transition-transform',
         isSelected && 'scale-105',
         compact ? 'w-14' : 'w-16',
       )}
@@ -68,6 +70,14 @@ export function JerseyCard({
         <span className={clsx('font-bold text-white', compact ? 'text-lg' : 'text-xl')}>
           {shirtNumber ?? '?'}
         </span>
+        {onRemove && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onRemove() }}
+            className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-gray-700 border border-gray-600 text-gray-400 hover:bg-red-500/80 hover:border-red-400 hover:text-white flex items-center justify-center text-[10px] leading-none transition-colors opacity-0 group-hover:opacity-100"
+          >
+            ×
+          </button>
+        )}
       </div>
 
       {/* Player name */}
