@@ -174,7 +174,9 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
                 "nation":           nation,
                 "player_name":      share.player_name,
                 "position":         share.position,
-                "lambda_goals":     allocation.lambda_total,
+                # Use uncapped open-play + penalty (allocate_player caps at 3.0 for per-match sanity,
+                # which is wrong for tournament BMs of 10-13)
+                "lambda_goals":     round(allocation.lambda_open_play + allocation.lambda_penalty, 4),
                 "lambda_assists":   allocation.lambda_assist,
             })
 
