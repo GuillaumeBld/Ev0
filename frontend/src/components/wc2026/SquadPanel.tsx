@@ -7,7 +7,6 @@ import { type WCSquadPlayer } from '@/lib/api'
 interface SquadPanelProps {
   squad: WCSquadPlayer[]
   usedNamesNorm: Set<string>
-  selectedPlayerName: string | null
   onPlayerClick: (player: WCSquadPlayer) => void
   onAddAsSub: (player: WCSquadPlayer) => void
 }
@@ -24,7 +23,7 @@ const normName = (n: string) =>
   n.normalize('NFKD').replace(/\p{Mn}/gu, '').toLowerCase().trim()
 
 export function SquadPanel({
-  squad, usedNamesNorm, selectedPlayerName, onPlayerClick, onAddAsSub,
+  squad, usedNamesNorm, onPlayerClick, onAddAsSub,
 }: SquadPanelProps) {
   const available = squad.filter((p) => !usedNamesNorm.has(normName(p.player_name)))
 
@@ -48,21 +47,14 @@ export function SquadPanel({
               {pos}
             </div>
             {players.map((p) => {
-              const isSelected = p.player_name === selectedPlayerName
               return (
                 <div
                   key={p.player_name}
-                  className={clsx(
-                    'group flex items-center rounded transition-colors',
-                    isSelected ? 'bg-orange-500/20' : 'hover:bg-gray-700/50',
-                  )}
+                  className="group flex items-center rounded hover:bg-gray-700/50 transition-colors"
                 >
                   <button
                     onClick={() => onPlayerClick(p)}
-                    className={clsx(
-                      'flex-1 text-left px-2 py-1 text-xs truncate transition-colors',
-                      isSelected ? 'text-orange-300 font-medium' : 'text-gray-300 group-hover:text-white',
-                    )}
+                    className="flex-1 text-left px-2 py-1 text-xs truncate text-gray-300 group-hover:text-white transition-colors"
                   >
                     {p.shirt_number != null && (
                       <span className="text-gray-500 mr-1 text-[10px]">#{p.shirt_number}</span>
