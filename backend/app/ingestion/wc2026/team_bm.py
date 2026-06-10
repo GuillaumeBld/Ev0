@@ -99,6 +99,16 @@ WC2026_LINEUP_NATION_MAP: dict[str, str] = {
     "Iraq":               "Irak",
 }
 
+# Maps TEAM_BM English names → wc2026_scouting_stats.nation when they diverge.
+WC2026_SCOUTING_NATION_MAP: dict[str, str] = {
+    "Bosnia-Herzegovina": "Bosnia and Herzegovina",
+    "Ivory Coast":        "Côte d'Ivoire",
+    "Curaçao":            "Curacao",
+    "Czechia":            "Czech Republic",
+    "South Korea":        "Korea Republic",
+    "Turkey":             "Türkiye",
+}
+
 # Maps TEAM_BM nation names → Bzzoiro national_team_name when they diverge.
 WC2026_NATION_NAME_ALIASES: dict[str, str] = {
     "United States":      "USA",

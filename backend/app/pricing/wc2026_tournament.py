@@ -63,16 +63,20 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
     """Compute per-player tournament pricing for WC2026.
 
     Formula:
-        weight_g_i  = npxg_per_90_i × (expected_minutes_i / 90)
-        share_g_i   = weight_g_i / sum(weight_g)          # relative fraction, sums to 1
-        lambda_goals = share_g_i × BM                     # expected goals over tournament
+        weight_g_i  = xg_p90_i × (expected_minutes_i / 90)
+        share_g_i   = weight_g_i / sum(weight_g)
+        lambda_goals = share_g_i × BM
 
-    Same logic for assists with xa_per_90 and BM × _ASSIST_GOAL_RATE.
+    Stats source: wc2026_scouting_stats (all 48 nations).
+    Lineup source: wc2026_expected_lineups / wc2026_expected_lineup_players.
     """
-    from app.ingestion.wc2026.team_bm import TEAM_BM, WC2026_NATION_NAME_ALIASES, WC2026_LINEUP_NATION_MAP
-    from app.models.bzzoiro import BzzTeam
+    from sqlalchemy import text
+    from app.ingestion.wc2026.team_bm import (
+        TEAM_BM,
+        WC2026_LINEUP_NATION_MAP,
+        WC2026_SCOUTING_NATION_MAP,
+    )
     from app.models.wc2026_lineups import WC2026ExpectedLineup, WC2026ExpectedLineupPlayer
-    from app.pricing.team_xg import _load_national_team_players
 
     all_entries: list[dict[str, Any]] = []
 
@@ -101,31 +105,36 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
             for lp in lp_result.scalars().all()
         }
 
-        # 3. Resolve Bzzoiro team
-        bzz_name = WC2026_NATION_NAME_ALIASES.get(nation, nation)
-        team_result = await db.execute(
-            select(BzzTeam).where(BzzTeam.name == bzz_name).limit(1)
-        )
-        bzz_team = team_result.scalar_one_or_none()
-        if bzz_team is None:
+        # 3. Load scouting stats for this nation
+        scouting_nation = WC2026_SCOUTING_NATION_MAP.get(nation, nation)
+        rows = (await db.execute(
+            text(
+                "SELECT player_name, normalized_name, stats "
+                "FROM wc2026_scouting_stats WHERE nation = :nation"
+            ),
+            {"nation": scouting_nation},
+        )).mappings().all()
+
+        if not rows:
             logger.warning(
-                "wc2026_pricing: bzz_team not found for %s (searched '%s') — skipped",
-                nation, bzz_name,
+                "wc2026_pricing: no scouting stats for %s (searched '%s') — skipped",
+                nation, scouting_nation,
             )
             continue
 
-        # 4. Load Bzzoiro club stats + match to lineup by normalised name
-        bzz_players = await _load_national_team_players(db, bzz_team.api_id)
+        # 4. Match scouting rows to lineup by normalised name
         matched: list[dict[str, Any]] = []
-        for p in bzz_players:
-            mins = lineup_minutes.get(_norm_name(p["player_name"]))
+        for row in rows:
+            norm = row["normalized_name"] or _norm_name(row["player_name"])
+            mins = lineup_minutes.get(norm)
             if mins is None:
                 continue
+            stats = row["stats"] or {}
             matched.append({
-                "player_name": p["player_name"],
-                "position":    p.get("position"),
-                "npxg_per_90": p.get("npxg_per_90") or p.get("xg_per_90") or 0.0,
-                "xa_per_90":   p.get("xa_per_90") or 0.0,
+                "player_name": row["player_name"],
+                "position":    stats.get("position"),
+                "npxg_per_90": float(stats.get("xg_p90") or 0.0),
+                "xa_per_90":   float(stats.get("xa_p90") or 0.0),
                 "minutes":     mins,
             })
 
