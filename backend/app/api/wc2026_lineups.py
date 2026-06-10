@@ -20,6 +20,38 @@ from app.ingestion.wc2026.sync_rotowire_lineups import seed_from_rotowire
 def _norm_name(name: str) -> str:
     n = unicodedata.normalize("NFKD", name.lower().strip())
     return "".join(c for c in n if not unicodedata.combining(c))
+
+
+def _lookup_shirt(
+    lineup_name: str,
+    lineup_position: str,
+    squad: list,
+) -> int | None:
+    """Find shirt number with exact-norm match, then prefix+position fallback.
+
+    Handles Brazilian-style single-name players (e.g. 'Douglas' → 'Douglas Santos').
+    """
+    key = _norm_name(lineup_name)
+    # 1. Exact normalized match
+    for sp in squad:
+        if _norm_name(sp.player_name) == key:
+            return sp.shirt_number
+    # 2. Prefix match: squad name starts with lineup name (word boundary)
+    candidates = [
+        sp for sp in squad
+        if _norm_name(sp.player_name).startswith(key + " ")
+    ]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0].shirt_number
+    # 3. Disambiguate by position
+    pos_filtered = [sp for sp in candidates if sp.position == lineup_position]
+    if len(pos_filtered) == 1:
+        return pos_filtered[0].shirt_number
+    # 4. Still ambiguous: pick lowest shirt number (more established player)
+    best = min(pos_filtered or candidates, key=lambda sp: sp.shirt_number or 999)
+    return best.shirt_number
 from app.models.wc2026 import WC2026SquadPlayer
 from app.models.wc2026_lineups import WC2026ExpectedLineup, WC2026ExpectedLineupPlayer
 
@@ -161,8 +193,6 @@ async def get_nation_lineups(
     )
     lineups = lineups_result.scalars().all()
 
-    shirt_numbers = {_norm_name(p.player_name): p.shirt_number for p in squad}
-
     # Load players for each lineup
     lineups_out: dict[str, LineupOut] = {}
     for lineup in lineups:
@@ -189,7 +219,7 @@ async def get_nation_lineups(
                     is_starter=p.is_starter,
                     role=p.role,
                     expected_minutes=p.expected_minutes,
-                    shirt_number=shirt_numbers.get(_norm_name(p.player_name)),
+                    shirt_number=_lookup_shirt(p.player_name, p.position, squad),
                 )
                 for p in players
             ],
@@ -286,11 +316,9 @@ async def upsert_lineup(
     players = players_result.scalars().all()
 
     squad_result = await session.execute(
-        select(WC2026SquadPlayer.player_name, WC2026SquadPlayer.shirt_number).where(
-            WC2026SquadPlayer.nation == nation
-        )
+        select(WC2026SquadPlayer).where(WC2026SquadPlayer.nation == nation)
     )
-    shirt_numbers = {_norm_name(row.player_name): row.shirt_number for row in squad_result.all()}
+    squad = squad_result.scalars().all()
 
     return LineupOut(
         nation=lineup.nation,
@@ -306,7 +334,7 @@ async def upsert_lineup(
                 is_starter=p.is_starter,
                 role=p.role,
                 expected_minutes=p.expected_minutes,
-                shirt_number=shirt_numbers.get(_norm_name(p.player_name)),
+                shirt_number=_lookup_shirt(p.player_name, p.position, squad),
             )
             for p in players
         ],
