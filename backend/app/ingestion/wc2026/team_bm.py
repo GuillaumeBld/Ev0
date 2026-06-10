@@ -1,0 +1,68 @@
+"""Pre-tournament expected goals (BM) per nation for WC2026.
+
+Keys must match wc2026_squad_players.nation (English names from DB).
+WC2026_NATION_NAME_ALIASES maps TEAM_BM keys to Bzzoiro national_team_name
+when they differ (used when resolving national_team_api_id in bzz_players).
+"""
+
+TEAM_BM: dict[str, float] = {
+    "Spain":                13.03,
+    "Brazil":               12.33,
+    "Germany":              11.78,
+    "England":              11.74,
+    "France":               10.90,
+    "Argentina":            10.83,
+    "Portugal":             10.23,
+    "Belgium":               9.56,
+    "Switzerland":           8.27,
+    "Netherlands":           7.97,
+    "Colombia":              7.69,
+    "Norway":                7.15,
+    "Mexico":                7.08,
+    "Ecuador":               6.63,
+    "Uruguay":               6.51,
+    "Canada":                6.23,
+    "United States":         6.20,
+    "Croatia":               6.06,
+    "Morocco":               5.98,
+    "Ivory Coast":           5.85,
+    "Austria":               5.78,
+    "Turkey":                5.73,
+    "Japan":                 5.38,
+    "Senegal":               5.31,
+    "Egypt":                 4.96,
+    "Scotland":              4.64,
+    "South Korea":           4.48,
+    "Czechia":               4.29,
+    "Sweden":                4.21,
+    "Bosnia-Herzegovina":    4.15,
+    "Algeria":               4.08,
+    "Paraguay":              3.95,
+    "Iran":                  3.80,
+    "Ghana":                 3.22,
+    "Australia":             3.19,
+    "Congo DR":              2.94,
+    "Panama":                2.94,
+    "New Zealand":           2.74,
+    "South Africa":          2.64,
+    "Uzbekistan":            2.62,
+    "Tunisia":               2.56,
+    "Cape Verde Islands":    2.51,
+    "Saudi Arabia":          2.35,
+    "Curaçao":               2.17,
+    "Haiti":                 2.08,
+    "Jordan":                2.05,
+    "Qatar":                 1.99,
+    "Iraq":                  1.53,
+}
+
+# Maps TEAM_BM nation names → Bzzoiro national_team_name when they diverge.
+WC2026_NATION_NAME_ALIASES: dict[str, str] = {
+    "United States":      "USA",
+    "Ivory Coast":        "Côte d'Ivoire",
+    "Bosnia-Herzegovina": "Bosnia and Herzegovina",
+    "Congo DR":           "DR Congo",
+    "Cape Verde Islands": "Cabo Verde",
+    "Czechia":            "Czech Republic",
+    "South Korea":        "Korea Republic",
+}
