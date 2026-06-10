@@ -3,6 +3,7 @@
 import { useMemo } from 'react'
 import { clsx } from 'clsx'
 import { WCNation, WCSquad, WCPlayer } from '@/lib/api'
+import { FlagImg } from '@/components/FlagImg'
 
 interface Props {
   nations: WCNation[]
@@ -146,7 +147,7 @@ export function WC2026View({ nations, selectedNation, squad, loading, onSelectNa
                       : 'border-transparent text-gray-400 hover:bg-gray-800 hover:text-white'
                   )}
                 >
-                  <span>{n.flag_emoji ?? '🌍'}</span>
+                  <FlagImg emoji={n.flag_emoji} size={16} />
                   <span className="truncate">{n.nation}</span>
                 </button>
               ))}
@@ -169,7 +170,7 @@ export function WC2026View({ nations, selectedNation, squad, loading, onSelectNa
           {selectedNation && !loading && squad && (
             <>
               <div className="flex items-center gap-2 mb-5">
-                <span className="text-2xl">{squad.flag_emoji ?? '🌍'}</span>
+                <FlagImg emoji={squad.flag_emoji} size={32} />
                 <div>
                   <h2 className="text-white font-bold text-lg leading-tight">{squad.nation}</h2>
                   <span className="text-gray-400 text-xs">
