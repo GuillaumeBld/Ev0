@@ -14,6 +14,11 @@ def test_team_bm_spain_is_top():
     assert TEAM_BM["Spain"] == max(TEAM_BM.values())
 
 
-def test_aliases_values_not_in_team_bm():
+def test_all_alias_keys_exist_in_team_bm():
     for key in WC2026_NATION_NAME_ALIASES:
         assert key in TEAM_BM, f"Alias key {key!r} not in TEAM_BM"
+
+
+def test_alias_values_differ_from_keys():
+    for key, value in WC2026_NATION_NAME_ALIASES.items():
+        assert key != value, f"Alias {key!r} maps to itself"
