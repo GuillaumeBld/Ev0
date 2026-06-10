@@ -122,11 +122,17 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
             )
             continue
 
-        # 4. Match scouting rows to lineup by normalised name
+        # 4. Match scouting rows to lineup by normalised name.
+        # Fallback: try reversed token order for cultures where name format differs
+        # (e.g. "Heung-min Son" in scouting vs "Son Heung-min" in lineup).
         matched: list[dict[str, Any]] = []
         for row in rows:
             norm = _norm_name(row["player_name"])
             mins = lineup_minutes.get(norm)
+            if mins is None:
+                parts = norm.split()
+                if len(parts) == 2:
+                    mins = lineup_minutes.get(f"{parts[1]} {parts[0]}")
             if mins is None:
                 continue
             stats = row["stats"] or {}
@@ -138,7 +144,7 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
                 "minutes":     mins,
             })
 
-        if len(matched) < 5:
+        if len(matched) < 3:
             logger.warning(
                 "wc2026_pricing: only %d matched players for %s — skipped",
                 len(matched), nation,
