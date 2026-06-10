@@ -53,6 +53,7 @@ const navGroups = [
     label: 'CDM 2026',
     items: [
       { name: 'Compos', href: '/dashboard/wc2026/lineups', icon: ClipboardList },
+      { name: 'Pricing', href: '/dashboard/wc2026/pricing', icon: Calculator },
     ],
   },
   {
