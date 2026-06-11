@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sync WC2026 outright odds (top scorer, winner…) depuis Unibet et Betclic.
+"""Sync WC2026 outright odds (top scorer, winner…) depuis Unibet, PMU et Betclic.
 
 À lancer en LOCAL (IP résidentielle FR) — les bookmakers bloquent les IP datacenter.
 
@@ -7,12 +7,13 @@ Prérequis Betclic :
     pip install playwright && playwright install chromium
 
 Usage :
-    python scripts/sync_wc_outrights.py [--dry-run] [--bookmaker unibet|betclic]
+    python scripts/sync_wc_outrights.py [--dry-run] [--bookmaker unibet|pmu|betclic]
 
 Exemples :
     python scripts/sync_wc_outrights.py --dry-run
     python scripts/sync_wc_outrights.py
     python scripts/sync_wc_outrights.py --bookmaker unibet
+    python scripts/sync_wc_outrights.py --bookmaker pmu
 """
 from __future__ import annotations
 
@@ -35,34 +36,38 @@ _DEFAULT_DSN = "postgresql://ev0:eqv2pWEYjMchXWAVVouiAb4nD2uKBug@213.130.144.204
 
 
 async def main(dry_run: bool, bookmaker: str | None) -> None:
+    from collections import Counter
+
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
     from sqlalchemy.orm import sessionmaker
 
     from app.ingestion.wc2026.sync_wc_outrights import (
         scrape_betclic_wc_outrights,
+        scrape_pmu_wc_outrights,
         scrape_unibet_wc_outrights,
         store_wc_outrights,
     )
 
     dsn = os.environ.get("DATABASE_URL", _DEFAULT_DSN)
-    # Convert sync DSN to async
     async_dsn = dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
 
     engine = create_async_engine(async_dsn, echo=False)
     AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-    # Run scrapers
-    tasks = []
+    # Choix des scrapers à lancer
+    scrapers: list[tuple[str, object]] = []
     if bookmaker in (None, "unibet"):
-        tasks.append(("unibet", scrape_unibet_wc_outrights()))
+        scrapers.append(("unibet", scrape_unibet_wc_outrights()))
+    if bookmaker in (None, "pmu"):
+        scrapers.append(("pmu", scrape_pmu_wc_outrights()))
     if bookmaker in (None, "betclic"):
-        tasks.append(("betclic", scrape_betclic_wc_outrights()))
+        scrapers.append(("betclic", scrape_betclic_wc_outrights()))
 
     all_results: list[dict] = []
-    for name, coro in tasks:
+    for name, coro in scrapers:
         logger.info("Scraping %s…", name)
         try:
-            rows = await coro
+            rows = await coro  # type: ignore[misc]
             logger.info("%s: %d cotes", name, len(rows))
             all_results.extend(rows)
         except Exception as exc:
@@ -72,10 +77,10 @@ async def main(dry_run: bool, bookmaker: str | None) -> None:
         logger.warning("Aucune cote récupérée.")
         return
 
-    # Group by market_type for summary
-    from collections import Counter
     summary = Counter(r["market_type"] for r in all_results)
-    logger.info("Résumé: %s", dict(summary))
+    logger.info("Résumé par market_type: %s", dict(summary))
+    by_book = Counter(r["bookmaker"] for r in all_results)
+    logger.info("Résumé par bookmaker: %s", dict(by_book))
 
     if dry_run:
         logger.info("--dry-run: pas de stockage. Aperçu (%d rows):", len(all_results))
@@ -91,7 +96,11 @@ async def main(dry_run: bool, bookmaker: str | None) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Sync WC2026 outright odds locally")
     parser.add_argument("--dry-run", action="store_true", help="Affiche les cotes sans stocker")
-    parser.add_argument("--bookmaker", choices=["unibet", "betclic"], help="Limiter à un seul bookmaker")
+    parser.add_argument(
+        "--bookmaker",
+        choices=["unibet", "pmu", "betclic"],
+        help="Limiter à un seul bookmaker",
+    )
     args = parser.parse_args()
 
     asyncio.run(main(dry_run=args.dry_run, bookmaker=args.bookmaker))

@@ -10,10 +10,14 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.models.wc2026 import WC2026SquadPlayer
+from app.models.wc2026_odds import WC2026OutrightOdd
 from app.models.wc2026_pricing import WC2026PlayerPricing
 from app.pricing.wc2026_tournament import compute_tournament_pricing
 
 router = APIRouter(prefix="/wc2026/pricing", tags=["wc2026"])
+
+_NATION_MARKETS = ("winner", "top4", "top8", "group_stage")
 
 
 def _norm_name(name: str) -> str:
@@ -146,3 +150,80 @@ async def get_pricing_players(
             edge_top_assister=edge_ta,
         ))
     return out
+
+
+# ── Nation outright odds ──────────────────────────────────────────────────────
+
+class BookmakerOdds(BaseModel):
+    unibet: float | None = None
+    pmu: float | None = None
+    betclic: float | None = None
+
+
+class NationOddsRow(BaseModel):
+    nation: str
+    group_letter: str | None
+    flag_emoji: str | None
+    winner: BookmakerOdds
+    top4: BookmakerOdds
+    top8: BookmakerOdds
+    group_stage: BookmakerOdds
+
+
+@router.get("/nations", response_model=list[NationOddsRow])
+async def get_nation_odds(
+    session: AsyncSession = Depends(get_db),
+) -> list[NationOddsRow]:
+    """Return nation-level outright odds (winner, top4, top8, group_stage) per bookmaker."""
+    # Cotes nations
+    odds_res = await session.execute(
+        select(
+            WC2026OutrightOdd.nation,
+            WC2026OutrightOdd.market_type,
+            WC2026OutrightOdd.bookmaker,
+            WC2026OutrightOdd.odds,
+        ).where(
+            WC2026OutrightOdd.nation.isnot(None),
+            WC2026OutrightOdd.market_type.in_(_NATION_MARKETS),
+        )
+    )
+    # Pivot : { nation → { market_type → { bookmaker → odds } } }
+    pivot: dict[str, dict[str, dict[str, float]]] = {}
+    for nation, market_type, bookmaker, odds in odds_res.all():
+        pivot.setdefault(nation, {}).setdefault(market_type, {})[bookmaker] = odds
+
+    # Métadonnées nations (group_letter, flag_emoji)
+    meta_res = await session.execute(
+        select(
+            WC2026SquadPlayer.nation,
+            WC2026SquadPlayer.group_letter,
+            WC2026SquadPlayer.flag_emoji,
+        )
+        .distinct(WC2026SquadPlayer.nation)
+        .order_by(WC2026SquadPlayer.group_letter, WC2026SquadPlayer.nation)
+    )
+    meta: dict[str, dict] = {
+        r.nation: {"group_letter": r.group_letter, "flag_emoji": r.flag_emoji}
+        for r in meta_res.all()
+    }
+
+    # Fusionne toutes les nations connues (DB + cotes)
+    all_nations = sorted(
+        meta.keys() | pivot.keys(),
+        key=lambda n: (meta.get(n, {}).get("group_letter", "Z"), n),
+    )
+
+    rows = []
+    for nation in all_nations:
+        m = meta.get(nation, {})
+        bk = pivot.get(nation, {})
+        rows.append(NationOddsRow(
+            nation=nation,
+            group_letter=m.get("group_letter"),
+            flag_emoji=m.get("flag_emoji"),
+            winner=BookmakerOdds(**bk.get("winner", {})),
+            top4=BookmakerOdds(**bk.get("top4", {})),
+            top8=BookmakerOdds(**bk.get("top8", {})),
+            group_stage=BookmakerOdds(**bk.get("group_stage", {})),
+        ))
+    return rows

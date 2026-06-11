@@ -961,3 +961,26 @@ export async function getWCPricingPlayers(params?: {
   const { data } = await api.get('/api/v1/wc2026/pricing/players', { params })
   return data
 }
+
+// ── WC2026 Nation outright odds ──────────────────────────────────────────────
+
+export interface BookmakerOdds {
+  unibet: number | null
+  pmu: number | null
+  betclic: number | null
+}
+
+export interface WCNationOdds {
+  nation: string
+  group_letter: string | null
+  flag_emoji: string | null
+  winner: BookmakerOdds
+  top4: BookmakerOdds
+  top8: BookmakerOdds
+  group_stage: BookmakerOdds
+}
+
+export async function getWCNationsOdds(): Promise<WCNationOdds[]> {
+  const { data } = await api.get('/api/v1/wc2026/pricing/nations')
+  return data
+}
