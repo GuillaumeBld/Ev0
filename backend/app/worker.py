@@ -33,6 +33,8 @@ from app.ingestion.bzzoiro.sync_fixtures_from_bzz import sync_fixtures_from_bzz
 from app.ingestion.bzzoiro.sync_reference import sync_leagues, sync_teams
 from app.ingestion.bzzoiro.sync_bzzoiro_odds import sync_bzzoiro_odds
 from app.ingestion.bzzoiro.sync_bzzoiro_lineups import sync_bzzoiro_lineups
+from app.ingestion.bzzoiro.sync_incidents import sync_incidents
+from app.ingestion.bzzoiro.sync_wc_squads import sync_wc_squads
 from app.ingestion.bzzoiro.constants import INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST
 from app.ingestion.wc2026.sync_wc_outrights import sync_all_wc_outrights
 from app.ingestion.storage import (
@@ -115,112 +117,20 @@ async def job_sync_fixtures():
 
 
 async def job_sync_match_events():
-    """Sync match events (goals, assists) for finished fixtures via ESPN.
+    """Sync match events (goals, assists) for finished fixtures via Bzzoiro incidents.
 
-    ESPN covers all supported leagues: Ligue 1, PL, Bundesliga, La Liga, Serie A, CL.
-    One HTTP call per fixture (scoreboard + summary).
+    Covers all Bzzoiro-sourced fixtures (external_id="bzz_*"), including WC2026.
     """
-    logger.info("=== Starting match events sync ===")
-
-    from datetime import timedelta as _td
-
-    from app.ingestion.espn_client import ESPNClient, ESPN_LEAGUE_SLUGS
-    from app.models.fixtures import Fixture
-    from app.models.match_events import MatchEvent
-    from app.notifications import send_telegram_alert
-
-    import httpx as _httpx
-
+    logger.info("=== Starting match events sync (Bzzoiro incidents) ===")
+    if not settings.bzzoiro_api_key:
+        logger.warning("BZZOIRO_API_KEY not configured, skipping match events sync")
+        return
     try:
-        async with async_session() as session:
-            fixtures_with_events = select(MatchEvent.fixture_id).distinct().subquery()
-            result = await session.execute(
-                select(Fixture)
-                .where(Fixture.status == "finished")
-                .where(Fixture.id.notin_(select(fixtures_with_events.c.fixture_id)))
-                .where(Fixture.league.in_(ESPN_LEAGUE_SLUGS.keys()))
-                .order_by(Fixture.kickoff_utc.desc())
-                .limit(100)
-            )
-            fixtures = list(result.scalars().all())
-
-            if not fixtures:
-                logger.info("No finished fixtures missing match events")
-                logger.info("=== Match events sync complete ===")
-                return
-
-            logger.info("Found %d finished fixtures without match events", len(fixtures))
-
-            synced = 0
-            async with _httpx.AsyncClient(follow_redirects=True, timeout=20.0) as http:
-                espn_client = ESPNClient(http)
-
-                for fixture in fixtures:
-                    kickoff_date = fixture.kickoff_utc.strftime("%Y-%m-%d")
-                    try:
-                        events = await espn_client.get_match_events(
-                            fixture.league,
-                            fixture.home_team,
-                            fixture.away_team,
-                            kickoff_date,
-                        )
-                        if events is None:
-                            # Match not found on ESPN
-                            logger.debug(
-                                "ESPN: match not found for %s vs %s on %s",
-                                fixture.home_team, fixture.away_team, kickoff_date,
-                            )
-                        elif events:
-                            stored = await store_match_events(session, fixture.id, events)
-                            if stored > 0:
-                                synced += 1
-                                logger.info(
-                                    "Stored %d events for %s vs %s (source=espn)",
-                                    stored, fixture.home_team, fixture.away_team,
-                                )
-                        else:
-                            # Match found, 0 scoring events (e.g. 0-0) — store sentinel
-                            await store_match_events(session, fixture.id, [
-                                {"player_name": "__processed__", "event_type": "match_processed", "minute": None}
-                            ])
-                            synced += 1
-                            logger.info(
-                                "ESPN: 0 goals for %s vs %s — sentinel stored",
-                                fixture.home_team, fixture.away_team,
-                            )
-                    except Exception as exc:
-                        logger.warning("ESPN failed for fixture %s: %s", fixture.id, exc)
-
-                    await asyncio.sleep(1.0)
-
-            logger.info("Synced match events for %d/%d fixtures (source=espn)", synced, len(fixtures))
-
-            # ── Alert: fixtures still missing events >24h after finishing ─
-            now = datetime.now(UTC)
-            fixtures_with_events2 = select(MatchEvent.fixture_id).distinct().subquery()
-            result2 = await session.execute(
-                select(Fixture)
-                .where(Fixture.status == "finished")
-                .where(Fixture.id.notin_(select(fixtures_with_events2.c.fixture_id)))
-                .where(Fixture.kickoff_utc < now - _td(hours=24))
-            )
-            still_missing = list(result2.scalars().all())
-
-            if still_missing:
-                names = ", ".join(
-                    f"{fx.home_team} vs {fx.away_team} ({fx.kickoff_utc.strftime('%Y-%m-%d')})"
-                    for fx in still_missing[:5]
-                )
-                await send_telegram_alert(
-                    f"⚠️ <b>[Ev0] Match events manquants</b>\n\n"
-                    f"{len(still_missing)} match(s) terminé(s) depuis >24h sans événements :\n"
-                    f"{names}"
-                    + (" ..." if len(still_missing) > 5 else "")
-                )
-
+        async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
+            processed = await sync_incidents(session, client, limit=100)
+            logger.info("sync_incidents: %d fixtures processed", processed)
     except Exception as exc:
         logger.error("Error syncing match events: %s", exc, exc_info=True)
-
     logger.info("=== Match events sync complete ===")
 
 
@@ -1408,9 +1318,24 @@ async def job_sync_bzzoiro_lineups() -> None:
 # ── WC2026 Outrights Job ──────────────────────────────────────────
 
 
+async def job_sync_wc_squads() -> None:
+    """Sync WC2026 official squad call-ups from Bzzoiro."""
+    logger.info("job_sync_wc_squads: start")
+    if not settings.bzzoiro_api_key:
+        logger.warning("BZZOIRO_API_KEY not configured, skipping WC squads sync")
+        return
+    try:
+        async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
+            total = await sync_wc_squads(session, client)
+        logger.info("job_sync_wc_squads: %d rows upserted", total)
+    except Exception as exc:
+        logger.exception("job_sync_wc_squads failed: %s", exc)
+
+
 async def job_sync_wc_outright_odds() -> None:
     """Scrape les outrights CDM (vainqueur, top4, top8, buteur) sur PMU/Unibet/Betclic."""
     logger.info("job_sync_wc_outright_odds: start")
+
     try:
         async with async_session() as session:
             total = await sync_all_wc_outrights(session)
@@ -1464,7 +1389,7 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Settlement pipeline: every 30 min (auto-finish → ESPN events → settle)
+    # Settlement pipeline: every 30 min (auto-finish → Bzzoiro incidents → settle)
     scheduler.add_job(
         job_settle_pipeline,
         IntervalTrigger(minutes=30),
@@ -1602,35 +1527,13 @@ def create_scheduler() -> AsyncIOScheduler:
         max_instances=1,
     )
 
-    # StatsHub gap-fill: daily at 08:15 UTC (after Bzzoiro player stats)
+    # WC2026 squads: daily at 05:00 UTC (squads rarely change; covers late call-ups)
     scheduler.add_job(
-        job_sync_statshub_gap_fill,
-        CronTrigger(hour=8, minute=15),
-        id="sync_statshub_gap_fill",
-        name="StatsHub: gap-fill NULL player-match stats",
+        job_sync_wc_squads,
+        CronTrigger(hour=5, minute=0),
+        id="sync_wc_squads",
+        name="Sync WC2026 official squads from Bzzoiro",
         replace_existing=True,
-    )
-
-    # StatsHub full-season: weekly Monday 03:00 UTC — all teams, toutes ligues
-    scheduler.add_job(
-        job_sync_statshub_full_season,
-        CronTrigger(day_of_week="mon", hour=3, minute=0),
-        id="sync_statshub_full_season",
-        name="StatsHub: full-season gap-fill (toutes équipes)",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
-
-    # StatsHub lineup poll: every 15 min (J-2h → J-10min window before KO)
-    scheduler.add_job(
-        job_poll_statshub_lineups,
-        IntervalTrigger(minutes=15),
-        id="poll_statshub_lineups",
-        name="StatsHub: poll official lineups (J-2h window)",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
     )
 
     # WC2026 outright odds: every 6 hours
