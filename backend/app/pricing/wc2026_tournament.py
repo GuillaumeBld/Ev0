@@ -94,14 +94,14 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
             logger.warning("wc2026_pricing: no default lineup for %s — skipped", nation)
             continue
 
-        # 2. Load expected minutes per player from lineup
+        # 2. Build set of players in the lineup (minutes come from position, not DB)
         lp_result = await db.execute(
             select(WC2026ExpectedLineupPlayer).where(
                 WC2026ExpectedLineupPlayer.lineup_id == lineup.id
             )
         )
-        lineup_minutes: dict[str, float] = {
-            _norm_name(lp.player_name): float(lp.expected_minutes)
+        lineup_names: set[str] = {
+            _norm_name(lp.player_name)
             for lp in lp_result.scalars().all()
         }
 
@@ -122,20 +122,16 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
             )
             continue
 
-        # 4. Match scouting rows to lineup by normalised name.
-        # Fallback: try reversed token order for cultures where name format differs
-        # (e.g. "Heung-min Son" in scouting vs "Son Heung-min" in lineup).
-        # Deduplicate by normalized name — keep the row with the highest xg_p90
-        # (handles cases like two "Danilo" in the same squad).
+        # 4. Match scouting rows to lineup, deduplicate by NFKD name (keep highest xg_p90).
         best_per_name: dict[str, dict[str, Any]] = {}
         for row in rows:
             norm = _norm_name(row["player_name"])
-            mins = lineup_minutes.get(norm)
-            if mins is None:
+            in_lineup = norm in lineup_names
+            if not in_lineup:
                 parts = norm.split()
                 if len(parts) == 2:
-                    mins = lineup_minutes.get(f"{parts[1]} {parts[0]}")
-            if mins is None:
+                    in_lineup = f"{parts[1]} {parts[0]}" in lineup_names
+            if not in_lineup:
                 continue
             stats = row["stats"] or {}
             candidate = {
@@ -143,12 +139,32 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
                 "position":    stats.get("position"),
                 "npxg_per_90": float(stats.get("xg_p90") or 0.0),
                 "xa_per_90":   float(stats.get("assists_p90") or 0.0),
-                "minutes":     mins,
             }
             existing = best_per_name.get(norm)
             if existing is None or candidate["npxg_per_90"] > existing["npxg_per_90"]:
                 best_per_name[norm] = candidate
-        matched = list(best_per_name.values())
+
+        # Assign minutes by position.
+        # Attackers: 85 min for the top xG scorer, 60 min for others.
+        candidates = list(best_per_name.values())
+        top_attacker = max(
+            (c for c in candidates if (c["position"] or "").lower() == "attacker"),
+            key=lambda c: c["npxg_per_90"],
+            default=None,
+        )
+
+        matched: list[dict[str, Any]] = []
+        for c in candidates:
+            pos = (c["position"] or "").lower()
+            if pos in ("defender", "goalkeeper"):
+                mins = 90.0
+            elif pos == "midfielder":
+                mins = 70.0
+            elif pos == "attacker":
+                mins = 85.0 if (top_attacker and c["player_name"] == top_attacker["player_name"]) else 60.0
+            else:
+                mins = 70.0
+            matched.append({**c, "minutes": mins})
 
         if len(matched) < 3:
             logger.warning(
