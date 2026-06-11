@@ -1,8 +1,13 @@
 # backend/app/ingestion/wc2026/sync_wc_outrights.py
-"""Scrape WC2026 outright odds from PMU (Kambi), Unibet (LVS), and Betclic.
+"""Scrape WC2026 outright odds from Unibet (LVS) and Betclic (Playwright).
 
 Outrights = marchés de tournoi : vainqueur CDM, top4, top8, buteur, passeur.
 Stockés dans wc2026_outright_odds avec upsert sur (nation, player_name, market_type, bookmaker).
+
+NOTE : ce scraper doit tourner en LOCAL (IP résidentielle FR).
+       Ne pas appeler depuis le worker VPS.
+
+PMU : désactivé — rebranding en cours, pas d'outrights WC2026 via Kambi.
 """
 from __future__ import annotations
 
@@ -15,136 +20,173 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
-# ── Constantes ────────────────────────────────────────────────────────────────
-
-KAMBI_BASE = "https://eu1.offering-api.kambicdn.com/offering/v2018/pmusportsfr"
 LVS_BASE = "https://www.unibet.fr"
+BETCLIC_BASE = "https://www.betclic.fr"
 
-# LVS node id WC2026 (node match — le même noeud expose outrights via markettypeId spécifique)
-_LVS_WC2026_NODE = 59096156
+# ── Unibet (LVS) ──────────────────────────────────────────────────────────────
 
-# LVS markettypeId pour les marchés de tournoi
+# markettypeId → market_type interne
 _LVS_OUTRIGHT_MARKET_TYPES: dict[int, str] = {
-    14:        "winner",       # Gagnant du tournoi
-    62:        "top2",         # Finaliste (atteindre la finale)
-    63:        "top4",         # Demi-finaliste
-    64:        "top8",         # Quart-de-finaliste
-    65:        "group_stage",  # Passer la phase de groupes
-    8:         "top_scorer",   # Meilleur buteur
-    100001899: "top_assister", # Meilleur passeur
-}
-
-_KAMBI_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-    "Accept": "application/json",
-    "Origin": "https://www.pmu.fr",
-    "Referer": "https://www.pmu.fr/",
+    14:        "winner",
+    62:        "top2",
+    63:        "top4",
+    64:        "top8",
+    65:        "group_stage",
+    8:         "top_scorer",
+    100001899: "top_assister",
 }
 
 _LVS_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     "Accept": "application/json",
     "Referer": "https://www.unibet.fr/",
 }
 
-# ── Helpers Kambi ─────────────────────────────────────────────────────────────
+# Nœuds WC2026 connus (peut évoluer en cours de tournoi — discovery en fallback)
+_LVS_WC2026_CANDIDATE_NODES = [59096156, 58529550]
 
 
-def _kambi_odds(raw: int | None) -> float | None:
-    """Convertit les cotes Kambi (entier×1000) en décimal. None si invalide."""
-    if not raw or raw <= 1000:
-        return None
-    return round(raw / 1000, 2)
-
-
-def _classify_kambi_outright(bet_offer_type: str, criterion: str) -> str | None:
-    """Retourne le market_type Ev0 depuis les labels Kambi. None si non reconnu."""
-    combined = f"{bet_offer_type} {criterion}".lower()
-    if "top scorer" in combined or "top goalscorer" in combined or "goalscorer" in combined:
-        return "top_scorer"
-    if "assister" in combined or "assist" in combined or "most assists" in combined:
-        return "top_assister"
-    if "semi final" in combined or "top 4" in combined:
-        return "top4"
-    if "quarter final" in combined or "top 8" in combined:
-        return "top8"
-    if "final" in combined and "semi" not in combined and "quarter" not in combined:
-        return "top2"
-    if "top 2" in combined:
-        return "top2"
-    if "winner" in combined and "top" not in combined:
-        return "winner"
-    if "group stage" in combined or "to qualify" in combined:
-        return "group_stage"
+async def _lvs_find_wc2026_node(client: httpx.AsyncClient, auth_headers: dict) -> int | None:
+    """Discover WC2026 outright node dynamically via LVS tree traversal."""
+    # Start from the football root candidates
+    for root in ["p1000093190", "p4", "p1"]:
+        try:
+            r = await client.get(
+                f"{LVS_BASE}/lvs-api/next/500/{root}",
+                params={"lang": "fr", "lineId": "1", "originId": "3"},
+                headers=auth_headers,
+                timeout=15.0,
+            )
+            if r.status_code != 200:
+                continue
+            items = r.json().get("items", {})
+            for key, val in items.items():
+                desc = str(val.get("desc", "") or val.get("n", "") or "").lower()
+                if "world cup 2026" in desc or "coupe du monde 2026" in desc:
+                    node_id = int(key.lstrip("p"))
+                    logger.info("Unibet: discovered WC2026 node %d via %s", node_id, root)
+                    return node_id
+        except Exception:
+            continue
     return None
 
 
-def _is_wc2026_event(event: dict[str, Any]) -> bool:
-    """Retourne True si l'événement est dans le path World Cup 2026."""
-    for part in event.get("path", []):
-        eng = part.get("englishName", "").lower()
-        if "world cup 2026" in eng or "coupe du monde 2026" in eng:
-            return True
-    return False
-
-
-# ── PMU (Kambi) ───────────────────────────────────────────────────────────────
-
-
-async def scrape_pmu_wc_outrights() -> list[dict]:
-    """Scrape les outrights CDM depuis PMU (Kambi).
+async def scrape_unibet_wc_outrights() -> list[dict]:
+    """Scrape les outrights CDM depuis Unibet (LVS).
 
     Returns list of dicts: {nation, player_name, market_type, bookmaker, odds}.
     """
-    url = f"{KAMBI_BASE}/listView/football/outright.json"
-    params = {"lang": "fr_FR", "market": "FR", "useCombined": "true", "limit": "500"}
+    async with httpx.AsyncClient(headers=_LVS_HEADERS, timeout=20.0) as client:
+        try:
+            token_r = await client.get(f"{LVS_BASE}/lvs-api/acc/token")
+            token_r.raise_for_status()
+            token = token_r.json().get("hsToken", "")
+        except Exception as exc:
+            logger.error("Unibet outrights: impossible d'obtenir le token: %s", exc)
+            return []
 
-    try:
-        async with httpx.AsyncClient(headers=_KAMBI_HEADERS, timeout=20.0) as client:
-            r = await client.get(url, params=params)
-            r.raise_for_status()
-            data = r.json()
-    except Exception as exc:
-        logger.error("PMU outrights: erreur fetch: %s", exc)
-        return []
+        auth_headers = {**_LVS_HEADERS, "X-LVS-HSToken": token}
 
-    results: list[dict] = []
-    for entry in data.get("events", []):
-        ev = entry.get("event", {})
-        if not _is_wc2026_event(ev):
-            continue
-        for bo in ev.get("betOffers", []):
-            bet_type = bo.get("betOfferType", {}).get("englishName", "")
-            criterion = bo.get("criterion", {}).get("englishLabel", "")
-            market_type = _classify_kambi_outright(bet_type, criterion)
-            if not market_type:
+        # Try known candidate nodes first, fallback to dynamic discovery
+        wc2026_node: int | None = None
+        for node_id in _LVS_WC2026_CANDIDATE_NODES:
+            try:
+                r = await client.get(
+                    f"{LVS_BASE}/lvs-api/next/200/p{node_id}",
+                    params={"lang": "fr", "lineId": "1", "originId": "3"},
+                    headers=auth_headers,
+                    timeout=15.0,
+                )
+                if r.status_code == 200 and r.json().get("items"):
+                    wc2026_node = node_id
+                    break
+            except Exception:
                 continue
-            for outcome in bo.get("outcomes", []):
-                odds = _kambi_odds(outcome.get("odds"))
-                if odds is None:
+
+        if wc2026_node is None:
+            wc2026_node = await _lvs_find_wc2026_node(client, auth_headers)
+
+        if wc2026_node is None:
+            logger.warning("Unibet outrights WC2026: nœud introuvable")
+            return []
+
+        try:
+            events_r = await client.get(
+                f"{LVS_BASE}/lvs-api/next/200/p{wc2026_node}",
+                params={"lang": "fr", "lineId": "1", "originId": "3"},
+                headers=auth_headers,
+                timeout=15.0,
+            )
+            events_r.raise_for_status()
+            items = events_r.json().get("items", {})
+        except Exception as exc:
+            logger.error("Unibet outrights: erreur fetch nœud %d: %s", wc2026_node, exc)
+            return []
+
+        outright_event_ids: list[int] = []
+        for key, val in items.items():
+            if not key.startswith("e"):
+                continue
+            # Outright events have no away team
+            if not val.get("b") and val.get("a"):
+                try:
+                    outright_event_ids.append(int(key[1:]))
+                except ValueError:
                     continue
-                label = outcome.get("englishLabel") or outcome.get("label") or ""
-                participant = outcome.get("participant") or label
-                if not participant:
+
+        if not outright_event_ids:
+            logger.info("Unibet outrights WC2026: aucun événement outright dans nœud %d", wc2026_node)
+            return []
+
+        results: list[dict] = []
+        for event_id in outright_event_ids:
+            try:
+                ff_r = await client.get(
+                    f"{LVS_BASE}/lvs-api/ff/e{event_id}",
+                    params={"lang": "fr", "lineId": "1", "originId": "3", "ext": "1"},
+                    headers=auth_headers,
+                    timeout=15.0,
+                )
+                ff_r.raise_for_status()
+                ff_items = ff_r.json().get("items", {})
+            except Exception as exc:
+                logger.warning("Unibet outrights: erreur event %d: %s", event_id, exc)
+                continue
+
+            markets: dict[str, dict] = {}
+            outcomes: list[dict] = []
+            for k, v in ff_items.items():
+                if k.startswith("m"):
+                    markets[k] = v
+                elif k.startswith("o"):
+                    outcomes.append({**v, "_key": k})
+
+            for mkey, market in markets.items():
+                mtype_id = market.get("markettypeId")
+                market_type = _LVS_OUTRIGHT_MARKET_TYPES.get(mtype_id)
+                if not market_type:
                     continue
                 is_player_market = market_type in ("top_scorer", "top_assister")
-                results.append({
-                    "nation": None if is_player_market else participant,
-                    "player_name": participant if is_player_market else None,
-                    "market_type": market_type,
-                    "bookmaker": "pmu",
-                    "odds": odds,
-                })
+                for o in outcomes:
+                    if o.get("marketId") != mkey and o.get("m") != mkey:
+                        continue
+                    name = o.get("a") or o.get("n", "")
+                    odds = _parse_lvs_price(o.get("pr") or o.get("p"))
+                    if not name or odds is None:
+                        continue
+                    results.append({
+                        "nation": None if is_player_market else name,
+                        "player_name": name if is_player_market else None,
+                        "market_type": market_type,
+                        "bookmaker": "unibet",
+                        "odds": odds,
+                    })
 
-    logger.info("PMU outrights WC2026: %d cotes scrappées", len(results))
+    logger.info("Unibet outrights WC2026: %d cotes scrappées", len(results))
     return results
 
 
-# ── Unibet (LVS) ──────────────────────────────────────────────────────────────
-
-
 def _parse_lvs_price(value: Any) -> float | None:
-    """Convertit une cote LVS en float. None si invalide ou suspendue."""
     if value is None:
         return None
     s = str(value).strip().lower()
@@ -159,187 +201,152 @@ def _parse_lvs_price(value: Any) -> float | None:
     return round(f, 2)
 
 
-async def scrape_unibet_wc_outrights() -> list[dict]:
-    """Scrape les outrights CDM depuis Unibet (LVS).
+# ── Betclic (Playwright) ───────────────────────────────────────────────────────
 
-    Returns list of dicts: {nation, player_name, market_type, bookmaker, odds}.
+_BETCLIC_COMPETITION_URL = f"https://www.betclic.fr/football-sfootball/coupe-du-monde-2026-c1"
 
-    Strategy: récupère le token anonyme LVS, liste les événements outright
-    du noeud WC2026, récupère les marchés de chaque événement via /ff/.
-    """
-    try:
-        async with httpx.AsyncClient(headers=_LVS_HEADERS, timeout=20.0) as client:
-            # 1. Token anonyme
-            token_r = await client.get(f"{LVS_BASE}/lvs-api/acc/token")
-            token_r.raise_for_status()
-            token = token_r.json().get("hsToken", "")
-            auth_headers = {**_LVS_HEADERS, "X-LVS-HSToken": token}
+# Textes des onglets "Spéciaux" / outrights sur Betclic (plusieurs orthographes possibles)
+_BETCLIC_SPECIALS_LABELS = [
+    "Spéciaux", "Speciaux", "Paris spéciaux", "Outrights", "Spécial", "Spéciales",
+]
 
-            # 2. Liste des événements outright du noeud WC2026
-            events_r = await client.get(
-                f"{LVS_BASE}/lvs-api/next/200/p{_LVS_WC2026_NODE}",
-                params={"lineId": "1", "originId": "3", "ext": "1"},
-                headers=auth_headers,
-            )
-            events_r.raise_for_status()
-            items = events_r.json().get("items", {})
-
-            # Identifier les event IDs (outright events ont b="" ou pas d'adversaire)
-            outright_event_ids = []
-            for key, val in items.items():
-                if not key.startswith("e"):
-                    continue
-                # Outright event: home/away vides ou absents
-                if not val.get("b") and val.get("a"):
-                    try:
-                        outright_event_ids.append(int(key[1:]))
-                    except ValueError:
-                        continue
-
-            if not outright_event_ids:
-                logger.info("Unibet outrights WC2026: aucun événement outright trouvé dans noeud %d", _LVS_WC2026_NODE)
-                return []
-
-            # 3. Fetch marchés de chaque événement
-            results: list[dict] = []
-            for event_id in outright_event_ids:
-                try:
-                    ff_r = await client.get(
-                        f"{LVS_BASE}/lvs-api/ff/e{event_id}",
-                        params={"lineId": "1", "originId": "3", "ext": "1"},
-                        headers=auth_headers,
-                    )
-                    ff_r.raise_for_status()
-                    ff_items = ff_r.json().get("items", {})
-                except Exception as exc:
-                    logger.warning("Unibet outrights: erreur event %d: %s", event_id, exc)
-                    continue
-
-                # Indexer les marchés par id
-                markets: dict[str, dict] = {}
-                outcomes: list[dict] = []
-                for k, v in ff_items.items():
-                    if k.startswith("m"):
-                        markets[k] = v
-                    elif k.startswith("o"):
-                        outcomes.append({**v, "_key": k})
-
-                for mkey, market in markets.items():
-                    mtype_id = market.get("markettypeId")
-                    market_type = _LVS_OUTRIGHT_MARKET_TYPES.get(mtype_id)
-                    if not market_type:
-                        continue
-                    is_player_market = market_type in ("top_scorer", "top_assister")
-                    for o in outcomes:
-                        if o.get("marketId") != mkey and o.get("m") != mkey:
-                            continue
-                        name = o.get("a") or o.get("n", "")
-                        odds = _parse_lvs_price(o.get("pr") or o.get("p"))
-                        if not name or odds is None:
-                            continue
-                        results.append({
-                            "nation": None if is_player_market else name,
-                            "player_name": name if is_player_market else None,
-                            "market_type": market_type,
-                            "bookmaker": "unibet",
-                            "odds": odds,
-                        })
-
-    except Exception as exc:
-        logger.error("Unibet outrights WC2026: erreur globale: %s", exc)
-        return []
-
-    logger.info("Unibet outrights WC2026: %d cotes scrappées", len(results))
-    return results
-
-
-# ── Betclic ───────────────────────────────────────────────────────────────────
-
-# Betclic outright competition ID pour WC 2026 spéciaux
-# (distinct de competition_id=1 qui est pour les matchs)
-_BETCLIC_OUTRIGHT_URL = (
-    "https://www.betclic.fr/api/v2/outrights"
-    "?competition_id=1&lang=fr&market=FR"
-)
-
-_BETCLIC_MARKET_TYPE_MAP: dict[str, str] = {
-    "gagnant": "winner",
-    "vainqueur": "winner",
-    "winner": "winner",
-    "finaliste": "top2",
-    "demi-finaliste": "top4",
-    "semi": "top4",
-    "quart": "top8",
-    "top 8": "top8",
-    "phase de groupes": "group_stage",
-    "buteur": "top_scorer",
-    "goalscorer": "top_scorer",
-    "passeur": "top_assister",
-    "assister": "top_assister",
-}
-
-_BETCLIC_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept": "application/json",
-    "Referer": "https://www.betclic.fr/",
-    "x-bg-regulation": "FR",
-    "x-bg-ref-brand": "BETCLIC",
+# market_type interne → mots-clés dans le titre du marché Betclic
+_BETCLIC_MARKET_KEYWORDS: dict[str, list[str]] = {
+    "top_scorer":   ["buteur", "scorer", "meilleur buteur"],
+    "top_assister": ["passeur", "assister", "meilleur passeur"],
+    "winner":       ["vainqueur", "gagnant", "winner"],
+    "top4":         ["top 4", "top4", "demi-final"],
+    "top8":         ["top 8", "top8", "quart"],
 }
 
 
-def _classify_betclic_outright(name: str) -> str | None:
-    """Classifie un marché outright Betclic en market_type Ev0."""
-    lower = name.lower()
-    for keyword, market_type in _BETCLIC_MARKET_TYPE_MAP.items():
-        if keyword in lower:
-            return market_type
+def _betclic_detect_market_type(title: str) -> str | None:
+    t = title.lower()
+    for mtype, keywords in _BETCLIC_MARKET_KEYWORDS.items():
+        if any(kw in t for kw in keywords):
+            return mtype
     return None
 
 
 async def scrape_betclic_wc_outrights() -> list[dict]:
-    """Scrape les outrights CDM depuis Betclic via REST API.
+    """Scrape les outrights CDM depuis Betclic via Playwright (SPA Cloudflare).
 
-    Returns list of dicts: {nation, player_name, market_type, bookmaker, odds}.
+    Stratégie :
+      1. Navigue sur la page compétition WC2026.
+      2. Cherche un onglet "Spéciaux" / outrights et clique dessus.
+      3. Extrait les selections des marchés trouvés.
+      4. Si aucun onglet trouvé, retourne [] avec warning.
+
+    Nécessite : pip install playwright && playwright install chromium
     """
     try:
-        async with httpx.AsyncClient(headers=_BETCLIC_HEADERS, timeout=20.0) as client:
-            r = await client.get(_BETCLIC_OUTRIGHT_URL)
-            r.raise_for_status()
-            data = r.json()
-    except Exception as exc:
-        logger.error("Betclic outrights WC2026: erreur fetch %s: %s", _BETCLIC_OUTRIGHT_URL, exc)
+        from playwright.async_api import async_playwright
+    except ImportError:
+        logger.warning("Betclic outrights: playwright non installé — skipped")
         return []
 
     results: list[dict] = []
 
-    # Betclic outright response: liste de marchés avec selections
-    # Structure attendue: [{"name": "Vainqueur CDM", "selections": [{"name": "France", "odds": 4.5}, ...]}, ...]
-    for market in data if isinstance(data, list) else data.get("markets", []):
-        market_name = market.get("name", "")
-        market_type = _classify_betclic_outright(market_name)
-        if not market_type:
-            continue
-        is_player_market = market_type in ("top_scorer", "top_assister")
-        for sel in market.get("selections", []) or market.get("outcomes", []):
-            name = sel.get("name", "")
-            raw_odds = sel.get("odds") or sel.get("price")
-            if not name or not raw_odds:
-                continue
-            try:
-                odds = float(raw_odds)
-            except (ValueError, TypeError):
-                continue
-            if odds < 1.01 or odds > 1000.0:
-                continue
-            results.append({
-                "nation": None if is_player_market else name,
-                "player_name": name if is_player_market else None,
-                "market_type": market_type,
-                "bookmaker": "betclic",
-                "odds": round(odds, 2),
-            })
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True)
+        ctx = await browser.new_context(
+            locale="fr-FR",
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            ),
+        )
+        page = await ctx.new_page()
 
-    logger.info("Betclic outrights WC2026: %d cotes scrappées", len(results))
+        try:
+            await page.goto(_BETCLIC_COMPETITION_URL, wait_until="load", timeout=30_000)
+            # Laisser les requêtes gRPC-Web se terminer
+            await page.wait_for_timeout(3_000)
+
+            final_url = page.url
+            if "betclic.fr" not in final_url or final_url.rstrip("/") == "https://www.betclic.fr":
+                logger.warning("Betclic: redirect vers homepage — page non accessible sans login ?")
+                return []
+
+            # Cherche l'onglet "Spéciaux" ou équivalent
+            specials_tab = None
+            for label in _BETCLIC_SPECIALS_LABELS:
+                try:
+                    el = page.get_by_role("tab", name=label, exact=False)
+                    if await el.count() > 0:
+                        specials_tab = el.first
+                        break
+                    # fallback: cherche dans les liens de navigation
+                    el2 = page.get_by_text(label, exact=False)
+                    if await el2.count() > 0:
+                        specials_tab = el2.first
+                        break
+                except Exception:
+                    continue
+
+            if specials_tab is None:
+                logger.info("Betclic WC2026: pas d'onglet Spéciaux/Outrights visible")
+                # Tente quand même d'extraire les groupes de marchés présents
+            else:
+                await specials_tab.click()
+                await page.wait_for_timeout(3_000)
+
+            # Parcours les groupes de marchés (accordéons / sections)
+            market_groups = await page.query_selector_all(
+                "[class*='marketGroup'], [class*='accordionItem'], [class*='market_']"
+            )
+            logger.info("Betclic WC2026: %d groupes de marchés trouvés", len(market_groups))
+
+            for group in market_groups:
+                try:
+                    title_el = await group.query_selector(
+                        "[class*='groupTitle'], [class*='marketTitle'], [class*='title']"
+                    )
+                    title = (await title_el.inner_text()).strip() if title_el else ""
+                    market_type = _betclic_detect_market_type(title)
+                    if not market_type:
+                        continue
+
+                    is_player = market_type in ("top_scorer", "top_assister")
+                    runners = await group.query_selector_all(
+                        "[class*='marketRunner'], [class*='runner'], [class*='outcome']"
+                    )
+                    for runner in runners:
+                        name_el = await runner.query_selector(
+                            "[class*='runnerName'], [class*='competitor'], [class*='playerName'], "
+                            "[class*='name']"
+                        )
+                        odds_el = await runner.query_selector(
+                            "button[data-odds], [class*='odds'], [class*='price'], [class*='cote']"
+                        )
+                        if not name_el or not odds_el:
+                            continue
+                        name = (await name_el.inner_text()).strip()
+                        odds_text = (await odds_el.inner_text()).strip().replace(",", ".")
+                        try:
+                            odds = float(odds_text)
+                        except ValueError:
+                            continue
+                        if odds < 1.01 or odds > 1000.0:
+                            continue
+                        results.append({
+                            "nation":      None if is_player else name,
+                            "player_name": name if is_player else None,
+                            "market_type": market_type,
+                            "bookmaker":   "betclic",
+                            "odds":        round(odds, 2),
+                        })
+                except Exception as exc:
+                    logger.debug("Betclic: erreur group parsing: %s", exc)
+                    continue
+
+        except Exception as exc:
+            logger.error("Betclic outrights: %s", exc)
+        finally:
+            await browser.close()
+
+    logger.info("Betclic outrights WC2026 total: %d cotes", len(results))
     return results
 
 
@@ -347,14 +354,8 @@ async def scrape_betclic_wc_outrights() -> list[dict]:
 
 
 async def store_wc_outrights(session: AsyncSession, outrights: list[dict]) -> None:
-    """Upsert les outrights dans wc2026_outright_odds.
-
-    Stratégie : INSERT ... ON CONFLICT ... DO UPDATE SET odds = EXCLUDED.odds, scraped_at = now().
-    Utilise raw SQL pour l'upsert PostgreSQL sans charger les objets en mémoire.
-    """
     if not outrights:
         return
-
     await session.execute(
         text("""
             INSERT INTO wc2026_outright_odds (nation, player_name, market_type, bookmaker, odds, scraped_at)
@@ -369,24 +370,23 @@ async def store_wc_outrights(session: AsyncSession, outrights: list[dict]) -> No
 
 
 async def sync_all_wc_outrights(session: AsyncSession) -> int:
-    """Lance les 3 scrapers en parallèle et stocke les résultats.
+    """Lance les scrapers Unibet + Betclic et stocke les résultats.
 
-    Returns: nombre total de cotes upsertées.
+    NOTE : appeler depuis un script local (IP résidentielle FR).
     """
     import asyncio
 
-    pmu_results, unibet_results, betclic_results = await asyncio.gather(
-        scrape_pmu_wc_outrights(),
+    unibet_results, betclic_results = await asyncio.gather(
         scrape_unibet_wc_outrights(),
         scrape_betclic_wc_outrights(),
     )
 
-    all_results = pmu_results + unibet_results + betclic_results
+    all_results = unibet_results + betclic_results
     if all_results:
         await store_wc_outrights(session, all_results)
 
     logger.info(
-        "sync_all_wc_outrights: pmu=%d unibet=%d betclic=%d total=%d",
-        len(pmu_results), len(unibet_results), len(betclic_results), len(all_results),
+        "sync_all_wc_outrights: unibet=%d betclic=%d total=%d",
+        len(unibet_results), len(betclic_results), len(all_results),
     )
     return len(all_results)
