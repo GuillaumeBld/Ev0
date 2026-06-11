@@ -192,20 +192,18 @@ async def get_nation_odds(
     for nation, market_type, bookmaker, odds in odds_res.all():
         pivot.setdefault(nation, {}).setdefault(market_type, {})[bookmaker] = odds
 
-    # Métadonnées nations (group_letter, flag_emoji)
+    # Métadonnées nations (group_letter, flag_emoji) — dedup en Python pour éviter DISTINCT ON
     meta_res = await session.execute(
         select(
             WC2026SquadPlayer.nation,
             WC2026SquadPlayer.group_letter,
             WC2026SquadPlayer.flag_emoji,
         )
-        .distinct(WC2026SquadPlayer.nation)
-        .order_by(WC2026SquadPlayer.group_letter, WC2026SquadPlayer.nation)
     )
-    meta: dict[str, dict] = {
-        r.nation: {"group_letter": r.group_letter, "flag_emoji": r.flag_emoji}
-        for r in meta_res.all()
-    }
+    meta: dict[str, dict] = {}
+    for r in meta_res.all():
+        if r.nation not in meta:
+            meta[r.nation] = {"group_letter": r.group_letter, "flag_emoji": r.flag_emoji}
 
     # Fusionne toutes les nations connues (DB + cotes)
     all_nations = sorted(
