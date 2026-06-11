@@ -85,9 +85,7 @@ async def _store_events(
                 event_type=ev["event_type"],
                 minute=ev.get("minute"),
             )
-            .on_conflict_do_nothing(
-                index_elements=["fixture_id", "player_name", "event_type", "minute"],
-            )
+            .on_conflict_do_nothing(constraint="uq_match_event")
         )
         result = await session.execute(stmt)
         count += result.rowcount
