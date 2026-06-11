@@ -296,6 +296,20 @@ async def sync_odds(
     try:
         rows = await scraper_map[bookmaker]()
     except Exception as exc:
+        err_str = str(exc)
+        # Playwright installé mais navigateur non téléchargé / IP restreinte
+        if bookmaker == "betclic" and (
+            "Executable doesn't exist" in err_str
+            or "playwright install" in err_str
+            or "BrowserType.launch" in err_str
+        ):
+            return SyncOddsResult(
+                bookmaker=bookmaker,
+                scraped=0,
+                deactivated=0,
+                duration_s=round(time.monotonic() - t0, 2),
+                note="Chromium absent sur ce serveur — lancez le script localement.",
+            )
         raise HTTPException(502, f"Scraping {bookmaker} échoué : {exc}") from exc
 
     if bookmaker == "betclic" and not rows:
