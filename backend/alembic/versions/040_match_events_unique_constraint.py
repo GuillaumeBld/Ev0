@@ -6,8 +6,8 @@ Create Date: 2026-06-11
 """
 from alembic import op
 
-revision = "040_match_events_unique_constraint"
-down_revision = "039_wc2026_player_pricing"
+revision = "040"
+down_revision = "039"
 branch_labels = None
 depends_on = None
 
