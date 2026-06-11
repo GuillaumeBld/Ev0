@@ -69,11 +69,7 @@ export default function WC2026PricingPage() {
     nations.map((n) => [n.nation, n.flag_emoji])
   )
 
-  const displayed = [...players].sort((a, b) =>
-    tab === 'goals'
-      ? b.lambda_goals - a.lambda_goals
-      : b.lambda_assists - a.lambda_assists
-  )
+  const displayed = players
 
   return (
     <div className="p-4 flex flex-col h-full gap-4">
