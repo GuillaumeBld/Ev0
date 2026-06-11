@@ -1218,64 +1218,6 @@ async def job_sync_bzzoiro_player_stats_full_season():
     logger.info("=== Bzzoiro full-season player stats sync complete ===")
 
 
-async def job_sync_statshub_gap_fill():
-    """Daily at 08:15 UTC: fill NULL player-match stats using StatsHub data.
-
-    Followed immediately by re-aggregation so BzzPlayerSeasonStat reflects
-    the newly filled rows before the next recommendation generation cycle.
-    """
-    logger.info("=== Starting StatsHub gap-fill sync ===")
-    try:
-        from app.ingestion.statshub.sync import sync_statshub_gap_fill
-        async with async_session() as session:
-            result = await sync_statshub_gap_fill(session, days_ahead=14)
-            logger.info("StatsHub gap-fill: %d rows upserted", result)
-    except Exception as exc:
-        logger.error("Error in StatsHub gap-fill: %s", exc, exc_info=True)
-    logger.info("=== StatsHub gap-fill complete ===")
-
-    # Re-aggregate season stats so pricing engine sees the filled data
-    await job_aggregate_season_stats()
-
-
-async def job_sync_statshub_full_season():
-    """Weekly (Mon 03:00 UTC): full-season StatsHub gap-fill for ALL teams in the 6 target leagues.
-
-    Covers teams not playing in the next 14 days (trêve internationale, etc.).
-    Followed by re-aggregation.
-    """
-    logger.info("=== Starting StatsHub full-season gap-fill ===")
-    try:
-        from app.ingestion.statshub.sync import sync_statshub_gap_fill
-        async with async_session() as session:
-            result = await sync_statshub_gap_fill(session, full_season=True)
-            logger.info("StatsHub full-season gap-fill: %d rows upserted", result)
-    except Exception as exc:
-        logger.error("Error in StatsHub full-season gap-fill: %s", exc, exc_info=True)
-    logger.info("=== StatsHub full-season gap-fill complete ===")
-
-    await job_aggregate_season_stats()
-
-
-async def job_poll_statshub_lineups():
-    """Every 15 min: poll StatsHub for confirmed/predicted lineups (J-2h → J-10min window).
-
-    Only processes fixtures without an existing official lineup.
-    Upserts team_lineups + team_lineup_players for home and away teams.
-    """
-    logger.info("=== Starting StatsHub lineup poll ===")
-    try:
-        from app.ingestion.statshub.sync_lineups import sync_statshub_lineups
-        async with async_session() as session:
-            upserted = await sync_statshub_lineups(session)
-            if upserted:
-                logger.info("StatsHub lineups: %d rows upserted", upserted)
-            else:
-                logger.debug("StatsHub lineups: nothing to upsert this tick")
-    except Exception as exc:
-        logger.error("Error in StatsHub lineup poll: %s", exc, exc_info=True)
-    logger.info("=== StatsHub lineup poll complete ===")
-
 
 async def job_sync_bzzoiro_predictions():
     """Daily at 07:00 UTC: sync Bzzoiro match predictions."""
