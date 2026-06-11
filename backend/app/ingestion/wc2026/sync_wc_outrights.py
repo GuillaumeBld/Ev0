@@ -36,121 +36,136 @@ _LVS_OUTRIGHT_MARKET_TYPES: dict[int, str] = {
     100001899: "top_assister",
 }
 
-_LVS_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-    "Accept": "application/json",
-    "Referer": "https://www.unibet.fr/",
+# Params requis par l'API LVS Unibet (découverts par analyse du trafic navigateur)
+_LVS_BASE_PARAMS = {
+    "lineId": "1",
+    "originId": "3",
+    "breakdownEventsIntoDays": "true",
+    "showPromotions": "true",
+    "pageIndex": "0",
 }
 
-# Nœuds WC2026 connus (peut évoluer en cours de tournoi — discovery en fallback)
-_LVS_WC2026_CANDIDATE_NODES = [59096156, 58529550]
+_LVS_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "fr-FR",
+    "Referer": "https://www.unibet.fr/paris-football",
+    "sec-ch-ua": '"Chromium";v="125", "Not/A)Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"macOS"',
+}
+
+# Nœud football WC2026 confirmé (Coupe du Monde 2026 matches)
+_LVS_WC2026_MATCH_NODE = 59096156
+# Nœud football racine (football français — contient tous les sous-groupes WC2026)
+_LVS_FOOTBALL_ROOT = 240
 
 
-async def _lvs_find_wc2026_node(client: httpx.AsyncClient, auth_headers: dict) -> int | None:
-    """Discover WC2026 outright node dynamically via LVS tree traversal."""
-    # Start from the football root candidates
-    for root in ["p1000093190", "p4", "p1"]:
-        try:
-            r = await client.get(
-                f"{LVS_BASE}/lvs-api/next/500/{root}",
-                params={"lang": "fr", "lineId": "1", "originId": "3"},
-                headers=auth_headers,
-                timeout=15.0,
-            )
-            if r.status_code != 200:
-                continue
-            items = r.json().get("items", {})
-            for key, val in items.items():
-                desc = str(val.get("desc", "") or val.get("n", "") or "").lower()
-                if "world cup 2026" in desc or "coupe du monde 2026" in desc:
-                    node_id = int(key.lstrip("p"))
-                    logger.info("Unibet: discovered WC2026 node %d via %s", node_id, root)
-                    return node_id
-        except Exception:
-            continue
-    return None
+async def _lvs_get_token(client: httpx.AsyncClient) -> str | None:
+    try:
+        r = await client.get(f"{LVS_BASE}/lvs-api/acc/token", timeout=10.0)
+        r.raise_for_status()
+        return r.json().get("hsToken", "")
+    except Exception as exc:
+        logger.error("Unibet: échec token LVS: %s", exc)
+        return None
+
+
+async def _lvs_fetch_node(client: httpx.AsyncClient, token: str, node: int, depth: int = 50) -> dict:
+    headers = {**_LVS_HEADERS, "X-LVS-HSToken": token}
+    try:
+        r = await client.get(
+            f"{LVS_BASE}/lvs-api/next/{depth}/p{node}",
+            params=_LVS_BASE_PARAMS,
+            headers=headers,
+            timeout=15.0,
+        )
+        if r.status_code == 200:
+            return r.json().get("items", {})
+    except Exception as exc:
+        logger.debug("Unibet LVS node %d: %s", node, exc)
+    return {}
 
 
 async def scrape_unibet_wc_outrights() -> list[dict]:
     """Scrape les outrights CDM depuis Unibet (LVS).
 
-    Returns list of dicts: {nation, player_name, market_type, bookmaker, odds}.
+    Stratégie :
+      1. Obtient le token via /lvs-api/acc/token.
+      2. Parcourt le nœud football WC2026 et ses voisins pour trouver des
+         événements outright (événements sans équipe away).
+      3. Pour chaque événement outright trouvé, récupère les marchés complets
+         et extrait les cotes de type top_scorer, winner, top4, etc.
+
+    NOTE : l'API LVS fonctionne uniquement depuis des IP non-datacenter.
     """
-    async with httpx.AsyncClient(headers=_LVS_HEADERS, timeout=20.0) as client:
-        try:
-            token_r = await client.get(f"{LVS_BASE}/lvs-api/acc/token")
-            token_r.raise_for_status()
-            token = token_r.json().get("hsToken", "")
-        except Exception as exc:
-            logger.error("Unibet outrights: impossible d'obtenir le token: %s", exc)
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        token = await _lvs_get_token(client)
+        if not token:
             return []
 
         auth_headers = {**_LVS_HEADERS, "X-LVS-HSToken": token}
 
-        # Try known candidate nodes first, fallback to dynamic discovery
-        wc2026_node: int | None = None
-        for node_id in _LVS_WC2026_CANDIDATE_NODES:
-            try:
-                r = await client.get(
-                    f"{LVS_BASE}/lvs-api/next/200/p{node_id}",
-                    params={"lang": "fr", "lineId": "1", "originId": "3"},
-                    headers=auth_headers,
-                    timeout=15.0,
-                )
-                if r.status_code == 200 and r.json().get("items"):
-                    wc2026_node = node_id
-                    break
-            except Exception:
+        # Nœuds à parcourir pour trouver des outrights WC2026
+        nodes_to_scan = [_LVS_WC2026_MATCH_NODE, _LVS_FOOTBALL_ROOT]
+
+        # Exploration du nœud football racine pour découvrir d'éventuels sous-groupes WC2026
+        root_items = await _lvs_fetch_node(client, token, _LVS_FOOTBALL_ROOT)
+        for key, val in root_items.items():
+            if not key.startswith("p"):
                 continue
-
-        if wc2026_node is None:
-            wc2026_node = await _lvs_find_wc2026_node(client, auth_headers)
-
-        if wc2026_node is None:
-            logger.warning("Unibet outrights WC2026: nœud introuvable")
-            return []
-
-        try:
-            events_r = await client.get(
-                f"{LVS_BASE}/lvs-api/next/200/p{wc2026_node}",
-                params={"lang": "fr", "lineId": "1", "originId": "3"},
-                headers=auth_headers,
-                timeout=15.0,
-            )
-            events_r.raise_for_status()
-            items = events_r.json().get("items", {})
-        except Exception as exc:
-            logger.error("Unibet outrights: erreur fetch nœud %d: %s", wc2026_node, exc)
-            return []
-
-        outright_event_ids: list[int] = []
-        for key, val in items.items():
-            if not key.startswith("e"):
-                continue
-            # Outright events have no away team
-            if not val.get("b") and val.get("a"):
+            desc = str(val.get("desc", "") or val.get("n", "") or "").lower()
+            if "coupe du monde 2026" in desc or "cdm" in desc or "world cup 2026" in desc:
                 try:
-                    outright_event_ids.append(int(key[1:]))
+                    nodes_to_scan.append(int(key[1:]))
                 except ValueError:
                     continue
 
+        # Collecte tous les événements outright (sans équipe away)
+        outright_event_ids: set[int] = set()
+        for node_id in nodes_to_scan:
+            items = await _lvs_fetch_node(client, token, node_id)
+            for key, val in items.items():
+                if not key.startswith("e"):
+                    continue
+                home = val.get("a", "")
+                away = val.get("b", "")
+                # Outright = a competition-level event with no away team
+                if home is None and not away:
+                    try:
+                        outright_event_ids.add(int(key[1:]))
+                    except ValueError:
+                        continue
+                elif not away and not home:
+                    # Ambiguous — include and let market filter decide
+                    try:
+                        outright_event_ids.add(int(key[1:]))
+                    except ValueError:
+                        continue
+
         if not outright_event_ids:
-            logger.info("Unibet outrights WC2026: aucun événement outright dans nœud %d", wc2026_node)
+            logger.info("Unibet WC2026: aucun événement outright trouvé (marchés peut-être pas encore ouverts)")
             return []
+
+        logger.info("Unibet WC2026: %d événements outrights candidats", len(outright_event_ids))
 
         results: list[dict] = []
         for event_id in outright_event_ids:
             try:
-                ff_r = await client.get(
+                r = await client.get(
                     f"{LVS_BASE}/lvs-api/ff/e{event_id}",
-                    params={"lang": "fr", "lineId": "1", "originId": "3", "ext": "1"},
+                    params=_LVS_BASE_PARAMS,
                     headers=auth_headers,
                     timeout=15.0,
                 )
-                ff_r.raise_for_status()
-                ff_items = ff_r.json().get("items", {})
+                if r.status_code != 200:
+                    continue
+                ff_items = r.json().get("items", {})
             except Exception as exc:
-                logger.warning("Unibet outrights: erreur event %d: %s", event_id, exc)
+                logger.debug("Unibet ff/e%d: %s", event_id, exc)
                 continue
 
             markets: dict[str, dict] = {}
@@ -166,7 +181,7 @@ async def scrape_unibet_wc_outrights() -> list[dict]:
                 market_type = _LVS_OUTRIGHT_MARKET_TYPES.get(mtype_id)
                 if not market_type:
                     continue
-                is_player_market = market_type in ("top_scorer", "top_assister")
+                is_player = market_type in ("top_scorer", "top_assister")
                 for o in outcomes:
                     if o.get("marketId") != mkey and o.get("m") != mkey:
                         continue
@@ -175,14 +190,14 @@ async def scrape_unibet_wc_outrights() -> list[dict]:
                     if not name or odds is None:
                         continue
                     results.append({
-                        "nation": None if is_player_market else name,
-                        "player_name": name if is_player_market else None,
+                        "nation":      None if is_player else name,
+                        "player_name": name if is_player else None,
                         "market_type": market_type,
-                        "bookmaker": "unibet",
-                        "odds": odds,
+                        "bookmaker":   "unibet",
+                        "odds":        odds,
                     })
 
-    logger.info("Unibet outrights WC2026: %d cotes scrappées", len(results))
+    logger.info("Unibet outrights WC2026: %d cotes", len(results))
     return results
 
 
