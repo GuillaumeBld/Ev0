@@ -125,7 +125,9 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
         # 4. Match scouting rows to lineup by normalised name.
         # Fallback: try reversed token order for cultures where name format differs
         # (e.g. "Heung-min Son" in scouting vs "Son Heung-min" in lineup).
-        matched: list[dict[str, Any]] = []
+        # Deduplicate by normalized name — keep the row with the highest xg_p90
+        # (handles cases like two "Danilo" in the same squad).
+        best_per_name: dict[str, dict[str, Any]] = {}
         for row in rows:
             norm = _norm_name(row["player_name"])
             mins = lineup_minutes.get(norm)
@@ -136,15 +138,17 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
             if mins is None:
                 continue
             stats = row["stats"] or {}
-            # xa_p90 not collected — use assists_p90 as proxy
-            assists_p90 = float(stats.get("assists_p90") or 0.0)
-            matched.append({
+            candidate = {
                 "player_name": row["player_name"],
                 "position":    stats.get("position"),
                 "npxg_per_90": float(stats.get("xg_p90") or 0.0),
-                "xa_per_90":   assists_p90,
+                "xa_per_90":   float(stats.get("assists_p90") or 0.0),
                 "minutes":     mins,
-            })
+            }
+            existing = best_per_name.get(norm)
+            if existing is None or candidate["npxg_per_90"] > existing["npxg_per_90"]:
+                best_per_name[norm] = candidate
+        matched = list(best_per_name.values())
 
         if len(matched) < 3:
             logger.warning(

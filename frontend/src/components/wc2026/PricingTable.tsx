@@ -116,7 +116,7 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
           </tr>
         </thead>
         <tbody>
-          {sorted.map((p) => {
+          {sorted.map((p, i) => {
             const lambda  = isGoals ? p.lambda_goals      : p.lambda_assists
             const cut1    = isGoals ? p.fair_1g           : p.fair_1a
             const cut2    = isGoals ? p.fair_2g           : p.fair_2a
@@ -128,7 +128,7 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
             const flag    = nationFlags[p.nation]
 
             return (
-              <tr key={`${p.nation}-${p.player_name}`} className="border-b border-gray-800 hover:bg-gray-800/40">
+              <tr key={`${p.nation}-${p.player_name}-${i}`} className="border-b border-gray-800 hover:bg-gray-800/40">
                 <td className="py-1.5 px-2 font-medium text-white">{p.player_name}</td>
                 <td className="py-1.5 px-2">
                   <span className="flex items-center gap-1">
