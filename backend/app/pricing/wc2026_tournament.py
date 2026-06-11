@@ -136,11 +136,13 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
             if mins is None:
                 continue
             stats = row["stats"] or {}
+            # xa_p90 not collected — use assists_p90 as proxy
+            assists_p90 = float(stats.get("assists_p90") or 0.0)
             matched.append({
                 "player_name": row["player_name"],
                 "position":    stats.get("position"),
                 "npxg_per_90": float(stats.get("xg_p90") or 0.0),
-                "xa_per_90":   float(stats.get("xa_p90") or 0.0),
+                "xa_per_90":   assists_p90,
                 "minutes":     mins,
             })
 
