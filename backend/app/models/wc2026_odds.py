@@ -1,7 +1,7 @@
 """WC2026 outright odds model."""
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -29,4 +29,19 @@ class WC2026OutrightOdd(Base):
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, server_default="TRUE", nullable=False
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    odds_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    republished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )

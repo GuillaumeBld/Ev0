@@ -964,23 +964,48 @@ export async function getWCPricingPlayers(params?: {
 
 // ── WC2026 Nation outright odds ──────────────────────────────────────────────
 
-export interface BookmakerOdds {
-  unibet: number | null
-  pmu: number | null
-  betclic: number | null
+export interface BookmakerOddEntry {
+  odds: number | null
+  is_active: boolean
+  last_seen_at: string | null
+  odds_changed_at: string | null
+  republished_at: string | null
+}
+
+export interface MarketOdds {
+  unibet: BookmakerOddEntry
+  pmu: BookmakerOddEntry
+  betclic: BookmakerOddEntry
 }
 
 export interface WCNationOdds {
   nation: string
   group_letter: string | null
   flag_emoji: string | null
-  winner: BookmakerOdds
-  top4: BookmakerOdds
-  top8: BookmakerOdds
-  group_stage: BookmakerOdds
+  winner: MarketOdds
+  top4: MarketOdds
+  top8: MarketOdds
+  group_stage: MarketOdds
+}
+
+export interface SyncOddsResult {
+  bookmaker: string
+  scraped: number
+  deactivated: number
+  duration_s: number
+  note: string | null
 }
 
 export async function getWCNationsOdds(): Promise<WCNationOdds[]> {
   const { data } = await api.get('/api/v1/wc2026/pricing/nations')
+  return data
+}
+
+export async function syncWCOdds(bookmaker: string): Promise<SyncOddsResult> {
+  const { data } = await api.post(
+    `/api/v1/wc2026/pricing/sync-odds?bookmaker=${bookmaker}`,
+    null,
+    { timeout: 120_000 },
+  )
   return data
 }

@@ -435,20 +435,84 @@ async def scrape_betclic_wc_outrights() -> list[dict]:
 # ── Storage ───────────────────────────────────────────────────────────────────
 
 
-async def store_wc_outrights(session: AsyncSession, outrights: list[dict]) -> None:
-    if not outrights:
-        return
-    await session.execute(
-        text("""
-            INSERT INTO wc2026_outright_odds (nation, player_name, market_type, bookmaker, odds, scraped_at)
-            VALUES (:nation, :player_name, :market_type, :bookmaker, :odds, now())
-            ON CONFLICT (nation, player_name, market_type, bookmaker)
-            DO UPDATE SET odds = EXCLUDED.odds, scraped_at = now()
-        """),
-        outrights,
+async def store_wc_outrights_for_bookmaker(
+    session: AsyncSession, outrights: list[dict], bookmaker: str
+) -> dict:
+    """Upsert les cotes d'un bookmaker et désactive celles qui ont disparu.
+
+    Transitions trackées :
+    - odds_changed_at  : mis à jour quand la cote change de valeur
+    - republished_at   : mis à jour quand une cote inactive redevient active
+    - is_active=FALSE  : pour les lignes absentes du batch courant
+    """
+    if outrights:
+        await session.execute(
+            text("""
+                INSERT INTO wc2026_outright_odds
+                  (nation, player_name, market_type, bookmaker, odds,
+                   is_active, first_seen_at, last_seen_at, odds_changed_at,
+                   republished_at, scraped_at)
+                VALUES
+                  (:nation, :player_name, :market_type, :bookmaker, :odds,
+                   TRUE, now(), now(), now(), NULL, now())
+                ON CONFLICT (nation, player_name, market_type, bookmaker)
+                DO UPDATE SET
+                  odds           = EXCLUDED.odds,
+                  is_active      = TRUE,
+                  last_seen_at   = now(),
+                  scraped_at     = now(),
+                  odds_changed_at = CASE
+                    WHEN wc2026_outright_odds.odds != EXCLUDED.odds THEN now()
+                    ELSE wc2026_outright_odds.odds_changed_at
+                  END,
+                  republished_at = CASE
+                    WHEN NOT wc2026_outright_odds.is_active THEN now()
+                    ELSE wc2026_outright_odds.republished_at
+                  END
+            """),
+            outrights,
+        )
+
+    # Désactive les lignes qui n'étaient pas dans le batch courant
+    # Récupère d'abord les lignes actives pour ce bookmaker
+    existing_res = await session.execute(
+        text(
+            "SELECT id, nation, player_name, market_type "
+            "FROM wc2026_outright_odds WHERE bookmaker = :bk AND is_active = TRUE"
+        ),
+        {"bk": bookmaker},
     )
+    scraped_keys = {
+        (r.get("nation"), r.get("player_name"), r.get("market_type"))
+        for r in outrights
+    }
+    ids_to_deactivate = [
+        row.id
+        for row in existing_res.all()
+        if (row.nation, row.player_name, row.market_type) not in scraped_keys
+    ]
+    if ids_to_deactivate:
+        await session.execute(
+            text("UPDATE wc2026_outright_odds SET is_active = FALSE WHERE id = ANY(:ids)"),
+            {"ids": ids_to_deactivate},
+        )
+
     await session.commit()
-    logger.info("store_wc_outrights: %d lignes upsertées", len(outrights))
+    logger.info(
+        "store_wc_outrights[%s]: %d upsertées, %d désactivées",
+        bookmaker, len(outrights), len(ids_to_deactivate),
+    )
+    return {"scraped": len(outrights), "deactivated": len(ids_to_deactivate)}
+
+
+async def store_wc_outrights(session: AsyncSession, outrights: list[dict]) -> None:
+    """Compatibilité ascendante : appelle store_wc_outrights_for_bookmaker par bookmaker."""
+    from collections import defaultdict
+    by_bk: dict[str, list[dict]] = defaultdict(list)
+    for r in outrights:
+        by_bk[r["bookmaker"]].append(r)
+    for bk, rows in by_bk.items():
+        await store_wc_outrights_for_bookmaker(session, rows, bk)
 
 
 async def sync_all_wc_outrights(session: AsyncSession) -> int:
@@ -464,12 +528,13 @@ async def sync_all_wc_outrights(session: AsyncSession) -> int:
         scrape_betclic_wc_outrights(),
     )
 
-    all_results = unibet_results + pmu_results + betclic_results
-    if all_results:
-        await store_wc_outrights(session, all_results)
+    total = 0
+    for bk, rows in [("unibet", unibet_results), ("pmu", pmu_results), ("betclic", betclic_results)]:
+        await store_wc_outrights_for_bookmaker(session, rows, bk)
+        total += len(rows)
 
     logger.info(
         "sync_all_wc_outrights: unibet=%d pmu=%d betclic=%d total=%d",
-        len(unibet_results), len(pmu_results), len(betclic_results), len(all_results),
+        len(unibet_results), len(pmu_results), len(betclic_results), total,
     )
-    return len(all_results)
+    return total

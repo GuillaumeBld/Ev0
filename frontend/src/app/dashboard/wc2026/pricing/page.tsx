@@ -1,22 +1,34 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { RefreshCw, Check, AlertTriangle } from 'lucide-react'
 import { clsx } from 'clsx'
 import {
   type WCPlayerPricing,
   type WCNationStatus,
   type WCNationOdds,
+  type SyncOddsResult,
   computeWCPricing,
   getWCPricingPlayers,
   getWCLineupNations,
   getWCNationsOdds,
+  syncWCOdds,
 } from '@/lib/api'
 import { PricingTable } from '@/components/wc2026/PricingTable'
 import { NationsOddsTable } from '@/components/wc2026/NationsOddsTable'
 
 type Tab = 'goals' | 'assists' | 'nations'
 type PosFilter = '' | 'FW' | 'MF' | 'DF'
+type Bookmaker = 'unibet' | 'pmu' | 'betclic'
+
+interface SyncState {
+  loading: boolean
+  result: SyncOddsResult | null
+  error: string | null
+}
+
+const BK_LABELS: Record<Bookmaker, string> = { unibet: 'Unibet', pmu: 'PMU', betclic: 'Betclic' }
+const BOOKMAKERS: Bookmaker[] = ['unibet', 'pmu', 'betclic']
 
 export default function WC2026PricingPage() {
   const [players, setPlayers] = useState<WCPlayerPricing[]>([])
@@ -30,6 +42,11 @@ export default function WC2026PricingPage() {
   const [nationFilter, setNationFilter] = useState('')
   const [posFilter, setPosFilter] = useState<PosFilter>('')
   const [minLambda, setMinLambda] = useState('')
+  const [syncStates, setSyncStates] = useState<Record<Bookmaker, SyncState>>({
+    unibet:  { loading: false, result: null, error: null },
+    pmu:     { loading: false, result: null, error: null },
+    betclic: { loading: false, result: null, error: null },
+  })
 
   const loadPlayers = useCallback(async () => {
     setLoading(true)
@@ -76,11 +93,34 @@ export default function WC2026PricingPage() {
     }
   }
 
+  async function handleSync(bk: Bookmaker) {
+    setSyncStates((prev) => ({
+      ...prev,
+      [bk]: { loading: true, result: null, error: null },
+    }))
+    try {
+      const res = await syncWCOdds(bk)
+      setSyncStates((prev) => ({
+        ...prev,
+        [bk]: { loading: false, result: res, error: res.note ?? null },
+      }))
+      // Rafraîchit le tableau après sync
+      await loadNationOdds()
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Erreur sync'
+      setSyncStates((prev) => ({
+        ...prev,
+        [bk]: { loading: false, result: null, error: msg },
+      }))
+    }
+  }
+
   const nationFlags = Object.fromEntries(
     nations.map((n) => [n.nation, n.flag_emoji])
   )
 
   const isPlayerTab = tab === 'goals' || tab === 'assists'
+  const anySyncing = BOOKMAKERS.some((b) => syncStates[b].loading)
 
   return (
     <div className="p-4 flex flex-col h-full gap-4">
@@ -129,8 +169,9 @@ export default function WC2026PricingPage() {
           </>
         )}
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
           {computeMsg && <span className="text-xs text-gray-400">{computeMsg}</span>}
+
           {isPlayerTab && (
             <button
               onClick={handleCompute}
@@ -141,15 +182,62 @@ export default function WC2026PricingPage() {
               {computing ? 'Calcul…' : 'Recalculer'}
             </button>
           )}
+
           {tab === 'nations' && (
-            <button
-              onClick={loadNationOdds}
-              disabled={loadingNations}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors"
-            >
-              <RefreshCw className={clsx('w-3 h-3', loadingNations && 'animate-spin')} />
-              Rafraîchir
-            </button>
+            <div className="flex items-center gap-1.5">
+              {/* Refresh button (recharge les données depuis la DB) */}
+              <button
+                onClick={loadNationOdds}
+                disabled={loadingNations || anySyncing}
+                title="Recharger depuis la DB"
+                className="flex items-center gap-1 px-2 py-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors"
+              >
+                <RefreshCw className={clsx('w-3 h-3', loadingNations && 'animate-spin')} />
+              </button>
+
+              {/* Sync par bookmaker */}
+              {BOOKMAKERS.map((bk) => {
+                const s = syncStates[bk]
+                const done = s.result && !s.error
+                const hasNote = !!s.error
+                return (
+                  <button
+                    key={bk}
+                    onClick={() => handleSync(bk)}
+                    disabled={s.loading || loadingNations}
+                    title={
+                      hasNote
+                        ? s.error!
+                        : done
+                        ? `${s.result!.scraped} cotes scrappées, ${s.result!.deactivated} désactivées (${s.result!.duration_s}s)`
+                        : `Scraper ${BK_LABELS[bk]}`
+                    }
+                    className={clsx(
+                      'flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-40',
+                      hasNote
+                        ? 'bg-amber-600/30 border border-amber-500/40 text-amber-300 hover:bg-amber-600/40'
+                        : done
+                        ? 'bg-green-600/20 border border-green-500/40 text-green-400 hover:bg-green-600/30'
+                        : 'bg-gray-700 hover:bg-gray-600 text-white border border-gray-600',
+                    )}
+                  >
+                    {s.loading ? (
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                    ) : hasNote ? (
+                      <AlertTriangle className="w-3 h-3" />
+                    ) : done ? (
+                      <Check className="w-3 h-3" />
+                    ) : (
+                      <RefreshCw className="w-3 h-3" />
+                    )}
+                    {BK_LABELS[bk]}
+                    {done && !hasNote && (
+                      <span className="text-[10px] opacity-70">{s.result!.scraped}</span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
           )}
         </div>
       </div>

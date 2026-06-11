@@ -45,7 +45,7 @@ async def main(dry_run: bool, bookmaker: str | None) -> None:
         scrape_betclic_wc_outrights,
         scrape_pmu_wc_outrights,
         scrape_unibet_wc_outrights,
-        store_wc_outrights,
+        store_wc_outrights_for_bookmaker,
     )
 
     dsn = os.environ.get("DATABASE_URL", _DEFAULT_DSN)
@@ -63,24 +63,25 @@ async def main(dry_run: bool, bookmaker: str | None) -> None:
     if bookmaker in (None, "betclic"):
         scrapers.append(("betclic", scrape_betclic_wc_outrights()))
 
-    all_results: list[dict] = []
+    results_by_bk: dict[str, list[dict]] = {}
     for name, coro in scrapers:
         logger.info("Scraping %s…", name)
         try:
             rows = await coro  # type: ignore[misc]
             logger.info("%s: %d cotes", name, len(rows))
-            all_results.extend(rows)
+            results_by_bk[name] = rows
         except Exception as exc:
             logger.error("%s failed: %s", name, exc)
+            results_by_bk[name] = []
 
-    if not all_results:
+    all_results = [r for rows in results_by_bk.values() for r in rows]
+    if not all_results and not results_by_bk:
         logger.warning("Aucune cote récupérée.")
         return
 
     summary = Counter(r["market_type"] for r in all_results)
     logger.info("Résumé par market_type: %s", dict(summary))
-    by_book = Counter(r["bookmaker"] for r in all_results)
-    logger.info("Résumé par bookmaker: %s", dict(by_book))
+    logger.info("Résumé par bookmaker: %s", {k: len(v) for k, v in results_by_bk.items()})
 
     if dry_run:
         logger.info("--dry-run: pas de stockage. Aperçu (%d rows):", len(all_results))
@@ -89,8 +90,9 @@ async def main(dry_run: bool, bookmaker: str | None) -> None:
         return
 
     async with AsyncSessionLocal() as session:
-        await store_wc_outrights(session, all_results)
-    logger.info("✓ %d cotes upsertées dans wc2026_outright_odds", len(all_results))
+        for bk, rows in results_by_bk.items():
+            stats = await store_wc_outrights_for_bookmaker(session, rows, bk)
+            logger.info("✓ %s: %d upsertées, %d désactivées", bk, stats["scraped"], stats["deactivated"])
 
 
 if __name__ == "__main__":

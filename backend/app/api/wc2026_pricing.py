@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import time
 import unicodedata
+from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,12 +19,15 @@ from app.pricing.wc2026_tournament import compute_tournament_pricing
 router = APIRouter(prefix="/wc2026/pricing", tags=["wc2026"])
 
 _NATION_MARKETS = ("winner", "top4", "top8", "group_stage")
+_BOOKMAKERS = ("unibet", "pmu", "betclic")
 
 
 def _norm_name(name: str) -> str:
     n = unicodedata.normalize("NFKD", (name or "").lower().strip())
     return "".join(c for c in n if not unicodedata.combining(c))
 
+
+# ── Player pricing ────────────────────────────────────────────────────────────
 
 class PlayerPricingOut(BaseModel):
     nation: str
@@ -98,24 +102,23 @@ async def get_pricing_players(
     result = await session.execute(q)
     players = result.scalars().all()
 
-    # Load bookmaker outright odds in two queries (not N+1)
-    from app.models.wc2026_odds import WC2026OutrightOdd
-
     ts_res = await session.execute(
         select(WC2026OutrightOdd.player_name, WC2026OutrightOdd.odds)
         .where(WC2026OutrightOdd.market_type == "top_scorer")
         .where(WC2026OutrightOdd.player_name.isnot(None))
+        .where(WC2026OutrightOdd.is_active.is_(True))
     )
     bk_scorer: dict[str, float] = {}
     for name, odds in ts_res.all():
         key = _norm_name(name)
         if key not in bk_scorer or odds > bk_scorer[key]:
-            bk_scorer[key] = odds   # keep best (highest) odds for bettor
+            bk_scorer[key] = odds
 
     ta_res = await session.execute(
         select(WC2026OutrightOdd.player_name, WC2026OutrightOdd.odds)
         .where(WC2026OutrightOdd.market_type == "top_assister")
         .where(WC2026OutrightOdd.player_name.isnot(None))
+        .where(WC2026OutrightOdd.is_active.is_(True))
     )
     bk_assister: dict[str, float] = {}
     for name, odds in ta_res.all():
@@ -154,45 +157,63 @@ async def get_pricing_players(
 
 # ── Nation outright odds ──────────────────────────────────────────────────────
 
-class BookmakerOdds(BaseModel):
-    unibet: float | None = None
-    pmu: float | None = None
-    betclic: float | None = None
+class BookmakerOddEntry(BaseModel):
+    odds: float | None = None
+    is_active: bool = True
+    last_seen_at: datetime | None = None
+    odds_changed_at: datetime | None = None
+    republished_at: datetime | None = None
+
+
+class MarketOdds(BaseModel):
+    unibet: BookmakerOddEntry = BookmakerOddEntry()
+    pmu: BookmakerOddEntry = BookmakerOddEntry()
+    betclic: BookmakerOddEntry = BookmakerOddEntry()
 
 
 class NationOddsRow(BaseModel):
     nation: str
     group_letter: str | None
     flag_emoji: str | None
-    winner: BookmakerOdds
-    top4: BookmakerOdds
-    top8: BookmakerOdds
-    group_stage: BookmakerOdds
+    winner: MarketOdds
+    top4: MarketOdds
+    top8: MarketOdds
+    group_stage: MarketOdds
 
 
 @router.get("/nations", response_model=list[NationOddsRow])
 async def get_nation_odds(
     session: AsyncSession = Depends(get_db),
 ) -> list[NationOddsRow]:
-    """Return nation-level outright odds (winner, top4, top8, group_stage) per bookmaker."""
-    # Cotes nations
+    """Return nation-level outright odds per market × bookmaker, with suspension status."""
     odds_res = await session.execute(
         select(
             WC2026OutrightOdd.nation,
             WC2026OutrightOdd.market_type,
             WC2026OutrightOdd.bookmaker,
             WC2026OutrightOdd.odds,
+            WC2026OutrightOdd.is_active,
+            WC2026OutrightOdd.last_seen_at,
+            WC2026OutrightOdd.odds_changed_at,
+            WC2026OutrightOdd.republished_at,
         ).where(
             WC2026OutrightOdd.nation.isnot(None),
             WC2026OutrightOdd.market_type.in_(_NATION_MARKETS),
         )
     )
-    # Pivot : { nation → { market_type → { bookmaker → odds } } }
-    pivot: dict[str, dict[str, dict[str, float]]] = {}
-    for nation, market_type, bookmaker, odds in odds_res.all():
-        pivot.setdefault(nation, {}).setdefault(market_type, {})[bookmaker] = odds
+    # Pivot : { nation → { market_type → { bookmaker → BookmakerOddEntry } } }
+    pivot: dict[str, dict[str, dict[str, BookmakerOddEntry]]] = {}
+    for nation, mtype, bk, odds, is_active, last_seen_at, odds_changed_at, republished_at in odds_res.all():
+        entry = BookmakerOddEntry(
+            odds=odds,
+            is_active=is_active,
+            last_seen_at=last_seen_at,
+            odds_changed_at=odds_changed_at,
+            republished_at=republished_at,
+        )
+        pivot.setdefault(nation, {}).setdefault(mtype, {})[bk] = entry
 
-    # Métadonnées nations (group_letter, flag_emoji) — dedup en Python pour éviter DISTINCT ON
+    # Métadonnées nations — dedup en Python
     meta_res = await session.execute(
         select(
             WC2026SquadPlayer.nation,
@@ -205,23 +226,97 @@ async def get_nation_odds(
         if r.nation not in meta:
             meta[r.nation] = {"group_letter": r.group_letter, "flag_emoji": r.flag_emoji}
 
-    # Fusionne toutes les nations connues (DB + cotes)
     all_nations = sorted(
         meta.keys() | pivot.keys(),
         key=lambda n: (meta.get(n, {}).get("group_letter", "Z"), n),
     )
 
+    def _market(nation: str, mtype: str) -> MarketOdds:
+        bk = pivot.get(nation, {}).get(mtype, {})
+        return MarketOdds(
+            unibet=bk.get("unibet", BookmakerOddEntry()),
+            pmu=bk.get("pmu", BookmakerOddEntry()),
+            betclic=bk.get("betclic", BookmakerOddEntry()),
+        )
+
     rows = []
     for nation in all_nations:
         m = meta.get(nation, {})
-        bk = pivot.get(nation, {})
         rows.append(NationOddsRow(
             nation=nation,
             group_letter=m.get("group_letter"),
             flag_emoji=m.get("flag_emoji"),
-            winner=BookmakerOdds(**bk.get("winner", {})),
-            top4=BookmakerOdds(**bk.get("top4", {})),
-            top8=BookmakerOdds(**bk.get("top8", {})),
-            group_stage=BookmakerOdds(**bk.get("group_stage", {})),
+            winner=_market(nation, "winner"),
+            top4=_market(nation, "top4"),
+            top8=_market(nation, "top8"),
+            group_stage=_market(nation, "group_stage"),
         ))
     return rows
+
+
+# ── Sync odds (déclenche le scraper depuis l'API) ─────────────────────────────
+
+class SyncOddsResult(BaseModel):
+    bookmaker: str
+    scraped: int
+    deactivated: int
+    duration_s: float
+    note: str | None = None
+
+
+@router.post("/sync-odds", response_model=SyncOddsResult)
+async def sync_odds(
+    bookmaker: str,
+    session: AsyncSession = Depends(get_db),
+) -> SyncOddsResult:
+    """Déclenche le scraping des cotes outrights pour un bookmaker donné.
+
+    PMU et Unibet fonctionnent depuis le VPS (httpx pur).
+    Betclic nécessite Playwright — retourne une erreur explicite si absent.
+    """
+    if bookmaker not in _BOOKMAKERS:
+        raise HTTPException(400, f"bookmaker doit être parmi {_BOOKMAKERS}")
+
+    from app.ingestion.wc2026.sync_wc_outrights import (
+        scrape_betclic_wc_outrights,
+        scrape_pmu_wc_outrights,
+        scrape_unibet_wc_outrights,
+        store_wc_outrights_for_bookmaker,
+    )
+
+    scraper_map = {
+        "unibet": scrape_unibet_wc_outrights,
+        "pmu": scrape_pmu_wc_outrights,
+        "betclic": scrape_betclic_wc_outrights,
+    }
+
+    t0 = time.monotonic()
+    note = None
+
+    try:
+        rows = await scraper_map[bookmaker]()
+    except Exception as exc:
+        raise HTTPException(502, f"Scraping {bookmaker} échoué : {exc}") from exc
+
+    if bookmaker == "betclic" and not rows:
+        # Playwright non installé → scraper retourne [] silencieusement
+        try:
+            from playwright.async_api import async_playwright  # noqa: F401
+        except ImportError:
+            return SyncOddsResult(
+                bookmaker=bookmaker,
+                scraped=0,
+                deactivated=0,
+                duration_s=round(time.monotonic() - t0, 2),
+                note="Playwright non installé sur ce serveur — lancez le script localement.",
+            )
+
+    stats = await store_wc_outrights_for_bookmaker(session, rows, bookmaker)
+
+    return SyncOddsResult(
+        bookmaker=bookmaker,
+        scraped=stats["scraped"],
+        deactivated=stats["deactivated"],
+        duration_s=round(time.monotonic() - t0, 2),
+        note=note,
+    )

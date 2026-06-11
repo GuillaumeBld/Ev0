@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { clsx } from 'clsx'
-import { type WCNationOdds, type BookmakerOdds } from '@/lib/api'
+import { type WCNationOdds, type MarketOdds, type BookmakerOddEntry } from '@/lib/api'
 
 type SortKey = 'nation' | 'group' | 'winner' | 'top4' | 'top8' | 'group_stage'
 type SortDir = 'asc' | 'desc'
@@ -23,55 +23,99 @@ const BK_LABELS: Record<string, string> = {
 const BOOKMAKERS = ['unibet', 'pmu', 'betclic'] as const
 type Bookmaker = typeof BOOKMAKERS[number]
 
-// Returns the best (highest) odds across bookmakers for a market
-function bestOdds(bk: BookmakerOdds): number | null {
-  const vals = BOOKMAKERS.map((b) => bk[b]).filter((v): v is number => v !== null)
+function bestActiveOdds(market: MarketOdds): number | null {
+  const vals = BOOKMAKERS
+    .map((b) => market[b])
+    .filter((e): e is BookmakerOddEntry => e.odds !== null && e.is_active)
+    .map((e) => e.odds as number)
   return vals.length ? Math.max(...vals) : null
 }
 
 function bestOddsForSort(row: WCNationOdds, key: SortKey): number {
-  if (key === 'winner')      return bestOdds(row.winner)      ?? Infinity
-  if (key === 'top4')        return bestOdds(row.top4)        ?? Infinity
-  if (key === 'top8')        return bestOdds(row.top8)        ?? Infinity
-  if (key === 'group_stage') return bestOdds(row.group_stage) ?? Infinity
+  if (key === 'winner')      return bestActiveOdds(row.winner)      ?? Infinity
+  if (key === 'top4')        return bestActiveOdds(row.top4)        ?? Infinity
+  if (key === 'top8')        return bestActiveOdds(row.top8)        ?? Infinity
+  if (key === 'group_stage') return bestActiveOdds(row.group_stage) ?? Infinity
   return 0
 }
 
-function OddsGroup({ bk }: { bk: BookmakerOdds }) {
-  const best = bestOdds(bk)
-  if (best === null) return <span className="text-gray-700 text-xs">—</span>
+function relTime(iso: string | null): string | null {
+  if (!iso) return null
+  const diff = Date.now() - new Date(iso).getTime()
+  const h = Math.floor(diff / 3_600_000)
+  if (h < 1) return 'il y a <1h'
+  if (h < 24) return `il y a ${h}h`
+  const d = Math.floor(h / 24)
+  return `il y a ${d}j`
+}
+
+function isRecentlyRepublished(entry: BookmakerOddEntry): boolean {
+  if (!entry.republished_at) return false
+  return Date.now() - new Date(entry.republished_at).getTime() < 48 * 3_600_000
+}
+
+function OddsEntry({ bk, entry, isBest }: {
+  bk: Bookmaker
+  entry: BookmakerOddEntry
+  isBest: boolean
+}) {
+  if (entry.odds === null) return null
+
+  const suspended = !entry.is_active
+  const republished = isRecentlyRepublished(entry)
+
+  const tooltip = [
+    suspended ? `Suspendu — vu en dernier ${relTime(entry.last_seen_at)}` : null,
+    republished ? `Republié ${relTime(entry.republished_at)} — cote modifiée ${relTime(entry.odds_changed_at)}` : null,
+    !suspended && !republished && entry.last_seen_at ? `Mis à jour ${relTime(entry.last_seen_at)}` : null,
+  ].filter(Boolean).join(' | ')
+
+  return (
+    <span
+      className={clsx('text-xs font-mono inline-flex items-center gap-0.5')}
+      title={tooltip || undefined}
+    >
+      <span className="text-gray-600 text-[10px] mr-0.5">{BK_LABELS[bk]}</span>
+      {suspended ? (
+        <span className="text-amber-500/80 line-through decoration-amber-500/60">
+          {(entry.odds).toFixed(2)}
+        </span>
+      ) : (
+        <span className={isBest ? 'text-green-400 font-semibold' : 'text-gray-400'}>
+          {(entry.odds).toFixed(2)}
+        </span>
+      )}
+      {suspended && (
+        <span className="text-amber-500/80 text-[9px] ml-0.5">⚠</span>
+      )}
+      {republished && !suspended && (
+        <span className="text-yellow-400 text-[9px] ml-0.5" title={`Republié ${relTime(entry.republished_at)}`}>↺</span>
+      )}
+    </span>
+  )
+}
+
+function MarketCell({ market }: { market: MarketOdds }) {
+  const best = bestActiveOdds(market)
+  const hasAny = BOOKMAKERS.some((b) => market[b].odds !== null)
+  if (!hasAny) return <span className="text-gray-700 text-xs">—</span>
 
   return (
     <div className="flex gap-1.5 items-center flex-wrap">
-      {BOOKMAKERS.map((b) => {
-        const v = bk[b]
-        if (v === null) return null
-        const isBest = v === best
-        return (
-          <span
-            key={b}
-            className={clsx(
-              'text-xs font-mono',
-              isBest ? 'text-green-400 font-semibold' : 'text-gray-400',
-            )}
-            title={`${BK_LABELS[b]}: ${v}`}
-          >
-            <span className="text-gray-600 text-[10px] mr-0.5">{BK_LABELS[b]}</span>
-            {v.toFixed(2)}
-          </span>
-        )
-      })}
+      {BOOKMAKERS.map((b) => (
+        <OddsEntry
+          key={b}
+          bk={b}
+          entry={market[b]}
+          isBest={market[b].is_active && market[b].odds !== null && market[b].odds === best}
+        />
+      ))}
     </div>
   )
 }
 
 function Th({
-  label,
-  sortKey,
-  current,
-  dir,
-  onClick,
-  className,
+  label, sortKey, current, dir, onClick, className,
 }: {
   label: string
   sortKey: SortKey
@@ -98,7 +142,6 @@ function Th({
 
 interface Props {
   nations: WCNationOdds[]
-  nationFlags?: Record<string, string | null>
 }
 
 export function NationsOddsTable({ nations }: Props) {
@@ -110,7 +153,7 @@ export function NationsOddsTable({ nations }: Props) {
       setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
     } else {
       setSortKey(key)
-      setSortDir(key === 'nation' || key === 'group' ? 'asc' : 'asc')
+      setSortDir('asc')
     }
   }
 
@@ -118,8 +161,7 @@ export function NationsOddsTable({ nations }: Props) {
     let av: string | number
     let bv: string | number
     if (sortKey === 'nation') {
-      av = a.nation
-      bv = b.nation
+      av = a.nation; bv = b.nation
     } else if (sortKey === 'group') {
       av = (a.group_letter ?? 'Z') + a.nation
       bv = (b.group_letter ?? 'Z') + b.nation
@@ -134,7 +176,7 @@ export function NationsOddsTable({ nations }: Props) {
   if (nations.length === 0) {
     return (
       <div className="p-6 text-center text-gray-500 text-sm">
-        Aucune cote disponible — lancez <code>sync_wc_outrights.py</code> en local.
+        Aucune cote disponible — cliquez sur <span className="text-orange-400 font-medium">Sync</span> ou lancez <code>sync_wc_outrights.py</code> en local.
       </div>
     )
   }
@@ -159,18 +201,16 @@ export function NationsOddsTable({ nations }: Props) {
               className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors"
             >
               <td className="px-3 py-1.5 font-medium text-white whitespace-nowrap">
-                {row.flag_emoji && (
-                  <span className="mr-1.5">{row.flag_emoji}</span>
-                )}
+                {row.flag_emoji && <span className="mr-1.5">{row.flag_emoji}</span>}
                 {row.nation}
               </td>
               <td className="px-3 py-1.5 text-xs text-gray-500 font-mono">
                 {row.group_letter ?? '—'}
               </td>
-              <td className="px-3 py-1.5"><OddsGroup bk={row.winner} /></td>
-              <td className="px-3 py-1.5"><OddsGroup bk={row.top4} /></td>
-              <td className="px-3 py-1.5"><OddsGroup bk={row.top8} /></td>
-              <td className="px-3 py-1.5"><OddsGroup bk={row.group_stage} /></td>
+              <td className="px-3 py-1.5"><MarketCell market={row.winner} /></td>
+              <td className="px-3 py-1.5"><MarketCell market={row.top4} /></td>
+              <td className="px-3 py-1.5"><MarketCell market={row.top8} /></td>
+              <td className="px-3 py-1.5"><MarketCell market={row.group_stage} /></td>
             </tr>
           ))}
         </tbody>
