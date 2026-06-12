@@ -15,6 +15,7 @@ class WC2026PlayerPricing(Base):
     player_name: Mapped[str] = mapped_column(String(100), nullable=False)
     position: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
+    expected_games: Mapped[float | None] = mapped_column(Float, nullable=True)
     lambda_goals: Mapped[float] = mapped_column(Float, nullable=False)
     lambda_assists: Mapped[float] = mapped_column(Float, nullable=False)
 

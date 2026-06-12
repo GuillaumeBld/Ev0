@@ -33,6 +33,7 @@ class PlayerPricingOut(BaseModel):
     nation: str
     player_name: str
     position: str | None
+    expected_games: float | None = None
     lambda_goals: float
     lambda_assists: float
     p_1g: float | None
@@ -141,6 +142,7 @@ async def get_pricing_players(
             nation=p.nation,
             player_name=p.player_name,
             position=p.position,
+            expected_games=p.expected_games,
             lambda_goals=p.lambda_goals,
             lambda_assists=p.lambda_assists,
             p_1g=p.p_1g, p_2g=p.p_2g, p_3g=p.p_3g, p_4g=p.p_4g,

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -16,6 +16,186 @@ logger = logging.getLogger(__name__)
 N_MONTE_CARLO = 50_000
 _MC_SEED = 42
 _ASSIST_GOAL_RATE = 0.65  # assists budget = BM × rate
+
+# WC2026: 48 teams, 32 advance to R32, then R16→QF→SF→Final+3rd
+# Uniform average = (48×3 + 32 + 16 + 8 + 4×2) / 48 ≈ 4.33 games
+# We use 4.5 as the calibration baseline assumed in TEAM_BM
+_E_GAMES_BASELINE = 4.5
+
+# Maps every odds DB nation string → canonical TEAM_BM English key.
+# Both French (Betclic/Unibet) and English (other books) variants included.
+_ODDS_TO_BM: dict[str, str] = {
+    # --- A ---
+    "Afrique du Sud":      "South Africa",
+    "South Africa":        "South Africa",
+    "Algeria":             "Algeria",
+    "Algérie":             "Algeria",
+    "Allemagne":           "Germany",
+    "Germany":             "Germany",
+    "Angleterre":          "England",
+    "England":             "England",
+    "Arabie Saoudite":     "Saudi Arabia",
+    "ArabieSaoudite":      "Saudi Arabia",
+    "Saudi Arabia":        "Saudi Arabia",
+    "Argentina":           "Argentina",
+    "Argentine":           "Argentina",
+    "Australia":           "Australia",
+    "Australie":           "Australia",
+    "Austria":             "Austria",
+    "Autriche":            "Austria",
+    # --- B ---
+    "Belgique":            "Belgium",
+    "Belgium":             "Belgium",
+    "Bosnia & Herzegovina": "Bosnia-Herzegovina",
+    "Bosnie Herzég.":      "Bosnia-Herzegovina",
+    "Bosnie-Herzégovine":  "Bosnia-Herzegovina",
+    "Brazil":              "Brazil",
+    "Brésil":              "Brazil",
+    # --- C ---
+    "Canada":              "Canada",
+    "Cap Vert":            "Cape Verde Islands",
+    "Cap-Vert":            "Cape Verde Islands",
+    "Cape Verde":          "Cape Verde Islands",
+    "Colombia":            "Colombia",
+    "Colombie":            "Colombia",
+    "Corée du Sud":        "South Korea",
+    "South Korea":         "South Korea",
+    "Croatia":             "Croatia",
+    "Croatie":             "Croatia",
+    "Curacao":             "Curaçao",
+    "Curaçao":             "Curaçao",
+    "Czech Republic":      "Czechia",
+    "Rép.Tchèque":         "Czechia",
+    "Tchéquie":            "Czechia",
+    "Côte d'Ivoire":       "Ivory Coast",
+    "Ivory Coast":         "Ivory Coast",
+    # --- D ---
+    "DR Congo":            "Congo DR",
+    "RD Congo":            "Congo DR",
+    # --- E ---
+    "Ecosse":              "Scotland",
+    "Écosse":              "Scotland",
+    "Scotland":            "Scotland",
+    "Ecuador":             "Ecuador",
+    "Equateur":            "Ecuador",
+    "Équateur":            "Ecuador",
+    "Egypt":               "Egypt",
+    "Egypte":              "Egypt",
+    "Égypte":              "Egypt",
+    "Espagne":             "Spain",
+    "Spain":               "Spain",
+    "Etats-Unis":          "United States",
+    "États-Unis":          "United States",
+    "USA":                 "United States",
+    # --- F ---
+    "France":              "France",
+    # --- G ---
+    "Ghana":               "Ghana",
+    # --- H ---
+    "Haiti":               "Haiti",
+    "Haïti":               "Haiti",
+    # --- I ---
+    "Irak":                "Iraq",
+    "Iraq":                "Iraq",
+    "Iran":                "Iran",
+    # --- J ---
+    "Japan":               "Japan",
+    "Japon":               "Japan",
+    "Jordan":              "Jordan",
+    "Jordanie":            "Jordan",
+    # --- M ---
+    "Maroc":               "Morocco",
+    "Morocco":             "Morocco",
+    "Mexico":              "Mexico",
+    "Mexique":             "Mexico",
+    # --- N ---
+    "Netherlands":         "Netherlands",
+    "Pays-Bas":            "Netherlands",
+    "New Zealand":         "New Zealand",
+    "Nlle Zélande":        "New Zealand",
+    "Nouvelle-Zélande":    "New Zealand",
+    "Norway":              "Norway",
+    "Norvège":             "Norway",
+    # --- P ---
+    "Panama":              "Panama",
+    "Paraguay":            "Paraguay",
+    "Portugal":            "Portugal",
+    # --- Q ---
+    "Qatar":               "Qatar",
+    # --- S ---
+    "Senegal":             "Senegal",
+    "Sénégal":             "Senegal",
+    "Sweden":              "Sweden",
+    "Suède":               "Sweden",
+    "Switzerland":         "Switzerland",
+    "Suisse":              "Switzerland",
+    # --- T ---
+    "Tunisia":             "Tunisia",
+    "Tunisie":             "Tunisia",
+    "Turkey":              "Turkey",
+    "Turquie":             "Turkey",
+    # --- U ---
+    "Uruguay":             "Uruguay",
+    "Uzbekistan":          "Uzbekistan",
+    "Ouzbékistan":         "Uzbekistan",
+}
+
+
+async def compute_expected_games(db: AsyncSession) -> dict[str, float]:
+    """Compute expected number of matches per nation from bookmaker odds.
+
+    WC2026 format: 48 teams, 32 advance to knockout (R32→R16→QF→SF→Final+3rd).
+    Max games = 8 (3 group + 5 knockout). All top-4 teams play game 8.
+
+    E[games] = 3
+        + p(pass group/reach R32)
+        + p(reach R16) [interpolated]
+        + p(top8 = reach QF)
+        + 2 × p(top4 = reach SF)   # SF game + 3rd-or-Final game (guaranteed for top4)
+        + p(finalist)               # Final game (only the 2 finalists)
+    """
+    rows = (await db.execute(text("""
+        SELECT nation, market_type, MAX(odds) AS best_odds
+        FROM wc2026_outright_odds
+        WHERE is_active = true
+          AND nation IS NOT NULL
+          AND nation NOT LIKE '%/%'
+          AND market_type IN ('group_stage', 'top8', 'top4', 'winner')
+        GROUP BY nation, market_type
+    """))).mappings().all()
+
+    # Aggregate per canonical TEAM_BM name — keep best odds (max) per market
+    best: dict[str, dict[str, float]] = {}
+    for row in rows:
+        canon = _ODDS_TO_BM.get(row["nation"])
+        if canon is None:
+            continue
+        mkt = row["market_type"]
+        cur = best.setdefault(canon, {})
+        if mkt not in cur or row["best_odds"] > cur[mkt]:
+            cur[mkt] = float(row["best_odds"])
+
+    result: dict[str, float] = {}
+    for nation, mkt in best.items():
+        p_group   = (1.0 / mkt["group_stage"]) if "group_stage" in mkt else 0.65
+        p_top8    = (1.0 / mkt["top8"])         if "top8"        in mkt else p_group * 0.25
+        p_top4    = (1.0 / mkt["top4"])         if "top4"        in mkt else p_top8  * 0.5
+        p_win     = (1.0 / mkt["winner"])        if "winner"      in mkt else p_top4  * 0.25
+
+        # Interpolate P(reach R16) — geometric mean between passing group and top8
+        p_r16 = math.sqrt(p_group * p_top8)
+        # P(finalist) ≈ 2 × P(win), capped at P(top4) since finalists ⊆ top4
+        p_finalist = min(2.0 * p_win, p_top4)
+
+        e_games = 3.0 + p_group + p_r16 + p_top8 + 2.0 * p_top4 + p_finalist
+        result[nation] = round(e_games, 4)
+
+    if result:
+        logger.info(
+            "wc2026 E[games] sample — Spain: %.2f, France: %.2f, Iran: %.2f",
+            result.get("Spain", 0), result.get("France", 0), result.get("Iran", 0),
+        )
+    return result
 
 
 def _norm_name(name: str) -> str:
@@ -63,14 +243,15 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
     """Compute per-player tournament pricing for WC2026.
 
     Formula:
-        weight_g_i  = xg_p90_i × (expected_minutes_i / 90)
-        share_g_i   = weight_g_i / sum(weight_g)
-        lambda_goals = share_g_i × BM
+        weight_g_i    = xg_p90_i × (expected_minutes_i / 90)
+        share_g_i     = weight_g_i / sum(weight_g)
+        adjusted_bm   = BM × (E_games_from_odds / _E_GAMES_BASELINE)
+        lambda_goals  = share_g_i × adjusted_bm
 
     Stats source: wc2026_scouting_stats (all 48 nations).
     Lineup source: wc2026_expected_lineups / wc2026_expected_lineup_players.
+    Odds source: wc2026_outright_odds (group_stage, top8, top4, winner markets).
     """
-    from sqlalchemy import text
     from app.ingestion.wc2026.team_bm import (
         TEAM_BM,
         WC2026_LINEUP_NATION_MAP,
@@ -78,9 +259,19 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
     )
     from app.models.wc2026_lineups import WC2026ExpectedLineup, WC2026ExpectedLineupPlayer
 
+    # 0. Load odds-based expected games per nation
+    e_games_map = await compute_expected_games(db)
+
     all_entries: list[dict[str, Any]] = []
 
     for nation, bm in TEAM_BM.items():
+        # Adjust BM by odds-derived expected games vs calibration baseline.
+        # BM was calibrated assuming _E_GAMES_BASELINE games on average.
+        # Dividing by baseline gives per-match quality; multiplying by
+        # odds-derived E[games] gives the true tournament lambda budget.
+        e_games = e_games_map.get(nation, _E_GAMES_BASELINE)
+        adjusted_bm = bm * (e_games / _E_GAMES_BASELINE)
+
         # 1. Load default lineup (DB stores nation names in French)
         lineup_nation = WC2026_LINEUP_NATION_MAP.get(nation, nation)
         lineup_result = await db.execute(
@@ -161,15 +352,16 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
 
         total_g = sum(p["w_g"] for p in matched) or 1e-9
         total_a = sum(p["w_a"] for p in matched) or 1e-9
-        budget_assists = bm * _ASSIST_GOAL_RATE
+        budget_assists = adjusted_bm * _ASSIST_GOAL_RATE
 
         for p in matched:
             all_entries.append({
-                "nation":        nation,
-                "player_name":   p["player_name"],
-                "position":      p["position"],
-                "lambda_goals":  round((p["w_g"] / total_g) * bm,            4),
-                "lambda_assists": round((p["w_a"] / total_a) * budget_assists, 4),
+                "nation":          nation,
+                "player_name":     p["player_name"],
+                "position":        p["position"],
+                "expected_games":  e_games,
+                "lambda_goals":    round((p["w_g"] / total_g) * adjusted_bm,            4),
+                "lambda_assists":  round((p["w_a"] / total_a) * budget_assists, 4),
             })
 
     if not all_entries:
@@ -196,6 +388,7 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
             "nation":           entry["nation"],
             "player_name":      entry["player_name"],
             "position":         entry["position"],
+            "expected_games":   entry["expected_games"],
             "lambda_goals":     lg,
             "lambda_assists":   la,
             "p_1g":             round(poisson_ge(lg, 1), 6),
