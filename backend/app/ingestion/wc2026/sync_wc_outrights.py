@@ -24,19 +24,30 @@ BETCLIC_BASE = "https://www.betclic.fr"
 # ── Unibet (LVS) ──────────────────────────────────────────────────────────────
 
 # Titre de marché (lowercase) → market_type interne
+# Classer du plus spécifique au plus générique pour éviter les faux-positifs.
 _LVS_MARKET_TITLE_MAP: list[tuple[str, str]] = [
-    ("vainqueur",        "winner"),
-    ("winner",           "winner"),
-    ("meilleur buteur",  "top_scorer"),
-    ("top scorer",       "top_scorer"),
-    ("meilleur passeur", "top_assister"),
-    ("top assister",     "top_assister"),
-    ("top 4",            "top4"),
-    ("top4",             "top4"),
-    ("top 8",            "top8"),
-    ("top8",             "top8"),
-    ("phase de groupe",  "group_stage"),
-    ("group stage",      "group_stage"),
+    # Joueurs
+    ("meilleur buteur",              "top_scorer"),
+    ("top scorer",                   "top_scorer"),
+    ("meilleur passeur",             "top_assister"),
+    ("top assister",                 "top_assister"),
+    # Nations — stades atteints (ex : "Quelle équipe atteindra les demi-finales ?")
+    ("atteindra les demi-finales",   "top4"),
+    ("reach the semi-final",         "top4"),
+    ("atteindra les quarts de finale", "top8"),
+    ("reach the quarter-final",      "top8"),
+    ("quarts de finale",             "top8"),
+    ("atteindra les 1/8",            "group_stage"),
+    ("reach the round of 16",        "group_stage"),
+    # Générique
+    ("vainqueur",                    "winner"),
+    ("winner",                       "winner"),
+    ("top 4",                        "top4"),
+    ("top4",                         "top4"),
+    ("top 8",                        "top8"),
+    ("top8",                         "top8"),
+    ("phase de groupe",              "group_stage"),
+    ("group stage",                  "group_stage"),
 ]
 
 # Params requis par l'API LVS Unibet (découverts par analyse du trafic navigateur)
@@ -187,7 +198,7 @@ _PMU_KAMBI_PARAMS = {
     "rangeSize":      "200",
 }
 
-# Mots-clés dans englishName de l'event Kambi → market_type interne
+# Mots-clés dans englishName de l'event Kambi → market_type interne (marchés globaux)
 _PMU_EVENT_MARKET_MAP: list[tuple[str, str]] = [
     ("top goalscorer", "top_scorer"),
     ("top assists",    "top_assister"),
@@ -197,9 +208,22 @@ _PMU_EVENT_MARKET_MAP: list[tuple[str, str]] = [
 # Préfixes de groupes de poule : "group a" … "group l" → group_stage
 _PMU_GROUP_PREFIX = "group "
 
+# Label d'outcome dans les events "{Nation} Markets 2026" → market_type
+# Classer du plus spécifique au plus générique.
+_PMU_NATION_OUTCOME_MAP: list[tuple[str, str]] = [
+    ("demi-finale",      "top4"),
+    ("semi-final",       "top4"),
+    ("quart de finale",  "top8"),
+    ("quarter-final",    "top8"),
+    ("1/8",              "group_stage"),
+    ("huitième",         "group_stage"),
+    ("round of 16",      "group_stage"),
+    ("round of 32",      "group_stage"),
+]
+
 
 def _pmu_detect_market_type(event_name: str, bet_offer_type: str) -> str | None:
-    """Mappe un event Kambi WC2026 vers un market_type interne."""
+    """Mappe un event Kambi WC2026 vers un market_type interne (marchés globaux)."""
     en = event_name.lower()
     for kw, mtype in _PMU_EVENT_MARKET_MAP:
         if kw in en:
@@ -210,6 +234,27 @@ def _pmu_detect_market_type(event_name: str, bet_offer_type: str) -> str | None:
         bt = bet_offer_type.lower()
         if "classement" in bt or "winner" in bt or "ranking" in bt:
             return "winner"
+    return None
+
+
+def _pmu_detect_nation_outcome(label: str) -> str | None:
+    """Mappe le label d'un outcome dans un event '{Nation} Markets 2026'."""
+    lbl = label.lower()
+    for kw, mtype in _PMU_NATION_OUTCOME_MAP:
+        if kw in lbl:
+            return mtype
+    return None
+
+
+def _pmu_extract_nation_from_markets_event(event_name: str) -> str | None:
+    """Extrait le nom de la nation depuis un event '{Nation} Markets 2026'.
+
+    Ex: "France Markets 2026" → "France"
+        "Brazil World Cup Markets" → "Brazil"
+    """
+    for suffix in (" Markets 2026", " World Cup 2026 Markets", " World Cup Markets", " markets 2026"):
+        if event_name.lower().endswith(suffix.lower()):
+            return event_name[: len(event_name) - len(suffix)].strip()
     return None
 
 
@@ -241,6 +286,37 @@ async def scrape_pmu_wc_outrights() -> list[dict]:
 
         for bo in ev.get("betOffers", []):
             bet_offer_type = bo.get("betOfferType", {}).get("name", "")
+
+            # ── Cas spécial : events "{Nation} Markets 2026" ──────────────────
+            # Chaque outcome représente un market_type différent pour cette nation.
+            # Ex: "France Markets 2026" → outcomes "Dernier stade atteint : Demi-finale",
+            #     "Dernier stade atteint : Quart de finale", etc.
+            if "market" in event_name.lower() and "compétition" in bet_offer_type.lower():
+                nation = _pmu_extract_nation_from_markets_event(event_name)
+                if nation:
+                    for o in bo.get("outcomes", []):
+                        if o.get("status") not in (None, "OPEN"):
+                            continue
+                        label = o.get("label", o.get("englishLabel", ""))
+                        raw_odds = o.get("odds", 0)
+                        if not label or not raw_odds:
+                            continue
+                        mtype = _pmu_detect_nation_outcome(label)
+                        if not mtype:
+                            continue
+                        odds = round(raw_odds / 1000, 2)
+                        if odds < 1.01 or odds > 1000.0:
+                            continue
+                        results.append({
+                            "nation":      nation,
+                            "player_name": None,
+                            "market_type": mtype,
+                            "bookmaker":   "pmu",
+                            "odds":        odds,
+                        })
+                continue  # ne pas repasser dans la détection standard
+
+            # ── Marchés globaux standard ──────────────────────────────────────
             market_type = _pmu_detect_market_type(event_name, bet_offer_type)
             if not market_type:
                 continue
