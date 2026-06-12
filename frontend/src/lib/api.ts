@@ -1113,6 +1113,21 @@ export interface WCPlayerStat {
   red_card: number | null
 }
 
+export interface WCMatchLineupPlayer {
+  id: number
+  name: string
+  short_name: string | null
+  position: string   // G | D | M | F
+  jersey_number: number | null
+}
+
+export interface WCTeamLineup {
+  team_id: number | null
+  formation: string | null
+  players: WCMatchLineupPlayer[]
+  substitutes: WCMatchLineupPlayer[]
+}
+
 export interface WCMatchDetail {
   bzz_id: number
   home_team: string
@@ -1136,6 +1151,8 @@ export interface WCMatchDetail {
   home_stats: WCTeamStats
   away_stats: WCTeamStats
   player_stats: WCPlayerStat[]
+  home_lineup: WCTeamLineup | null
+  away_lineup: WCTeamLineup | null
 }
 
 export async function getWCMatches(): Promise<WCMatchListItem[]> {

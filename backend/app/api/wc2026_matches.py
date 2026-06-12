@@ -91,6 +91,21 @@ class Incident(BaseModel):
     length: int | None = None
 
 
+class LineupPlayer(BaseModel):
+    id: int
+    name: str
+    short_name: str | None
+    position: str        # G | D | M | F
+    jersey_number: int | None
+
+
+class TeamLineup(BaseModel):
+    team_id: int | None
+    formation: str | None
+    players: list[LineupPlayer]   # 11 starters
+    substitutes: list[LineupPlayer]
+
+
 class PlayerStat(BaseModel):
     player_id: int
     player_name: str | None
@@ -149,6 +164,8 @@ class MatchDetail(BaseModel):
     home_stats: TeamStats
     away_stats: TeamStats
     player_stats: list[PlayerStat]
+    home_lineup: TeamLineup | None
+    away_lineup: TeamLineup | None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -209,6 +226,26 @@ def _parse_team_stats(raw: dict[str, Any]) -> TeamStats:
         passes=raw.get("totalPasses") or raw.get("passes"),
         pass_accuracy=raw.get("accuratePasses") or raw.get("pass_accuracy"),
         offsides=raw.get("offsides"),
+    )
+
+
+def _parse_lineup(raw: dict[str, Any] | None, team_key: str) -> TeamLineup | None:
+    if not raw:
+        return None
+    side = raw.get(team_key) or {}
+    def _player(p: dict) -> LineupPlayer:
+        return LineupPlayer(
+            id=p.get("id", 0),
+            name=p.get("name", "?"),
+            short_name=p.get("short_name"),
+            position=p.get("position", "?"),
+            jersey_number=p.get("jersey_number"),
+        )
+    return TeamLineup(
+        team_id=side.get("team_id"),
+        formation=side.get("formation"),
+        players=[_player(p) for p in side.get("players") or []],
+        substitutes=[_player(p) for p in side.get("substitutes") or []],
     )
 
 
@@ -348,11 +385,13 @@ async def get_match_detail(
     team_stats_home_raw: dict = {}
     team_stats_away_raw: dict = {}
     player_stats_raw: list[dict] = []
+    lineups_raw: dict = {}
     group_name: str | None = None
 
     # Check cache: incidents stored as list in JSONB
     cached_incidents = event.incidents
     cached_shotmap = event.shotmap
+    cached_lineups = event.lineups
     has_cache = (
         isinstance(cached_incidents, list) and len(cached_incidents) > 0
     )
@@ -385,6 +424,13 @@ async def get_match_detail(
             except Exception:
                 player_stats_raw = []
 
+            # Lineups
+            try:
+                lu_data = await client.get_page(f"/api/v2/events/{bzz_id}/lineups/")
+                lineups_raw = lu_data.get("lineups") or {}
+            except Exception:
+                lineups_raw = {}
+
             # Header for group_name
             try:
                 hdr = await client.get_page(f"/api/v2/events/{bzz_id}/")
@@ -392,12 +438,12 @@ async def get_match_detail(
             except Exception:
                 pass
 
-        # Cache incidents + shotmap in DB
-        if incidents_raw or shotmap_raw:
+        # Cache incidents + shotmap + lineups in DB
+        if incidents_raw or shotmap_raw or lineups_raw:
             await session.execute(
                 update(BzzEvent)
                 .where(BzzEvent.api_id == bzz_id)
-                .values(incidents=incidents_raw, shotmap=shotmap_raw)
+                .values(incidents=incidents_raw, shotmap=shotmap_raw, lineups=lineups_raw)
             )
             await session.commit()
 
@@ -468,6 +514,7 @@ async def get_match_detail(
         # Load from cache
         incidents_raw = cached_incidents if isinstance(cached_incidents, list) else []
         shotmap_raw = cached_shotmap if isinstance(cached_shotmap, list) else []
+        lineups_raw = cached_lineups if isinstance(cached_lineups, dict) else {}
 
         # Player stats from DB
         ps_result = await session.execute(
@@ -539,4 +586,6 @@ async def get_match_detail(
         player_stats=_parse_player_stats(
             player_stats_raw, name_map, event.home_team_api_id
         ),
+        home_lineup=_parse_lineup(lineups_raw, "home"),
+        away_lineup=_parse_lineup(lineups_raw, "away"),
     )
