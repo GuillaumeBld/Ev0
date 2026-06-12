@@ -45,18 +45,18 @@ function MatchCard({
     <button
       onClick={onClick}
       className={clsx(
-        'w-full text-left px-3 py-2 rounded-lg border transition-colors',
+        'w-full text-left px-4 py-3 rounded-lg border transition-colors',
         selected
           ? 'bg-orange-500/10 border-orange-500/40'
           : 'border-gray-700/60 hover:bg-gray-800/50 hover:border-gray-600',
         loading && 'opacity-60',
       )}
     >
-      {/* Date + group */}
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-[10px] text-gray-600">{formatDate(match.event_date)}</span>
+      {/* Date */}
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-xs text-gray-500">{formatDate(match.event_date)}</span>
         {match.round_number && (
-          <span className="text-[10px] text-gray-600">J{match.round_number}</span>
+          <span className="text-xs text-gray-600">J{match.round_number}</span>
         )}
       </div>
 
@@ -64,21 +64,21 @@ function MatchCard({
       <div className="flex items-center gap-2">
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between">
-            <span className={clsx('text-xs truncate', hasScore && match.home_score! > match.away_score! ? 'text-white font-semibold' : 'text-gray-300')}>
+            <span className={clsx('text-sm truncate', hasScore && match.home_score! > match.away_score! ? 'text-white font-semibold' : 'text-gray-300')}>
               {match.home_team}
             </span>
             {hasScore && (
-              <span className={clsx('font-mono tabular-nums text-sm font-bold ml-2 shrink-0', match.home_score! > match.away_score! ? 'text-white' : 'text-gray-400')}>
+              <span className={clsx('font-mono tabular-nums text-base font-bold ml-2 shrink-0', match.home_score! > match.away_score! ? 'text-white' : 'text-gray-400')}>
                 {match.home_score}
               </span>
             )}
           </div>
-          <div className="flex items-center justify-between">
-            <span className={clsx('text-xs truncate', hasScore && match.away_score! > match.home_score! ? 'text-white font-semibold' : 'text-gray-300')}>
+          <div className="flex items-center justify-between mt-0.5">
+            <span className={clsx('text-sm truncate', hasScore && match.away_score! > match.home_score! ? 'text-white font-semibold' : 'text-gray-300')}>
               {match.away_team}
             </span>
             {hasScore && (
-              <span className={clsx('font-mono tabular-nums text-sm font-bold ml-2 shrink-0', match.away_score! > match.home_score! ? 'text-white' : 'text-gray-400')}>
+              <span className={clsx('font-mono tabular-nums text-base font-bold ml-2 shrink-0', match.away_score! > match.home_score! ? 'text-white' : 'text-gray-400')}>
                 {match.away_score}
               </span>
             )}
@@ -88,15 +88,15 @@ function MatchCard({
 
       {/* xG */}
       {finished && match.home_xg !== null && (
-        <div className="flex justify-between mt-1 text-[10px]">
-          <span className="text-blue-400/60">xG {match.home_xg.toFixed(2)}</span>
-          <span className="text-red-400/60">xG {match.away_xg?.toFixed(2)}</span>
+        <div className="flex justify-between mt-1.5 text-xs">
+          <span className="text-blue-400/70">xG {match.home_xg.toFixed(2)}</span>
+          <span className="text-red-400/70">xG {match.away_xg?.toFixed(2)}</span>
         </div>
       )}
 
       {/* Status badge */}
       {!finished && (
-        <div className={clsx('mt-1 text-[10px] uppercase tracking-wider', statusColor(match.status))}>
+        <div className={clsx('mt-1.5 text-xs uppercase tracking-wider', statusColor(match.status))}>
           {match.status === 'notstarted' ? formatDate(match.event_date) : match.period ?? match.status}
         </div>
       )}
@@ -142,7 +142,6 @@ export default function WC2026MatchesPage() {
     }
   }
 
-  // Group by round
   const rounds = Array.from(new Set(matches.map(m => m.round_number ?? 0))).sort((a, b) => a - b)
 
   const filtered = matches.filter(m => {
@@ -171,28 +170,28 @@ export default function WC2026MatchesPage() {
   return (
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden gap-0">
       {/* Left: match list */}
-      <div className="w-72 shrink-0 border-r border-gray-700 flex flex-col">
+      <div className="w-96 shrink-0 border-r border-gray-700 flex flex-col">
         {/* Header + filters */}
-        <div className="p-3 border-b border-gray-700 space-y-2">
+        <div className="p-4 border-b border-gray-700 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-white">CDM 2026 — Matchs</h2>
+            <h2 className="text-base font-semibold text-white">CDM 2026 — Matchs</h2>
             <button
               onClick={loadMatches}
               disabled={loading}
-              className="p-1 rounded hover:bg-gray-700 text-gray-500 hover:text-white transition-colors disabled:opacity-40"
+              className="p-1.5 rounded hover:bg-gray-700 text-gray-500 hover:text-white transition-colors disabled:opacity-40"
             >
-              <RefreshCw className={clsx('w-3.5 h-3.5', loading && 'animate-spin')} />
+              <RefreshCw className={clsx('w-4 h-4', loading && 'animate-spin')} />
             </button>
           </div>
 
           {/* Status filter */}
-          <div className="flex gap-1">
+          <div className="flex gap-1.5">
             {(['all', 'finished', 'upcoming'] as StatusFilter[]).map(f => (
               <button
                 key={f}
                 onClick={() => setStatusFilter(f)}
                 className={clsx(
-                  'flex-1 py-1 text-[10px] rounded border transition-colors',
+                  'flex-1 py-1.5 text-xs rounded border transition-colors',
                   statusFilter === f
                     ? 'border-orange-500/50 bg-orange-500/10 text-orange-300'
                     : 'border-gray-700 text-gray-500 hover:text-gray-300',
@@ -204,11 +203,11 @@ export default function WC2026MatchesPage() {
           </div>
 
           {/* Round filter */}
-          <div className="flex gap-1 flex-wrap">
+          <div className="flex gap-1.5 flex-wrap">
             <button
               onClick={() => setRoundFilter(null)}
               className={clsx(
-                'px-1.5 py-0.5 text-[10px] rounded border transition-colors',
+                'px-2 py-1 text-xs rounded border transition-colors',
                 roundFilter === null
                   ? 'border-orange-500/50 bg-orange-500/10 text-orange-300'
                   : 'border-gray-700 text-gray-500 hover:text-gray-300',
@@ -221,7 +220,7 @@ export default function WC2026MatchesPage() {
                 key={r}
                 onClick={() => setRoundFilter(r === roundFilter ? null : r)}
                 className={clsx(
-                  'px-1.5 py-0.5 text-[10px] rounded border transition-colors',
+                  'px-2 py-1 text-xs rounded border transition-colors',
                   roundFilter === r
                     ? 'border-orange-500/50 bg-orange-500/10 text-orange-300'
                     : 'border-gray-700 text-gray-500 hover:text-gray-300',
@@ -234,18 +233,18 @@ export default function WC2026MatchesPage() {
         </div>
 
         {/* Match list */}
-        <div className="flex-1 overflow-y-auto p-2 space-y-3">
+        <div className="flex-1 overflow-y-auto p-3 space-y-4">
           {loading ? (
-            <p className="text-gray-600 text-xs text-center py-8">Chargement…</p>
+            <p className="text-gray-600 text-sm text-center py-8">Chargement…</p>
           ) : (
             Object.entries(byRound)
               .sort(([a], [b]) => Number(a) - Number(b))
               .map(([round, roundMatches]) => (
                 <div key={round}>
-                  <div className="text-[10px] font-bold text-gray-600 uppercase tracking-wider mb-1 px-1">
+                  <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 px-1">
                     {roundLabels[Number(round)] ?? `Journée ${round}`}
                   </div>
-                  <div className="space-y-1">
+                  <div className="space-y-1.5">
                     {roundMatches.map(m => (
                       <MatchCard
                         key={m.bzz_id}
@@ -263,7 +262,7 @@ export default function WC2026MatchesPage() {
       </div>
 
       {/* Right: detail panel */}
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto p-6">
         {!selected && !detail && (
           <div className="flex items-center justify-center h-full text-gray-600 text-sm">
             Sélectionne un match pour voir le détail
@@ -278,7 +277,7 @@ export default function WC2026MatchesPage() {
         )}
 
         {detail && !detailLoading && (
-          <div className="max-w-2xl mx-auto">
+          <div className="max-w-3xl mx-auto">
             <MatchDetailPanel
               match={detail}
               onClose={() => { setSelected(null); setDetail(null) }}

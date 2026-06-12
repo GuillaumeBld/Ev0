@@ -57,7 +57,7 @@ export function ShotMap({ shots, homeTeam, awayTeam, side }: ShotMapProps) {
       <svg
         viewBox={`0 0 ${W} ${H}`}
         className="w-full h-auto"
-        style={{ maxHeight: 200 }}
+        style={{ maxHeight: 300 }}
       >
         {/* Pitch background */}
         <rect x={0} y={0} width={W} height={H} fill="#1a2e1a" rx={4} />
@@ -126,7 +126,7 @@ export function ShotMap({ shots, homeTeam, awayTeam, side }: ShotMapProps) {
 
       {/* Side toggle label */}
       {side === 'both' && (
-        <div className="flex justify-center gap-4 text-[10px] mt-1">
+        <div className="flex justify-center gap-6 text-xs mt-2">
           <span className="flex items-center gap-1">
             <span className="inline-block w-2.5 h-2.5 rounded-full border-2 border-blue-400 bg-transparent" />
             <span className="text-blue-400">{homeTeam}</span>
