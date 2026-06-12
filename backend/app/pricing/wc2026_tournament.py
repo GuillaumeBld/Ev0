@@ -154,17 +154,20 @@ async def compute_expected_games(db: AsyncSession) -> dict[str, float]:
         + 2 × p(top4 = reach SF)   # SF game + 3rd-or-Final game (guaranteed for top4)
         + p(finalist)               # Final game (only the 2 finalists)
     """
+    # Use median to exclude bookmaker-specific outliers (e.g. Unibet winner, PMU group_stage).
     rows = (await db.execute(text("""
-        SELECT nation, market_type, MAX(odds) AS best_odds
+        SELECT nation, market_type,
+               PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY odds) AS median_odds
         FROM wc2026_outright_odds
         WHERE is_active = true
           AND nation IS NOT NULL
           AND nation NOT LIKE '%/%'
           AND market_type IN ('group_stage', 'top8', 'top4', 'winner')
         GROUP BY nation, market_type
+        HAVING COUNT(*) >= 1
     """))).mappings().all()
 
-    # Aggregate per canonical TEAM_BM name — keep best odds (max) per market
+    # Aggregate per canonical TEAM_BM name — keep best (lowest implied prob) median per market
     best: dict[str, dict[str, float]] = {}
     for row in rows:
         canon = _ODDS_TO_BM.get(row["nation"])
@@ -172,8 +175,9 @@ async def compute_expected_games(db: AsyncSession) -> dict[str, float]:
             continue
         mkt = row["market_type"]
         cur = best.setdefault(canon, {})
-        if mkt not in cur or row["best_odds"] > cur[mkt]:
-            cur[mkt] = float(row["best_odds"])
+        # Keep highest median odds (= lowest implied probability = most conservative estimate)
+        if mkt not in cur or row["median_odds"] > cur[mkt]:
+            cur[mkt] = float(row["median_odds"])
 
     result: dict[str, float] = {}
     for nation, mkt in best.items():
