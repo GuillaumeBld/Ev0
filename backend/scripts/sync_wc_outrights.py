@@ -42,7 +42,7 @@ async def push_via_api(api_url: str, bookmaker: str, rows: list[dict]) -> None:
     """Envoie les cotes scrapées vers POST /api/v1/wc2026/pricing/store-odds."""
     import httpx
     url = f"{api_url.rstrip('/')}/api/v1/wc2026/pricing/store-odds"
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=60.0, verify=False) as client:
         r = await client.post(url, params={"bookmaker": bookmaker}, json=rows)
         r.raise_for_status()
         data = r.json()
