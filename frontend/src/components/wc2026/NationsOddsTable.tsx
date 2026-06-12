@@ -5,35 +5,37 @@ import { clsx } from 'clsx'
 import { type WCNationOdds, type MarketOdds, type BookmakerOddEntry } from '@/lib/api'
 
 type MarketKey = 'winner' | 'top4' | 'top8' | 'group_stage'
-type SortKey = 'nation' | 'group' | MarketKey
+type SortField = 'nation' | 'group' | 'unibet' | 'betclic' | 'pmu' | 'best'
 type SortDir = 'asc' | 'desc'
 
 const MARKETS: { key: MarketKey; label: string }[] = [
-  { key: 'winner',      label: 'Vainqueur' },
-  { key: 'top4',        label: 'Demi-fin'  },
-  { key: 'top8',        label: 'Top 8'     },
-  { key: 'group_stage', label: 'Phase grp' },
+  { key: 'winner',      label: 'Vainqueur'    },
+  { key: 'top4',        label: 'Demi-finales' },
+  { key: 'top8',        label: 'Quarts'       },
+  { key: 'group_stage', label: 'Phase grp'    },
 ]
 
 const BOOKMAKERS = ['unibet', 'betclic', 'pmu'] as const
 type Bookmaker = typeof BOOKMAKERS[number]
 
-const BK_LABELS: Record<Bookmaker, string> = {
-  unibet:  'UNI',
-  betclic: 'BET',
-  pmu:     'PMU',
+const BK_LABEL: Record<Bookmaker, string> = { unibet: 'Unibet', betclic: 'Betclic', pmu: 'PMU' }
+const BK_SHORT: Record<Bookmaker, string> = { unibet: 'UNI', betclic: 'BET', pmu: 'PMU' }
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function bestEntry(market: MarketOdds): { bk: Bookmaker; odds: number } | null {
+  let best: { bk: Bookmaker; odds: number } | null = null
+  for (const bk of BOOKMAKERS) {
+    const e = market[bk]
+    if (e.odds !== null && e.is_active && (best === null || e.odds > best.odds)) {
+      best = { bk, odds: e.odds }
+    }
+  }
+  return best
 }
 
-function bestActive(market: MarketOdds): number | null {
-  const vals = BOOKMAKERS
-    .map((b) => market[b])
-    .filter((e): e is BookmakerOddEntry => e.odds !== null && e.is_active)
-    .map((e) => e.odds as number)
-  return vals.length ? Math.max(...vals) : null
-}
-
-function bestForSort(row: WCNationOdds, key: MarketKey): number {
-  return bestActive(row[key]) ?? Infinity
+function bestOddsValue(market: MarketOdds): number | null {
+  return bestEntry(market)?.odds ?? null
 }
 
 function relTime(iso: string | null): string | null {
@@ -44,22 +46,37 @@ function relTime(iso: string | null): string | null {
   return `${Math.floor(h / 24)}j`
 }
 
-function isRecentlyRepublished(e: BookmakerOddEntry): boolean {
-  return !!e.republished_at && Date.now() - new Date(e.republished_at).getTime() < 48 * 3_600_000
+// Couleur basée sur la probabilité implicite (1/cote) — indépendante du marché
+function oddsTextColor(odds: number): string {
+  const p = 1 / odds
+  if (p > 0.45) return 'text-amber-300'      // grand favori  odds < 2.2
+  if (p > 0.20) return 'text-yellow-200/90'  // favori        odds 2.2–5
+  if (p > 0.08) return 'text-gray-100'       // challenger    odds 5–12.5
+  if (p > 0.03) return 'text-gray-400'       // outsider      odds 12.5–33
+  return 'text-gray-600'                     // longshot      odds > 33
 }
 
-function OddsCell({ entry, isBest }: { entry: BookmakerOddEntry; isBest: boolean }) {
+function activeCount(nations: WCNationOdds[], key: MarketKey): number {
+  return nations.reduce(
+    (n, row) => n + BOOKMAKERS.filter(b => row[key][b].odds !== null && row[key][b].is_active).length,
+    0,
+  )
+}
+
+// ── Sub-components ───────────────────────────────────────────────────────────
+
+function OddsChip({ entry, best }: { entry: BookmakerOddEntry; best: number | null }) {
   if (entry.odds === null) {
-    return (
-      <td className="px-1.5 py-1 text-center text-[11px] text-gray-700 tabular-nums">—</td>
-    )
+    return <span className="text-gray-700 text-[12px]">—</span>
   }
 
   const suspended   = !entry.is_active
-  const republished = isRecentlyRepublished(entry)
+  const republished = !!entry.republished_at &&
+    Date.now() - new Date(entry.republished_at).getTime() < 48 * 3_600_000
+  const isBest = !suspended && entry.odds === best
 
   const tooltip = suspended
-    ? `Suspendu — vu en dernier il y a ${relTime(entry.last_seen_at)}`
+    ? `Suspendu — vu il y a ${relTime(entry.last_seen_at)}`
     : republished
     ? `Republié il y a ${relTime(entry.republished_at)}, cote modifiée il y a ${relTime(entry.odds_changed_at)}`
     : entry.last_seen_at
@@ -67,165 +84,187 @@ function OddsCell({ entry, isBest }: { entry: BookmakerOddEntry; isBest: boolean
     : undefined
 
   return (
-    <td
-      className="px-1.5 py-1 text-center tabular-nums"
+    <span
       title={tooltip}
+      className={clsx(
+        'inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded font-mono tabular-nums text-[12px]',
+        isBest   && 'bg-green-900/25 ring-1 ring-green-800/40',
+        suspended && 'opacity-70',
+      )}
     >
       <span className={clsx(
-        'text-[11px] font-mono',
         suspended
-          ? 'text-amber-500/70 line-through decoration-amber-500/50'
+          ? 'line-through decoration-amber-500/50 text-amber-500/70'
           : isBest
           ? 'text-green-400 font-semibold'
-          : 'text-gray-300',
+          : oddsTextColor(entry.odds),
       )}>
         {entry.odds.toFixed(2)}
       </span>
-      {suspended && (
-        <span className="text-amber-500/70 text-[9px] ml-0.5">⚠</span>
-      )}
-      {republished && !suspended && (
-        <span className="text-yellow-400 text-[9px] ml-0.5">↺</span>
-      )}
-    </td>
+      {suspended  && <span className="text-[9px] text-amber-500/70 leading-none">⚠</span>}
+      {republished && !suspended && <span className="text-[9px] text-yellow-400 leading-none">↺</span>}
+    </span>
   )
 }
+
+function BestCell({ market }: { market: MarketOdds }) {
+  const b = bestEntry(market)
+  if (!b) return <span className="text-gray-700 text-xs">—</span>
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="font-mono font-semibold text-[13px] text-green-400">{b.odds.toFixed(2)}</span>
+      <span className="text-[10px] text-green-600/80 bg-green-900/30 px-1 py-px rounded leading-none">
+        {BK_SHORT[b.bk]}
+      </span>
+    </span>
+  )
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 
 interface Props {
   nations: WCNationOdds[]
 }
 
 export function NationsOddsTable({ nations }: Props) {
-  const [sortKey, setSortKey] = useState<SortKey>('group')
-  const [sortDir, setSortDir] = useState<SortDir>('asc')
+  const [market, setMarket]     = useState<MarketKey>('winner')
+  const [sortField, setSortField] = useState<SortField>('best')
+  const [sortDir, setSortDir]   = useState<SortDir>('asc')
 
-  function toggleSort(key: SortKey) {
-    if (key === sortKey) {
-      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+  function switchMarket(key: MarketKey) {
+    setMarket(key)
+    setSortField('best')
+    setSortDir('asc')
+  }
+
+  function toggleSort(f: SortField) {
+    if (f === sortField) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))
     } else {
-      setSortKey(key)
-      setSortDir('asc')
+      setSortField(f)
+      setSortDir(f === 'nation' || f === 'group' ? 'asc' : 'asc')
     }
   }
 
+  const getVal = (row: WCNationOdds): string | number => {
+    const m = row[market]
+    if (sortField === 'nation') return row.nation
+    if (sortField === 'group')  return (row.group_letter ?? 'Z') + row.nation
+    if (sortField === 'best')   return bestOddsValue(m) ?? Infinity
+    const e = m[sortField as Bookmaker]
+    return e.is_active && e.odds !== null ? e.odds : Infinity
+  }
+
   const sorted = [...nations].sort((a, b) => {
-    let av: string | number
-    let bv: string | number
-    if (sortKey === 'nation') {
-      av = a.nation; bv = b.nation
-    } else if (sortKey === 'group') {
-      av = (a.group_letter ?? 'Z') + a.nation
-      bv = (b.group_letter ?? 'Z') + b.nation
-    } else {
-      av = bestForSort(a, sortKey)
-      bv = bestForSort(b, sortKey)
-    }
+    const av = getVal(a), bv = getVal(b)
     const cmp = av < bv ? -1 : av > bv ? 1 : 0
     return sortDir === 'asc' ? cmp : -cmp
   })
 
+  const sortIcon = (f: SortField) =>
+    sortField === f ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''
+
   if (nations.length === 0) {
     return (
-      <div className="p-6 text-center text-gray-500 text-sm">
-        Aucune cote — cliquez sur <span className="text-orange-400 font-medium">Sync</span> ou lancez <code>sync_wc_outrights.py</code> en local.
+      <div className="p-8 text-center text-gray-500 text-sm">
+        Aucune cote — cliquez sur{' '}
+        <span className="text-orange-400 font-medium">Sync</span> pour démarrer.
       </div>
     )
   }
 
-  const sortIcon = (key: SortKey) =>
-    sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''
+  const COLS: { f: SortField; label: string; align: 'left' | 'right' }[] = [
+    { f: 'nation',  label: 'Nation',  align: 'left'  },
+    { f: 'group',   label: 'Grp',     align: 'left'  },
+    { f: 'unibet',  label: 'Unibet',  align: 'right' },
+    { f: 'betclic', label: 'Betclic', align: 'right' },
+    { f: 'pmu',     label: 'PMU',     align: 'right' },
+    { f: 'best',    label: 'Meilleur',align: 'right' },
+  ]
 
   return (
-    <div className="overflow-x-auto">
-      <table className="text-sm border-collapse w-full">
-        <thead>
-          {/* Ligne 1 : groupes de marchés */}
-          <tr className="border-b border-gray-700">
-            <th
-              rowSpan={2}
-              onClick={() => toggleSort('nation')}
-              className="px-3 py-1.5 text-left text-xs font-medium text-gray-400 cursor-pointer hover:text-white whitespace-nowrap select-none"
+    <div className="space-y-3">
+      {/* Market tabs */}
+      <div className="flex gap-0.5 border-b border-gray-700/50 pb-0">
+        {MARKETS.map(m => {
+          const cnt = activeCount(nations, m.key)
+          return (
+            <button
+              key={m.key}
+              onClick={() => switchMarket(m.key)}
+              className={clsx(
+                'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5 rounded-t',
+                market === m.key
+                  ? 'border-orange-500 text-orange-300'
+                  : 'border-transparent text-gray-400 hover:text-gray-200',
+              )}
             >
-              Nation{sortIcon('nation')}
-            </th>
-            <th
-              rowSpan={2}
-              onClick={() => toggleSort('group')}
-              className="px-2 py-1.5 text-left text-xs font-medium text-gray-400 cursor-pointer hover:text-white select-none"
-            >
-              Grp{sortIcon('group')}
-            </th>
-            {MARKETS.map((m) => (
-              <th
-                key={m.key}
-                colSpan={3}
-                onClick={() => toggleSort(m.key)}
-                className={clsx(
-                  'px-2 py-1.5 text-center text-xs font-medium cursor-pointer select-none hover:text-white transition-colors border-l border-gray-800',
-                  sortKey === m.key ? 'text-orange-400' : 'text-gray-400',
-                )}
-              >
-                {m.label}{sortIcon(m.key)}
-              </th>
-            ))}
-          </tr>
-          {/* Ligne 2 : labels bookmakers */}
-          <tr className="border-b border-gray-700">
-            {MARKETS.map((m) =>
-              BOOKMAKERS.map((bk, i) => (
+              {m.label}
+              <span className={clsx(
+                'text-[10px] px-1.5 py-px rounded-sm font-mono tabular-nums leading-none',
+                market === m.key
+                  ? 'bg-orange-500/15 text-orange-400'
+                  : 'bg-gray-800 text-gray-600',
+              )}>
+                {cnt}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Table */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="border-b border-gray-700/70">
+              {COLS.map(({ f, label, align }) => (
                 <th
-                  key={`${m.key}-${bk}`}
+                  key={f}
+                  onClick={() => toggleSort(f)}
                   className={clsx(
-                    'px-1.5 py-1 text-center text-[10px] font-normal text-gray-500 select-none',
-                    i === 0 && 'border-l border-gray-800',
+                    'py-2 px-3 text-[11px] font-medium cursor-pointer select-none hover:text-white transition-colors uppercase tracking-wide',
+                    align === 'right' ? 'text-right' : 'text-left',
+                    sortField === f ? 'text-orange-400' : 'text-gray-500',
                   )}
                 >
-                  {BK_LABELS[bk]}
+                  {label}{sortIcon(f)}
                 </th>
-              ))
-            )}
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((row) => {
-            // Calcule best active odds par marché une seule fois par ligne
-            const bests: Record<MarketKey, number | null> = {
-              winner:      bestActive(row.winner),
-              top4:        bestActive(row.top4),
-              top8:        bestActive(row.top8),
-              group_stage: bestActive(row.group_stage),
-            }
-
-            return (
-              <tr
-                key={row.nation}
-                className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors"
-              >
-                <td className="px-3 py-1 font-medium text-white whitespace-nowrap text-xs">
-                  {row.flag_emoji && <span className="mr-1">{row.flag_emoji}</span>}
-                  {row.nation}
-                </td>
-                <td className="px-2 py-1 text-[11px] text-gray-500 font-mono">
-                  {row.group_letter ?? '—'}
-                </td>
-                {MARKETS.map((m) =>
-                  BOOKMAKERS.map((bk, i) => (
-                    <OddsCell
-                      key={`${m.key}-${bk}`}
-                      entry={row[m.key][bk]}
-                      isBest={
-                        row[m.key][bk].is_active &&
-                        row[m.key][bk].odds !== null &&
-                        row[m.key][bk].odds === bests[m.key]
-                      }
-                    />
-                  ))
-                )}
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map(row => {
+              const m    = row[market]
+              const best = bestOddsValue(m)
+              return (
+                <tr
+                  key={row.nation}
+                  className="border-b border-gray-800/30 hover:bg-gray-800/20 transition-colors"
+                >
+                  <td className="py-2 px-3 whitespace-nowrap">
+                    <span className="font-medium text-white text-xs">
+                      {row.flag_emoji && <span className="mr-1.5">{row.flag_emoji}</span>}
+                      {row.nation}
+                    </span>
+                  </td>
+                  <td className="py-2 px-3 text-[11px] text-gray-500 font-mono">
+                    {row.group_letter ?? '—'}
+                  </td>
+                  {BOOKMAKERS.map(bk => (
+                    <td key={bk} className="py-2 px-3 text-right">
+                      <OddsChip entry={m[bk]} best={best} />
+                    </td>
+                  ))}
+                  <td className="py-2 px-3 text-right">
+                    <BestCell market={m} />
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

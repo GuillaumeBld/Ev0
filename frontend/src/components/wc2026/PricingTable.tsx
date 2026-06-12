@@ -14,19 +14,56 @@ interface PricingTableProps {
   nationFlags: Record<string, string | null>
 }
 
+// Edge coloré par magnitude
 function EdgeBadge({ edge }: { edge: number | null }) {
-  if (edge === null) return <span className="text-gray-600">—</span>
+  if (edge === null) return <span className="text-gray-700">—</span>
   const pct = (edge * 100).toFixed(1)
+  const cls =
+    edge >= 0.25 ? 'text-emerald-300 font-bold' :
+    edge >= 0.12 ? 'text-emerald-400 font-semibold' :
+    edge >= 0.05 ? 'text-emerald-500' :
+    edge >  0    ? 'text-emerald-700' :
+    edge > -0.05 ? 'text-red-700/80' :
+    edge > -0.12 ? 'text-red-500' :
+    edge > -0.25 ? 'text-red-400' :
+                   'text-red-300 font-semibold'
   return (
-    <span className={clsx('font-medium', edge > 0 ? 'text-green-400' : 'text-red-400')}>
+    <span className={cls}>
       {edge > 0 ? '+' : ''}{pct}%
     </span>
   )
 }
 
-function OddsCell({ value }: { value: number | null }) {
-  if (!value) return <span className="text-gray-600">—</span>
-  return <span>{value.toFixed(2)}</span>
+// Cote brute neutre (fair prices)
+function FairOddsCell({ value }: { value: number | null }) {
+  if (!value) return <span className="text-gray-700">—</span>
+  return <span className="text-gray-400">{value.toFixed(2)}</span>
+}
+
+// Cote bookmaker colorée par rapport à la cote fair
+function BkOddsCell({ bk, fair }: { bk: number | null; fair: number | null }) {
+  if (!bk) return <span className="text-gray-700">—</span>
+  if (!fair) return <span className="text-gray-400">{bk.toFixed(2)}</span>
+  const ratio = bk / fair
+  const cls =
+    ratio >= 1.12 ? 'text-emerald-400 font-semibold' :
+    ratio >= 1.05 ? 'text-emerald-600' :
+    ratio >= 1.00 ? 'text-gray-300' :
+    ratio >= 0.93 ? 'text-red-600/70' :
+                    'text-red-500'
+  return <span className={clsx('font-mono', cls)}>{bk.toFixed(2)}</span>
+}
+
+// Lambda coloré par intensité
+function LambdaCell({ value }: { value: number }) {
+  const cls =
+    value >= 6   ? 'text-white font-bold' :
+    value >= 4   ? 'text-orange-200' :
+    value >= 2.5 ? 'text-orange-300' :
+    value >= 1.2 ? 'text-orange-400' :
+    value >= 0.5 ? 'text-orange-500/80' :
+                   'text-orange-700/60'
+  return <span className={clsx('font-mono', cls)}>{value.toFixed(2)}</span>
 }
 
 function SortIcon({ col, sortKey, sortDir }: { col: string; sortKey: string; sortDir: SortDir }) {
@@ -128,23 +165,25 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
             const flag    = nationFlags[p.nation]
 
             return (
-              <tr key={`${p.nation}-${p.player_name}-${i}`} className="border-b border-gray-800 hover:bg-gray-800/40">
-                <td className="py-1.5 px-2 font-medium text-white">{p.player_name}</td>
+              <tr key={`${p.nation}-${p.player_name}-${i}`} className="border-b border-gray-800/60 hover:bg-gray-800/30">
+                <td className="py-1.5 px-2 font-medium text-white text-xs">{p.player_name}</td>
                 <td className="py-1.5 px-2">
                   <span className="flex items-center gap-1">
                     <FlagImg emoji={flag} size={14} />
-                    <span className="text-gray-400 text-[10px]">{p.nation}</span>
+                    <span className="text-gray-500 text-[10px]">{p.nation}</span>
                   </span>
                 </td>
-                <td className="py-1.5 px-2 text-gray-500">{p.position ?? '—'}</td>
-                <td className="py-1.5 px-2 text-right font-mono text-orange-300">{lambda.toFixed(2)}</td>
-                <td className="py-1.5 px-2 text-right"><OddsCell value={cut1} /></td>
-                <td className="py-1.5 px-2 text-right"><OddsCell value={cut2} /></td>
-                <td className="py-1.5 px-2 text-right"><OddsCell value={cut3} /></td>
-                {isGoals && <td className="py-1.5 px-2 text-right"><OddsCell value={cut4} /></td>}
-                <td className="py-1.5 px-2 text-right"><OddsCell value={fairOut} /></td>
-                <td className="py-1.5 px-2 text-right text-gray-400"><OddsCell value={bkOut} /></td>
-                <td className="py-1.5 px-2 text-right"><EdgeBadge edge={edgeOut} /></td>
+                <td className="py-1.5 px-2 text-gray-600 text-xs">{p.position ?? '—'}</td>
+                <td className="py-1.5 px-2 text-right"><LambdaCell value={lambda} /></td>
+                <td className="py-1.5 px-2 text-right text-xs"><FairOddsCell value={cut1} /></td>
+                <td className="py-1.5 px-2 text-right text-xs"><FairOddsCell value={cut2} /></td>
+                <td className="py-1.5 px-2 text-right text-xs"><FairOddsCell value={cut3} /></td>
+                {isGoals && <td className="py-1.5 px-2 text-right text-xs"><FairOddsCell value={cut4} /></td>}
+                <td className="py-1.5 px-2 text-right text-xs"><FairOddsCell value={fairOut} /></td>
+                <td className="py-1.5 px-2 text-right text-xs">
+                  <BkOddsCell bk={bkOut} fair={fairOut} />
+                </td>
+                <td className="py-1.5 px-2 text-right text-xs"><EdgeBadge edge={edgeOut} /></td>
               </tr>
             )
           })}
