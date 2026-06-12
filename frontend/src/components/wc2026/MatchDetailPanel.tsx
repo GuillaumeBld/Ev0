@@ -2,7 +2,8 @@
 
 import { useState } from 'react'
 import { clsx } from 'clsx'
-import { type WCMatchDetail, type WCIncident, type WCTeamLineup, type WCMatchLineupPlayer } from '@/lib/api'
+import { type WCMatchDetail, type WCIncident } from '@/lib/api'
+import { MatchPitch } from './MatchPitch'
 import { ShotMap } from './ShotMap'
 
 type DetailTab = 'incidents' | 'compo' | 'stats' | 'shotmap'
@@ -81,82 +82,6 @@ function IncidentRow({ inc, homeTeam, awayTeam }: {
   }
 
   return null
-}
-
-// ── Lineup display ───────────────────────────────────────────────────────────
-
-const POS_ORDER = ['G', 'D', 'M', 'F']
-const POS_LABEL: Record<string, string> = { G: 'Gardien', D: 'Défenseurs', M: 'Milieux', F: 'Attaquants' }
-
-function LineupColumn({
-  lineup,
-  teamName,
-  reverse,
-}: {
-  lineup: WCTeamLineup
-  teamName: string
-  reverse?: boolean
-}) {
-  const order = reverse ? [...POS_ORDER].reverse() : POS_ORDER
-  const byPos: Record<string, WCMatchLineupPlayer[]> = {}
-  for (const p of lineup.players) {
-    ;(byPos[p.position] ??= []).push(p)
-  }
-
-  return (
-    <div className="flex-1 min-w-0">
-      <div className={clsx('text-sm font-semibold text-white mb-1', reverse ? 'text-right' : 'text-left')}>
-        {teamName}
-        {lineup.formation && (
-          <span className="ml-2 text-xs text-gray-500 font-normal">{lineup.formation}</span>
-        )}
-      </div>
-
-      <div className="space-y-2">
-        {order.filter(pos => byPos[pos]?.length).map(pos => (
-          <div key={pos}>
-            <div className={clsx('text-[10px] text-gray-600 uppercase tracking-wider mb-1', reverse ? 'text-right' : 'text-left')}>
-              {POS_LABEL[pos]}
-            </div>
-            <div className="space-y-0.5">
-              {byPos[pos].map(p => (
-                <div
-                  key={p.id}
-                  className={clsx('flex items-center gap-2 py-0.5', reverse ? 'flex-row-reverse' : 'flex-row')}
-                >
-                  <span className="text-xs text-gray-600 w-5 shrink-0 text-center font-mono">
-                    {p.jersey_number ?? '—'}
-                  </span>
-                  <span className="text-sm text-gray-200 truncate">{p.short_name ?? p.name}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {lineup.substitutes.length > 0 && (
-        <div className="mt-3 pt-3 border-t border-gray-800">
-          <div className={clsx('text-[10px] text-gray-600 uppercase tracking-wider mb-1', reverse ? 'text-right' : 'text-left')}>
-            Remplaçants
-          </div>
-          <div className="space-y-0.5">
-            {lineup.substitutes.map(p => (
-              <div
-                key={p.id}
-                className={clsx('flex items-center gap-2 py-0.5', reverse ? 'flex-row-reverse' : 'flex-row')}
-              >
-                <span className="text-xs text-gray-700 w-5 shrink-0 text-center font-mono">
-                  {p.jersey_number ?? '—'}
-                </span>
-                <span className="text-xs text-gray-500 truncate">{p.short_name ?? p.name}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  )
 }
 
 // ── xG timeline ──────────────────────────────────────────────────────────────
@@ -410,17 +335,15 @@ export function MatchDetailPanel({ match, onClose }: MatchDetailPanelProps) {
 
         {tab === 'compo' && (
           <div>
-            {(!match.home_lineup && !match.away_lineup) ? (
+            {(!match.home_lineup || !match.away_lineup) ? (
               <p className="text-gray-600 text-sm text-center py-6">Pas de composition disponible</p>
             ) : (
-              <div className="flex gap-6">
-                {match.home_lineup && (
-                  <LineupColumn lineup={match.home_lineup} teamName={match.home_team} />
-                )}
-                {match.away_lineup && (
-                  <LineupColumn lineup={match.away_lineup} teamName={match.away_team} reverse />
-                )}
-              </div>
+              <MatchPitch
+                homeLineup={match.home_lineup}
+                awayLineup={match.away_lineup}
+                homeTeam={match.home_team}
+                awayTeam={match.away_team}
+              />
             )}
           </div>
         )}
