@@ -33,7 +33,7 @@ function IncidentRow({ inc, homeTeam, awayTeam }: {
   if (inc.type === 'injuryTime') {
     return (
       <div className="flex justify-center py-0.5">
-        <span className="text-[10px] text-gray-700">+{inc.length}' temps additionnel</span>
+        <span className="text-[10px] text-gray-700">+{inc.length}&apos; temps additionnel</span>
       </div>
     )
   }
@@ -139,7 +139,7 @@ function XgTimeline({ data, homeTeam, awayTeam, homeXg, awayXg }: {
         {/* Axis labels */}
         {ticks.map(t => (
           <text key={t} x={xScale(t)} y={H - 4} textAnchor="middle" fontSize={7} fill="#4b5563">
-            {t}'
+            {t}&apos;
           </text>
         ))}
         <text x={4} y={pad.t + 3} fontSize={7} fill="#4b5563">xG</text>

@@ -94,7 +94,7 @@ export function ShotMap({ shots, homeTeam, awayTeam, side }: ShotMapProps) {
                 strokeOpacity={0.8}
               >
                 <title>
-                  {s.type.toUpperCase()} • xG {s.xg.toFixed(3)} • {s.minute}'
+                  {s.type.toUpperCase()} • xG {s.xg.toFixed(3)} • {s.minute}&apos;
                   {s.body ? ` • ${s.body}` : ''}
                   {s.sit ? ` • ${s.sit}` : ''}
                 </title>
