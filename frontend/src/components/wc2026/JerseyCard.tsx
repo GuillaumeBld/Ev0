@@ -3,17 +3,34 @@
 import { useState, useRef, useEffect } from 'react'
 import { clsx } from 'clsx'
 
+type Role = 'starter' | 'sub_planned' | 'sub_tactical' | 'reserve'
+
 interface JerseyCardProps {
   playerName: string
   shirtNumber: number | null
   expectedMinutes: number
   isSelected: boolean
-  role: 'starter' | 'sub_planned' | 'sub_tactical' | 'reserve'
+  role: Role
   onClick: () => void
   onMinutesChange: (minutes: number) => void
+  onRoleChange?: (role: Role, defaultMinutes: number) => void
   onRemove?: () => void
-  stat?: number | null  // future: Buteur/Passeur/Décisif cote
-  compact?: boolean     // for subs row
+  stat?: number | null
+  compact?: boolean
+}
+
+const ROLE_CYCLE: Role[] = ['sub_planned', 'sub_tactical', 'reserve']
+const ROLE_MINUTES: Record<Role, number> = {
+  starter: 85, sub_planned: 30, sub_tactical: 12, reserve: 0,
+}
+const ROLE_LABEL: Record<Role, string> = {
+  starter: '85\'', sub_planned: 'Ent.', sub_tactical: 'Tac.', reserve: 'Rés.',
+}
+const ROLE_COLOR: Record<Role, string> = {
+  starter:      'text-gray-400',
+  sub_planned:  'text-blue-400',
+  sub_tactical: 'text-yellow-500',
+  reserve:      'text-gray-600',
 }
 
 export function JerseyCard({
@@ -24,6 +41,7 @@ export function JerseyCard({
   role,
   onClick,
   onMinutesChange,
+  onRoleChange,
   onRemove,
   stat,
   compact = false,
@@ -32,9 +50,8 @@ export function JerseyCard({
   const [draft, setDraft] = useState(String(expectedMinutes))
   const inputRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => {
-    if (editing) inputRef.current?.focus()
-  }, [editing])
+  useEffect(() => { setDraft(String(expectedMinutes)) }, [expectedMinutes])
+  useEffect(() => { if (editing) inputRef.current?.focus() }, [editing])
 
   function commitEdit() {
     const val = parseInt(draft, 10)
@@ -46,7 +63,15 @@ export function JerseyCard({
     setEditing(false)
   }
 
-  const displayName = playerName.split(' ').pop() ?? playerName  // last name only
+  function cycleRole(e: React.MouseEvent) {
+    e.stopPropagation()
+    if (!onRoleChange) return
+    const idx = ROLE_CYCLE.indexOf(role as typeof ROLE_CYCLE[number])
+    const next = ROLE_CYCLE[(idx + 1) % ROLE_CYCLE.length]
+    onRoleChange(next, ROLE_MINUTES[next])
+  }
+
+  const displayName = playerName.split(' ').pop() ?? playerName
 
   return (
     <div
@@ -85,9 +110,39 @@ export function JerseyCard({
         {displayName}
       </span>
 
-      {/* Minutes or stat */}
+      {/* Bottom row: stat / role badge (for subs) / minutes */}
       {stat !== null && stat !== undefined ? (
         <span className="mt-0.5 text-[11px] font-bold text-orange-300">{stat.toFixed(2)}</span>
+      ) : compact && onRoleChange ? (
+        // Sub bench: role badge (clickable to cycle) + minutes
+        <div className="mt-0.5 flex flex-col items-center gap-0">
+          <button
+            onClick={cycleRole}
+            title={`Rôle : ${role} — cliquer pour changer`}
+            className={clsx('text-[10px] font-medium leading-none hover:brightness-125 transition-all', ROLE_COLOR[role])}
+          >
+            {ROLE_LABEL[role]}
+          </button>
+          <div
+            className="flex items-center gap-0.5"
+            onClick={(e) => { e.stopPropagation(); setEditing(true) }}
+          >
+            {editing ? (
+              <input
+                ref={inputRef}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={commitEdit}
+                onKeyDown={(e) => { if (e.key === 'Enter') commitEdit() }}
+                className="w-10 text-[11px] text-center bg-gray-700 border border-orange-400 rounded px-1 py-0 text-white"
+              />
+            ) : (
+              <span className="text-[10px] text-gray-500 hover:text-white cursor-text">
+                {expectedMinutes}&apos;
+              </span>
+            )}
+          </div>
+        </div>
       ) : (
         <div
           className="mt-0.5 flex items-center gap-0.5"

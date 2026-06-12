@@ -3,10 +3,12 @@
 
 import { useState, useEffect } from 'react'
 import { clsx } from 'clsx'
-import { Save } from 'lucide-react'
+import { Save, Copy } from 'lucide-react'
 import { JerseyCard } from './JerseyCard'
 import { SquadPanel } from './SquadPanel'
 import { type WCLineup, type WCLineupPlayer, type WCSquadPlayer, upsertWCLineup } from '@/lib/api'
+
+type Role = 'starter' | 'sub_planned' | 'sub_tactical' | 'reserve'
 
 const FORMATIONS: Record<string, number[]> = {
   '4-4-2':   [4, 4, 2],
@@ -40,9 +42,13 @@ const FORMATION_GROUPS = [
 
 const CONTEXTS = [
   { value: 'default',    label: 'Compo type' },
-  { value: 'matchday_1', label: 'Journée 1' },
-  { value: 'matchday_2', label: 'Journée 2' },
-  { value: 'matchday_3', label: 'Journée 3' },
+  { value: 'matchday_1', label: 'J1' },
+  { value: 'matchday_2', label: 'J2' },
+  { value: 'matchday_3', label: 'J3' },
+  { value: 'r16',        label: 'R16' },
+  { value: 'qf',         label: 'QF' },
+  { value: 'sf',         label: 'SF' },
+  { value: 'final',      label: 'Finale' },
 ]
 
 const ROLE_MINUTES: Record<string, number> = {
@@ -205,6 +211,22 @@ export function LineupPitchEditor({
     )
   }
 
+  function updateRole(playerName: string, role: Role, defaultMinutes: number) {
+    setPlayers((prev) =>
+      prev.map((p) =>
+        p.player_name === playerName ? { ...p, role, expected_minutes: defaultMinutes } : p,
+      )
+    )
+  }
+
+  function copyFromDefault() {
+    const def = initialLineups['default']
+    if (!def) return
+    setFormation(def.formation)
+    setPlayers(def.players)
+    setSelectedSlot(null)
+  }
+
   async function handleSave() {
     setSaving(true)
     setSaveMsg(null)
@@ -262,6 +284,16 @@ export function LineupPitchEditor({
           </select>
 
           <div className="ml-auto flex items-center gap-2">
+            {context !== 'default' && initialLineups['default'] && (
+              <button
+                onClick={copyFromDefault}
+                title="Copier depuis Compo type"
+                className="flex items-center gap-1 px-2.5 py-1.5 border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 text-xs rounded-lg transition-colors"
+              >
+                <Copy className="w-3 h-3" />
+                Copier type
+              </button>
+            )}
             {saveMsg && <span className="text-xs text-gray-400">{saveMsg}</span>}
             <button
               onClick={handleSave}
@@ -364,9 +396,10 @@ export function LineupPitchEditor({
                   shirtNumber={p.shirt_number ?? null}
                   expectedMinutes={p.expected_minutes}
                   isSelected={false}
-                  role={p.role as 'sub_planned' | 'sub_tactical' | 'reserve'}
+                  role={p.role as Role}
                   onClick={() => {}}
                   onMinutesChange={(m) => updateMinutes(p.player_name, m)}
+                  onRoleChange={(role, mins) => updateRole(p.player_name, role, mins)}
                   onRemove={() => removePlayer(p.player_name)}
                   compact
                 />
