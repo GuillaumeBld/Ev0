@@ -254,6 +254,37 @@ async def get_nation_odds(
     return rows
 
 
+# ── Store odds (reçoit des cotes pré-scrapées depuis un client local) ────────
+
+class OddsInput(BaseModel):
+    nation: str | None = None
+    player_name: str | None = None
+    market_type: str
+    bookmaker: str
+    odds: float
+
+
+class StoreOddsResult(BaseModel):
+    bookmaker: str
+    scraped: int
+    deactivated: int
+
+
+@router.post("/store-odds", response_model=StoreOddsResult)
+async def store_odds(
+    bookmaker: str,
+    payload: list[OddsInput],
+    session: AsyncSession = Depends(get_db),
+) -> StoreOddsResult:
+    """Reçoit des cotes pré-scrapées (ex: Betclic depuis local) et les stocke."""
+    if bookmaker not in _BOOKMAKERS:
+        raise HTTPException(400, f"bookmaker doit être parmi {_BOOKMAKERS}")
+    from app.ingestion.wc2026.sync_wc_outrights import store_wc_outrights_for_bookmaker
+    rows = [r.model_dump() for r in payload]
+    stats = await store_wc_outrights_for_bookmaker(session, rows, bookmaker)
+    return StoreOddsResult(bookmaker=bookmaker, scraped=stats["scraped"], deactivated=stats["deactivated"])
+
+
 # ── Sync odds (déclenche le scraper depuis l'API) ─────────────────────────────
 
 class SyncOddsResult(BaseModel):

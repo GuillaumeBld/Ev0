@@ -273,16 +273,34 @@ async def scrape_pmu_wc_outrights() -> list[dict]:
 _BETCLIC_COMPETITION_URL = "https://www.betclic.fr/football-sfootball/coupe-du-monde-2026-c1"
 
 # Mots-clés dans marketBox_headTitle → market_type interne
-# On cible uniquement les marchés de tournoi (pas les marchés de groupe ni doubles chances)
+# Les plus spécifiques en premier pour éviter les faux-positifs.
+# "meilleur buteur - " (avec " - ") cible le marché global et pas "Meilleur Buteur France".
 _BETCLIC_MARKET_MAP: list[tuple[str, str]] = [
-    ("meilleur buteur",  "top_scorer"),
-    ("meilleur passeur", "top_assister"),
-    ("vainqueur compétition",  "winner"),      # titre exact sans "double chance"
+    # Nations — stades atteints (titres Betclic réels observés)
+    ("stade de la compétition atteint - demi-finale",     "top4"),
+    ("stade de la compétition atteint - quart de finale", "top8"),
+    ("stade de la compétition atteint - huitième",        "group_stage"),
+    # Joueurs — " - " distingue le marché global des marchés par équipe
+    ("meilleur buteur - ",  "top_scorer"),
+    ("meilleur passeur - ", "top_assister"),
+    # Vainqueur global
+    ("vainqueur compétition", "winner"),
 ]
 
-# Titres à exclure même s'ils contiennent un mot-clé (marchés combinés)
+# Titres à exclure même s'ils contiennent un mot-clé
 _BETCLIC_MARKET_EXCLUDE = [
-    "double chance", "vainqueur groupe", "gagnant /", "gagnant/",
+    "double chance",
+    "vainqueur groupe",
+    "gagnant /",
+    "gagnant/",
+    "qualification -",   # marchés par groupe (4 équipes seulement)
+    "duo ",              # Duo gagnant / Duo placé
+    "nombre de buts",    # marchés individuels (ex : Nombre de buts de Mbappé)
+    "nombre de passes",
+    "joueur inscivant",
+    "les bons plans",
+    "les finalistes",    # pari combiné deux finalistes
+    "meilleure équipe",
 ]
 
 
