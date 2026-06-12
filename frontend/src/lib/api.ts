@@ -1015,3 +1015,135 @@ export async function syncWCOdds(bookmaker: string): Promise<SyncOddsResult> {
   )
   return data
 }
+
+// ── WC2026 Match Center ──────────────────────────────────────────────────────
+
+export interface WCMatchListItem {
+  bzz_id: number
+  home_team: string
+  away_team: string
+  home_team_id: number | null
+  away_team_id: number | null
+  event_date: string | null
+  status: string | null
+  period: string | null
+  round_number: number | null
+  group_name: string | null
+  home_score: number | null
+  away_score: number | null
+  home_score_ht: number | null
+  away_score_ht: number | null
+  home_xg: number | null
+  away_xg: number | null
+  has_detail: boolean
+}
+
+export interface WCShotPoint {
+  x: number
+  y: number
+  xg: number
+  type: string
+  body: string | null
+  sit: string | null
+  player_id: number | null
+  is_home: boolean
+  minute: number | null
+}
+
+export interface WCXgMinute {
+  m: number
+  xg_home: number
+  xg_away: number
+  cum_home: number
+  cum_away: number
+}
+
+export interface WCIncident {
+  type: string
+  minute: number | null
+  added_time: number | null
+  is_home: boolean | null
+  player: string | null
+  player_id: number | null
+  assist: string | null
+  is_own_goal: boolean | null
+  card_type: string | null
+  player_in: string | null
+  player_out: string | null
+  player_in_id: number | null
+  player_out_id: number | null
+  text: string | null
+  home_score: number | null
+  away_score: number | null
+  length: number | null
+}
+
+export interface WCTeamStats {
+  shots: number | null
+  shots_on_target: number | null
+  possession: number | null
+  corners: number | null
+  fouls: number | null
+  yellow_cards: number | null
+  red_cards: number | null
+  passes: number | null
+  pass_accuracy: number | null
+  offsides: number | null
+}
+
+export interface WCPlayerStat {
+  player_id: number
+  player_name: string | null
+  team_id: number | null
+  is_home: boolean | null
+  minutes_played: number | null
+  rating: number | null
+  goals: number | null
+  goal_assist: number | null
+  expected_goals: number | null
+  expected_assists: number | null
+  total_shots: number | null
+  shots_on_target: number | null
+  key_pass: number | null
+  total_pass: number | null
+  accurate_pass: number | null
+  duel_won: number | null
+  duel_lost: number | null
+  yellow_card: number | null
+  red_card: number | null
+}
+
+export interface WCMatchDetail {
+  bzz_id: number
+  home_team: string
+  away_team: string
+  home_team_id: number | null
+  away_team_id: number | null
+  event_date: string | null
+  status: string | null
+  period: string | null
+  round_number: number | null
+  group_name: string | null
+  home_score: number | null
+  away_score: number | null
+  home_score_ht: number | null
+  away_score_ht: number | null
+  home_xg: number | null
+  away_xg: number | null
+  incidents: WCIncident[]
+  shotmap: WCShotPoint[]
+  xg_per_minute: WCXgMinute[]
+  home_stats: WCTeamStats
+  away_stats: WCTeamStats
+  player_stats: WCPlayerStat[]
+}
+
+export async function getWCMatches(): Promise<WCMatchListItem[]> {
+  const { data } = await api.get('/api/v1/wc2026/matches')
+  return data
+}
+
+export async function getWCMatchDetail(bzzId: number): Promise<WCMatchDetail> {
+  const { data } = await api.get(`/api/v1/wc2026/matches/${bzzId}`, { timeout: 30_000 })
+  return data
+}
