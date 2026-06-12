@@ -516,6 +516,22 @@ async def get_match_detail(
         shotmap_raw = cached_shotmap if isinstance(cached_shotmap, list) else []
         lineups_raw = cached_lineups if isinstance(cached_lineups, dict) else {}
 
+        # Lineups not cached yet — fetch and store
+        if not lineups_raw:
+            async with _bzz_client() as client:
+                try:
+                    lu_data = await client.get_page(f"/api/v2/events/{bzz_id}/lineups/")
+                    lineups_raw = lu_data.get("lineups") or {}
+                except Exception:
+                    lineups_raw = {}
+            if lineups_raw:
+                await session.execute(
+                    update(BzzEvent)
+                    .where(BzzEvent.api_id == bzz_id)
+                    .values(lineups=lineups_raw)
+                )
+                await session.commit()
+
         # Player stats from DB
         ps_result = await session.execute(
             select(BzzPlayerMatchStat)
