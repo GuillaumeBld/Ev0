@@ -154,30 +154,38 @@ async def compute_expected_games(db: AsyncSession) -> dict[str, float]:
         + 2 × p(top4 = reach SF)   # SF game + 3rd-or-Final game (guaranteed for top4)
         + p(finalist)               # Final game (only the 2 finalists)
     """
-    # Use median to exclude bookmaker-specific outliers (e.g. Unibet winner, PMU group_stage).
+    # Fetch all individual odds records, then compute median after name normalization.
+    # This avoids double-counting when bookmakers use different name variants for the same nation
+    # (e.g. PMU uses "Spain" while Betclic/Unibet use "Espagne" → both map to canonical "Spain").
     rows = (await db.execute(text("""
-        SELECT nation, market_type,
-               PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY odds) AS median_odds
+        SELECT nation, market_type, bookmaker, odds
         FROM wc2026_outright_odds
         WHERE is_active = true
           AND nation IS NOT NULL
           AND nation NOT LIKE '%/%'
           AND market_type IN ('group_stage', 'top8', 'top4', 'winner')
-        GROUP BY nation, market_type
-        HAVING COUNT(*) >= 1
     """))).mappings().all()
 
-    # Aggregate per canonical TEAM_BM name — keep best (lowest implied prob) median per market
-    best: dict[str, dict[str, float]] = {}
+    # Collect one odds value per (canonical_nation, market, bookmaker) — take max if multiple
+    raw: dict[tuple[str, str], dict[str, float]] = {}
     for row in rows:
         canon = _ODDS_TO_BM.get(row["nation"])
         if canon is None:
             continue
-        mkt = row["market_type"]
+        key = (canon, row["market_type"])
+        per_book = raw.setdefault(key, {})
+        book = row["bookmaker"]
+        if book not in per_book or row["odds"] > per_book[book]:
+            per_book[book] = float(row["odds"])
+
+    # Compute median per (canonical, market) across bookmakers
+    best: dict[str, dict[str, float]] = {}
+    for (canon, mkt), per_book in raw.items():
+        vals = sorted(per_book.values())
+        n = len(vals)
+        median = (vals[n // 2] + vals[(n - 1) // 2]) / 2.0
         cur = best.setdefault(canon, {})
-        # Keep highest median odds (= lowest implied probability = most conservative estimate)
-        if mkt not in cur or row["median_odds"] > cur[mkt]:
-            cur[mkt] = float(row["median_odds"])
+        cur[mkt] = median
 
     result: dict[str, float] = {}
     for nation, mkt in best.items():
