@@ -850,7 +850,7 @@ export interface WCLineup {
   nation: string
   context: string
   formation: string
-  source: 'manual' | 'rotowire'
+  source: 'manual' | 'rotowire' | 'bzzoiro'
   players: WCLineupPlayer[]
 }
 
@@ -903,6 +903,14 @@ export async function syncRotowireLineups(): Promise<{
   no_match: number
 }> {
   const { data } = await api.post('/api/v1/wc2026/lineups/sync-rotowire')
+  return data
+}
+
+export async function syncBzzoiroLineups(): Promise<{
+  synced: number
+  total_matches: number
+}> {
+  const { data } = await api.post('/api/v1/wc2026/lineups/sync-from-matches')
   return data
 }
 
