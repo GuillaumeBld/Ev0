@@ -14,7 +14,8 @@ interface PricingTableProps {
   nationFlags: Record<string, string | null>
 }
 
-// Edge coloré par magnitude
+// ── Cells ────────────────────────────────────────────────────────────────────
+
 function EdgeBadge({ edge }: { edge: number | null }) {
   if (edge === null) return <span className="text-gray-700">—</span>
   const pct = (edge * 100).toFixed(1)
@@ -27,34 +28,45 @@ function EdgeBadge({ edge }: { edge: number | null }) {
     edge > -0.12 ? 'text-red-500' :
     edge > -0.25 ? 'text-red-400' :
                    'text-red-300 font-semibold'
-  return (
-    <span className={cls}>
-      {edge > 0 ? '+' : ''}{pct}%
-    </span>
-  )
+  return <span className={cls}>{edge > 0 ? '+' : ''}{pct}%</span>
 }
 
-// Cote brute neutre (fair prices)
 function FairOddsCell({ value }: { value: number | null }) {
   if (!value) return <span className="text-gray-700">—</span>
   return <span className="text-gray-400">{value.toFixed(2)}</span>
 }
 
-// Cote bookmaker colorée par rapport à la cote fair
-function BkOddsCell({ bk, fair }: { bk: number | null; fair: number | null }) {
+// Cote BK avec couleur vs fair + highlight si c'est la meilleure parmi les 3 books
+function BkOddsCell({
+  bk,
+  fair,
+  isBest,
+}: {
+  bk: number | null
+  fair: number | null
+  isBest: boolean
+}) {
   if (!bk) return <span className="text-gray-700">—</span>
-  if (!fair) return <span className="text-gray-400">{bk.toFixed(2)}</span>
-  const ratio = bk / fair
+  const ratio = fair ? bk / fair : null
   const cls =
-    ratio >= 1.12 ? 'text-emerald-400 font-semibold' :
-    ratio >= 1.05 ? 'text-emerald-600' :
-    ratio >= 1.00 ? 'text-gray-300' :
-    ratio >= 0.93 ? 'text-red-600/70' :
-                    'text-red-500'
-  return <span className={clsx('font-mono', cls)}>{bk.toFixed(2)}</span>
+    isBest              ? 'text-emerald-400 font-semibold' :
+    ratio === null       ? 'text-gray-400' :
+    ratio >= 1.12        ? 'text-emerald-500' :
+    ratio >= 1.05        ? 'text-emerald-600' :
+    ratio >= 1.00        ? 'text-gray-300' :
+    ratio >= 0.93        ? 'text-red-600/70' :
+                           'text-red-500'
+  return (
+    <span className={clsx(
+      'font-mono tabular-nums',
+      cls,
+      isBest && 'underline decoration-emerald-700/50 decoration-dotted underline-offset-2',
+    )}>
+      {bk.toFixed(2)}
+    </span>
+  )
 }
 
-// Lambda coloré par intensité
 function LambdaCell({ value }: { value: number }) {
   const cls =
     value >= 6   ? 'text-white font-bold' :
@@ -66,42 +78,50 @@ function LambdaCell({ value }: { value: number }) {
   return <span className={clsx('font-mono', cls)}>{value.toFixed(2)}</span>
 }
 
-function SortIcon({ col, sortKey, sortDir }: { col: string; sortKey: string; sortDir: SortDir }) {
-  if (col !== sortKey) return <span className="text-gray-700 ml-0.5">↕</span>
-  return <span className="text-orange-400 ml-0.5">{sortDir === 'desc' ? '↓' : '↑'}</span>
-}
+// ── Sort ─────────────────────────────────────────────────────────────────────
 
-type SortKey = 'player_name' | 'nation' | 'position' | 'lambda' | 'cut1' | 'cut2' | 'cut3' | 'cut4' | 'top' | 'bk' | 'edge'
+type SortKey =
+  | 'player_name' | 'nation' | 'position'
+  | 'lambda' | 'cut1' | 'cut2' | 'cut3' | 'cut4'
+  | 'top' | 'bk_uni' | 'bk_bet' | 'bk_pmu' | 'bk' | 'edge'
 
-function sortPlayers(players: WCPlayerPricing[], key: SortKey, dir: SortDir, isGoals: boolean): WCPlayerPricing[] {
+function sortPlayers(
+  players: WCPlayerPricing[],
+  key: SortKey,
+  dir: SortDir,
+  isGoals: boolean,
+): WCPlayerPricing[] {
   const val = (p: WCPlayerPricing): string | number | null => {
     switch (key) {
       case 'player_name': return p.player_name
       case 'nation':      return p.nation
       case 'position':    return p.position ?? null
-      case 'lambda':      return isGoals ? p.lambda_goals : p.lambda_assists
-      case 'cut1':        return isGoals ? p.fair_1g : p.fair_1a
-      case 'cut2':        return isGoals ? p.fair_2g : p.fair_2a
-      case 'cut3':        return isGoals ? p.fair_3g : p.fair_3a
-      case 'cut4':        return isGoals ? p.fair_4g : null
-      case 'top':         return isGoals ? p.fair_top_scorer : p.fair_top_assister
-      case 'bk':          return isGoals ? p.bk_top_scorer : p.bk_top_assister
-      case 'edge':        return isGoals ? p.edge_top_scorer : p.edge_top_assister
+      case 'lambda':      return isGoals ? p.lambda_goals        : p.lambda_assists
+      case 'cut1':        return isGoals ? p.fair_1g             : p.fair_1a
+      case 'cut2':        return isGoals ? p.fair_2g             : p.fair_2a
+      case 'cut3':        return isGoals ? p.fair_3g             : p.fair_3a
+      case 'cut4':        return isGoals ? p.fair_4g             : null
+      case 'top':         return isGoals ? p.fair_top_scorer     : p.fair_top_assister
+      case 'bk':          return isGoals ? p.bk_top_scorer       : p.bk_top_assister
+      case 'bk_uni':      return isGoals ? p.bk_top_scorer_unibet  : p.bk_top_assister_unibet
+      case 'bk_bet':      return isGoals ? p.bk_top_scorer_betclic : p.bk_top_assister_betclic
+      case 'bk_pmu':      return isGoals ? p.bk_top_scorer_pmu    : p.bk_top_assister_pmu
+      case 'edge':        return isGoals ? p.edge_top_scorer      : p.edge_top_assister
     }
   }
 
   return [...players].sort((a, b) => {
-    const av = val(a)
-    const bv = val(b)
+    const av = val(a), bv = val(b)
     if (av === null && bv === null) return 0
     if (av === null) return 1
     if (bv === null) return -1
-    if (typeof av === 'string' && typeof bv === 'string') {
+    if (typeof av === 'string' && typeof bv === 'string')
       return dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av)
-    }
     return dir === 'asc' ? (av as number) - (bv as number) : (bv as number) - (av as number)
   })
 }
+
+// ── Main ─────────────────────────────────────────────────────────────────────
 
 export function PricingTable({ players, mode, nationFlags }: PricingTableProps) {
   const isGoals = mode === 'goals'
@@ -109,27 +129,37 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 
   function handleSort(col: SortKey) {
-    if (col === sortKey) {
-      setSortDir(d => d === 'desc' ? 'asc' : 'desc')
-    } else {
-      setSortKey(col)
-      setSortDir('desc')
-    }
+    if (col === sortKey) setSortDir(d => d === 'desc' ? 'asc' : 'desc')
+    else { setSortKey(col); setSortDir('desc') }
   }
 
   const sorted = sortPlayers(players, sortKey, sortDir, isGoals)
 
-  function Th({ col, label, right }: { col: SortKey; label: string; right?: boolean }) {
+  function Th({ col, label, right, title }: { col: SortKey; label: string; right?: boolean; title?: string }) {
+    const active = sortKey === col
     return (
       <th
         onClick={() => handleSort(col)}
+        title={title}
         className={clsx(
-          'py-2 px-2 font-medium cursor-pointer select-none hover:text-white transition-colors',
+          'py-2 px-2 font-medium cursor-pointer select-none transition-colors whitespace-nowrap',
           right ? 'text-right' : 'text-left',
-          sortKey === col ? 'text-orange-400' : 'text-gray-500',
+          active ? 'text-orange-400' : 'text-gray-500 hover:text-gray-300',
         )}
       >
-        {label}<SortIcon col={col} sortKey={sortKey} sortDir={sortDir} />
+        {label}
+        <span className="ml-0.5 text-[10px]">
+          {active ? (sortDir === 'desc' ? '▼' : '▲') : <span className="text-gray-700">▲▼</span>}
+        </span>
+      </th>
+    )
+  }
+
+  // Séparateur visuel entre sections
+  function ThSep({ label }: { label: string }) {
+    return (
+      <th className="py-2 px-2 text-center text-[10px] font-normal text-gray-600 uppercase tracking-wider border-l border-gray-800/60 whitespace-nowrap">
+        {label}
       </th>
     )
   }
@@ -138,17 +168,23 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
     <div className="overflow-x-auto">
       <table className="w-full text-xs text-gray-300">
         <thead>
-          <tr className="border-b border-gray-700 uppercase tracking-wider">
+          <tr className="border-b border-gray-700 uppercase tracking-wider text-[10px]">
             <Th col="player_name" label="Joueur" />
             <Th col="nation"      label="Nat." />
             <Th col="position"    label="Pos" />
-            <Th col="lambda"      label="λ"    right />
-            <Th col="cut1"        label="≥1"   right />
-            <Th col="cut2"        label="≥2"   right />
-            <Th col="cut3"        label="≥3"   right />
+            <Th col="lambda"      label="λ" right title="Lambda attendu sur le tournoi" />
+            <Th col="cut1"        label="≥1" right />
+            <Th col="cut2"        label="≥2" right />
+            <Th col="cut3"        label="≥3" right />
             {isGoals && <Th col="cut4" label="≥4" right />}
-            <Th col="top"  label={isGoals ? 'Top buteur' : 'Top passeur'} right />
-            <Th col="bk"   label="BK"   right />
+            <Th col="top" label={isGoals ? 'Top Bt.' : 'Top Pa.'} right
+              title={isGoals ? 'Cote fair top buteur' : 'Cote fair top passeur'} />
+
+            {/* Bookmakers — 3 colonnes */}
+            <ThSep label="UNI" />
+            <ThSep label="BET" />
+            <ThSep label="PMU" />
+
             <Th col="edge" label="Edge" right />
           </tr>
         </thead>
@@ -160,30 +196,50 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
             const cut3    = isGoals ? p.fair_3g           : p.fair_3a
             const cut4    = isGoals ? p.fair_4g           : null
             const fairOut = isGoals ? p.fair_top_scorer   : p.fair_top_assister
-            const bkOut   = isGoals ? p.bk_top_scorer     : p.bk_top_assister
+            const bkUni   = isGoals ? p.bk_top_scorer_unibet  : p.bk_top_assister_unibet
+            const bkBet   = isGoals ? p.bk_top_scorer_betclic : p.bk_top_assister_betclic
+            const bkPmu   = isGoals ? p.bk_top_scorer_pmu     : p.bk_top_assister_pmu
             const edgeOut = isGoals ? p.edge_top_scorer   : p.edge_top_assister
             const flag    = nationFlags[p.nation]
 
+            // Meilleure cote parmi les 3 books pour highlight
+            const bkValues = [bkUni, bkBet, bkPmu].filter((v): v is number => v !== null)
+            const bkBest   = bkValues.length ? Math.max(...bkValues) : null
+
             return (
-              <tr key={`${p.nation}-${p.player_name}-${i}`} className="border-b border-gray-800/60 hover:bg-gray-800/30">
+              <tr
+                key={`${p.nation}-${p.player_name}-${i}`}
+                className="border-b border-gray-800/50 hover:bg-gray-800/25 transition-colors"
+              >
                 <td className="py-1.5 px-2 font-medium text-white text-xs">{p.player_name}</td>
                 <td className="py-1.5 px-2">
                   <span className="flex items-center gap-1">
-                    <FlagImg emoji={flag} size={14} />
+                    <FlagImg emoji={flag} size={13} />
                     <span className="text-gray-500 text-[10px]">{p.nation}</span>
                   </span>
                 </td>
-                <td className="py-1.5 px-2 text-gray-600 text-xs">{p.position ?? '—'}</td>
+                <td className="py-1.5 px-2 text-gray-600">{p.position ?? '—'}</td>
                 <td className="py-1.5 px-2 text-right"><LambdaCell value={lambda} /></td>
-                <td className="py-1.5 px-2 text-right text-xs"><FairOddsCell value={cut1} /></td>
-                <td className="py-1.5 px-2 text-right text-xs"><FairOddsCell value={cut2} /></td>
-                <td className="py-1.5 px-2 text-right text-xs"><FairOddsCell value={cut3} /></td>
-                {isGoals && <td className="py-1.5 px-2 text-right text-xs"><FairOddsCell value={cut4} /></td>}
-                <td className="py-1.5 px-2 text-right text-xs"><FairOddsCell value={fairOut} /></td>
-                <td className="py-1.5 px-2 text-right text-xs">
-                  <BkOddsCell bk={bkOut} fair={fairOut} />
+                <td className="py-1.5 px-2 text-right"><FairOddsCell value={cut1} /></td>
+                <td className="py-1.5 px-2 text-right"><FairOddsCell value={cut2} /></td>
+                <td className="py-1.5 px-2 text-right"><FairOddsCell value={cut3} /></td>
+                {isGoals && <td className="py-1.5 px-2 text-right"><FairOddsCell value={cut4} /></td>}
+                <td className="py-1.5 px-2 text-right"><FairOddsCell value={fairOut} /></td>
+
+                {/* Unibet */}
+                <td className="py-1.5 px-2 text-right border-l border-gray-800/60">
+                  <BkOddsCell bk={bkUni} fair={fairOut} isBest={bkUni !== null && bkUni === bkBest} />
                 </td>
-                <td className="py-1.5 px-2 text-right text-xs"><EdgeBadge edge={edgeOut} /></td>
+                {/* Betclic */}
+                <td className="py-1.5 px-2 text-right">
+                  <BkOddsCell bk={bkBet} fair={fairOut} isBest={bkBet !== null && bkBet === bkBest} />
+                </td>
+                {/* PMU */}
+                <td className="py-1.5 px-2 text-right">
+                  <BkOddsCell bk={bkPmu} fair={fairOut} isBest={bkPmu !== null && bkPmu === bkBest} />
+                </td>
+
+                <td className="py-1.5 px-2 text-right"><EdgeBadge edge={edgeOut} /></td>
               </tr>
             )
           })}

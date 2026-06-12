@@ -937,7 +937,13 @@ export interface WCPlayerPricing {
   fair_top_assister: number | null
   // bookmaker edge
   bk_top_scorer: number | null
+  bk_top_scorer_unibet: number | null
+  bk_top_scorer_betclic: number | null
+  bk_top_scorer_pmu: number | null
   bk_top_assister: number | null
+  bk_top_assister_unibet: number | null
+  bk_top_assister_betclic: number | null
+  bk_top_assister_pmu: number | null
   edge_top_scorer: number | null
   edge_top_assister: number | null
 }

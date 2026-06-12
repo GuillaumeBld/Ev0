@@ -53,8 +53,14 @@ class PlayerPricingOut(BaseModel):
     p_top_assister: float | None
     fair_top_scorer: float | None
     fair_top_assister: float | None
-    bk_top_scorer: float | None = None
-    bk_top_assister: float | None = None
+    bk_top_scorer: float | None = None          # meilleure cote toutes books
+    bk_top_scorer_unibet: float | None = None
+    bk_top_scorer_betclic: float | None = None
+    bk_top_scorer_pmu: float | None = None
+    bk_top_assister: float | None = None        # meilleure cote toutes books
+    bk_top_assister_unibet: float | None = None
+    bk_top_assister_betclic: float | None = None
+    bk_top_assister_pmu: float | None = None
     edge_top_scorer: float | None = None
     edge_top_assister: float | None = None
 
@@ -103,36 +109,34 @@ async def get_pricing_players(
     players = result.scalars().all()
 
     ts_res = await session.execute(
-        select(WC2026OutrightOdd.player_name, WC2026OutrightOdd.odds)
+        select(WC2026OutrightOdd.player_name, WC2026OutrightOdd.bookmaker, WC2026OutrightOdd.odds)
         .where(WC2026OutrightOdd.market_type == "top_scorer")
         .where(WC2026OutrightOdd.player_name.isnot(None))
         .where(WC2026OutrightOdd.is_active.is_(True))
     )
-    bk_scorer: dict[str, float] = {}
-    for name, odds in ts_res.all():
-        key = _norm_name(name)
-        if key not in bk_scorer or odds > bk_scorer[key]:
-            bk_scorer[key] = odds
+    bk_scorer: dict[str, dict[str, float]] = {}
+    for name, bookmaker, odds in ts_res.all():
+        bk_scorer.setdefault(_norm_name(name), {})[bookmaker] = odds
 
     ta_res = await session.execute(
-        select(WC2026OutrightOdd.player_name, WC2026OutrightOdd.odds)
+        select(WC2026OutrightOdd.player_name, WC2026OutrightOdd.bookmaker, WC2026OutrightOdd.odds)
         .where(WC2026OutrightOdd.market_type == "top_assister")
         .where(WC2026OutrightOdd.player_name.isnot(None))
         .where(WC2026OutrightOdd.is_active.is_(True))
     )
-    bk_assister: dict[str, float] = {}
-    for name, odds in ta_res.all():
-        key = _norm_name(name)
-        if key not in bk_assister or odds > bk_assister[key]:
-            bk_assister[key] = odds
+    bk_assister: dict[str, dict[str, float]] = {}
+    for name, bookmaker, odds in ta_res.all():
+        bk_assister.setdefault(_norm_name(name), {})[bookmaker] = odds
 
     out = []
     for p in players:
         key = _norm_name(p.player_name)
-        bk_ts = bk_scorer.get(key)
-        bk_ta = bk_assister.get(key)
-        edge_ts = round((bk_ts / p.fair_top_scorer) - 1, 4) if bk_ts and p.fair_top_scorer else None
-        edge_ta = round((bk_ta / p.fair_top_assister) - 1, 4) if bk_ta and p.fair_top_assister else None
+        ts = bk_scorer.get(key, {})
+        ta = bk_assister.get(key, {})
+        bk_ts_best = max(ts.values()) if ts else None
+        bk_ta_best = max(ta.values()) if ta else None
+        edge_ts = round((bk_ts_best / p.fair_top_scorer) - 1, 4) if bk_ts_best and p.fair_top_scorer else None
+        edge_ta = round((bk_ta_best / p.fair_top_assister) - 1, 4) if bk_ta_best and p.fair_top_assister else None
         out.append(PlayerPricingOut(
             nation=p.nation,
             player_name=p.player_name,
@@ -147,8 +151,14 @@ async def get_pricing_players(
             p_top_assister=p.p_top_assister,
             fair_top_scorer=p.fair_top_scorer,
             fair_top_assister=p.fair_top_assister,
-            bk_top_scorer=bk_ts,
-            bk_top_assister=bk_ta,
+            bk_top_scorer=bk_ts_best,
+            bk_top_scorer_unibet=ts.get("unibet"),
+            bk_top_scorer_betclic=ts.get("betclic"),
+            bk_top_scorer_pmu=ts.get("pmu"),
+            bk_top_assister=bk_ta_best,
+            bk_top_assister_unibet=ta.get("unibet"),
+            bk_top_assister_betclic=ta.get("betclic"),
+            bk_top_assister_pmu=ta.get("pmu"),
             edge_top_scorer=edge_ts,
             edge_top_assister=edge_ta,
         ))
