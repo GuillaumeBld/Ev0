@@ -15,8 +15,11 @@ function minuteStr(inc: WCIncident): string {
   return inc.added_time ? `${m}+${inc.added_time}'` : `${m}'`
 }
 
-function IncidentRow({ inc, homeTeam, awayTeam }: {
-  inc: WCIncident; homeTeam: string; awayTeam: string
+function IncidentRow({ inc, homeTeam, awayTeam, onGoalClick }: {
+  inc: WCIncident
+  homeTeam: string
+  awayTeam: string
+  onGoalClick?: (inc: WCIncident) => void
 }) {
   const isHome = inc.is_home
 
@@ -40,21 +43,37 @@ function IncidentRow({ inc, homeTeam, awayTeam }: {
 
   if (inc.type === 'goal') {
     return (
-      <div className={clsx('flex items-center gap-3 py-1.5', isHome ? 'flex-row' : 'flex-row-reverse')}>
+      <button
+        onClick={() => onGoalClick?.(inc)}
+        className={clsx(
+          'w-full flex items-center gap-3 py-2 px-2 rounded-lg transition-colors group',
+          onGoalClick ? 'hover:bg-green-900/25 cursor-pointer' : 'cursor-default',
+          isHome ? 'flex-row' : 'flex-row-reverse',
+        )}
+      >
         <span className="text-sm text-gray-500 w-12 shrink-0 text-center">{minuteStr(inc)}</span>
-        <div className={clsx('flex items-center gap-1.5', isHome ? 'flex-row' : 'flex-row-reverse')}>
+        <div className={clsx('flex items-center gap-2', isHome ? 'flex-row' : 'flex-row-reverse')}>
           <span className="text-green-400 text-base">⚽</span>
-          <div className={clsx('text-sm', isHome ? 'text-left' : 'text-right')}>
-            <span className="text-white font-medium">
+          <div className={clsx(isHome ? 'text-left' : 'text-right')}>
+            <div className="text-white font-semibold text-sm">
               {inc.is_own_goal ? `${inc.player} (CSC)` : inc.player}
-            </span>
+            </div>
             {inc.assist && (
-              <span className="text-gray-500 ml-1.5 text-xs">ass. {inc.assist}</span>
+              <div className="text-sky-400 text-xs mt-0.5">
+                ↳ {inc.assist}
+              </div>
             )}
           </div>
         </div>
-        <div className="ml-auto mr-auto" />
-      </div>
+        {onGoalClick && (
+          <span className={clsx(
+            'text-[10px] text-green-700 opacity-0 group-hover:opacity-100 transition-opacity shrink-0',
+            isHome ? 'ml-auto' : 'mr-auto',
+          )}>
+            voir tir →
+          </span>
+        )}
+      </button>
     )
   }
 
@@ -235,6 +254,11 @@ export function MatchDetailPanel({ match, onClose }: MatchDetailPanelProps) {
 
   const goals = match.incidents.filter(i => i.type === 'goal')
 
+  function handleGoalClick(inc: WCIncident) {
+    setShotSide(inc.is_home ? 'home' : 'away')
+    setTab('shotmap')
+  }
+
   return (
     <div className="bg-gray-900 border border-gray-700 rounded-xl overflow-hidden">
       {/* Header */}
@@ -325,7 +349,7 @@ export function MatchDetailPanel({ match, onClose }: MatchDetailPanelProps) {
         {tab === 'incidents' && (
           <div className="space-y-0.5">
             {match.incidents.filter(i => !['injuryTime'].includes(i.type) || i.type === 'period').map((inc, i) => (
-              <IncidentRow key={i} inc={inc} homeTeam={match.home_team} awayTeam={match.away_team} />
+              <IncidentRow key={i} inc={inc} homeTeam={match.home_team} awayTeam={match.away_team} onGoalClick={handleGoalClick} />
             ))}
             {match.incidents.length === 0 && (
               <p className="text-gray-600 text-sm text-center py-6">Pas d&apos;incidents</p>
