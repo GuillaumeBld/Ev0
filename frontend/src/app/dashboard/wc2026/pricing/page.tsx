@@ -137,9 +137,16 @@ export default function WC2026PricingPage() {
               className="px-2 py-1 text-xs bg-gray-800 border border-gray-600 rounded text-white"
             >
               <option value="">Toutes les nations</option>
-              {nations.map((n) => (
-                <option key={n.nation} value={n.nation}>{n.nation}</option>
-              ))}
+              {[...nations]
+                .sort((a, b) => {
+                  const gl = (a.group_letter ?? 'Z').localeCompare(b.group_letter ?? 'Z')
+                  return gl !== 0 ? gl : a.nation.localeCompare(b.nation, 'fr')
+                })
+                .map((n) => (
+                  <option key={n.nation} value={n.nation}>
+                    {n.group_letter ? `[${n.group_letter}] ` : ''}{n.nation}
+                  </option>
+                ))}
             </select>
 
             <div className="flex gap-1">

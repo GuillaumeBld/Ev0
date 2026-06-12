@@ -32,22 +32,24 @@ _LVS_MARKET_TITLE_MAP: list[tuple[str, str]] = [
     ("meilleur passeur",             "top_assister"),
     ("top assister",                 "top_assister"),
     # Nations — stades atteints (ex : "Quelle équipe atteindra les demi-finales ?")
+    # IMPORTANT : ne pas ajouter "phase de groupe" / "group stage" — trop générique,
+    # capte des marchés de classement de poule (points) qui ne sont pas des qualifications.
     ("atteindra les demi-finales",   "top4"),
     ("reach the semi-final",         "top4"),
     ("atteindra les quarts de finale", "top8"),
     ("reach the quarter-final",      "top8"),
     ("quarts de finale",             "top8"),
+    # "atteindra les 1/8" = qualification pour la phase à élimination directe
     ("atteindra les 1/8",            "group_stage"),
     ("reach the round of 16",        "group_stage"),
-    # Générique
+    ("reach the round of 32",        "group_stage"),
+    # Générique — en dernier pour éviter les faux-positifs
     ("vainqueur",                    "winner"),
     ("winner",                       "winner"),
     ("top 4",                        "top4"),
     ("top4",                         "top4"),
     ("top 8",                        "top8"),
     ("top8",                         "top8"),
-    ("phase de groupe",              "group_stage"),
-    ("group stage",                  "group_stage"),
 ]
 
 # Params requis par l'API LVS Unibet (découverts par analyse du trafic navigateur)
@@ -223,13 +225,17 @@ _PMU_NATION_OUTCOME_MAP: list[tuple[str, str]] = [
 
 
 def _pmu_detect_market_type(event_name: str, bet_offer_type: str) -> str | None:
-    """Mappe un event Kambi WC2026 vers un market_type interne (marchés globaux)."""
+    """Mappe un event Kambi WC2026 vers un market_type interne (marchés globaux).
+
+    NOTE : les events "Group A/B/C..." (betOfferType=Classement) sont volontairement
+    exclus. Ce sont des marchés de classement de poule (points) en noms anglais qui
+    ne correspondent pas à nos market_types et créent des doublons avec les noms FR
+    des events "{Nation} Markets 2026".
+    """
     en = event_name.lower()
     for kw, mtype in _PMU_EVENT_MARKET_MAP:
         if kw in en:
             return mtype
-    if en.startswith(_PMU_GROUP_PREFIX) and len(en) == len(_PMU_GROUP_PREFIX) + 1:
-        return "group_stage"
     if "world cup" in en and "market" not in en and "special" not in en:
         bt = bet_offer_type.lower()
         if "classement" in bt or "winner" in bt or "ranking" in bt:

@@ -126,10 +126,19 @@ interface Props {
   nations: WCNationOdds[]
 }
 
+const COLS: { f: SortField; label: string; align: 'left' | 'right' }[] = [
+  { f: 'nation',  label: 'Nation',   align: 'left'  },
+  { f: 'group',   label: 'Grp',      align: 'left'  },
+  { f: 'unibet',  label: 'Unibet',   align: 'right' },
+  { f: 'betclic', label: 'Betclic',  align: 'right' },
+  { f: 'pmu',     label: 'PMU',      align: 'right' },
+  { f: 'best',    label: 'Meilleur', align: 'right' },
+]
+
 export function NationsOddsTable({ nations }: Props) {
-  const [market, setMarket]     = useState<MarketKey>('winner')
+  const [market, setMarket]       = useState<MarketKey>('winner')
   const [sortField, setSortField] = useState<SortField>('best')
-  const [sortDir, setSortDir]   = useState<SortDir>('asc')
+  const [sortDir, setSortDir]     = useState<SortDir>('asc')
 
   function switchMarket(key: MarketKey) {
     setMarket(key)
@@ -137,12 +146,18 @@ export function NationsOddsTable({ nations }: Props) {
     setSortDir('asc')
   }
 
-  function toggleSort(f: SortField) {
+  function setSort(f: SortField, dir: SortDir) {
+    setSortField(f)
+    setSortDir(dir)
+  }
+
+  function handleColClick(f: SortField) {
     if (f === sortField) {
       setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))
     } else {
       setSortField(f)
-      setSortDir(f === 'nation' || f === 'group' ? 'asc' : 'asc')
+      // texte : alphabétique asc par défaut ; cotes : croissant asc (favoris d'abord)
+      setSortDir('asc')
     }
   }
 
@@ -161,9 +176,6 @@ export function NationsOddsTable({ nations }: Props) {
     return sortDir === 'asc' ? cmp : -cmp
   })
 
-  const sortIcon = (f: SortField) =>
-    sortField === f ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''
-
   if (nations.length === 0) {
     return (
       <div className="p-8 text-center text-gray-500 text-sm">
@@ -173,44 +185,75 @@ export function NationsOddsTable({ nations }: Props) {
     )
   }
 
-  const COLS: { f: SortField; label: string; align: 'left' | 'right' }[] = [
-    { f: 'nation',  label: 'Nation',  align: 'left'  },
-    { f: 'group',   label: 'Grp',     align: 'left'  },
-    { f: 'unibet',  label: 'Unibet',  align: 'right' },
-    { f: 'betclic', label: 'Betclic', align: 'right' },
-    { f: 'pmu',     label: 'PMU',     align: 'right' },
-    { f: 'best',    label: 'Meilleur',align: 'right' },
-  ]
-
   return (
     <div className="space-y-3">
-      {/* Market tabs */}
-      <div className="flex gap-0.5 border-b border-gray-700/50 pb-0">
-        {MARKETS.map(m => {
-          const cnt = activeCount(nations, m.key)
-          return (
-            <button
-              key={m.key}
-              onClick={() => switchMarket(m.key)}
-              className={clsx(
-                'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5 rounded-t',
-                market === m.key
-                  ? 'border-orange-500 text-orange-300'
-                  : 'border-transparent text-gray-400 hover:text-gray-200',
-              )}
-            >
-              {m.label}
-              <span className={clsx(
-                'text-[10px] px-1.5 py-px rounded-sm font-mono tabular-nums leading-none',
-                market === m.key
-                  ? 'bg-orange-500/15 text-orange-400'
-                  : 'bg-gray-800 text-gray-600',
-              )}>
-                {cnt}
-              </span>
-            </button>
-          )
-        })}
+      {/* Market tabs + sort direction control */}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex gap-0.5 border-b border-gray-700/50 pb-0">
+          {MARKETS.map(m => {
+            const cnt = activeCount(nations, m.key)
+            return (
+              <button
+                key={m.key}
+                onClick={() => switchMarket(m.key)}
+                className={clsx(
+                  'px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5 rounded-t',
+                  market === m.key
+                    ? 'border-orange-500 text-orange-300'
+                    : 'border-transparent text-gray-400 hover:text-gray-200',
+                )}
+              >
+                {m.label}
+                <span className={clsx(
+                  'text-[10px] px-1.5 py-px rounded-sm font-mono tabular-nums leading-none',
+                  market === m.key
+                    ? 'bg-orange-500/15 text-orange-400'
+                    : 'bg-gray-800 text-gray-600',
+                )}>
+                  {cnt}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Contrôle de tri explicite */}
+        <div className="flex items-center gap-1 text-[11px] text-gray-500 shrink-0">
+          <span className="mr-1">Cotes&nbsp;:</span>
+          <button
+            onClick={() => setSort('best', 'asc')}
+            className={clsx(
+              'flex items-center gap-0.5 px-2 py-1 rounded border transition-colors',
+              sortField === 'best' && sortDir === 'asc'
+                ? 'border-orange-500/50 text-orange-400 bg-orange-500/10'
+                : 'border-gray-700 text-gray-500 hover:text-gray-300 hover:border-gray-600',
+            )}
+          >
+            ▲ Croissant
+          </button>
+          <button
+            onClick={() => setSort('best', 'desc')}
+            className={clsx(
+              'flex items-center gap-0.5 px-2 py-1 rounded border transition-colors',
+              sortField === 'best' && sortDir === 'desc'
+                ? 'border-orange-500/50 text-orange-400 bg-orange-500/10'
+                : 'border-gray-700 text-gray-500 hover:text-gray-300 hover:border-gray-600',
+            )}
+          >
+            ▼ Décroissant
+          </button>
+          <button
+            onClick={() => setSort('group', 'asc')}
+            className={clsx(
+              'flex items-center gap-0.5 px-2 py-1 rounded border transition-colors',
+              sortField === 'group'
+                ? 'border-orange-500/50 text-orange-400 bg-orange-500/10'
+                : 'border-gray-700 text-gray-500 hover:text-gray-300 hover:border-gray-600',
+            )}
+          >
+            A→Z Groupe
+          </button>
+        </div>
       </div>
 
       {/* Table */}
@@ -221,14 +264,29 @@ export function NationsOddsTable({ nations }: Props) {
               {COLS.map(({ f, label, align }) => (
                 <th
                   key={f}
-                  onClick={() => toggleSort(f)}
+                  onClick={() => handleColClick(f)}
                   className={clsx(
-                    'py-2 px-3 text-[11px] font-medium cursor-pointer select-none hover:text-white transition-colors uppercase tracking-wide',
+                    'py-2 px-3 text-[11px] font-medium cursor-pointer select-none transition-colors uppercase tracking-wide group',
                     align === 'right' ? 'text-right' : 'text-left',
-                    sortField === f ? 'text-orange-400' : 'text-gray-500',
+                    sortField === f ? 'text-orange-400' : 'text-gray-500 hover:text-gray-300',
                   )}
                 >
-                  {label}{sortIcon(f)}
+                  <span className="inline-flex items-center gap-1">
+                    {align === 'right' && sortField === f && (
+                      <span className="text-orange-500/70 text-[10px]">
+                        {sortDir === 'asc' ? '▲' : '▼'}
+                      </span>
+                    )}
+                    {label}
+                    {align === 'left' && sortField === f && (
+                      <span className="text-orange-500/70 text-[10px]">
+                        {sortDir === 'asc' ? '▲' : '▼'}
+                      </span>
+                    )}
+                    {sortField !== f && (
+                      <span className="text-gray-700 text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">▲▼</span>
+                    )}
+                  </span>
                 </th>
               ))}
             </tr>
