@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import asyncio
+
 from app.db import get_db
 from app.ingestion.bzzoiro.client import BzzoiroClient
 from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzPlayerMatchStat, BzzTeam
@@ -567,6 +569,20 @@ async def get_match_detail(
             select(BzzPlayer.api_id, BzzPlayer.name).where(BzzPlayer.api_id.in_(player_ids))
         )
         name_map = {r.api_id: r.name for r in bp_result.all()}
+
+    # Auto-sync lineup editor for finished group stage matches (fire-and-forget)
+    if event.status == "finished" and (event.round_number or 0) in (1, 2, 3):
+        from app.api.wc2026_lineups import sync_match_lineups_to_editor
+        from app.db import get_db as _get_db
+        async def _bg_sync():
+            from sqlalchemy.ext.asyncio import AsyncSession
+            from app.db import engine
+            async with AsyncSession(engine) as bg_session:
+                try:
+                    await sync_match_lineups_to_editor(bzz_id, bg_session)
+                except Exception:
+                    pass
+        asyncio.create_task(_bg_sync())
 
     return MatchDetail(
         bzz_id=event.api_id,

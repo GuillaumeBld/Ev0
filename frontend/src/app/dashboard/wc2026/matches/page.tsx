@@ -125,6 +125,13 @@ export default function WC2026MatchesPage() {
 
   useEffect(() => { loadMatches() }, [])
 
+  // Auto-refresh: 30s if live match, 2min otherwise
+  useEffect(() => {
+    const hasLive = matches.some(m => m.status === 'live' || m.status === 'inprogress')
+    const interval = setInterval(loadMatches, hasLive ? 30_000 : 120_000)
+    return () => clearInterval(interval)
+  }, [matches])
+
   async function selectMatch(id: number) {
     if (selected === id) {
       setSelected(null)
