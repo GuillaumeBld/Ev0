@@ -664,15 +664,15 @@ async def fill_subs(session: AsyncSession = Depends(get_db)) -> dict:
         if lineup is None:
             continue
 
-        # Existing players in lineup (normalised names)
+        # Existing bench players in lineup (normalised name → object)
         existing_r = await session.execute(
             select(WC2026ExpectedLineupPlayer).where(
                 WC2026ExpectedLineupPlayer.lineup_id == lineup.id
             )
         )
-        existing_names = {
-            _norm_name(p.player_name)
-            for p in existing_r.scalars().all()
+        all_existing = existing_r.scalars().all()
+        existing_by_name: dict[str, WC2026ExpectedLineupPlayer] = {
+            _norm_name(p.player_name): p for p in all_existing
         }
 
         # Current max sub slot_index
@@ -684,7 +684,7 @@ async def fill_subs(session: AsyncSession = Depends(get_db)) -> dict:
         )
         next_slot = (max_slot_r.scalar() or -1) + 1
 
-        # Squad players not yet in lineup
+        # Squad players not yet in lineup (or with 0 minutes — fix them)
         squad_r = await session.execute(
             select(WC2026SquadPlayer).where(
                 WC2026SquadPlayer.nation == nation
@@ -692,13 +692,19 @@ async def fill_subs(session: AsyncSession = Depends(get_db)) -> dict:
         )
         added = 0
         for sp in squad_r.scalars().all():
-            if _norm_name(sp.player_name) in existing_names:
-                continue
             mins, role = _MINUTES.get(sp.position, (0, "reserve"))
+            existing = existing_by_name.get(_norm_name(sp.player_name))
+            if existing is not None:
+                # Update minutes if the player was added with 0 min (e.g. manual add)
+                if not existing.is_starter and existing.expected_minutes == 0 and mins > 0:
+                    existing.expected_minutes = mins
+                    existing.role = role
+                continue
+            pos = sp.position if sp.position in ("GK", "DEF", "MID", "FWD") else "MID"
             session.add(WC2026ExpectedLineupPlayer(
                 lineup_id=lineup.id,
                 player_name=sp.player_name,
-                position=sp.position if sp.position in ("GK", "DEF", "MID", "FWD") else "MID",
+                position=pos,
                 line_index=-1,
                 slot_index=next_slot,
                 is_starter=False,
