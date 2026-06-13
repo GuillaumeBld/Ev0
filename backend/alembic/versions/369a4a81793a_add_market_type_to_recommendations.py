@@ -29,8 +29,30 @@ def upgrade() -> None:
             server_default='standard',
         )
     )
+    # Ajouter bet_type
+    op.add_column(
+        'recommendations',
+        sa.Column('bet_type', sa.String(20), nullable=False, server_default='goal')
+    )
+    # Remplacer la contrainte unique (drop ancienne si elle existe, créer nouvelle)
+    try:
+        op.drop_constraint('uq_recommendation_fixture_player_market', 'recommendations', type_='unique')
+    except Exception:
+        pass
+    op.create_unique_constraint(
+        'uq_recommendation_fixture_player_market_bet',
+        'recommendations',
+        ['fixture_id', 'player_name', 'market_type', 'bet_type']
+    )
 
 
 def downgrade() -> None:
+    op.drop_constraint('uq_recommendation_fixture_player_market_bet', 'recommendations', type_='unique')
+    op.create_unique_constraint(
+        'uq_recommendation_fixture_player_market',
+        'recommendations',
+        ['fixture_id', 'player_name', 'market_type']
+    )
+    op.drop_column('recommendations', 'bet_type')
     op.drop_column('recommendations', 'market_type')
     op.execute("DROP TYPE IF EXISTS markettype")

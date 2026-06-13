@@ -34,6 +34,7 @@ class Recommendation(Base, TimestampMixin):
         default=MarketType.STANDARD,
         server_default=MarketType.STANDARD.value,
     )  # standard (goalscorer/assist), supersub (with sub protection)
+    bet_type: Mapped[str] = mapped_column(String(20), nullable=False, default="goal", server_default="goal")  # goal or assist
 
     # Pricing
     lambda_intensity: Mapped[float] = mapped_column(Float)
@@ -74,7 +75,8 @@ class Recommendation(Base, TimestampMixin):
             "fixture_id",
             "player_name",
             "market_type",
-            name="uq_recommendation_fixture_player_market",
+            "bet_type",
+            name="uq_recommendation_fixture_player_market_bet",
         ),
     )
 

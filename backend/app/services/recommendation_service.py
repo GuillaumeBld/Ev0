@@ -446,7 +446,7 @@ async def process_scraped_fixtures(
     )
     all_recs = list(rec_result.scalars().all())
     rec_by_key: dict[tuple, Recommendation] = {
-        (r.fixture_id, r.player_name, r.market_type): r
+        (r.fixture_id, r.player_name, r.market_type, getattr(r, "bet_type", "goal")): r
         for r in all_recs
     }
 
@@ -559,7 +559,7 @@ async def process_scraped_fixtures(
                 edge = calculate_edge(fair_odds, market_odds)
                 is_value = edge >= min_edge
 
-                rec_key = (fixture_orm.id, player_name, mkt_type)
+                rec_key = (fixture_orm.id, player_name, mkt_type, bet_type)
                 existing_rec = rec_by_key.get(rec_key)
 
                 if is_value:
@@ -570,6 +570,7 @@ async def process_scraped_fixtures(
                             fixture_id=fixture_orm.id,
                             player_name=player_name,
                             market_type=mkt_type,
+                            bet_type=bet_type,
                             lambda_intensity=round(lambda_val, 4),
                             fair_probability=round(probability, 4),
                             fair_odds=fair_odds,
