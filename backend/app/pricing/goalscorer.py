@@ -107,3 +107,30 @@ def remove_margin(odds_list: list[float]) -> list[float]:
     """Remove bookmaker margin proportionally."""
     total_prob = sum(1 / o for o in odds_list if o > 0)
     return [o * total_prob for o in odds_list]
+
+
+# ── Supersub formula ──────────────────────────────────────────────
+
+from app.pricing.sub_constants import SUB_GOAL_LAMBDA
+
+
+def calculate_supersub_prob(
+    lambda_A: float,
+    p_sub: float,
+    t_sub: float,
+    lambda_B_sub: float | None = None,
+    position: str = "FW",
+) -> float:
+    """
+    P(pari gagné avec mécanique supersub).
+
+    P = (1 - p_sub) × (1 - e^(-λ_A))
+      + p_sub       × (1 - e^(-(λ_A×t_sub/90 + λ_B×(90-t_sub)/90)))
+    """
+    if lambda_B_sub is None:
+        lambda_B_sub = SUB_GOAL_LAMBDA.get(position, 0.08)
+    lA_adj  = lambda_A * (t_sub / 90.0)
+    lB_adj  = lambda_B_sub * ((90.0 - t_sub) / 90.0)
+    p_full  = (1.0 - p_sub) * (1.0 - math.exp(-lambda_A))
+    p_chain = p_sub          * (1.0 - math.exp(-(lA_adj + lB_adj)))
+    return p_full + p_chain

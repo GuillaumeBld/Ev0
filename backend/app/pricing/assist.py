@@ -150,3 +150,28 @@ def remove_margin(odds_list: list[float]) -> list[float]:
     return [o * total_prob for o in odds_list]
 
 
+# ── Supersub formula ──────────────────────────────────────────────
+
+from app.pricing.sub_constants import SUB_ASSIST_LAMBDA
+
+
+def calculate_supersub_prob_assist(
+    lambda_A: float,
+    p_sub: float,
+    t_sub: float,
+    lambda_B_sub: float | None = None,
+    position: str = "MF",
+) -> float:
+    """
+    P(passe décisive gagnée avec mécanique supersub).
+    Même formule que pour les buts, λ_B_sub issu de SUB_ASSIST_LAMBDA.
+    """
+    if lambda_B_sub is None:
+        lambda_B_sub = SUB_ASSIST_LAMBDA.get(position, 0.07)
+    lA_adj  = lambda_A * (t_sub / 90.0)
+    lB_adj  = lambda_B_sub * ((90.0 - t_sub) / 90.0)
+    p_full  = (1.0 - p_sub) * (1.0 - math.exp(-lambda_A))
+    p_chain = p_sub          * (1.0 - math.exp(-(lA_adj + lB_adj)))
+    return p_full + p_chain
+
+
