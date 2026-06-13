@@ -17,8 +17,14 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
+
+# Python 3.9 compatibility: UTC not available until 3.11
+try:
+    from datetime import UTC
+except ImportError:
+    UTC = timezone.utc
 
 from scipy.optimize import brentq, minimize
 from scipy.stats import poisson as _poisson_dist
