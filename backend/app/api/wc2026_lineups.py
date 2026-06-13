@@ -629,6 +629,93 @@ async def upsert_lineup(
     )
 
 
+@router.post("/fill-subs")
+async def fill_subs(session: AsyncSession = Depends(get_db)) -> dict:
+    """For every nation's default lineup, add missing squad players as substitutes.
+
+    Minutes: FWD/MID → 30 min (sub_planned), DEF → 10 min (sub_planned), GK → 0 (reserve).
+    Skips players already present in the lineup (any role). Only touches 'default' context.
+    """
+    _MINUTES: dict[str, tuple[int, str]] = {
+        "GK":  (0,  "reserve"),
+        "DEF": (10, "sub_planned"),
+        "MID": (30, "sub_planned"),
+        "FWD": (30, "sub_planned"),
+    }
+
+    # Load all nations from squad
+    nations_r = await session.execute(
+        select(WC2026SquadPlayer.nation).distinct()
+    )
+    nations = [r[0] for r in nations_r.all()]
+
+    added_total = 0
+    nation_stats: dict[str, int] = {}
+
+    for nation in nations:
+        # Load default lineup
+        lineup_r = await session.execute(
+            select(WC2026ExpectedLineup).where(
+                WC2026ExpectedLineup.nation == nation,
+                WC2026ExpectedLineup.context == "default",
+            )
+        )
+        lineup = lineup_r.scalar_one_or_none()
+        if lineup is None:
+            continue
+
+        # Existing players in lineup (normalised names)
+        existing_r = await session.execute(
+            select(WC2026ExpectedLineupPlayer).where(
+                WC2026ExpectedLineupPlayer.lineup_id == lineup.id
+            )
+        )
+        existing_names = {
+            _norm_name(p.player_name)
+            for p in existing_r.scalars().all()
+        }
+
+        # Current max sub slot_index
+        max_slot_r = await session.execute(
+            select(func.max(WC2026ExpectedLineupPlayer.slot_index)).where(
+                WC2026ExpectedLineupPlayer.lineup_id == lineup.id,
+                WC2026ExpectedLineupPlayer.is_starter.is_(False),
+            )
+        )
+        next_slot = (max_slot_r.scalar() or -1) + 1
+
+        # Squad players not yet in lineup
+        squad_r = await session.execute(
+            select(WC2026SquadPlayer).where(
+                WC2026SquadPlayer.nation == nation
+            ).order_by(WC2026SquadPlayer.position, WC2026SquadPlayer.shirt_number)
+        )
+        added = 0
+        for sp in squad_r.scalars().all():
+            if _norm_name(sp.player_name) in existing_names:
+                continue
+            mins, role = _MINUTES.get(sp.position, (0, "reserve"))
+            session.add(WC2026ExpectedLineupPlayer(
+                lineup_id=lineup.id,
+                player_name=sp.player_name,
+                position=sp.position if sp.position in ("GK", "DEF", "MID", "FWD") else "MID",
+                line_index=-1,
+                slot_index=next_slot,
+                is_starter=False,
+                role=role,
+                expected_minutes=mins,
+            ))
+            next_slot += 1
+            added += 1
+
+        if added:
+            nation_stats[nation] = added
+            added_total += added
+
+    await session.commit()
+    return {"added_total": added_total, "by_nation": nation_stats}
+
+
 @router.post("/sync-from-matches")
 async def sync_from_matches(session: AsyncSession = Depends(get_db)) -> dict:
     """Scan all finished WC2026 group stage matches and auto-fill lineup editor from Bzzoiro."""

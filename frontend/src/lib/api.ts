@@ -914,6 +914,14 @@ export async function syncBzzoiroLineups(): Promise<{
   return data
 }
 
+export async function fillSubsLineups(): Promise<{
+  added_total: number
+  by_nation: Record<string, number>
+}> {
+  const { data } = await api.post('/api/v1/wc2026/lineups/fill-subs')
+  return data
+}
+
 // ── WC2026 Tournament Pricing ────────────────────────────────────────────────
 
 export interface WCPlayerPricing {

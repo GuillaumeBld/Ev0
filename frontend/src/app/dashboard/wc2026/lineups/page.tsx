@@ -11,6 +11,7 @@ import {
   getWCNationLineups,
   syncRotowireLineups,
   syncBzzoiroLineups,
+  fillSubsLineups,
 } from '@/lib/api'
 import { LineupPitchEditor } from '@/components/wc2026/LineupPitchEditor'
 import { FlagImg } from '@/components/FlagImg'
@@ -23,6 +24,7 @@ export default function WC2026LineupsPage() {
   const [loadingNation, setLoadingNation] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [syncingBzz, setSyncingBzz] = useState(false)
+  const [fillingBench, setFillingBench] = useState(false)
   const [syncMsg, setSyncMsg] = useState<string | null>(null)
 
   async function loadNations() {
@@ -61,6 +63,21 @@ export default function WC2026LineupsPage() {
     }
   }
 
+  async function handleFillBench() {
+    setFillingBench(true)
+    setSyncMsg(null)
+    try {
+      const res = await fillSubsLineups()
+      setSyncMsg(`Bancs remplis : ${res.added_total} joueurs ajoutés sur ${Object.keys(res.by_nation).length} nations`)
+      await loadNations()
+      if (selectedNation) await selectNation(selectedNation)
+    } catch {
+      setSyncMsg('Erreur fill-subs')
+    } finally {
+      setFillingBench(false)
+    }
+  }
+
   async function handleSyncBzzoiro() {
     setSyncingBzz(true)
     setSyncMsg(null)
@@ -92,6 +109,15 @@ export default function WC2026LineupsPage() {
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-semibold text-white">CDM 2026</h2>
           <div className="flex items-center gap-1">
+            <button
+              onClick={handleFillBench}
+              disabled={fillingBench}
+              title="Remplir les bancs depuis la squad (ATT/MIL 30min, DEF 10min)"
+              className="px-2 py-1 text-[10px] rounded hover:bg-purple-900/40 text-purple-400 hover:text-purple-300 border border-purple-800/50 hover:border-purple-600 transition-colors disabled:opacity-40 flex items-center gap-1"
+            >
+              <RefreshCw className={clsx('w-3 h-3', fillingBench && 'animate-spin')} />
+              Bancs
+            </button>
             <button
               onClick={handleSyncBzzoiro}
               disabled={syncingBzz}
