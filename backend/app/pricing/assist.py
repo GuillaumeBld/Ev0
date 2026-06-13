@@ -17,8 +17,6 @@ from __future__ import annotations
 import math
 from typing import Any, TypedDict
 
-CLAMP_MULTIPLIER_MIN = 0.5
-CLAMP_MULTIPLIER_MAX = 2.0
 CLAMP_LAMBDA_MIN = 0.01
 CLAMP_LAMBDA_MAX = 2.0
 

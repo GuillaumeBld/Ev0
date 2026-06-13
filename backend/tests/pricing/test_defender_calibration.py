@@ -57,8 +57,8 @@ class TestAssistMultiplierDefender:
         mult = calculate_creation_multiplier_v2(stats, "DF")
         assert mult == pytest.approx(0.40, abs=0.01)
 
-    def test_creation_mult_fw_unchanged(self):
-        """FW avec 0 stats : plancher toujours 0.70."""
+    def test_creation_mult_fw_clamped_low(self):
+        """FW avec stats nulles : plancher = 0.70."""
         stats = {
             "xa_per_90": 0.0,
             "key_pass_per_90": 0.0,
