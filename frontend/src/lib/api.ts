@@ -43,6 +43,8 @@ export interface Recommendation {
   player_name: string
   team: string
   market_type: 'goalscorer' | 'assist'
+  bet_type?: 'goal' | 'assist'
+  supersub_market_type?: 'standard' | 'supersub'
   fair_odds: number
   best_bookmaker: string
   best_odds: number
@@ -86,6 +88,15 @@ export interface PlayerAllocationOut {
   lambda_assist: number
   prob_assist: number
   fair_odds_assist: number
+  // Supersub fields (may be absent for non-sub players)
+  p_goal_supersub?: number
+  fair_odds_goal_supersub?: number
+  p_assist_supersub?: number
+  fair_odds_assist_supersub?: number
+  p_sub?: number
+  avg_sub_time?: number
+  sub_premium_goal?: number
+  sub_premium_assist?: number
 }
 
 export interface MatchPriceResponse {
