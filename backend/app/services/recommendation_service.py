@@ -15,9 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.odds import normalize_selection_name
 from app.models.match_odds import MatchOddsSnapshot
+from app.models.recommendations import MarketType
 from app.pricing.goalscorer import calculate_edge
 from app.pricing.team_xg import load_match_pricing
 from app.services.market_xg import p_poisson_away_win, p_poisson_draw, p_poisson_home_win
+from app.services.recommendations_service import build_recommendations_for_player
 from app.strategy.selector import RecommendationFilter, select_bets
 
 logger = logging.getLogger(__name__)
@@ -502,7 +504,7 @@ async def process_scraped_fixtures(
 
         seen_value_keys: set[tuple] = set()
 
-        for (player_name, market_type), odds_entry in best_odds_map.items():
+        for (player_name, bet_type), odds_entry in best_odds_map.items():
             market_odds = odds_entry["odds"]
             bookmaker = odds_entry["bookmaker"]
 
@@ -514,112 +516,127 @@ async def process_scraped_fixtures(
             if not alloc or alloc.position == "GK":
                 continue
 
-            if market_type == "goalscorer":
-                fair_odds = alloc.fair_odds_goal
-                probability = alloc.prob_goal
+            if bet_type == "goalscorer":
+                fair_odds_std = alloc.fair_odds_goal
+                probability_std = alloc.prob_goal
                 lambda_val = alloc.lambda_total
                 has_form = alloc.has_form_goal
-            elif market_type == "assist":
-                fair_odds = alloc.fair_odds_assist
-                probability = alloc.prob_assist
+                fair_odds_ss = alloc.fair_odds_goal_supersub
+                probability_ss = alloc.p_goal_supersub
+            elif bet_type == "assist":
+                fair_odds_std = alloc.fair_odds_assist
+                probability_std = alloc.prob_assist
                 lambda_val = alloc.lambda_assist
                 has_form = alloc.has_form_assist
+                fair_odds_ss = alloc.fair_odds_assist_supersub
+                probability_ss = alloc.p_assist_supersub
             else:
                 continue
 
-            if not fair_odds or fair_odds <= 1:
+            if not fair_odds_std or fair_odds_std <= 1:
                 continue
 
-            edge = calculate_edge(fair_odds, market_odds)
-            is_value = edge >= min_edge
+            matches = alloc.matches_played
+            if matches >= 10 and has_form:
+                confidence = 0.85
+            elif matches >= 5:
+                confidence = 0.70
+            elif matches >= 3:
+                confidence = 0.55
+            elif matches >= 1:
+                confidence = 0.40
+            else:
+                confidence = 0.25
 
-            rec_key = (fixture_orm.id, player_name, market_type)
-            existing_rec = rec_by_key.get(rec_key)
+            # --- Generate STANDARD and SUPERSUB recommendations ---
+            for mkt_type, probability, fair_odds in (
+                (MarketType.STANDARD, probability_std, fair_odds_std),
+                (MarketType.SUPERSUB, probability_ss, fair_odds_ss),
+            ):
+                if not fair_odds or fair_odds <= 1 or probability <= 0:
+                    continue
 
-            if is_value:
-                seen_value_keys.add(rec_key)
+                edge = calculate_edge(fair_odds, market_odds)
+                is_value = edge >= min_edge
 
-                matches = alloc.matches_played
-                if matches >= 10 and has_form:
-                    confidence = 0.85
-                elif matches >= 5:
-                    confidence = 0.70
-                elif matches >= 3:
-                    confidence = 0.55
-                elif matches >= 1:
-                    confidence = 0.40
-                else:
-                    confidence = 0.25
+                rec_key = (fixture_orm.id, player_name, mkt_type)
+                existing_rec = rec_by_key.get(rec_key)
 
-                if existing_rec is None:
-                    new_rec = Recommendation(
-                        fixture_id=fixture_orm.id,
-                        player_name=player_name,
-                        market_type=market_type,
-                        lambda_intensity=round(lambda_val, 4),
-                        fair_probability=round(probability, 4),
-                        fair_odds=fair_odds,
-                        best_bookmaker=bookmaker,
-                        best_odds=market_odds,
-                        edge=edge,
-                        classification="VALUE",
-                        confidence=confidence,
-                        xg_source=pricing.xg_source,
-                        is_pen_taker=alloc.is_pen_taker,
-                        explanation={
-                            "model": "top_down_v2",
-                            "xg_source": pricing.xg_source,
-                            "lambda": round(lambda_val, 4),
-                            "is_pen_taker": alloc.is_pen_taker,
-                            "market_type": market_type,
-                        },
-                        generated_utc=now,
-                        status="pending",
-                    )
-                    session.add(new_rec)
-                    rec_by_key[rec_key] = new_rec
-                    stats["created"] += 1
-                    new_value_alerts.append({
-                        "player": player_name,
-                        "fixture": f"{fixture_orm.home_team} vs {fixture_orm.away_team}",
-                        "market": market_type,
-                        "odds": market_odds,
-                        "bookmaker": bookmaker,
-                        "edge": edge,
-                        "resurrected": False,
-                    })
+                if is_value:
+                    seen_value_keys.add(rec_key)
 
-                elif existing_rec.status == "expired":
-                    existing_rec.status = "pending"
-                    existing_rec.best_odds = market_odds
-                    existing_rec.best_bookmaker = bookmaker
-                    existing_rec.edge = edge
-                    existing_rec.confidence = confidence
-                    existing_rec.generated_utc = now
-                    stats["resurrected"] += 1
-                    new_value_alerts.append({
-                        "player": player_name,
-                        "fixture": f"{fixture_orm.home_team} vs {fixture_orm.away_team}",
-                        "market": market_type,
-                        "odds": market_odds,
-                        "bookmaker": bookmaker,
-                        "edge": edge,
-                        "resurrected": True,
-                    })
+                    if existing_rec is None:
+                        new_rec = Recommendation(
+                            fixture_id=fixture_orm.id,
+                            player_name=player_name,
+                            market_type=mkt_type,
+                            lambda_intensity=round(lambda_val, 4),
+                            fair_probability=round(probability, 4),
+                            fair_odds=fair_odds,
+                            best_bookmaker=bookmaker,
+                            best_odds=market_odds,
+                            edge=edge,
+                            classification="VALUE",
+                            confidence=confidence,
+                            xg_source=pricing.xg_source,
+                            is_pen_taker=alloc.is_pen_taker,
+                            explanation={
+                                "model": "top_down_v2",
+                                "xg_source": pricing.xg_source,
+                                "lambda": round(lambda_val, 4),
+                                "is_pen_taker": alloc.is_pen_taker,
+                                "bet_type": bet_type,
+                                "market_type": mkt_type.value,
+                            },
+                            generated_utc=now,
+                            status="pending",
+                        )
+                        session.add(new_rec)
+                        rec_by_key[rec_key] = new_rec
+                        stats["created"] += 1
+                        new_value_alerts.append({
+                            "player": player_name,
+                            "fixture": f"{fixture_orm.home_team} vs {fixture_orm.away_team}",
+                            "market": f"{bet_type}/{mkt_type.value}",
+                            "odds": market_odds,
+                            "bookmaker": bookmaker,
+                            "edge": edge,
+                            "resurrected": False,
+                        })
 
-                else:
-                    # pending or approved — update if odds/edge changed
-                    if (
-                        abs(market_odds - existing_rec.best_odds) > 0.001
-                        or abs(edge - existing_rec.edge) > 0.001
-                    ):
+                    elif existing_rec.status == "expired":
+                        existing_rec.status = "pending"
                         existing_rec.best_odds = market_odds
                         existing_rec.best_bookmaker = bookmaker
                         existing_rec.edge = edge
                         existing_rec.confidence = confidence
-                        stats["updated"] += 1
+                        existing_rec.generated_utc = now
+                        stats["resurrected"] += 1
+                        new_value_alerts.append({
+                            "player": player_name,
+                            "fixture": f"{fixture_orm.home_team} vs {fixture_orm.away_team}",
+                            "market": f"{bet_type}/{mkt_type.value}",
+                            "odds": market_odds,
+                            "bookmaker": bookmaker,
+                            "edge": edge,
+                            "resurrected": True,
+                        })
+
+                    else:
+                        # pending or approved — update if odds/edge changed
+                        if (
+                            abs(market_odds - existing_rec.best_odds) > 0.001
+                            or abs(edge - existing_rec.edge) > 0.001
+                        ):
+                            existing_rec.best_odds = market_odds
+                            existing_rec.best_bookmaker = bookmaker
+                            existing_rec.edge = edge
+                            existing_rec.confidence = confidence
+                            stats["updated"] += 1
 
         # Expire pending/approved recs for players that appeared in fresh odds but are no longer EV+
+        # Build set of (player_name, bet_type) pairs present in fresh odds
+        active_player_bets: set[str] = {pname for (pname, _) in best_odds_map}
         for rec in all_recs:
             if rec.fixture_id != fixture_orm.id:
                 continue
@@ -628,7 +645,8 @@ async def process_scraped_fixtures(
             rec_key = (rec.fixture_id, rec.player_name, rec.market_type)
             if rec_key in seen_value_keys:
                 continue
-            if (rec.player_name, rec.market_type) in best_odds_map:
+            # Expire if player was seen in fresh odds (not value) or still present
+            if rec.player_name in active_player_bets:
                 rec.status = "expired"
                 stats["expired"] += 1
 
