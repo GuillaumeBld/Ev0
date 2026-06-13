@@ -1,11 +1,18 @@
 """Recommendation model."""
 
+import enum
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String, Text, UniqueConstraint
+import sqlalchemy as sa
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
+
+
+class MarketType(str, enum.Enum):
+    STANDARD = "standard"
+    SUPERSUB = "supersub"
 
 
 class Recommendation(Base, TimestampMixin):
@@ -21,7 +28,12 @@ class Recommendation(Base, TimestampMixin):
     player_name: Mapped[str] = mapped_column(String(200))
 
     # Market
-    market_type: Mapped[str] = mapped_column(String(50))  # goalscorer, assist
+    market_type: Mapped[MarketType] = mapped_column(
+        Enum(MarketType, name="markettype", create_type=True),
+        nullable=False,
+        default=MarketType.STANDARD,
+        server_default=MarketType.STANDARD.value,
+    )  # standard (goalscorer/assist), supersub (with sub protection)
 
     # Pricing
     lambda_intensity: Mapped[float] = mapped_column(Float)
