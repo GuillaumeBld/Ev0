@@ -586,10 +586,15 @@ async def store_wc_outrights_for_bookmaker(
         (r.get("nation"), r.get("player_name"), r.get("market_type"))
         for r in outrights
     }
+    # Seulement désactiver les market_types effectivement présents dans ce batch.
+    # Un market_type absent du batch (ex: top_assister non proposé aujourd'hui)
+    # est laissé intact pour éviter de purger des données encore valides.
+    present_market_types = {r.get("market_type") for r in outrights}
     ids_to_deactivate = [
         row.id
         for row in existing_res.all()
-        if (row.nation, row.player_name, row.market_type) not in scraped_keys
+        if row.market_type in present_market_types
+        and (row.nation, row.player_name, row.market_type) not in scraped_keys
     ]
     if ids_to_deactivate:
         await session.execute(

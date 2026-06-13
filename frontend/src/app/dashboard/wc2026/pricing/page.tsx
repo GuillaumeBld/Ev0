@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { RefreshCw, Check, AlertTriangle } from 'lucide-react'
+import { RefreshCw, Check, AlertTriangle, Info } from 'lucide-react'
 import { clsx } from 'clsx'
 import {
   type WCPlayerPricing,
@@ -24,7 +24,8 @@ type Bookmaker = 'unibet' | 'pmu' | 'betclic'
 interface SyncState {
   loading: boolean
   result: SyncOddsResult | null
-  error: string | null
+  error: string | null   // vraie erreur (exception réseau / HTTP)
+  note: string | null    // message informatif du serveur (ex: "lancez localement")
 }
 
 const BK_LABELS: Record<Bookmaker, string> = { unibet: 'Unibet', pmu: 'PMU', betclic: 'Betclic' }
@@ -43,9 +44,9 @@ export default function WC2026PricingPage() {
   const [posFilter, setPosFilter] = useState<PosFilter>('')
   const [minLambda, setMinLambda] = useState('')
   const [syncStates, setSyncStates] = useState<Record<Bookmaker, SyncState>>({
-    unibet:  { loading: false, result: null, error: null },
-    pmu:     { loading: false, result: null, error: null },
-    betclic: { loading: false, result: null, error: null },
+    unibet:  { loading: false, result: null, error: null, note: null },
+    pmu:     { loading: false, result: null, error: null, note: null },
+    betclic: { loading: false, result: null, error: null, note: null },
   })
 
   const loadPlayers = useCallback(async () => {
@@ -102,15 +103,14 @@ export default function WC2026PricingPage() {
       const res = await syncWCOdds(bk)
       setSyncStates((prev) => ({
         ...prev,
-        [bk]: { loading: false, result: res, error: res.note ?? null },
+        [bk]: { loading: false, result: res, error: null, note: res.note ?? null },
       }))
-      // Rafraîchit le tableau après sync
       await loadNationOdds()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Erreur sync'
       setSyncStates((prev) => ({
         ...prev,
-        [bk]: { loading: false, result: null, error: msg },
+        [bk]: { loading: false, result: null, error: msg, note: null },
       }))
     }
   }
@@ -206,23 +206,28 @@ export default function WC2026PricingPage() {
               {BOOKMAKERS.map((bk) => {
                 const s = syncStates[bk]
                 const done = s.result && !s.error
-                const hasNote = !!s.error
+                const hasError = !!s.error
+                const hasNote = !!s.note
                 return (
                   <button
                     key={bk}
                     onClick={() => handleSync(bk)}
                     disabled={s.loading || loadingNations}
                     title={
-                      hasNote
+                      hasError
                         ? s.error!
+                        : hasNote
+                        ? s.note!
                         : done
                         ? `${s.result!.scraped} cotes scrappées, ${s.result!.deactivated} désactivées (${s.result!.duration_s}s)`
                         : `Scraper ${BK_LABELS[bk]}`
                     }
                     className={clsx(
                       'flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-40',
-                      hasNote
+                      hasError
                         ? 'bg-amber-600/30 border border-amber-500/40 text-amber-300 hover:bg-amber-600/40'
+                        : hasNote
+                        ? 'bg-blue-600/20 border border-blue-500/40 text-blue-300 hover:bg-blue-600/30'
                         : done
                         ? 'bg-green-600/20 border border-green-500/40 text-green-400 hover:bg-green-600/30'
                         : 'bg-gray-700 hover:bg-gray-600 text-white border border-gray-600',
@@ -230,15 +235,17 @@ export default function WC2026PricingPage() {
                   >
                     {s.loading ? (
                       <RefreshCw className="w-3 h-3 animate-spin" />
-                    ) : hasNote ? (
+                    ) : hasError ? (
                       <AlertTriangle className="w-3 h-3" />
+                    ) : hasNote ? (
+                      <Info className="w-3 h-3" />
                     ) : done ? (
                       <Check className="w-3 h-3" />
                     ) : (
                       <RefreshCw className="w-3 h-3" />
                     )}
                     {BK_LABELS[bk]}
-                    {done && !hasNote && (
+                    {done && !hasError && !hasNote && (
                       <span className="text-[10px] opacity-70">{s.result!.scraped}</span>
                     )}
                   </button>
