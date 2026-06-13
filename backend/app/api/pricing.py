@@ -40,6 +40,15 @@ class PlayerAllocationOut(BaseModel):
     lambda_assist: float
     prob_assist: float
     fair_odds_assist: float
+    # Supersub
+    p_goal_supersub: float = 0.0
+    fair_odds_goal_supersub: float = 99.0
+    p_assist_supersub: float = 0.0
+    fair_odds_assist_supersub: float = 99.0
+    p_sub: float = 0.35
+    avg_sub_time: float = 65.0
+    sub_premium_goal: float = 0.0
+    sub_premium_assist: float = 0.0
 
 
 class MatchPriceResponse(BaseModel):
@@ -121,6 +130,14 @@ async def price_match(
                 lambda_assist=a.lambda_assist,
                 prob_assist=a.prob_assist,
                 fair_odds_assist=a.fair_odds_assist,
+                p_goal_supersub=getattr(a, "p_goal_supersub", 0.0),
+                fair_odds_goal_supersub=getattr(a, "fair_odds_goal_supersub", 99.0),
+                p_assist_supersub=getattr(a, "p_assist_supersub", 0.0),
+                fair_odds_assist_supersub=getattr(a, "fair_odds_assist_supersub", 99.0),
+                p_sub=getattr(a, "p_sub", 0.35),
+                avg_sub_time=getattr(a, "avg_sub_time", 65.0),
+                sub_premium_goal=getattr(a, "sub_premium_goal", 0.0),
+                sub_premium_assist=getattr(a, "sub_premium_assist", 0.0),
             )
             for a in allocs
         ]
