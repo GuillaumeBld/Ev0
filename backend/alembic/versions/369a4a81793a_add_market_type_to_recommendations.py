@@ -22,36 +22,54 @@ def upgrade() -> None:
     op.execute("""
         DO $$
         BEGIN
+            -- 1. Créer le type ENUM si absent
             IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'markettype') THEN
                 CREATE TYPE markettype AS ENUM ('standard', 'supersub');
+            END IF;
+
+            -- 2. Ajouter market_type si absent
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'recommendations' AND column_name = 'market_type'
+            ) THEN
+                ALTER TABLE recommendations
+                    ADD COLUMN market_type markettype NOT NULL DEFAULT 'standard';
+            END IF;
+
+            -- 3. Ajouter bet_type si absent
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'recommendations' AND column_name = 'bet_type'
+            ) THEN
+                ALTER TABLE recommendations
+                    ADD COLUMN bet_type VARCHAR(20) NOT NULL DEFAULT 'goal';
+            END IF;
+
+            -- 4. Supprimer l'ancienne contrainte unique si elle existe
+            IF EXISTS (
+                SELECT 1 FROM information_schema.table_constraints
+                WHERE table_name = 'recommendations'
+                  AND constraint_name = 'uq_recommendation_fixture_player_market'
+                  AND constraint_type = 'UNIQUE'
+            ) THEN
+                ALTER TABLE recommendations
+                    DROP CONSTRAINT uq_recommendation_fixture_player_market;
+            END IF;
+
+            -- 5. Créer la nouvelle contrainte unique si elle n'existe pas
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.table_constraints
+                WHERE table_name = 'recommendations'
+                  AND constraint_name = 'uq_recommendation_fixture_player_market_bet'
+                  AND constraint_type = 'UNIQUE'
+            ) THEN
+                ALTER TABLE recommendations
+                    ADD CONSTRAINT uq_recommendation_fixture_player_market_bet
+                    UNIQUE (fixture_id, player_name, market_type, bet_type);
             END IF;
         END
         $$;
     """)
-    op.add_column(
-        'recommendations',
-        sa.Column(
-            'market_type',
-            sa.Enum('standard', 'supersub', name='markettype', create_type=False),
-            nullable=False,
-            server_default='standard',
-        )
-    )
-    # Ajouter bet_type
-    op.add_column(
-        'recommendations',
-        sa.Column('bet_type', sa.String(20), nullable=False, server_default='goal')
-    )
-    # Remplacer la contrainte unique (drop ancienne si elle existe, créer nouvelle)
-    try:
-        op.drop_constraint('uq_recommendation_fixture_player_market', 'recommendations', type_='unique')
-    except Exception:
-        pass
-    op.create_unique_constraint(
-        'uq_recommendation_fixture_player_market_bet',
-        'recommendations',
-        ['fixture_id', 'player_name', 'market_type', 'bet_type']
-    )
 
 
 def downgrade() -> None:
