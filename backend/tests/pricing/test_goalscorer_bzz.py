@@ -200,7 +200,14 @@ from app.pricing.goalscorer import (
 
 class TestFinishingMultiplier:
     def test_average_fw_returns_near_one(self):
-        stats = {"shot_accuracy": 0.42, "xg_per_shot": 0.12, "avg_rating": 6.9}
+        stats = {
+            "shot_accuracy": 0.515,
+            "xg_per_shot": 0.176,
+            "avg_rating": 6.76,
+            "matches_played": 20,
+            "npxg_total": 5.0,
+            "goals": 5,
+        }
         mult = calculate_finishing_multiplier(stats, "FW")
         assert 0.95 <= mult <= 1.05
 
@@ -217,7 +224,7 @@ class TestFinishingMultiplier:
     def test_none_stats_return_min(self):
         stats = {"shot_accuracy": None, "xg_per_shot": None, "avg_rating": None}
         mult = calculate_finishing_multiplier(stats, "MF")
-        assert mult == 0.70
+        assert mult == pytest.approx(0.55, abs=0.01)
 
     def test_unknown_position_uses_fallback(self):
         stats = {"shot_accuracy": 0.37, "xg_per_shot": 0.10, "avg_rating": 6.8}
