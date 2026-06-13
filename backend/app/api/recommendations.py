@@ -133,6 +133,8 @@ class Recommendation(BaseModel):
     decided_utc: str | None = None
     xg_source: str | None = None
     is_pen_taker: bool = False
+    supersub_market_type: str | None = None  # "standard" ou "supersub"
+    bet_type: str | None = None              # "goal" ou "assist"
 
 
 class RecommendationsResponse(BaseModel):
@@ -232,6 +234,8 @@ async def get_recommendations(
                 decided_utc=rec.decided_utc.isoformat() if rec.decided_utc else None,
                 xg_source=rec.xg_source,
                 is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
+                supersub_market_type=rec.market_type.value if rec.market_type else None,
+                bet_type=getattr(rec, "bet_type", None),
             )
             for rec, fix in rows
         ]
@@ -380,6 +384,8 @@ async def get_recommendations(
                 status=status_map.get(db_id, RecommendationStatus.PENDING),
                 xg_source=rec.get("xg_source"),
                 is_pen_taker=rec.get("is_pen_taker", False) or False,
+                supersub_market_type=rec.get("market_type"),
+                bet_type=rec.get("bet_type"),
             )
         )
 
@@ -448,6 +454,8 @@ async def get_expired_recommendations(
                 decided_utc=rec.decided_utc.isoformat() if rec.decided_utc else None,
                 xg_source=rec.xg_source,
                 is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
+                supersub_market_type=rec.market_type.value if rec.market_type else None,
+                bet_type=getattr(rec, "bet_type", None),
             )
             for rec, fix in rows
         ]
@@ -496,6 +504,8 @@ async def get_expired_recommendations(
             decided_utc=rec.decided_utc.isoformat() if rec.decided_utc else None,
             xg_source=rec.xg_source,
             is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
+            supersub_market_type=rec.market_type.value if rec.market_type else None,
+            bet_type=getattr(rec, "bet_type", None),
         )
         for rec, fix in rows
     ]
