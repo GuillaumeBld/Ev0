@@ -14,6 +14,8 @@ interface Recommendation {
   team: string
   opponent: string
   market: string
+  supersub_market_type?: 'standard' | 'supersub'
+  bet_type?: 'goal' | 'assist'
   fairOdds: number
   bestOdds: number
   bookmaker: string
@@ -126,6 +128,15 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
                   PEN
                 </span>
               )}
+              {rec.supersub_market_type === 'supersub' ? (
+                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-900/60 text-blue-300 border border-blue-700">
+                  SUPERSUB
+                </span>
+              ) : rec.supersub_market_type === 'standard' ? (
+                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-800 text-gray-400 border border-gray-700">
+                  STD
+                </span>
+              ) : null}
             </h3>
             <p className="text-xs text-ev-t4 mt-0.5">
               <span className="text-ev-t5">vs</span> {rec.opponent}
