@@ -45,8 +45,19 @@ CREATION_WEIGHTS_BY_PROFILE: dict[str, dict[str, float]] = {
     "unknown": {"xa": 0.40, "kp": 0.35, "xc": 0.15, "xca": 0.10},
 }
 
-CREATION_MULT_CLAMP: tuple[float, float] = (0.70, 1.50)
-XA_CONVERSION_CLAMP: tuple[float, float] = (0.75, 1.40)
+CREATION_MULT_CLAMP: dict[str, tuple[float, float]] = {
+    "FW": (0.70, 1.50),
+    "MF": (0.70, 1.50),
+    "DF": (0.40, 1.30),
+}
+_CREATION_MULT_CLAMP_DEFAULT: tuple[float, float] = (0.70, 1.50)
+
+XA_CONVERSION_CLAMP: dict[str, tuple[float, float]] = {
+    "FW": (0.75, 1.40),
+    "MF": (0.75, 1.40),
+    "DF": (0.50, 1.40),
+}
+_XA_CONVERSION_CLAMP_DEFAULT: tuple[float, float] = (0.75, 1.40)
 XA_CONVERSION_MIN_MATCHES: int = 5
 _PROFILE_WIDE_THRESHOLD: float = 0.55
 _PROFILE_CENTRAL_THRESHOLD: float = 0.25
@@ -107,10 +118,11 @@ def calculate_creation_multiplier_v2(stats: dict[str, Any], position: str | None
         + w["xc"]  * xc_norm
         + w["xca"] * xca_norm
     )
-    return max(CREATION_MULT_CLAMP[0], min(raw, CREATION_MULT_CLAMP[1]))
+    clamp = CREATION_MULT_CLAMP.get(position or "", _CREATION_MULT_CLAMP_DEFAULT)
+    return max(clamp[0], min(raw, clamp[1]))
 
 
-def calculate_xa_conversion(stats: dict[str, Any]) -> float:
+def calculate_xa_conversion(stats: dict[str, Any], position: str | None = None) -> float:
     """Assists / xA conversion rate. Returns 1.0 if insufficient data."""
     matches = stats.get("matches_played") or 0
     if matches < XA_CONVERSION_MIN_MATCHES:
@@ -119,7 +131,8 @@ def calculate_xa_conversion(stats: dict[str, Any]) -> float:
     assists = stats.get("assists") or 0
     if xa <= 0:
         return 1.0
-    return max(XA_CONVERSION_CLAMP[0], min(assists / xa, XA_CONVERSION_CLAMP[1]))
+    clamp = XA_CONVERSION_CLAMP.get(position or "", _XA_CONVERSION_CLAMP_DEFAULT)
+    return max(clamp[0], min(assists / xa, clamp[1]))
 
 
 def calculate_assist_lambda(

@@ -350,7 +350,7 @@ def allocate_player(
         "assists": share.assists_total,
     }
     creation_mult = calculate_creation_multiplier_v2(assist_stats, share.position)
-    xa_conversion = calculate_xa_conversion(assist_stats)
+    xa_conversion = calculate_xa_conversion(assist_stats, share.position)
     lambda_assist = calculate_assist_lambda(share.xa_share, budget_assists, creation_mult, xa_conversion)
     prob_assist = 1 - math.exp(-lambda_assist)
     fair_odds_assist = round(1 / prob_assist, 2) if prob_assist > 0 else 9999.0
