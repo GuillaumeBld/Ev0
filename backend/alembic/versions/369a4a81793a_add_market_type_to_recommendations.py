@@ -19,7 +19,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("CREATE TYPE IF NOT EXISTS markettype AS ENUM ('standard', 'supersub')")
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'markettype') THEN
+                CREATE TYPE markettype AS ENUM ('standard', 'supersub');
+            END IF;
+        END
+        $$;
+    """)
     op.add_column(
         'recommendations',
         sa.Column(
