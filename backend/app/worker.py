@@ -50,7 +50,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Defaults (used when no user settings exist)
-DEFAULT_LEAGUES = ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a", "champions_league"]
+DEFAULT_LEAGUES = ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a", "champions_league", "world_cup_2026"]
 CURRENT_SEASON = "2025-2026"
 
 _LEAGUE_ALIASES = {"ligue1": "ligue_1", "ligue-1": "ligue_1"}
