@@ -26,9 +26,11 @@ from app.pricing.assist import (
     calculate_assist_lambda,
     calculate_creation_multiplier_v2,
     calculate_xa_conversion,
+    calculate_supersub_prob_assist,
 )
 from app.pricing.goalscorer import (
     calculate_finishing_multiplier,
+    calculate_supersub_prob,
 )
 from app.services.market_xg import MarketXgResult, MarketXgService
 
@@ -159,6 +161,15 @@ class PlayerAllocation:
     matches_played: int = 0
     has_form_goal: bool = False
     has_form_assist: bool = False
+    # Supersub fields
+    p_goal_supersub: float = 0.0
+    fair_odds_goal_supersub: float = 99.0
+    p_assist_supersub: float = 0.0
+    fair_odds_assist_supersub: float = 99.0
+    p_sub: float = 0.35
+    avg_sub_time: float = 65.0
+    sub_premium_goal: float = 0.0
+    sub_premium_assist: float = 0.0
 
 
 @dataclass
@@ -306,6 +317,8 @@ def allocate_player(
     budget_assists: float,
     league_avg_goalscorer: dict[str, float] | None = None,
     league_avg_assist: dict[str, float] | None = None,
+    p_sub: float = 0.35,
+    avg_sub_time: float = 65.0,
 ) -> PlayerAllocation:
     """Compute Poisson lambdas using new top-down formulas."""
     mins_ratio = share.expected_minutes / 90.0
@@ -342,6 +355,27 @@ def allocate_player(
     prob_assist = 1 - math.exp(-lambda_assist)
     fair_odds_assist = round(1 / prob_assist, 2) if prob_assist > 0 else 9999.0
 
+    # ── Supersub ──────────────────────────────────────────────────
+    position_str = share.position or "MF"
+    p_goal_ss = calculate_supersub_prob(
+        lambda_A=lambda_total,
+        p_sub=p_sub,
+        t_sub=avg_sub_time,
+        position=position_str,
+    )
+    fair_odds_goal_ss = round(1.0 / p_goal_ss, 2) if p_goal_ss > 0 else 99.0
+
+    p_assist_ss = calculate_supersub_prob_assist(
+        lambda_A=lambda_assist,
+        p_sub=p_sub,
+        t_sub=avg_sub_time,
+        position=position_str,
+    )
+    fair_odds_assist_ss = round(1.0 / p_assist_ss, 2) if p_assist_ss > 0 else 99.0
+
+    sub_premium_goal   = round(p_goal_ss   - prob_goal,   4)
+    sub_premium_assist = round(p_assist_ss - prob_assist, 4)
+
     return PlayerAllocation(
         player_id=share.player_id,
         player_name=share.player_name,
@@ -364,6 +398,14 @@ def allocate_player(
         matches_played=share.matches_played,
         has_form_goal=share.form_xg_5 is not None,
         has_form_assist=share.form_assists_5 is not None,
+        p_goal_supersub=round(p_goal_ss, 4),
+        fair_odds_goal_supersub=fair_odds_goal_ss,
+        p_assist_supersub=round(p_assist_ss, 4),
+        fair_odds_assist_supersub=fair_odds_assist_ss,
+        p_sub=round(p_sub, 4),
+        avg_sub_time=round(avg_sub_time, 1),
+        sub_premium_goal=sub_premium_goal,
+        sub_premium_assist=sub_premium_assist,
     )
 
 
@@ -1017,14 +1059,39 @@ async def load_match_pricing(
     budget_assists_home = home_match_xg * ASSIST_GOAL_RATE
     budget_assists_away = away_match_xg * ASSIST_GOAL_RATE
 
-    home_allocs = sorted(
-        [allocate_player(s, home_match_xg, s.is_pen_taker, budget_assists_home) for s in home_shares],
-        key=lambda a: a.prob_goal, reverse=True,
-    )
-    away_allocs = sorted(
-        [allocate_player(s, away_match_xg, s.is_pen_taker, budget_assists_away) for s in away_shares],
-        key=lambda a: a.prob_goal, reverse=True,
-    )
+    from app.services.sub_stats import get_player_sub_stats
+
+    _home_allocs: list[PlayerAllocation] = []
+    for s in home_shares:
+        sub = await get_player_sub_stats(
+            player_name=s.player_name,
+            position=s.position or "MF",
+            db=db,
+            n_matches=20,
+        )
+        _home_allocs.append(
+            allocate_player(
+                s, home_match_xg, s.is_pen_taker, budget_assists_home,
+                p_sub=sub.p_sub, avg_sub_time=sub.avg_sub_time,
+            )
+        )
+    home_allocs = sorted(_home_allocs, key=lambda a: a.prob_goal, reverse=True)
+
+    _away_allocs: list[PlayerAllocation] = []
+    for s in away_shares:
+        sub = await get_player_sub_stats(
+            player_name=s.player_name,
+            position=s.position or "MF",
+            db=db,
+            n_matches=20,
+        )
+        _away_allocs.append(
+            allocate_player(
+                s, away_match_xg, s.is_pen_taker, budget_assists_away,
+                p_sub=sub.p_sub, avg_sub_time=sub.avg_sub_time,
+            )
+        )
+    away_allocs = sorted(_away_allocs, key=lambda a: a.prob_goal, reverse=True)
 
     home_lineup = (
         compute_lineup_allocation(home_players_db, home_starters, home_team, home_match_xg)

@@ -11,6 +11,7 @@ import { clsx } from 'clsx'
 type MarketFilter = 'all' | 'goalscorer' | 'assist'
 type EdgeFilter = 'all' | '5+' | '10+' | '15+'
 type StatusFilter = 'pending' | 'approved' | 'rejected' | 'expired' | 'all'
+type SupersubFilter = 'all' | 'standard' | 'supersub'
 
 type FixtureLineupCache = {
   home_team: string
@@ -54,6 +55,7 @@ export default function RecommendationsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('pending')
   const [marketFilter, setMarketFilter] = useState<MarketFilter>('all')
   const [edgeFilter, setEdgeFilter] = useState<EdgeFilter>('5+')
+  const [supersubFilter, setSupersubFilter] = useState<SupersubFilter>('all')
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [lineupCache, setLineupCache] = useState<Record<string, FixtureLineupCache>>({})
@@ -61,7 +63,7 @@ export default function RecommendationsPage() {
 
   useEffect(() => {
     setPage(1)
-  }, [selectedDate, marketFilter, edgeFilter, statusFilter])
+  }, [selectedDate, marketFilter, edgeFilter, statusFilter, supersubFilter])
 
   const isViewAll = selectedDate === null
   const isExpired = statusFilter === 'expired'
@@ -84,6 +86,8 @@ export default function RecommendationsPage() {
             team: rec.team,
             opponent: parseOpponent(rec.fixture_name, rec.team),
             market: rec.market_type,
+            supersub_market_type: rec.supersub_market_type,
+            bet_type: rec.bet_type,
             fairOdds: rec.fair_odds,
             bestOdds: rec.best_odds,
             bookmaker: rec.best_bookmaker,
@@ -119,6 +123,8 @@ export default function RecommendationsPage() {
           team: rec.team,
           opponent: parseOpponent(rec.fixture_name, rec.team),
           market: rec.market_type,
+          supersub_market_type: rec.supersub_market_type,
+          bet_type: rec.bet_type,
           fairOdds: rec.fair_odds,
           bestOdds: rec.best_odds,
           bookmaker: rec.best_bookmaker,
@@ -137,7 +143,10 @@ export default function RecommendationsPage() {
     },
   })
 
-  const filteredRecs = data?.recs || []
+  const allRecs = data?.recs || []
+  const filteredRecs = supersubFilter === 'all'
+    ? allRecs
+    : allRecs.filter(r => r.supersub_market_type === supersubFilter)
   const totalPages = data?.pages || 1
 
   useEffect(() => {
@@ -247,6 +256,24 @@ export default function RecommendationsPage() {
             ))}
           </div>
         )}
+
+        {/* Supersub filter */}
+        <div className="flex items-center gap-0.5 bg-ev-surface border border-ev-bd rounded-full p-0.5">
+          {(['all', 'supersub', 'standard'] as const).map((f) => (
+            <button
+              key={f}
+              onClick={() => setSupersubFilter(f)}
+              className={clsx(
+                'px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-150',
+                supersubFilter === f
+                  ? f === 'supersub' ? 'bg-blue-700/60 text-blue-300' : 'bg-white/[0.08] text-white'
+                  : 'text-ev-t4 hover:text-ev-t2'
+              )}
+            >
+              {f === 'all' ? 'Tous' : f === 'supersub' ? 'SUPERSUB' : 'STANDARD'}
+            </button>
+          ))}
+        </div>
 
         {/* Edge filter — only on pending / all tabs */}
         {(statusFilter === 'pending' || statusFilter === 'all') && (
