@@ -42,7 +42,12 @@ FINISHING_MULT_WEIGHTS: dict[str, float] = {
     "xg_per_shot":   0.40,
     "rating":        0.20,
 }
-FINISHING_MULT_CLAMP: tuple[float, float] = (0.70, 1.50)
+FINISHING_MULT_CLAMP: dict[str, tuple[float, float]] = {
+    "FW": (0.70, 1.50),
+    "MF": (0.55, 1.50),
+    "DF": (0.30, 1.30),
+}
+_FINISHING_MULT_CLAMP_DEFAULT: tuple[float, float] = (0.55, 1.50)
 CONVERSION_CLAMP: tuple[float, float] = (0.75, 1.40)
 CONVERSION_MIN_MATCHES: int = 5
 
@@ -64,7 +69,8 @@ def calculate_finishing_multiplier(stats: dict[str, Any], position: str | None) 
         + norm("xg_per_shot")   * FINISHING_MULT_WEIGHTS["xg_per_shot"]
         + rating_norm           * FINISHING_MULT_WEIGHTS["rating"]
     )
-    return max(FINISHING_MULT_CLAMP[0], min(raw, FINISHING_MULT_CLAMP[1]))
+    clamp = FINISHING_MULT_CLAMP.get(position or "", _FINISHING_MULT_CLAMP_DEFAULT)
+    return max(clamp[0], min(raw, clamp[1]))
 
 
 def calculate_conversion_rate(stats: dict[str, Any]) -> float:

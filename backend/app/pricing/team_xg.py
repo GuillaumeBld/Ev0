@@ -42,6 +42,7 @@ PENS_PER_MATCH = 0.10
 PEN_CONVERSION = 0.78
 CLAMP_MULTIPLIER_MIN = 0.5
 CLAMP_MULTIPLIER_MAX = 2.0
+DF_SETPIECE_DISCOUNT: float = 0.55
 
 FORM_WEIGHTS_BY_POSITION: dict[str, float] = {
     "FW": 0.25, "MF": 0.20, "DF": 0.10,
@@ -232,6 +233,8 @@ def compute_player_shares(
         else:
             blended_xg = xg_per_90
         goal_weight = blended_xg * mins_ratio
+        if pos == "DF":
+            goal_weight *= DF_SETPIECE_DISCOUNT
 
         # Assist weight — blend season xa_per_90 + form_assists_5
         xa_per_90 = p.get("xa_per_90") or 0.0
@@ -350,7 +353,7 @@ def allocate_player(
         "assists": share.assists_total,
     }
     creation_mult = calculate_creation_multiplier_v2(assist_stats, share.position)
-    xa_conversion = calculate_xa_conversion(assist_stats)
+    xa_conversion = calculate_xa_conversion(assist_stats, share.position)
     lambda_assist = calculate_assist_lambda(share.xa_share, budget_assists, creation_mult, xa_conversion)
     prob_assist = 1 - math.exp(-lambda_assist)
     fair_odds_assist = round(1 / prob_assist, 2) if prob_assist > 0 else 9999.0

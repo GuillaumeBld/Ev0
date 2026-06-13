@@ -46,8 +46,10 @@ class TestDetectCreatorProfile:
 class TestCreationMultiplierV2:
     def test_average_mf_returns_near_one(self):
         stats = {
-            "xa_per_90": 0.06, "key_pass_per_90": 0.55,
-            "accurate_cross_per_90": 0.20, "cross_accuracy": 0.35,
+            "xa_per_90": 0.116,
+            "key_pass_per_90": 1.172,
+            "accurate_cross_per_90": 0.527,
+            "cross_accuracy": 0.35,
         }
         mult = calculate_creation_multiplier_v2(stats, "MF")
         assert 0.95 <= mult <= 1.05
