@@ -977,7 +977,7 @@ async def _cli_main(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    leagues: list[str] = [args.league] if args.league else ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a"]
+    leagues: list[str] = [args.league] if args.league else ["ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a", "world_cup_2026"]
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -1060,7 +1060,7 @@ async def _cli_main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(description="Scrape French bookmaker odds (Betclic / Unibet / ParionsSport)")
-    parser.add_argument("--league", choices=["ligue_1", "premier_league", "champions_league", "bundesliga", "la_liga", "serie_a"], default=None, help="Single league")
+    parser.add_argument("--league", choices=["ligue_1", "premier_league", "champions_league", "bundesliga", "la_liga", "serie_a", "world_cup_2026"], default=None, help="Single league")
     parser.add_argument(
         "--bookmaker", choices=["betclic", "unibet", "parionssport"], default=None, help="Single bookmaker"
     )
