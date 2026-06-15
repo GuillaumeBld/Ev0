@@ -197,7 +197,7 @@ export default function WC2026StatsPage() {
             {!loading && filtered.length === 0 && (
               <tr>
                 <td colSpan={14} className="py-12 text-center text-gray-500 text-sm">
-                  Aucun joueur — synchronise des matchs dans l'onglet Matchs
+                  Aucun joueur — synchronise des matchs dans l&apos;onglet Matchs
                 </td>
               </tr>
             )}
