@@ -205,7 +205,7 @@ def _parse_shotmap(raw: list[dict[str, Any]]) -> list[ShotPoint]:
         out.append(ShotPoint(
             x=pos.get("x", 0),
             y=pos.get("y", 0),
-            xg=s.get("xg", 0),
+            xg=s.get("xg") or 0,
             type=s.get("type", "miss"),
             body=s.get("body"),
             sit=s.get("sit"),
