@@ -6,7 +6,7 @@ import { clsx } from 'clsx'
 import { type WCPlayerRanking, getWCRankings } from '@/lib/api'
 import { FlagImg } from '@/components/FlagImg'
 
-type SortKey = 'goals' | 'assists' | 'xg' | 'xa' | 'finishing_delta' | 'creation_delta' | 'xg_per_90' | 'xa_per_90' | 'minutes' | 'shots' | 'precomp_xg' | 'xg_left' | 'xa_left' | 'team_xg_share'
+type SortKey = 'goals' | 'assists' | 'xg' | 'xa' | 'finishing_delta' | 'creation_delta' | 'xg_per_90' | 'xa_per_90' | 'minutes' | 'shots' | 'xg_tournoi' | 'xg_left' | 'xa_left' | 'team_xg_share'
 type PosFilter = '' | 'GK' | 'DEF' | 'MID' | 'FWD'
 
 interface SortState {
@@ -184,7 +184,7 @@ export default function WC2026StatsPage() {
               <Th col="shots"           label="Tirs"    sort={sort} onSort={toggleSort} />
               <Th col="xg_per_90"       label="xG/90"  sort={sort} onSort={toggleSort} />
               <Th col="xa_per_90"       label="xA/90"  sort={sort} onSort={toggleSort} />
-              <Th col="precomp_xg"      label="xG Pré" sort={sort} onSort={toggleSort} />
+              <Th col="xg_tournoi"      label="xG Tnoi" sort={sort} onSort={toggleSort} />
               <Th col="xg_left"         label="xG Left" sort={sort} onSort={toggleSort} />
               <Th col="xa_left"         label="xA Left" sort={sort} onSort={toggleSort} />
               <Th col="team_xg_share"   label="% Éq."  sort={sort} onSort={toggleSort} />
@@ -250,7 +250,7 @@ export default function WC2026StatsPage() {
                   {r.xa_per_90 != null ? r.xa_per_90.toFixed(2) : '—'}
                 </td>
                 <td className="px-3 py-2 text-right font-mono text-gray-500">
-                  {r.precomp_xg != null ? r.precomp_xg.toFixed(1) : '—'}
+                  {r.xg_tournoi != null ? r.xg_tournoi.toFixed(2) : '—'}
                 </td>
                 <td className="px-3 py-2 text-right">
                   {r.xg_left != null ? (
@@ -295,9 +295,9 @@ export default function WC2026StatsPage() {
         <span>·</span>
         <span>Δ xA = Passes − xA</span>
         <span>·</span>
-        <span>xG Pré = xG saison club</span>
+        <span>xG Tnoi = xG attendu tournoi (BM équipe)</span>
         <span>·</span>
-        <span>xG/xA Left = potentiel restant</span>
+        <span>xG/xA Left = budget restant équipe</span>
         <span>·</span>
         <span>% Éq. = part du xG tournoi de l&apos;équipe</span>
         <span>·</span>

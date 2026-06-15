@@ -15,6 +15,59 @@ router = APIRouter(prefix="/wc2026/stats", tags=["wc2026"])
 
 WC_LEAGUE_ID = 27
 
+# xG attendus pour l'ensemble du tournoi, par bookmaker (source externe).
+# Clés = noms de nations tels qu'ils apparaissent dans wc2026_squad_players.
+BM_XG: dict[str, float] = {
+    "Espagne":            13.03,
+    "Brésil":             12.33,
+    "Allemagne":          11.78,
+    "Angleterre":         11.74,
+    "France":             10.90,
+    "Argentine":          10.83,
+    "Portugal":           10.23,
+    "Belgique":            9.56,
+    "Suisse":              8.27,
+    "Pays-Bas":            7.97,
+    "Colombie":            7.69,
+    "Norvège":             7.15,
+    "Mexique":             7.08,
+    "Équateur":            6.63,
+    "Uruguay":             6.51,
+    "Canada":              6.23,
+    "États-Unis":          6.20,
+    "Croatie":             6.06,
+    "Maroc":               5.98,
+    "Côte d'Ivoire":       5.85,
+    "Autriche":            5.78,
+    "Turquie":             5.73,
+    "Japon":               5.38,
+    "Sénégal":             5.31,
+    "Égypte":              4.96,
+    "Écosse":              4.64,
+    "Corée du Sud":        4.48,
+    "République Tchèque":  4.29,
+    "Suède":               4.21,
+    "Bosnie-Herzégovine":  4.15,
+    "Algérie":             4.08,
+    "Paraguay":            3.95,
+    "Iran":                3.80,
+    "Ghana":               3.22,
+    "Australie":           3.19,
+    "RD Congo":            2.94,
+    "Panama":              2.94,
+    "Nouvelle-Zélande":    2.74,
+    "Afrique du Sud":      2.64,
+    "Ouzbékistan":         2.62,
+    "Tunisie":             2.56,
+    "Cap-Vert":            2.51,
+    "Arabie Saoudite":     2.35,
+    "Curaçao":             2.17,
+    "Haïti":               2.08,
+    "Jordanie":            2.05,
+    "Qatar":               1.99,
+    "Irak":                1.53,
+}
+
 
 def _norm(name: str) -> str:
     n = unicodedata.normalize("NFKD", name.lower().strip())
@@ -38,10 +91,10 @@ class PlayerRanking(BaseModel):
     creation_delta: float       # assists - xa
     xg_per_90: float | None
     xa_per_90: float | None
-    precomp_xg: float | None    # xG saison club (scouting pré-tournoi)
-    xg_left: float | None       # precomp_xg - xg tournoi
-    xa_left: float | None       # (precomp_xg × 0.7) - xa tournoi
-    team_xg_share: float | None # % du xG tournoi de l'équipe
+    xg_tournoi: float | None    # xG BM attendus pour tout le tournoi (équipe)
+    xg_left: float | None       # xg_tournoi - xG cumulé équipe en tournoi
+    xa_left: float | None       # (xg_tournoi × 0.7) - xA cumulé équipe en tournoi
+    team_xg_share: float | None # % du xG tournoi généré par ce joueur
 
 
 @router.get("/rankings", response_model=list[PlayerRanking])
@@ -53,7 +106,6 @@ async def get_rankings(
     # ── 1. Aggregation depuis bzz_player_match_stats ──────────────────────────
     # DISTINCT ON (name, event) : Bzzoiro peut renvoyer des player_id différents
     # pour le même joueur entre deux syncs (ID historique vs ID CDM spécifique).
-    # On garde le player_api_id le plus élevé (le plus récent) par (nom, match).
     rows: list[dict[str, Any]] = (
         await session.execute(
             text("""
@@ -108,23 +160,7 @@ async def get_rankings(
         _norm(r["player_name"]): dict(r) for r in squad_rows
     }
 
-    # ── 3. Scouting pré-tournoi (xG saison club) ──────────────────────────────
-    # normalized_name de la table est corrompu (1er char/mot supprimé) →
-    # on indexe par _norm(player_name) pour un match fiable.
-    scouting_rows = (
-        await session.execute(
-            text("SELECT player_name, (stats->>'xg')::float AS xg FROM wc2026_scouting_stats")
-        )
-    ).mappings().all()
-
-    scouting: dict[str, float] = {}
-    for sr in scouting_rows:
-        key = _norm(sr["player_name"])
-        # Garder la valeur max si doublons de nom
-        if sr["xg"] is not None:
-            scouting[key] = max(scouting.get(key, 0.0), float(sr["xg"]))
-
-    # ── 4. Construction des résultats (première passe) ────────────────────────
+    # ── 3. Première passe — construction intermédiaire ────────────────────────
     intermediate: list[dict] = []
     for r in rows:
         bzz_name: str = r["bzz_name"]
@@ -134,57 +170,52 @@ async def get_rankings(
         flag_emoji = squad_entry["flag_emoji"] if squad_entry else None
         position   = squad_entry["position"]   if squad_entry else _bzz_pos_to_squad(r["bzz_pos"])
 
-        goals   = int(r["goals"])
-        assists = int(r["assists"])
-        xg      = round(float(r["xg"]), 2)
-        xa      = round(float(r["xa"]), 2)
-        minutes = int(r["minutes"])
-
-        precomp_xg = scouting.get(_norm(bzz_name))
-
         intermediate.append({
             "player_name": bzz_name,
             "nation": nation,
             "flag_emoji": flag_emoji,
             "position": position,
             "matches": int(r["matches"]),
-            "minutes": minutes,
-            "goals": goals,
-            "assists": assists,
-            "xg": xg,
-            "xa": xa,
+            "minutes": int(r["minutes"]),
+            "goals": int(r["goals"]),
+            "assists": int(r["assists"]),
+            "xg": round(float(r["xg"]), 2),
+            "xa": round(float(r["xa"]), 2),
             "shots": int(r["shots"]),
             "shots_on_target": int(r["shots_on_target"]),
-            "precomp_xg": round(precomp_xg, 2) if precomp_xg is not None else None,
+            "bzz_pos": r["bzz_pos"],
         })
 
-    # ── 5. xG tournoi par équipe (pour le % de contribution) ─────────────────
+    # ── 4. xG et xA cumulés par équipe en tournoi ─────────────────────────────
     team_xg: dict[str, float] = {}
+    team_xa: dict[str, float] = {}
     for p in intermediate:
-        if p["nation"]:
-            team_xg[p["nation"]] = team_xg.get(p["nation"], 0.0) + p["xg"]
+        n = p["nation"]
+        if n:
+            team_xg[n] = team_xg.get(n, 0.0) + p["xg"]
+            team_xa[n] = team_xa.get(n, 0.0) + p["xa"]
 
-    # ── 6. Résultats finaux ───────────────────────────────────────────────────
+    # ── 5. Résultats finaux ───────────────────────────────────────────────────
     result: list[PlayerRanking] = []
     for p in intermediate:
         xg      = p["xg"]
         xa      = p["xa"]
         minutes = p["minutes"]
-        precomp_xg = p["precomp_xg"]
+        nation  = p["nation"]
 
         xg_per_90 = round(xg / minutes * 90, 2) if minutes >= 10 else None
         xa_per_90 = round(xa / minutes * 90, 2) if minutes >= 10 else None
 
-        precomp_xa = round(precomp_xg * 0.7, 2) if precomp_xg is not None else None
-        xg_left    = round(precomp_xg - xg, 2)  if precomp_xg is not None else None
-        xa_left    = round(precomp_xa - xa, 2)   if precomp_xa is not None else None
-
-        txg = team_xg.get(p["nation"], 0.0) if p["nation"] else 0.0
+        bm         = BM_XG.get(nation) if nation else None
+        txg        = team_xg.get(nation, 0.0) if nation else 0.0
+        txa        = team_xa.get(nation, 0.0) if nation else 0.0
+        xg_left    = round(bm - txg, 2)         if bm is not None else None
+        xa_left    = round(bm * 0.7 - txa, 2)   if bm is not None else None
         team_xg_share = round(xg / txg * 100, 1) if txg > 0 and xg > 0 else None
 
         result.append(PlayerRanking(
             player_name=p["player_name"],
-            nation=p["nation"],
+            nation=nation,
             flag_emoji=p["flag_emoji"],
             position=p["position"],
             matches=p["matches"],
@@ -199,7 +230,7 @@ async def get_rankings(
             creation_delta=round(p["assists"] - xa, 2),
             xg_per_90=xg_per_90,
             xa_per_90=xa_per_90,
-            precomp_xg=precomp_xg,
+            xg_tournoi=bm,
             xg_left=xg_left,
             xa_left=xa_left,
             team_xg_share=team_xg_share,

@@ -1062,10 +1062,10 @@ export interface WCPlayerRanking {
   creation_delta: number    // assists - xa
   xg_per_90: number | null
   xa_per_90: number | null
-  precomp_xg: number | null   // xG saison club pré-tournoi
-  xg_left: number | null      // precomp_xg - xg tournoi
-  xa_left: number | null      // (precomp_xg × 0.7) - xa tournoi
-  team_xg_share: number | null // % du xG tournoi de l'équipe
+  xg_tournoi: number | null    // xG BM attendus pour tout le tournoi (équipe)
+  xg_left: number | null      // xg_tournoi - xG cumulé équipe en tournoi
+  xa_left: number | null      // (xg_tournoi × 0.7) - xA cumulé équipe en tournoi
+  team_xg_share: number | null // % du xG tournoi généré par ce joueur
 }
 
 export async function getWCRankings(): Promise<WCPlayerRanking[]> {
