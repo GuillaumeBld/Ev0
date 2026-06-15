@@ -47,28 +47,46 @@ async def get_rankings(
     """Classement cumulatif des joueurs CDM 2026 depuis les stats Bzzoiro."""
 
     # ── 1. Aggregation depuis bzz_player_match_stats ──────────────────────────
+    # DISTINCT ON (name, event) : Bzzoiro peut renvoyer des player_id différents
+    # pour le même joueur entre deux syncs (ID historique vs ID CDM spécifique).
+    # On garde le player_api_id le plus élevé (le plus récent) par (nom, match).
     rows: list[dict[str, Any]] = (
         await session.execute(
             text("""
+                WITH deduped AS (
+                    SELECT DISTINCT ON (p.name, ps.event_api_id)
+                        p.name       AS player_name,
+                        p.position   AS bzz_pos,
+                        t.name       AS team_name,
+                        ps.minutes_played,
+                        ps.goals,
+                        ps.goal_assist,
+                        ps.expected_goals,
+                        ps.expected_assists,
+                        ps.total_shots,
+                        ps.shots_on_target
+                    FROM bzz_player_match_stats ps
+                    JOIN bzz_players p ON p.api_id = ps.player_api_id
+                    JOIN bzz_events  e ON e.api_id = ps.event_api_id
+                    JOIN bzz_teams   t ON t.api_id = ps.team_api_id
+                    WHERE e.league_api_id = :lid
+                      AND COALESCE(ps.minutes_played, 1) > 0
+                    ORDER BY p.name, ps.event_api_id, ps.player_api_id DESC
+                )
                 SELECT
-                    p.name                              AS bzz_name,
-                    p.position                          AS bzz_pos,
-                    t.name                              AS team_name,
-                    COUNT(DISTINCT ps.event_api_id)     AS matches,
-                    COALESCE(SUM(ps.minutes_played), 0) AS minutes,
-                    COALESCE(SUM(ps.goals), 0)          AS goals,
-                    COALESCE(SUM(ps.goal_assist), 0)    AS assists,
-                    COALESCE(SUM(ps.expected_goals), 0.0)    AS xg,
-                    COALESCE(SUM(ps.expected_assists), 0.0)  AS xa,
-                    COALESCE(SUM(ps.total_shots), 0)    AS shots,
-                    COALESCE(SUM(ps.shots_on_target), 0) AS shots_on_target
-                FROM bzz_player_match_stats ps
-                JOIN bzz_players p  ON p.api_id  = ps.player_api_id
-                JOIN bzz_events  e  ON e.api_id  = ps.event_api_id
-                JOIN bzz_teams   t  ON t.api_id  = ps.team_api_id
-                WHERE e.league_api_id = :lid
-                  AND COALESCE(ps.minutes_played, 1) > 0
-                GROUP BY p.api_id, p.name, p.position, t.api_id, t.name
+                    player_name                              AS bzz_name,
+                    bzz_pos,
+                    team_name,
+                    COUNT(*)                                 AS matches,
+                    COALESCE(SUM(minutes_played), 0)         AS minutes,
+                    COALESCE(SUM(goals), 0)                  AS goals,
+                    COALESCE(SUM(goal_assist), 0)            AS assists,
+                    COALESCE(SUM(expected_goals), 0.0)       AS xg,
+                    COALESCE(SUM(expected_assists), 0.0)     AS xa,
+                    COALESCE(SUM(total_shots), 0)            AS shots,
+                    COALESCE(SUM(shots_on_target), 0)        AS shots_on_target
+                FROM deduped
+                GROUP BY player_name, bzz_pos, team_name
                 ORDER BY xg DESC
             """),
             {"lid": WC_LEAGUE_ID},

@@ -450,65 +450,59 @@ async def get_match_detail(
             await session.commit()
 
         # Upsert player stats into bzz_player_match_stats
+        # Supprime d'abord les stats existantes pour ce match : Bzzoiro peut renvoyer
+        # des player_id différents entre deux syncs (legacy ID vs ID CDM), ce qui
+        # accumulerait des doublons via l'ON CONFLICT sur (player_api_id, event_api_id).
         if player_stats_raw:
+            from sqlalchemy import delete as sa_delete
             from sqlalchemy.dialects.postgresql import insert as pg_insert
+            await session.execute(
+                sa_delete(BzzPlayerMatchStat).where(BzzPlayerMatchStat.event_api_id == bzz_id)
+            )
+            await session.flush()
             for ps in player_stats_raw:
                 pid = ps.get("player_id")
                 tid = ps.get("team_id")
                 if not pid:
                     continue
-                stmt = (
-                    pg_insert(BzzPlayerMatchStat)
-                    .values(
-                        player_api_id=pid,
-                        event_api_id=bzz_id,
-                        team_api_id=tid,
-                        is_home=(tid == event.home_team_api_id) if tid else None,
-                        minutes_played=ps.get("minutes_played"),
-                        rating=ps.get("rating"),
-                        goals=ps.get("goals"),
-                        goal_assist=ps.get("goal_assist"),
-                        expected_goals=ps.get("expected_goals"),
-                        expected_assists=ps.get("expected_assists"),
-                        total_shots=ps.get("total_shots"),
-                        shots_on_target=ps.get("shots_on_target"),
-                        key_pass=ps.get("key_pass"),
-                        total_pass=ps.get("total_pass"),
-                        accurate_pass=ps.get("accurate_pass"),
-                        total_long_balls=ps.get("total_long_balls"),
-                        accurate_long_balls=ps.get("accurate_long_balls"),
-                        total_cross=ps.get("total_cross"),
-                        accurate_cross=ps.get("accurate_cross"),
-                        duel_won=ps.get("duel_won"),
-                        duel_lost=ps.get("duel_lost"),
-                        aerial_won=ps.get("aerial_won"),
-                        aerial_lost=ps.get("aerial_lost"),
-                        total_tackle=ps.get("total_tackle"),
-                        won_tackle=ps.get("won_tackle"),
-                        total_clearance=ps.get("total_clearance"),
-                        interception=ps.get("interception"),
-                        ball_recovery=ps.get("ball_recovery"),
-                        yellow_card=ps.get("yellow_card"),
-                        red_card=ps.get("red_card"),
-                        fouls=ps.get("fouls"),
-                        was_fouled=ps.get("was_fouled"),
-                        dispossessed=ps.get("dispossessed"),
-                        possession_lost=ps.get("possession_lost"),
-                        saves=ps.get("saves"),
-                        goals_conceded=ps.get("goals_conceded"),
-                    )
-                    .on_conflict_do_update(
-                        constraint="uq_bzz_player_match",
-                        set_={
-                            "rating": ps.get("rating"),
-                            "goals": ps.get("goals"),
-                            "goal_assist": ps.get("goal_assist"),
-                            "expected_goals": ps.get("expected_goals"),
-                            "expected_assists": ps.get("expected_assists"),
-                            "minutes_played": ps.get("minutes_played"),
-                        },
-                    )
-                )
+                stmt = pg_insert(BzzPlayerMatchStat).values(
+                    player_api_id=pid,
+                    event_api_id=bzz_id,
+                    team_api_id=tid,
+                    is_home=(tid == event.home_team_api_id) if tid else None,
+                    minutes_played=ps.get("minutes_played"),
+                    rating=ps.get("rating"),
+                    goals=ps.get("goals"),
+                    goal_assist=ps.get("goal_assist"),
+                    expected_goals=ps.get("expected_goals"),
+                    expected_assists=ps.get("expected_assists"),
+                    total_shots=ps.get("total_shots"),
+                    shots_on_target=ps.get("shots_on_target"),
+                    key_pass=ps.get("key_pass"),
+                    total_pass=ps.get("total_pass"),
+                    accurate_pass=ps.get("accurate_pass"),
+                    total_long_balls=ps.get("total_long_balls"),
+                    accurate_long_balls=ps.get("accurate_long_balls"),
+                    total_cross=ps.get("total_cross"),
+                    accurate_cross=ps.get("accurate_cross"),
+                    duel_won=ps.get("duel_won"),
+                    duel_lost=ps.get("duel_lost"),
+                    aerial_won=ps.get("aerial_won"),
+                    aerial_lost=ps.get("aerial_lost"),
+                    total_tackle=ps.get("total_tackle"),
+                    won_tackle=ps.get("won_tackle"),
+                    total_clearance=ps.get("total_clearance"),
+                    interception=ps.get("interception"),
+                    ball_recovery=ps.get("ball_recovery"),
+                    yellow_card=ps.get("yellow_card"),
+                    red_card=ps.get("red_card"),
+                    fouls=ps.get("fouls"),
+                    was_fouled=ps.get("was_fouled"),
+                    dispossessed=ps.get("dispossessed"),
+                    possession_lost=ps.get("possession_lost"),
+                    saves=ps.get("saves"),
+                    goals_conceded=ps.get("goals_conceded"),
+                ).on_conflict_do_nothing()
                 await session.execute(stmt)
             await session.commit()
 
