@@ -1043,6 +1043,32 @@ export async function syncWCOdds(bookmaker: string): Promise<SyncOddsResult> {
   return data
 }
 
+// ── WC2026 Stats / Rankings ──────────────────────────────────────────────────
+
+export interface WCPlayerRanking {
+  player_name: string
+  nation: string | null
+  flag_emoji: string | null
+  position: string | null   // GK | DEF | MID | FWD
+  matches: number
+  minutes: number
+  goals: number
+  assists: number
+  xg: number
+  xa: number
+  shots: number
+  shots_on_target: number
+  finishing_delta: number   // goals - xg
+  creation_delta: number    // assists - xa
+  xg_per_90: number | null
+  xa_per_90: number | null
+}
+
+export async function getWCRankings(): Promise<WCPlayerRanking[]> {
+  const { data } = await api.get('/api/v1/wc2026/stats/rankings')
+  return data
+}
+
 // ── WC2026 Match Center ──────────────────────────────────────────────────────
 
 export interface WCMatchListItem {

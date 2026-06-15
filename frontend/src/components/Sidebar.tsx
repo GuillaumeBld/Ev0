@@ -19,7 +19,8 @@ import {
   BookOpen,
   ClipboardList,
   Shield,
-  X
+  X,
+  BarChart2,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 
@@ -53,6 +54,7 @@ const navGroups = [
     label: 'CDM 2026',
     items: [
       { name: 'Matchs', href: '/dashboard/wc2026/matches', icon: Calendar },
+      { name: 'Stats', href: '/dashboard/wc2026/stats', icon: BarChart2 },
       { name: 'Compos', href: '/dashboard/wc2026/lineups', icon: ClipboardList },
       { name: 'Pricing', href: '/dashboard/wc2026/pricing', icon: Calculator },
     ],
