@@ -1062,6 +1062,10 @@ export interface WCPlayerRanking {
   creation_delta: number    // assists - xa
   xg_per_90: number | null
   xa_per_90: number | null
+  precomp_xg: number | null   // xG saison club pré-tournoi
+  xg_left: number | null      // precomp_xg - xg tournoi
+  xa_left: number | null      // (precomp_xg × 0.7) - xa tournoi
+  team_xg_share: number | null // % du xG tournoi de l'équipe
 }
 
 export async function getWCRankings(): Promise<WCPlayerRanking[]> {

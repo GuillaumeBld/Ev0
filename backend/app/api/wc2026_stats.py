@@ -38,6 +38,10 @@ class PlayerRanking(BaseModel):
     creation_delta: float       # assists - xa
     xg_per_90: float | None
     xa_per_90: float | None
+    precomp_xg: float | None    # xG saison club (scouting pré-tournoi)
+    xg_left: float | None       # precomp_xg - xg tournoi
+    xa_left: float | None       # (precomp_xg × 0.7) - xa tournoi
+    team_xg_share: float | None # % du xG tournoi de l'équipe
 
 
 @router.get("/rankings", response_model=list[PlayerRanking])
@@ -104,8 +108,24 @@ async def get_rankings(
         _norm(r["player_name"]): dict(r) for r in squad_rows
     }
 
-    # ── 3. Construction des résultats ─────────────────────────────────────────
-    result: list[PlayerRanking] = []
+    # ── 3. Scouting pré-tournoi (xG saison club) ──────────────────────────────
+    # normalized_name de la table est corrompu (1er char/mot supprimé) →
+    # on indexe par _norm(player_name) pour un match fiable.
+    scouting_rows = (
+        await session.execute(
+            text("SELECT player_name, (stats->>'xg')::float AS xg FROM wc2026_scouting_stats")
+        )
+    ).mappings().all()
+
+    scouting: dict[str, float] = {}
+    for sr in scouting_rows:
+        key = _norm(sr["player_name"])
+        # Garder la valeur max si doublons de nom
+        if sr["xg"] is not None:
+            scouting[key] = max(scouting.get(key, 0.0), float(sr["xg"]))
+
+    # ── 4. Construction des résultats (première passe) ────────────────────────
+    intermediate: list[dict] = []
     for r in rows:
         bzz_name: str = r["bzz_name"]
         squad_entry = squad.get(_norm(bzz_name))
@@ -120,26 +140,69 @@ async def get_rankings(
         xa      = round(float(r["xa"]), 2)
         minutes = int(r["minutes"])
 
+        precomp_xg = scouting.get(_norm(bzz_name))
+
+        intermediate.append({
+            "player_name": bzz_name,
+            "nation": nation,
+            "flag_emoji": flag_emoji,
+            "position": position,
+            "matches": int(r["matches"]),
+            "minutes": minutes,
+            "goals": goals,
+            "assists": assists,
+            "xg": xg,
+            "xa": xa,
+            "shots": int(r["shots"]),
+            "shots_on_target": int(r["shots_on_target"]),
+            "precomp_xg": round(precomp_xg, 2) if precomp_xg is not None else None,
+        })
+
+    # ── 5. xG tournoi par équipe (pour le % de contribution) ─────────────────
+    team_xg: dict[str, float] = {}
+    for p in intermediate:
+        if p["nation"]:
+            team_xg[p["nation"]] = team_xg.get(p["nation"], 0.0) + p["xg"]
+
+    # ── 6. Résultats finaux ───────────────────────────────────────────────────
+    result: list[PlayerRanking] = []
+    for p in intermediate:
+        xg      = p["xg"]
+        xa      = p["xa"]
+        minutes = p["minutes"]
+        precomp_xg = p["precomp_xg"]
+
         xg_per_90 = round(xg / minutes * 90, 2) if minutes >= 10 else None
         xa_per_90 = round(xa / minutes * 90, 2) if minutes >= 10 else None
 
+        precomp_xa = round(precomp_xg * 0.7, 2) if precomp_xg is not None else None
+        xg_left    = round(precomp_xg - xg, 2)  if precomp_xg is not None else None
+        xa_left    = round(precomp_xa - xa, 2)   if precomp_xa is not None else None
+
+        txg = team_xg.get(p["nation"], 0.0) if p["nation"] else 0.0
+        team_xg_share = round(xg / txg * 100, 1) if txg > 0 and xg > 0 else None
+
         result.append(PlayerRanking(
-            player_name=bzz_name,
-            nation=nation,
-            flag_emoji=flag_emoji,
-            position=position,
-            matches=int(r["matches"]),
+            player_name=p["player_name"],
+            nation=p["nation"],
+            flag_emoji=p["flag_emoji"],
+            position=p["position"],
+            matches=p["matches"],
             minutes=minutes,
-            goals=goals,
-            assists=assists,
+            goals=p["goals"],
+            assists=p["assists"],
             xg=xg,
             xa=xa,
-            shots=int(r["shots"]),
-            shots_on_target=int(r["shots_on_target"]),
-            finishing_delta=round(goals - xg, 2),
-            creation_delta=round(assists - xa, 2),
+            shots=p["shots"],
+            shots_on_target=p["shots_on_target"],
+            finishing_delta=round(p["goals"] - xg, 2),
+            creation_delta=round(p["assists"] - xa, 2),
             xg_per_90=xg_per_90,
             xa_per_90=xa_per_90,
+            precomp_xg=precomp_xg,
+            xg_left=xg_left,
+            xa_left=xa_left,
+            team_xg_share=team_xg_share,
         ))
 
     return result

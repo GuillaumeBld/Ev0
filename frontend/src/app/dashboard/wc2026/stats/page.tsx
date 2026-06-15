@@ -6,7 +6,7 @@ import { clsx } from 'clsx'
 import { type WCPlayerRanking, getWCRankings } from '@/lib/api'
 import { FlagImg } from '@/components/FlagImg'
 
-type SortKey = 'goals' | 'assists' | 'xg' | 'xa' | 'finishing_delta' | 'creation_delta' | 'xg_per_90' | 'xa_per_90' | 'minutes' | 'shots'
+type SortKey = 'goals' | 'assists' | 'xg' | 'xa' | 'finishing_delta' | 'creation_delta' | 'xg_per_90' | 'xa_per_90' | 'minutes' | 'shots' | 'precomp_xg' | 'xg_left' | 'xa_left' | 'team_xg_share'
 type PosFilter = '' | 'GK' | 'DEF' | 'MID' | 'FWD'
 
 interface SortState {
@@ -181,22 +181,26 @@ export default function WC2026StatsPage() {
               <Th col="assists"         label="Passes"  sort={sort} onSort={toggleSort} />
               <Th col="xa"              label="xA"     sort={sort} onSort={toggleSort} />
               <Th col="creation_delta"  label="Δ xA"   sort={sort} onSort={toggleSort} />
-              <Th col="shots"           label="Tirs"   sort={sort} onSort={toggleSort} />
+              <Th col="shots"           label="Tirs"    sort={sort} onSort={toggleSort} />
               <Th col="xg_per_90"       label="xG/90"  sort={sort} onSort={toggleSort} />
               <Th col="xa_per_90"       label="xA/90"  sort={sort} onSort={toggleSort} />
+              <Th col="precomp_xg"      label="xG Pré" sort={sort} onSort={toggleSort} />
+              <Th col="xg_left"         label="xG Left" sort={sort} onSort={toggleSort} />
+              <Th col="xa_left"         label="xA Left" sort={sort} onSort={toggleSort} />
+              <Th col="team_xg_share"   label="% Éq."  sort={sort} onSort={toggleSort} />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800">
             {loading && (
               <tr>
-                <td colSpan={14} className="py-12 text-center text-gray-500 text-sm">
+                <td colSpan={18} className="py-12 text-center text-gray-500 text-sm">
                   Chargement…
                 </td>
               </tr>
             )}
             {!loading && filtered.length === 0 && (
               <tr>
-                <td colSpan={14} className="py-12 text-center text-gray-500 text-sm">
+                <td colSpan={18} className="py-12 text-center text-gray-500 text-sm">
                   Aucun joueur — synchronise des matchs dans l&apos;onglet Matchs
                 </td>
               </tr>
@@ -245,6 +249,40 @@ export default function WC2026StatsPage() {
                 <td className="px-3 py-2 text-right font-mono text-gray-400">
                   {r.xa_per_90 != null ? r.xa_per_90.toFixed(2) : '—'}
                 </td>
+                <td className="px-3 py-2 text-right font-mono text-gray-500">
+                  {r.precomp_xg != null ? r.precomp_xg.toFixed(1) : '—'}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  {r.xg_left != null ? (
+                    <span className={clsx(
+                      'font-mono text-xs font-semibold',
+                      r.xg_left > 5  ? 'text-emerald-400' :
+                      r.xg_left > 1  ? 'text-yellow-400'  :
+                      r.xg_left >= 0 ? 'text-gray-400'    : 'text-red-400',
+                    )}>
+                      {r.xg_left.toFixed(1)}
+                    </span>
+                  ) : <span className="text-gray-600 text-xs">—</span>}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  {r.xa_left != null ? (
+                    <span className={clsx(
+                      'font-mono text-xs',
+                      r.xa_left > 3  ? 'text-emerald-400' :
+                      r.xa_left > 0  ? 'text-yellow-400'  :
+                                       'text-red-400',
+                    )}>
+                      {r.xa_left.toFixed(1)}
+                    </span>
+                  ) : <span className="text-gray-600 text-xs">—</span>}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  {r.team_xg_share != null ? (
+                    <span className="font-mono text-xs text-orange-400">
+                      {r.team_xg_share.toFixed(0)}%
+                    </span>
+                  ) : <span className="text-gray-600 text-xs">—</span>}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -252,9 +290,19 @@ export default function WC2026StatsPage() {
       </div>
 
       {/* Légende delta */}
-      <p className="text-[10px] text-gray-600">
-        Δ Buts = Buts réels − xG &nbsp;·&nbsp; Δ xA = Passes réelles − xA &nbsp;·&nbsp;
-        <span className="text-green-600">vert</span> = surperformance &nbsp;·&nbsp;
+      <p className="text-[10px] text-gray-600 space-x-2">
+        <span>Δ Buts = Buts − xG</span>
+        <span>·</span>
+        <span>Δ xA = Passes − xA</span>
+        <span>·</span>
+        <span>xG Pré = xG saison club</span>
+        <span>·</span>
+        <span>xG/xA Left = potentiel restant</span>
+        <span>·</span>
+        <span>% Éq. = part du xG tournoi de l&apos;équipe</span>
+        <span>·</span>
+        <span className="text-green-600">vert</span> = surperformance
+        <span>·</span>
         <span className="text-red-600">rouge</span> = sous-performance
       </p>
     </div>
