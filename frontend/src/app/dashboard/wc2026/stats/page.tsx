@@ -92,7 +92,7 @@ export default function WC2026StatsPage() {
   }
 
   const nations = useMemo(
-    () => [...new Set(rows.map((r) => r.nation).filter(Boolean) as string[])].sort((a, b) => a.localeCompare(b, 'fr')),
+    () => Array.from(new Set(rows.map((r) => r.nation).filter(Boolean) as string[])).sort((a, b) => a.localeCompare(b, 'fr')),
     [rows],
   )
 
