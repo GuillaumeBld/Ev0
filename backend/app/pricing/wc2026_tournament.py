@@ -452,10 +452,11 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
             lambda_total_g = round((p["w_g"] / total_g) * adjusted_bm,   4)
             lambda_total_a = round((p["w_a"] / total_a) * budget_assists, 4)
 
-            # Fraction of expected minutes still to be played
-            total_exp_min = float(p["minutes"])
-            played_min    = float(p["wc_minutes"])
-            fraction_rem  = max(0.0, (total_exp_min - played_min) / total_exp_min) if total_exp_min > 0 else 1.0
+            # Fraction of tournament still to be played, based on matches remaining.
+            # lineup["minutes"] is per-match expected playing time (≈90 min), not total.
+            # We estimate matches played from WC minutes (90 min ≈ 1 full match).
+            matches_played_approx = p["wc_minutes"] / 90.0
+            fraction_rem = max(0.0, (e_games - matches_played_approx) / e_games) if e_games > 0 else 1.0
 
             all_entries.append({
                 "nation":                  nation,
