@@ -18,6 +18,18 @@ class WC2026PlayerPricing(Base):
     expected_games: Mapped[float | None] = mapped_column(Float, nullable=True)
     lambda_goals: Mapped[float] = mapped_column(Float, nullable=False)
     lambda_assists: Mapped[float] = mapped_column(Float, nullable=False)
+    lambda_remaining_goals: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lambda_remaining_assists: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # WC actual stats (from bzz_player_match_stats)
+    wc_goals: Mapped[int | None] = mapped_column(nullable=True)
+    wc_assists: Mapped[int | None] = mapped_column(nullable=True)
+    wc_minutes: Mapped[int | None] = mapped_column(nullable=True)
+    wc_xg_per_90: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # xG/90 sources: prior from scouting, blended used in lambda
+    prior_xg_p90: Mapped[float | None] = mapped_column(Float, nullable=True)
+    blended_xg_p90: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Cuts — goals
     p_1g: Mapped[float | None] = mapped_column(Float, nullable=True)

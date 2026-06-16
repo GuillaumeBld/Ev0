@@ -172,7 +172,17 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
             <Th col="player_name" label="Joueur" />
             <Th col="nation"      label="Nat." />
             <Th col="position"    label="Pos" />
-            <Th col="lambda"      label="λ" right title="Lambda attendu sur le tournoi" />
+            {/* WC actual stats */}
+            <th className="py-2 px-2 text-right text-[10px] font-medium text-gray-600 whitespace-nowrap border-l border-gray-800/60"
+                title="Buts marqués en tournoi">Buts</th>
+            <th className="py-2 px-2 text-right text-[10px] font-medium text-gray-600 whitespace-nowrap"
+                title="Passes décisives en tournoi">PD</th>
+            <th className="py-2 px-2 text-right text-[10px] font-medium text-gray-600 whitespace-nowrap"
+                title="xG/90 min réel en tournoi">WC xG/90</th>
+            <th className="py-2 px-2 text-right text-[10px] font-medium text-gray-600 whitespace-nowrap"
+                title="xG/90 blendé (prior scouting + WC réel)">Blend xG/90</th>
+            {/* Pricing */}
+            <Th col="lambda"      label="λ tot." right title="Lambda total projeté tournoi" />
             <Th col="cut1"        label="≥1" right />
             <Th col="cut2"        label="≥2" right />
             <Th col="cut3"        label="≥3" right />
@@ -219,6 +229,25 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
                   </span>
                 </td>
                 <td className="py-1.5 px-2 text-gray-600">{p.position ?? '—'}</td>
+                {/* WC actual stats */}
+                <td className="py-1.5 px-2 text-right font-mono border-l border-gray-800/60">
+                  {(p.wc_goals ?? 0) > 0
+                    ? <span className="text-emerald-400 font-semibold">{p.wc_goals}</span>
+                    : <span className="text-gray-700">0</span>}
+                </td>
+                <td className="py-1.5 px-2 text-right font-mono">
+                  {(p.wc_assists ?? 0) > 0
+                    ? <span className="text-blue-400 font-semibold">{p.wc_assists}</span>
+                    : <span className="text-gray-700">0</span>}
+                </td>
+                <td className="py-1.5 px-2 text-right font-mono text-gray-500 text-[11px]">
+                  {p.wc_xg_per_90 != null && p.wc_minutes != null && p.wc_minutes >= 45
+                    ? p.wc_xg_per_90.toFixed(2)
+                    : <span className="text-gray-700">—</span>}
+                </td>
+                <td className="py-1.5 px-2 text-right font-mono text-orange-400/70 text-[11px]">
+                  {p.blended_xg_p90 != null ? p.blended_xg_p90.toFixed(2) : <span className="text-gray-700">—</span>}
+                </td>
                 <td className="py-1.5 px-2 text-right"><LambdaCell value={lambda} /></td>
                 <td className="py-1.5 px-2 text-right"><FairOddsCell value={cut1} /></td>
                 <td className="py-1.5 px-2 text-right"><FairOddsCell value={cut2} /></td>

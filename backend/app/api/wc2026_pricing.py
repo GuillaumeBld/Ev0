@@ -36,6 +36,14 @@ class PlayerPricingOut(BaseModel):
     expected_games: float | None = None
     lambda_goals: float
     lambda_assists: float
+    lambda_remaining_goals: float | None = None
+    lambda_remaining_assists: float | None = None
+    wc_goals: int | None = None
+    wc_assists: int | None = None
+    wc_minutes: int | None = None
+    wc_xg_per_90: float | None = None
+    prior_xg_p90: float | None = None
+    blended_xg_p90: float | None = None
     p_1g: float | None
     p_2g: float | None
     p_3g: float | None
@@ -145,6 +153,14 @@ async def get_pricing_players(
             expected_games=p.expected_games,
             lambda_goals=p.lambda_goals,
             lambda_assists=p.lambda_assists,
+            lambda_remaining_goals=p.lambda_remaining_goals,
+            lambda_remaining_assists=p.lambda_remaining_assists,
+            wc_goals=p.wc_goals,
+            wc_assists=p.wc_assists,
+            wc_minutes=p.wc_minutes,
+            wc_xg_per_90=p.wc_xg_per_90,
+            prior_xg_p90=p.prior_xg_p90,
+            blended_xg_p90=p.blended_xg_p90,
             p_1g=p.p_1g, p_2g=p.p_2g, p_3g=p.p_3g, p_4g=p.p_4g,
             fair_1g=p.fair_1g, fair_2g=p.fair_2g, fair_3g=p.fair_3g, fair_4g=p.fair_4g,
             p_1a=p.p_1a, p_2a=p.p_2a, p_3a=p.p_3a,

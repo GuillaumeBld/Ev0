@@ -941,6 +941,15 @@ export interface WCPlayerPricing {
   position: string | null
   lambda_goals: number
   lambda_assists: number
+  lambda_remaining_goals: number | null
+  lambda_remaining_assists: number | null
+  // WC actual tournament stats
+  wc_goals: number | null
+  wc_assists: number | null
+  wc_minutes: number | null
+  wc_xg_per_90: number | null
+  prior_xg_p90: number | null
+  blended_xg_p90: number | null
   // cuts — goals
   p_1g: number | null
   p_2g: number | null
