@@ -359,9 +359,15 @@ def allocate_player(
     fair_odds_assist = round(1 / prob_assist, 2) if prob_assist > 0 else 9999.0
 
     # ── Supersub ──────────────────────────────────────────────────
+    # calculate_supersub_prob expects the full 90-min lambda; lambda_total and
+    # lambda_assist are already scaled by mins_ratio (via npxg_share / xa_share),
+    # so we must un-scale them before passing to the formula.
     position_str = share.position or "MF"
+    lambda_total_90 = lambda_total / mins_ratio if mins_ratio > 0 else lambda_total
+    lambda_assist_90 = lambda_assist / mins_ratio if mins_ratio > 0 else lambda_assist
+
     p_goal_ss = calculate_supersub_prob(
-        lambda_A=lambda_total,
+        lambda_A=lambda_total_90,
         p_sub=p_sub,
         t_sub=avg_sub_time,
         position=position_str,
@@ -369,7 +375,7 @@ def allocate_player(
     fair_odds_goal_ss = round(1.0 / p_goal_ss, 2) if p_goal_ss > 0 else 99.0
 
     p_assist_ss = calculate_supersub_prob_assist(
-        lambda_A=lambda_assist,
+        lambda_A=lambda_assist_90,
         p_sub=p_sub,
         t_sub=avg_sub_time,
         position=position_str,
