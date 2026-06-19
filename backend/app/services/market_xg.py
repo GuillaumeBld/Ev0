@@ -411,12 +411,14 @@ class MarketXgService:
             )
             return None
 
-        # Load all rows within 15 min of the freshest snapshot.
+        # Load all rows within MAX_SNAPSHOT_AGE (absolute window).
+        # Different scrapers write at different intervals; a 15-min relative window
+        # would exclude betclic/pmu totals when bzzoiro h2h lands later.
+        # ASC order so later rows overwrite older ones per (market, bm, outcome).
         rows_result = await session.execute(
             select(MatchOddsSnapshot)
             .where(MatchOddsSnapshot.fixture_id == fixture_id)
-            .where(MatchOddsSnapshot.snapshot_utc >= freshest_snapshot_utc - timedelta(minutes=15))
-            .where(MatchOddsSnapshot.snapshot_utc <= freshest_snapshot_utc)
+            .where(MatchOddsSnapshot.snapshot_utc >= now - MAX_SNAPSHOT_AGE)
             .order_by(MatchOddsSnapshot.snapshot_utc)
         )
         rows = rows_result.scalars().all()
