@@ -481,17 +481,19 @@ class MarketXgService:
             set(markets.get("h2h", {}).keys()) | set(markets.get("totals", {}).keys())
         ) or "unknown"
 
-        # Devig btts (optional)
+        # Devig btts (optional) — average across all available bookmakers.
+        # Single-bookmaker BTTS (especially Betclic) can be entertainment-priced
+        # on lopsided matches; averaging dampens outliers.
         p_btts_yes: float | None = None
         if "btts" in markets:
-            btts_bm = _preferred_bookmaker(set(markets["btts"].keys()))
-            if btts_bm is not None:
-                btts_outcomes = markets["btts"][btts_bm]
-                yes_odds = btts_outcomes.get("yes")
-                no_odds = btts_outcomes.get("no")
+            btts_samples: list[float] = []
+            for bm_outcomes in markets["btts"].values():
+                yes_odds = bm_outcomes.get("yes")
+                no_odds = bm_outcomes.get("no")
                 if yes_odds is not None and no_odds is not None:
-                    btts_clean = multiplicative_devig([yes_odds, no_odds])
-                    p_btts_yes = btts_clean[0]
+                    btts_samples.append(multiplicative_devig([yes_odds, no_odds])[0])
+            if btts_samples:
+                p_btts_yes = sum(btts_samples) / len(btts_samples)
 
         lambda_h: float
         lambda_a: float
