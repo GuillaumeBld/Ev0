@@ -1230,3 +1230,14 @@ export async function getWCMatchDetail(bzzId: number): Promise<WCMatchDetail> {
   const { data } = await api.get(`/api/v1/wc2026/matches/${bzzId}`, { timeout: 30_000 })
   return data
 }
+
+export interface SyncStatsResult {
+  synced: number
+  skipped: number
+  errors: string[]
+}
+
+export async function syncWCStats(): Promise<SyncStatsResult> {
+  const { data } = await api.post('/api/v1/wc2026/matches/sync-stats', {}, { timeout: 120_000 })
+  return data
+}

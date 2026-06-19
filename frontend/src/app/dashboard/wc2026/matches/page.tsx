@@ -6,8 +6,10 @@ import { RefreshCw } from 'lucide-react'
 import {
   type WCMatchListItem,
   type WCMatchDetail,
+  type SyncStatsResult,
   getWCMatches,
   getWCMatchDetail,
+  syncWCStats,
 } from '@/lib/api'
 import { MatchDetailPanel } from '@/components/wc2026/MatchDetailPanel'
 
@@ -112,6 +114,8 @@ export default function WC2026MatchesPage() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [roundFilter, setRoundFilter] = useState<number | null>(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncResult, setSyncResult] = useState<SyncStatsResult | null>(null)
 
   async function loadMatches() {
     setLoading(true)
@@ -131,6 +135,20 @@ export default function WC2026MatchesPage() {
     const interval = setInterval(loadMatches, hasLive ? 30_000 : 120_000)
     return () => clearInterval(interval)
   }, [matches])
+
+  async function handleSyncStats() {
+    setSyncing(true)
+    setSyncResult(null)
+    try {
+      const result = await syncWCStats()
+      setSyncResult(result)
+      if (result.synced > 0) loadMatches()
+    } catch {
+      setSyncResult({ synced: 0, skipped: 0, errors: ['Erreur réseau'] })
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   async function selectMatch(id: number) {
     if (selected === id) {
@@ -182,14 +200,38 @@ export default function WC2026MatchesPage() {
         <div className="p-4 border-b border-gray-700 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold text-white">CDM 2026 — Matchs</h2>
-            <button
-              onClick={loadMatches}
-              disabled={loading}
-              className="p-1.5 rounded hover:bg-gray-700 text-gray-500 hover:text-white transition-colors disabled:opacity-40"
-            >
-              <RefreshCw className={clsx('w-4 h-4', loading && 'animate-spin')} />
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={handleSyncStats}
+                disabled={syncing}
+                title="Synchro stats joueurs (matchs terminés sans stats)"
+                className="px-2 py-1 text-xs rounded border border-gray-700 text-gray-500 hover:text-orange-300 hover:border-orange-500/40 transition-colors disabled:opacity-40 flex items-center gap-1"
+              >
+                <RefreshCw className={clsx('w-3 h-3', syncing && 'animate-spin')} />
+                Stats
+              </button>
+              <button
+                onClick={loadMatches}
+                disabled={loading}
+                className="p-1.5 rounded hover:bg-gray-700 text-gray-500 hover:text-white transition-colors disabled:opacity-40"
+              >
+                <RefreshCw className={clsx('w-4 h-4', loading && 'animate-spin')} />
+              </button>
+            </div>
           </div>
+          {syncResult && (
+            <div className={clsx(
+              'text-xs px-2 py-1 rounded border',
+              syncResult.errors.length > 0
+                ? 'border-red-700/40 bg-red-900/20 text-red-400'
+                : 'border-emerald-700/40 bg-emerald-900/20 text-emerald-400',
+            )}>
+              {syncResult.errors.length > 0
+                ? syncResult.errors[0]
+                : `${syncResult.synced} synchro${syncResult.synced > 1 ? 's' : ''}, ${syncResult.skipped} déjà OK`
+              }
+            </div>
+          )}
 
           {/* Status filter */}
           <div className="flex gap-1.5">
