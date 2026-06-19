@@ -1256,6 +1256,27 @@ async def job_sync_bzzoiro_lineups() -> None:
         logger.exception("job_sync_bzzoiro_lineups failed: %s", exc)
 
 
+# ── WC2026 Match Stats Job ───────────────────────────────────────
+
+
+async def job_sync_wc_match_stats() -> None:
+    """Every hour: fetch player stats for finished WC2026 matches that have none yet."""
+    logger.info("job_sync_wc_match_stats: start")
+    try:
+        from app.ingestion.wc2026.sync_wc_match_stats import sync_wc_match_stats
+        async with async_session() as session:
+            result = await sync_wc_match_stats(session)
+        if result.synced or result.errors:
+            logger.info(
+                "job_sync_wc_match_stats: synced=%d errors=%d",
+                result.synced, len(result.errors),
+            )
+            for err in result.errors:
+                logger.warning("job_sync_wc_match_stats error: %s", err)
+    except Exception as exc:
+        logger.exception("job_sync_wc_match_stats failed: %s", exc)
+
+
 # ── WC2026 Outrights Job ──────────────────────────────────────────
 
 
@@ -1466,6 +1487,16 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # WC2026 match stats: every hour — picks up newly finished matches automatically
+    scheduler.add_job(
+        job_sync_wc_match_stats,
+        IntervalTrigger(hours=1),
+        id="sync_wc_match_stats",
+        name="Sync WC2026 player stats for finished matches",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
 
     return scheduler
 

@@ -296,48 +296,10 @@ class SyncStatsResult(BaseModel):
 async def sync_all_finished_stats(
     session: AsyncSession = Depends(get_db),
 ) -> SyncStatsResult:
-    """Synchro des stats joueurs pour tous les matchs finished sans stats.
-
-    Appelle le detail endpoint en interne pour chaque match concerné,
-    ce qui déclenche le fetch Bzzoiro + save dans bzz_player_match_stats.
-    Vide aussi le cache incidents pour forcer un re-fetch propre.
-    """
-    from sqlalchemy import func as sa_func
-    from app.models.bzzoiro import BzzPlayerMatchStat
-
-    # Matchs terminés sans stats
-    subq = (
-        select(BzzPlayerMatchStat.event_api_id)
-        .where(BzzPlayerMatchStat.event_api_id == BzzEvent.api_id)
-        .exists()
-    )
-    result = await session.execute(
-        select(BzzEvent.api_id)
-        .where(BzzEvent.league_api_id == WC_LEAGUE_API_ID)
-        .where(BzzEvent.status == "finished")
-        .where(~subq)
-        .order_by(BzzEvent.event_date)
-    )
-    to_sync = [row[0] for row in result.all()]
-
-    synced, errors = 0, []
-    for bzz_id in to_sync:
-        try:
-            # Vider le cache pour garantir un re-fetch depuis Bzzoiro
-            await session.execute(
-                update(BzzEvent)
-                .where(BzzEvent.api_id == bzz_id)
-                .values(incidents=None, shotmap=None, lineups=None)
-            )
-            await session.commit()
-
-            # Fetch complet via la logique existante du detail endpoint
-            await get_match_detail(bzz_id, session)
-            synced += 1
-        except Exception as exc:
-            errors.append(f"{bzz_id}: {exc}")
-
-    return SyncStatsResult(synced=synced, skipped=0, errors=errors)
+    """Synchro des stats joueurs pour tous les matchs WC2026 finished sans stats."""
+    from app.ingestion.wc2026.sync_wc_match_stats import sync_wc_match_stats
+    r = await sync_wc_match_stats(session)
+    return SyncStatsResult(synced=r.synced, skipped=r.skipped, errors=r.errors)
 
 
 @router.get("", response_model=list[MatchListItem])
