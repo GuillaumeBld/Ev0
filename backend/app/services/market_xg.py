@@ -353,18 +353,9 @@ class MarketXgService:
         if result is not None:
             return result
 
-        # Niveau 2 : prédictions Bzzoiro (expected_home/away_goals)
-        result = await self._try_bzzoiro_predictions(fixture, session)
-        if result is not None:
-            result.last_snapshot_at = self._last_snapshot_at  # attach last scrape time
-            logger.info(
-                "market_xg: fallback bzzoiro pour fixture %s (%s vs %s)",
-                fixture_id, fixture.home_team, fixture.away_team,
-            )
-            return result
-
         logger.warning(
-            "market_xg: aucune donnée disponible pour fixture %s (%s vs %s)",
+            "market_xg: aucune cote marché disponible pour fixture %s (%s vs %s) — "
+            "pas de fallback Bzzoiro (désactivé)",
             fixture_id, fixture.home_team, fixture.away_team,
         )
         return None
