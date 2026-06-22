@@ -302,6 +302,16 @@ async def sync_all_finished_stats(
     return SyncStatsResult(synced=r.synced, skipped=r.skipped, errors=r.errors)
 
 
+@router.post("/resync-all-stats", response_model=SyncStatsResult)
+async def resync_all_stats(
+    session: AsyncSession = Depends(get_db),
+) -> SyncStatsResult:
+    """Force re-fetch de TOUS les matchs WC2026 terminés (répare team_api_id manquants)."""
+    from app.ingestion.wc2026.sync_wc_match_stats import resync_all_wc_match_stats
+    r = await resync_all_wc_match_stats(session)
+    return SyncStatsResult(synced=r.synced, skipped=r.skipped, errors=r.errors)
+
+
 @router.get("", response_model=list[MatchListItem])
 async def list_matches(
     session: AsyncSession = Depends(get_db),
@@ -472,13 +482,29 @@ async def get_match_detail(
         if player_stats_raw:
             from sqlalchemy import delete as sa_delete
             from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+            # Build player→team map from lineups (Bzzoiro souvent ne met pas team_id
+            # dans player-stats, mais les lineups ont toujours la correspondance joueur/équipe)
+            player_to_team: dict[int, int] = {}
+            if lineups_raw:
+                for side_key, tid_fallback in [
+                    ("home", event.home_team_api_id),
+                    ("away", event.away_team_api_id),
+                ]:
+                    side = lineups_raw.get(side_key) or {}
+                    tid_lu = side.get("team_id") or tid_fallback
+                    if tid_lu:
+                        for lp in (side.get("players") or []) + (side.get("substitutes") or []):
+                            if lp.get("id"):
+                                player_to_team[int(lp["id"])] = int(tid_lu)
+
             await session.execute(
                 sa_delete(BzzPlayerMatchStat).where(BzzPlayerMatchStat.event_api_id == bzz_id)
             )
             await session.flush()
             for ps in player_stats_raw:
                 pid = ps.get("player_id")
-                tid = ps.get("team_id")
+                tid = ps.get("team_id") or player_to_team.get(pid)
                 if not pid:
                     continue
                 stmt = pg_insert(BzzPlayerMatchStat).values(

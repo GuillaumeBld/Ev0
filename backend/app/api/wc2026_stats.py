@@ -124,7 +124,12 @@ async def get_rankings(
                     FROM bzz_player_match_stats ps
                     JOIN bzz_players p ON p.api_id = ps.player_api_id
                     JOIN bzz_events  e ON e.api_id = ps.event_api_id
-                    JOIN bzz_teams   t ON t.api_id = ps.team_api_id
+                    LEFT JOIN bzz_teams t ON t.api_id = COALESCE(
+                        ps.team_api_id,
+                        CASE WHEN ps.is_home = true  THEN e.home_team_api_id
+                             WHEN ps.is_home = false THEN e.away_team_api_id
+                             ELSE NULL END
+                    )
                     WHERE e.league_api_id = :lid
                       AND COALESCE(ps.minutes_played, 1) > 0
                     ORDER BY p.name, ps.event_api_id, ps.player_api_id DESC
