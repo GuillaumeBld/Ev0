@@ -81,7 +81,11 @@ export default function WC2026StatsPage() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    const interval = setInterval(load, 5 * 60 * 1000)
+    return () => clearInterval(interval)
+  }, [])
 
   function toggleSort(key: SortKey) {
     setSort((prev) =>

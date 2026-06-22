@@ -68,4 +68,20 @@ async def sync_wc_match_stats(session: AsyncSession) -> WCSyncResult:
             logger.error("sync_wc_match_stats: match %d failed: %s", bzz_id, exc)
             result_obj.errors.append(f"{bzz_id}: {exc}")
 
+    # Recompute pricing automatiquement si de nouveaux matchs ont été synchés
+    if result_obj.synced > 0:
+        try:
+            from sqlalchemy import text
+            from app.pricing.wc2026_tournament import compute_tournament_pricing
+            from app.models.wc2026_pricing import WC2026PlayerPricing
+
+            rows = await compute_tournament_pricing(session)
+            await session.execute(text("TRUNCATE TABLE wc2026_player_pricing RESTART IDENTITY"))
+            for row in rows:
+                session.add(WC2026PlayerPricing(**row))
+            await session.commit()
+            logger.info("sync_wc_match_stats: pricing recomputed (%d players)", len(rows))
+        except Exception as exc:
+            logger.error("sync_wc_match_stats: pricing recompute failed: %s", exc)
+
     return result_obj
