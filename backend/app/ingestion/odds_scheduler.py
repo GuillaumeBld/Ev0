@@ -358,6 +358,13 @@ _TEAM_ALIASES: dict[str, str] = {
     "democratic republic of congo": "rd congo",
     "dr congo":                 "rd congo",
     "cape verde":               "cap vert",
+
+    # ── WC2026 — noms anglais Bzzoiro → noms français bookmakers ─────────────
+    # Bzzoiro utilise des noms anglais, les scrapers FR utilisent les noms français.
+    "iraq":                     "irak",
+    "uzbekistan":               "ouzbekistan",
+    "cabo verde":               "cap vert",
+    "bosnia & herzegovina":     "bosnie herzegovine",
 }
 
 
