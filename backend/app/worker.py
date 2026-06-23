@@ -953,6 +953,19 @@ async def job_settle_pipeline():
     await job_auto_finish_fixtures()
     await job_sync_match_events()
     await job_auto_settle()
+
+    # Sync WC2026 player stats for any match that just became finished
+    try:
+        from app.ingestion.wc2026.sync_wc_match_stats import sync_wc_match_stats
+        async with async_session() as session:
+            result = await sync_wc_match_stats(session)
+        if result.synced > 0:
+            logger.info("Settlement pipeline: WC stats synced=%d", result.synced)
+        if result.errors:
+            logger.warning("Settlement pipeline: WC stats errors=%s", result.errors)
+    except Exception as exc:
+        logger.error("Settlement pipeline: WC stats sync failed: %s", exc, exc_info=True)
+
     logger.info("=== Settlement pipeline: done ===")
 
 
