@@ -13,6 +13,7 @@ interface Recommendation {
   player: string
   team: string
   opponent: string
+  fixtureName?: string
   market: string
   supersub_market_type?: 'standard' | 'supersub'
   bet_type?: 'goal' | 'assist'
@@ -112,11 +113,13 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
             <div className="flex items-center gap-1.5 flex-wrap">
               <span className={clsx(
                 'inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border uppercase tracking-wide',
-                rec.market === 'goalscorer'
-                  ? 'bg-orange-500/[0.08] text-orange-400 border-orange-500/20'
-                  : 'bg-sky-500/[0.08] text-sky-400 border-sky-500/20'
+                rec.market === 'h2h'
+                  ? 'bg-purple-500/[0.08] text-purple-400 border-purple-500/20'
+                  : rec.market === 'goalscorer'
+                    ? 'bg-orange-500/[0.08] text-orange-400 border-orange-500/20'
+                    : 'bg-sky-500/[0.08] text-sky-400 border-sky-500/20'
               )}>
-                {rec.market === 'goalscorer' ? 'Buteur' : 'Passeur'}
+                {rec.market === 'h2h' ? '1X2' : rec.market === 'goalscorer' ? 'Buteur' : 'Passeur'}
               </span>
               <XgSourceBadge source={rec.xg_source} />
               <span className="text-[10px] text-ev-t5 font-mono">{timeStr}</span>
@@ -138,9 +141,13 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
                 </span>
               ) : null}
             </h3>
-            <p className="text-xs text-ev-t4 mt-0.5">
-              <span className="text-ev-t5">vs</span> {rec.opponent}
-            </p>
+            {rec.market === 'h2h' ? (
+              <p className="text-xs text-ev-t4 mt-0.5">{rec.fixtureName}</p>
+            ) : (
+              <p className="text-xs text-ev-t4 mt-0.5">
+                <span className="text-ev-t5">vs</span> {rec.opponent}
+              </p>
+            )}
           </div>
 
           {/* Edge badge */}
