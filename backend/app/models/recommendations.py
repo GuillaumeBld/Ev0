@@ -11,9 +11,11 @@ from app.models.base import Base, TimestampMixin
 
 
 class MarketType(str, enum.Enum):
-    STANDARD = "standard"
-    SUPERSUB = "supersub"
-    H2H = "h2h"  # legacy — DB enum still contains this value
+    GOALSCORER = "goalscorer"
+    ASSIST = "assist"
+    H2H = "h2h"
+    STANDARD = "standard"   # legacy alias
+    SUPERSUB = "supersub"   # legacy alias
 
 
 class Recommendation(Base, TimestampMixin):
