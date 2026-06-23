@@ -93,6 +93,8 @@ class MarketType(StrEnum):
     GOALSCORER = "goalscorer"
     ASSIST = "assist"
     H2H = "h2h"
+    STANDARD = "standard"
+    SUPERSUB = "supersub"
 
 
 class Classification(StrEnum):
