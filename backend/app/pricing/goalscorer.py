@@ -127,15 +127,54 @@ def calculate_goalscorer_lambda(
 
 # ── Edge & margin helpers ─────────────────────────────────────────
 
+# Typical French bookmaker margin on goalscorer markets (Winamax/Betclic).
+GOALSCORER_MARKET_MARGIN: float = 0.12
+
+
+def devig_implied_prob(market_odds: float, margin: float = GOALSCORER_MARKET_MARGIN) -> float:
+    """True implied probability after removing bookmaker margin from a single-selection.
+
+    Uses the additive single-selection devig: true_prob = raw_implied / (1 + margin).
+    Appropriate for goalscorer / assist markets where only the 'yes' side is quoted.
+    """
+    if market_odds <= 1.0:
+        return 0.0
+    return (1.0 / market_odds) / (1.0 + margin)
+
+
+def ev_anytime(model_prob: float, market_odds: float) -> float:
+    """Net EV per €1 staked: model_prob × (market_odds - 1) - (1 - model_prob).
+
+    Positive value → bet has positive expected return at these market odds.
+    """
+    if market_odds <= 1.0:
+        return -1.0
+    return model_prob * (market_odds - 1.0) - (1.0 - model_prob)
+
+
+def ev_anytime_p00_guarantee(model_prob: float, market_odds: float, p00: float) -> float:
+    """EV with French 'remboursé si 0-0' guarantee.
+
+    If the match ends 0-0 you receive your stake back (push), so you never lose
+    on a 0-0 scoreline:
+        EV = model_prob × (odds-1) - (1 - model_prob - p00)
+           = ev_anytime(model_prob, odds) + p00
+    """
+    return ev_anytime(model_prob, market_odds) + p00
+
+
 def calculate_edge(fair_odds: float, market_odds: float) -> float:
-    """Edge = (market_odds / fair_odds) - 1."""
+    """Edge = (market_odds / fair_odds) - 1.
+
+    Equivalent to ev_anytime(model_prob, market_odds) when fair_odds = 1/model_prob.
+    """
     if fair_odds <= 0 or market_odds <= 0:
         return 0.0
     return (market_odds / fair_odds) - 1
 
 
 def remove_margin(odds_list: list[float]) -> list[float]:
-    """Remove bookmaker margin proportionally."""
+    """Remove bookmaker margin proportionally (multi-selection markets)."""
     total_prob = sum(1 / o for o in odds_list if o > 0)
     return [o * total_prob for o in odds_list]
 

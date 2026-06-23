@@ -16,7 +16,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ingestion.odds import normalize_selection_name
 from app.models.match_odds import MatchOddsSnapshot
 from app.models.recommendations import MarketType
-from app.pricing.goalscorer import calculate_edge
+from app.pricing.goalscorer import (
+    calculate_edge,
+    ev_anytime,
+    ev_anytime_p00_guarantee,
+    devig_implied_prob,
+    GOALSCORER_MARKET_MARGIN,
+)
 from app.pricing.team_xg import load_match_pricing
 from app.services.market_xg import p_poisson_away_win, p_poisson_draw, p_poisson_home_win
 from app.services.recommendations_service import build_recommendations_for_player
@@ -110,6 +116,7 @@ async def generate_recommendations(
         xg_source = pricing.xg_source
         home_match_xg = pricing.home_match_xg
         away_match_xg = pricing.away_match_xg
+        match_p00 = pricing.p00
 
         # Build player allocation lookup (normalized name → allocation)
         alloc_by_norm: dict[str, Any] = {}
@@ -152,6 +159,9 @@ async def generate_recommendations(
                 has_form = alloc.has_form_assist
 
             edge = calculate_edge(fair_odds, market_odds)
+            ev = round(ev_anytime(probability, market_odds), 4)
+            ev_p00 = round(ev_anytime_p00_guarantee(probability, market_odds, match_p00), 4)
+            market_devigged_prob = round(devig_implied_prob(market_odds, GOALSCORER_MARKET_MARGIN), 4)
 
             # Confidence
             matches = alloc.matches_played
@@ -189,6 +199,10 @@ async def generate_recommendations(
                 "market_odds": market_odds,
                 "best_bookmaker": bookmaker,
                 "edge": edge,
+                "ev_anytime": ev,
+                "ev_p00_guarantee": ev_p00,
+                "market_devigged_prob": market_devigged_prob,
+                "p00": match_p00,
                 "classification": classification,
                 "confidence": confidence,
                 "xg_source": xg_source,

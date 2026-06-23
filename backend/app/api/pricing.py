@@ -64,6 +64,7 @@ class MatchPriceResponse(BaseModel):
     home_lineup_players: list[PlayerAllocationOut] | None = None
     away_lineup_players: list[PlayerAllocationOut] | None = None
     last_scraped_at: str | None = None  # ISO timestamp of freshest bookmaker odds snapshot
+    p00: float = 0.0  # P(0-0) under independent Poisson; used for FR 'remboursé si 0-0' guarantee
 
 
 @router.post("/price/match", response_model=MatchPriceResponse)
@@ -154,4 +155,5 @@ async def price_match(
         home_lineup_players=_to_out(pricing.home_lineup_players) if pricing.home_lineup_players else None,
         away_lineup_players=_to_out(pricing.away_lineup_players) if pricing.away_lineup_players else None,
         last_scraped_at=pricing.last_scraped_at.isoformat() if pricing.last_scraped_at else None,
+        p00=pricing.p00,
     )

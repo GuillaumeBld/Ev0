@@ -22,7 +22,7 @@ CLAMP_LAMBDA_MAX = 2.0
 
 # ── Top-down assist constants (Bzzoiro v2) ────────────────────────
 
-ASSIST_GOAL_RATE: float = 0.65
+ASSIST_GOAL_RATE: float = 0.72
 
 ASSIST_POSITION_AVGS: dict[str, dict[str, float]] = {
     # Calibrated on Bzzoiro 2025-2026 (≥450 min, Big5 + UCL)
