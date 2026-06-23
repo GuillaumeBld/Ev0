@@ -21,9 +21,6 @@ class MatchPriceRequest(BaseModel):
     # Optional: redistribute xG among these starters only
     home_starters: list[str] | None = None
     away_starters: list[str] | None = None
-    # Sprint 3: matchup / corners
-    home_matchup: str | None = None  # "bloc_bas" | "neutre" | "ligne_haute"
-    away_matchup: str | None = None
     home_corners_per_match: float | None = None
     away_corners_per_match: float | None = None
 
@@ -100,8 +97,6 @@ async def price_match(
         away_pen_taker_override=request.away_pen_taker_override,
         home_starters=request.home_starters,
         away_starters=request.away_starters,
-        home_matchup=request.home_matchup,
-        away_matchup=request.away_matchup,
         home_corners_per_match=request.home_corners_per_match,
         away_corners_per_match=request.away_corners_per_match,
     )

@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Calculator, RefreshCw, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
-import { getFixtures, priceMatch, getPenTakers, setPenTakers, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut, type MatchupType } from '@/lib/api'
+import { getFixtures, priceMatch, getPenTakers, setPenTakers, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
 import { LineupPricingWidget } from '@/components/calculator/LineupPricingWidget'
 import { XgSourceBadge } from '@/components/XgSourceBadge'
 import { getTeamId } from '@/lib/teamLogos'
@@ -289,9 +289,6 @@ function CalculatorInner() {
   const [homePenTaker, setHomePenTaker] = useState<number | null>(null)
   const [awayPenTaker, setAwayPenTaker] = useState<number | null>(null)
 
-  // Sprint 3 params
-  const [homeMatchup, setHomeMatchup] = useState<MatchupType | ''>('')
-  const [awayMatchup, setAwayMatchup] = useState<MatchupType | ''>('')
   const [homeCorners, setHomeCorners] = useState('')
   const [awayCorners, setAwayCorners] = useState('')
 
@@ -333,8 +330,6 @@ function CalculatorInner() {
         away_pen_taker_override: awayPenTaker,
         home_starters: homeStartersRef.current,
         away_starters: awayStartersRef.current,
-        home_matchup: homeMatchup || null,
-        away_matchup: awayMatchup || null,
         home_corners_per_match: homeCorners ? Number(homeCorners) : null,
         away_corners_per_match: awayCorners ? Number(awayCorners) : null,
       })
@@ -371,8 +366,6 @@ function CalculatorInner() {
     setAwayPenTaker(null)
     setLastScrapedAt(null)
     setError(null)
-    setHomeMatchup('')
-    setAwayMatchup('')
     setHomeCorners('')
     setAwayCorners('')
     homeStartersRef.current = null
@@ -472,44 +465,11 @@ function CalculatorInner() {
         </div>
       </div>
 
-      {/* Sprint 3 params — matchup + corners */}
+      {/* Corners params */}
       {selectedFixtureId && (
         <div className="mb-5 p-3 rounded-lg bg-gray-800/60 border border-gray-700/50">
           <p className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mb-3">Paramètres modèle</p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-3 max-w-xl">
-            {/* Matchup */}
-            <div>
-              <label className="block text-[10px] text-gray-400 mb-1">
-                Matchup {pricing?.home_team ?? 'DOM.'}
-              </label>
-              <select
-                value={homeMatchup}
-                onChange={(e) => setHomeMatchup(e.target.value as MatchupType | '')}
-                className="w-full text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-white"
-              >
-                <option value="">— neutre —</option>
-                <option value="ligne_haute">Ligne haute (×1.15)</option>
-                <option value="neutre">Neutre (×1.00)</option>
-                <option value="bloc_bas">Bloc bas (×0.85)</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-[10px] text-gray-400 mb-1">
-                Matchup {pricing?.away_team ?? 'EXT.'}
-              </label>
-              <select
-                value={awayMatchup}
-                onChange={(e) => setAwayMatchup(e.target.value as MatchupType | '')}
-                className="w-full text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-white"
-              >
-                <option value="">— neutre —</option>
-                <option value="ligne_haute">Ligne haute (×1.15)</option>
-                <option value="neutre">Neutre (×1.00)</option>
-                <option value="bloc_bas">Bloc bas (×0.85)</option>
-              </select>
-            </div>
-
-            {/* Corners */}
             <div>
               <label className="block text-[10px] text-gray-400 mb-1">
                 Corners/match {pricing?.home_team ?? 'DOM.'} <span className="text-gray-600">(moy.)</span>
@@ -542,7 +502,7 @@ function CalculatorInner() {
             </div>
           </div>
           <p className="text-[10px] text-gray-600 mt-2">
-            Matchup : ajuste le xG des attaquants selon le bloc défensif adverse · Corners : bonus λ CB/FB si &gt;5.5/match
+            Corners : bonus λ CB/FB si &gt;5.5/match
           </p>
         </div>
       )}

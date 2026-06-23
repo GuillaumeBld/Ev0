@@ -61,8 +61,6 @@ export interface Recommendation {
 
 // ── Match pricing (Top-Down) ────────────────────────────────────
 
-export type MatchupType = 'bloc_bas' | 'neutre' | 'ligne_haute'
-
 export interface MatchPriceRequest {
   fixture_id: number
   home_xg_override?: number | null
@@ -71,8 +69,6 @@ export interface MatchPriceRequest {
   away_pen_taker_override?: number | null
   home_starters?: string[] | null
   away_starters?: string[] | null
-  home_matchup?: MatchupType | null
-  away_matchup?: MatchupType | null
   home_corners_per_match?: number | null
   away_corners_per_match?: number | null
 }

@@ -80,15 +80,6 @@ INTERNATIONAL_LEAGUES: frozenset[str] = frozenset({
 })
 
 # ── Matchup factor ─────────────────────────────────────────────────
-# Scales team_match_xg distribution among attackers vs defenders based on
-# opponent defensive block depth. Passed explicitly at call sites.
-MATCHUP_FACTOR: dict[str, float] = {
-    "bloc_bas":    0.85,  # deep block — forwards face packed defence, fewer clear chances
-    "neutre":      1.00,  # default
-    "ligne_haute": 1.15,  # high line — more space in behind, strikers get more xG share
-}
-_MATCHUP_FACTOR_DEFAULT = 1.00
-
 # ── CPA (Corners / Phases Arrêtées) additive module ───────────────
 # Adds a λ bonus to CB/WB/FB players from set-piece delivery.
 # Calibrated: top CPA teams (≥7 corners/match) vs bottom (≤4).
@@ -480,12 +471,10 @@ def allocate_player(
     league_avg_assist: dict[str, float] | None = None,
     p_sub: float = 0.35,
     avg_sub_time: float = 65.0,
-    matchup_factor: float = _MATCHUP_FACTOR_DEFAULT,
     team_corners_per_match: float | None = None,
 ) -> PlayerAllocation:
     """Compute Poisson lambdas using new top-down formulas.
 
-    matchup_factor: from MATCHUP_FACTOR dict (bloc_bas/neutre/ligne_haute).
     team_corners_per_match: avg corners per match for the attacking team;
         used by compute_cpa_bonus to add set-piece λ for CB/WB/FB.
     """
@@ -501,7 +490,7 @@ def allocate_player(
         "goals": share.goals_total,
     }
     finishing_mult = calculate_finishing_multiplier(goal_stats, share.position)
-    lambda_open_play = share.npxg_share * team_match_xg * finishing_mult * matchup_factor
+    lambda_open_play = share.npxg_share * team_match_xg * finishing_mult
     lambda_penalty = PEN_CONVERSION * PENS_PER_MATCH * mins_ratio if is_pen_taker else 0.0
     lambda_cpa = compute_cpa_bonus(share.position, team_corners_per_match) * mins_ratio
     lambda_total = max(0.001, min(lambda_open_play + lambda_penalty + lambda_cpa, 3.0))
@@ -1147,8 +1136,6 @@ async def load_match_pricing(
     away_pen_taker_override: int | None = None,
     home_starters: list[str] | None = None,
     away_starters: list[str] | None = None,
-    home_matchup: str | None = None,
-    away_matchup: str | None = None,
     home_corners_per_match: float | None = None,
     away_corners_per_match: float | None = None,
 ) -> MatchPricingResult | None:
@@ -1243,9 +1230,6 @@ async def load_match_pricing(
     budget_assists_home = home_match_xg * ASSIST_GOAL_RATE
     budget_assists_away = away_match_xg * ASSIST_GOAL_RATE
 
-    home_mf = MATCHUP_FACTOR.get(home_matchup or "", _MATCHUP_FACTOR_DEFAULT)
-    away_mf = MATCHUP_FACTOR.get(away_matchup or "", _MATCHUP_FACTOR_DEFAULT)
-
     from app.services.sub_stats import get_player_sub_stats
 
     _home_allocs: list[PlayerAllocation] = []
@@ -1260,7 +1244,6 @@ async def load_match_pricing(
             allocate_player(
                 s, home_match_xg, s.is_pen_taker, budget_assists_home,
                 p_sub=sub.p_sub, avg_sub_time=sub.avg_sub_time,
-                matchup_factor=home_mf,
                 team_corners_per_match=home_corners_per_match,
             )
         )
@@ -1278,7 +1261,6 @@ async def load_match_pricing(
             allocate_player(
                 s, away_match_xg, s.is_pen_taker, budget_assists_away,
                 p_sub=sub.p_sub, avg_sub_time=sub.avg_sub_time,
-                matchup_factor=away_mf,
                 team_corners_per_match=away_corners_per_match,
             )
         )
