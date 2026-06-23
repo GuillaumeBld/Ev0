@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import math
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -42,18 +43,33 @@ PENS_PER_MATCH = 0.10
 PEN_CONVERSION = 0.78
 CLAMP_MULTIPLIER_MIN = 0.5
 CLAMP_MULTIPLIER_MAX = 2.0
+# Deprecated — kept for backward compat (imports, tests). Logic moved to 11-bucket POSITION_NPXG_PRIORS.
 DF_SETPIECE_DISCOUNT: float = 0.55
 
 FORM_WEIGHTS_BY_POSITION: dict[str, float] = {
+    # 11 fine-grained buckets
+    "CF_lone": 0.30, "CF_pair": 0.28, "SS": 0.25, "winger": 0.22,
+    "AM": 0.20, "CM": 0.18, "DM": 0.12,
+    "WB": 0.10, "FB": 0.08, "CB": 0.06, "GK": 0.00,
+    # Legacy 3-bucket fallback (kept for backward compat)
     "FW": 0.25, "MF": 0.20, "DF": 0.10,
 }
-_FORM_WEIGHT_DEFAULT = 0.20
+_FORM_WEIGHT_DEFAULT = 0.18
 
+# 11-bucket npxG/90 priors (calibrated on Big5 + UCL 2024-25, ≥450 min)
 POSITION_NPXG_PRIORS: dict[str, float] = {
-    "FW": 0.25, "MF": 0.08, "DF": 0.02, "GK": 0.00,
+    "CF_lone": 0.42, "CF_pair": 0.35, "SS": 0.22,
+    "winger": 0.14, "AM": 0.10, "CM": 0.05, "DM": 0.03,
+    "WB": 0.02, "FB": 0.01, "CB": 0.01, "GK": 0.00,
+    # Legacy fallback
+    "FW": 0.25, "MF": 0.08, "DF": 0.02,
 }
 POSITION_XA_PRIORS: dict[str, float] = {
-    "FW": 0.10, "MF": 0.15, "DF": 0.03, "GK": 0.00,
+    "CF_lone": 0.08, "CF_pair": 0.09, "SS": 0.14,
+    "winger": 0.18, "AM": 0.18, "CM": 0.10, "DM": 0.05,
+    "WB": 0.08, "FB": 0.06, "CB": 0.02, "GK": 0.00,
+    # Legacy fallback
+    "FW": 0.10, "MF": 0.15, "DF": 0.03,
 }
 
 INTERNATIONAL_LEAGUES: frozenset[str] = frozenset({
@@ -63,6 +79,28 @@ INTERNATIONAL_LEAGUES: frozenset[str] = frozenset({
     "nations_league_concacaf",
 })
 
+# ── Matchup factor ─────────────────────────────────────────────────
+# Scales team_match_xg distribution among attackers vs defenders based on
+# opponent defensive block depth. Passed explicitly at call sites.
+MATCHUP_FACTOR: dict[str, float] = {
+    "bloc_bas":    0.85,  # deep block — forwards face packed defence, fewer clear chances
+    "neutre":      1.00,  # default
+    "ligne_haute": 1.15,  # high line — more space in behind, strikers get more xG share
+}
+_MATCHUP_FACTOR_DEFAULT = 1.00
+
+# ── CPA (Corners / Phases Arrêtées) additive module ───────────────
+# Adds a λ bonus to CB/WB/FB players from set-piece delivery.
+# Calibrated: top CPA teams (≥7 corners/match) vs bottom (≤4).
+CPA_BONUS_BY_POSITION: dict[str, float] = {
+    "CB": 0.025,   # primary aerial threat
+    "WB": 0.012,   # occasional near-post run
+    "FB": 0.008,   # rare but happens
+}
+CPA_CORNERS_THRESHOLD = 5.5   # avg corners/match above which CPA bonus applies
+CPA_CORNERS_HIGH      = 8.0   # max scaling anchor
+_CPA_BONUS_DEFAULT    = 0.0
+
 
 # ── Position normalisation ────────────────────────────────────────
 
@@ -71,25 +109,63 @@ def _bzz_pos_to_raw(bzz_pos: str | None) -> str | None:
     return {"G": "GK", "D": "DF", "M": "MF", "F": "FW"}.get(bzz_pos or "", bzz_pos)
 
 
+def _name_key(name: str | None) -> str:
+    """Accent-insensitive lowercase key for player deduplication.
+
+    Strips diacritics so 'José' and 'Jose' collide to the same key.
+    """
+    normalized = unicodedata.normalize("NFD", (name or "").strip().lower())
+    return "".join(c for c in normalized if unicodedata.category(c) != "Mn")
+
+
+_NORM_POS_11_BUCKET: dict[str, str] = {
+    "CF_LONE": "CF_lone", "CF_PAIR": "CF_pair", "SS": "SS", "WINGER": "winger",
+    "AM": "AM", "CM": "CM", "DM": "DM", "WB": "WB", "FB": "FB", "CB": "CB", "GK": "GK",
+}
+
+
 def _norm_pos(raw: str | None) -> str | None:
-    """Canonical position: FW / MF / DF / GK (W and FB kept for assist weighting)."""
+    """Map Bzzoiro position codes to 11-bucket system.
+
+    Buckets: CF_lone, CF_pair, SS, winger, AM, CM, DM, WB, FB, CB, GK
+    Falls back to legacy FW/MF/DF/GK when sub-position info is absent.
+    """
     if not raw:
         return None
     p = raw.strip().upper()
-    if p in ("FW", "MF", "DF", "GK", "W", "FB", "AM"):
-        return p
-    if "GK" in p:
+    # Explicit 11-bucket pass-through (case-insensitive → canonical casing)
+    if p in _NORM_POS_11_BUCKET:
+        return _NORM_POS_11_BUCKET[p]
+    # GK
+    if "GK" in p or p == "G":
         return "GK"
-    if p.startswith("F") or "FW" in p:
-        return "FW"
-    if p in ("LB", "RB", "LWB", "RWB"):
+    # Defensive line
+    if p in ("CB", "SW"):
+        return "CB"
+    if p in ("LB", "RB"):
         return "FB"
-    if p in ("LW", "RW", "LM", "RM"):
-        return "W"
-    if p.startswith("D") or "DF" in p or "CB" in p:
-        return "DF"
-    if p.startswith("M") or "MF" in p or "AM" in p:
-        return "MF"
+    if p in ("LWB", "RWB"):
+        return "WB"
+    # Defensive mid
+    if p in ("DM", "CDM", "CM/DM"):
+        return "DM"
+    # Central mid
+    if p in ("CM", "MF", "M"):
+        return "CM"
+    # Attacking mid / second striker
+    if p in ("AM", "CAM"):
+        return "AM"
+    # Wingers
+    if p in ("LW", "RW", "LM", "RM", "W"):
+        return "winger"
+    # Forwards — default to CF_lone when no pairing info
+    if p in ("FW", "CF", "ST", "F"):
+        return "CF_lone"
+    # Broad legacy fallback (Bzzoiro single-char already mapped by _bzz_pos_to_raw)
+    if p == "DF":
+        return "CB"
+    if p == "AM":
+        return "AM"
     return None
 
 
@@ -187,6 +263,8 @@ class MatchPricingResult:
     home_lineup_players: list[PlayerAllocation] | None = None
     away_lineup_players: list[PlayerAllocation] | None = None
     last_scraped_at: datetime | None = None
+    # Match-level derived probabilities
+    p00: float = 0.0   # P(0-0) = e^(-(lambda_h + lambda_a)) under independent Poisson
 
 
 
@@ -203,6 +281,79 @@ def estimate_team_match_xg(
     def_ratio = opponent_xga / league_avg_xga if (league_avg_xga > 0 and opponent_xga > 0) else 1.0
     home_factor = HOME_ADVANTAGE if is_home else 1.0
     return max(0.3, min(4.0, attack_ratio * def_ratio * league_avg_xg * home_factor))
+
+
+# ── Guard-rail: assess_inputs ────────────────────────────────────
+
+@dataclass
+class InputWarning:
+    code: str
+    player_id: int | None
+    player_name: str | None
+    detail: str
+
+
+def assess_inputs(players: list[dict[str, Any]], team: str) -> list[InputWarning]:
+    """Validate player data before pricing. Returns warnings; never raises.
+
+    Checks:
+    - matches_played=1 with minutes_played>180 (data corruption)
+    - npxg_per_90 > 1.5 (implausible; likely ingestion error)
+    - no players found (empty squad)
+    - avg_minutes_per_match > 90 (impossible per-match average)
+    """
+    warnings: list[InputWarning] = []
+    if not players:
+        warnings.append(InputWarning("NO_PLAYERS", None, None, f"team={team}: 0 players loaded"))
+        return warnings
+    for p in players:
+        pid = p.get("player_id")
+        pname = p.get("player_name", "?")
+        matches = p.get("matches_played") or 0
+        mins = p.get("minutes_played") or 0
+        avg_mins = p.get("avg_minutes_per_match") or 0.0
+        npxg = p.get("npxg_per_90") or p.get("xg_per_90") or 0.0
+
+        if matches == 1 and mins > 180:
+            warnings.append(InputWarning(
+                "CORRUPT_MATCHES_PLAYED", pid, pname,
+                f"matches_played=1 but minutes_played={mins} (probable aggregation error)"
+            ))
+        if npxg > 1.5:
+            warnings.append(InputWarning(
+                "IMPLAUSIBLE_NPXG", pid, pname,
+                f"npxg_per_90={npxg:.3f} > 1.5 — likely ingestion error"
+            ))
+        if avg_mins > 90.0:
+            warnings.append(InputWarning(
+                "IMPOSSIBLE_AVG_MINS", pid, pname,
+                f"avg_minutes_per_match={avg_mins:.1f} > 90"
+            ))
+    return warnings
+
+
+# ── CPA additive module ───────────────────────────────────────────
+
+def compute_cpa_bonus(
+    position: str | None,
+    team_corners_per_match: float | None,
+) -> float:
+    """Return additive λ bonus from set pieces for CB/WB/FB.
+
+    Scales linearly between CPA_CORNERS_THRESHOLD and CPA_CORNERS_HIGH.
+    Returns 0.0 for other positions or when corners data is unavailable.
+    """
+    base = CPA_BONUS_BY_POSITION.get(position or "", _CPA_BONUS_DEFAULT)
+    if base == 0.0 or team_corners_per_match is None:
+        return 0.0
+    if team_corners_per_match <= CPA_CORNERS_THRESHOLD:
+        return 0.0
+    scale = min(
+        (team_corners_per_match - CPA_CORNERS_THRESHOLD)
+        / (CPA_CORNERS_HIGH - CPA_CORNERS_THRESHOLD),
+        1.0,
+    )
+    return round(base * scale, 4)
 
 
 # ── Stage 2: Player shares ────────────────────────────────────────
@@ -227,20 +378,18 @@ def compute_player_shares(
         form_w = FORM_WEIGHTS_BY_POSITION.get(pos or "", _FORM_WEIGHT_DEFAULT)
         xg_per_90 = p.get("npxg_per_90") or p.get("xg_per_90") or 0.0
         form_xg = p.get("form_xg_5")
-        if form_xg is not None and avg_mins > 0:
-            form_rate = form_xg / (5.0 * avg_mins / 90.0)
+        if form_xg is not None and exp_mins > 0:
+            form_rate = form_xg / (5.0 * exp_mins / 90.0)
             blended_xg = (1 - form_w) * xg_per_90 + form_w * form_rate
         else:
             blended_xg = xg_per_90
         goal_weight = blended_xg * mins_ratio
-        if pos == "DF":
-            goal_weight *= DF_SETPIECE_DISCOUNT
 
         # Assist weight — blend season xa_per_90 + form_assists_5
         xa_per_90 = p.get("xa_per_90") or 0.0
         form_xa = p.get("form_assists_5")
-        if form_xa is not None and avg_mins > 0:
-            form_xa_rate = form_xa / (5.0 * avg_mins / 90.0)
+        if form_xa is not None and exp_mins > 0:
+            form_xa_rate = form_xa / (5.0 * exp_mins / 90.0)
             blended_xa = (1 - form_w) * xa_per_90 + form_w * form_xa_rate
         else:
             blended_xa = xa_per_90
@@ -300,9 +449,18 @@ def compute_player_shares(
 
 
 def detect_penalty_taker(players: list[dict[str, Any]]) -> int | None:
-    """Auto-detect penalty taker: highest xG − npxG (= penalty xG)."""
+    """Auto-detect penalty taker: highest xG − npxG (= penalty xG).
+
+    Returns None when no player has npxG data (e.g. international matches where
+    Bzzoiro doesn't provide xG/npxG split) to avoid spurious detection.
+    Requires pen_xg > 0.05 to filter noise from data rounding errors.
+    """
+    has_any_npxg = any((p.get("npxg") or 0.0) > 0.0 for p in players)
+    if not has_any_npxg:
+        return None
+
     best_id: int | None = None
-    best_pen_xg = 0.0
+    best_pen_xg = 0.05  # minimum threshold — avoids noise from rounding
     for p in players:
         pen_xg = (p.get("xg", 0.0) or 0.0) - (p.get("npxg", 0.0) or 0.0)
         if pen_xg > best_pen_xg:
@@ -322,8 +480,15 @@ def allocate_player(
     league_avg_assist: dict[str, float] | None = None,
     p_sub: float = 0.35,
     avg_sub_time: float = 65.0,
+    matchup_factor: float = _MATCHUP_FACTOR_DEFAULT,
+    team_corners_per_match: float | None = None,
 ) -> PlayerAllocation:
-    """Compute Poisson lambdas using new top-down formulas."""
+    """Compute Poisson lambdas using new top-down formulas.
+
+    matchup_factor: from MATCHUP_FACTOR dict (bloc_bas/neutre/ligne_haute).
+    team_corners_per_match: avg corners per match for the attacking team;
+        used by compute_cpa_bonus to add set-piece λ for CB/WB/FB.
+    """
     mins_ratio = share.expected_minutes / 90.0
 
     # ── Goalscorer ────────────────────────────────────────────────
@@ -336,9 +501,10 @@ def allocate_player(
         "goals": share.goals_total,
     }
     finishing_mult = calculate_finishing_multiplier(goal_stats, share.position)
-    lambda_open_play = share.npxg_share * team_match_xg * finishing_mult
+    lambda_open_play = share.npxg_share * team_match_xg * finishing_mult * matchup_factor
     lambda_penalty = PEN_CONVERSION * PENS_PER_MATCH * mins_ratio if is_pen_taker else 0.0
-    lambda_total = max(0.001, min(lambda_open_play + lambda_penalty, 3.0))
+    lambda_cpa = compute_cpa_bonus(share.position, team_corners_per_match) * mins_ratio
+    lambda_total = max(0.001, min(lambda_open_play + lambda_penalty + lambda_cpa, 3.0))
     prob_goal = 1 - math.exp(-lambda_total)
     fair_odds_goal = round(1 / prob_goal, 2) if prob_goal > 0 else 9999.0
 
@@ -624,7 +790,7 @@ async def _load_team_players(
     for row in res.all():
         stat, player = row[0], row[1]
         name = player.name
-        name_key = (name or "").strip().lower()
+        name_key = _name_key(name)
         internal_id = player.internal_id
         if player.api_id in seen_ids:
             continue
@@ -702,7 +868,7 @@ async def _load_team_players(
         if internal_id is not None and internal_id in seen_internal_ids:
             continue
         name = player.name
-        name_key = (name or "").strip().lower()
+        name_key = _name_key(name)
         if name_key in seen_names:
             continue
 
@@ -806,7 +972,7 @@ async def _load_national_team_players(
     for row in res.all():
         stat, player = row[0], row[1]
         name = player.name
-        name_key = (name or "").strip().lower()
+        name_key = _name_key(name)
         internal_id = player.internal_id
         if player.api_id in seen_ids:
             continue
@@ -882,7 +1048,7 @@ async def _load_national_team_players(
         if internal_id is not None and internal_id in seen_internal_ids:
             continue
         name = player.name
-        name_key = (name or "").strip().lower()
+        name_key = _name_key(name)
         if name_key in seen_names:
             continue
 
@@ -981,6 +1147,10 @@ async def load_match_pricing(
     away_pen_taker_override: int | None = None,
     home_starters: list[str] | None = None,
     away_starters: list[str] | None = None,
+    home_matchup: str | None = None,
+    away_matchup: str | None = None,
+    home_corners_per_match: float | None = None,
+    away_corners_per_match: float | None = None,
 ) -> MatchPricingResult | None:
     """Full Top-Down pricing pipeline for one fixture (Model C).
 
@@ -1058,6 +1228,11 @@ async def load_match_pricing(
     home_shares = compute_player_shares(home_players_db, home_team, lambda_team=home_match_xg)
     away_shares = compute_player_shares(away_players_db, away_team, lambda_team=away_match_xg)
 
+    for w in assess_inputs(home_players_db, home_team):
+        logger.warning("assess_inputs [%s]: %s — %s", home_team, w.field, w.message)
+    for w in assess_inputs(away_players_db, away_team):
+        logger.warning("assess_inputs [%s]: %s — %s", away_team, w.field, w.message)
+
     home_pen_id = home_pen_taker_override or detect_penalty_taker(home_players_db)
     away_pen_id = away_pen_taker_override or detect_penalty_taker(away_players_db)
     for s in home_shares:
@@ -1067,6 +1242,9 @@ async def load_match_pricing(
 
     budget_assists_home = home_match_xg * ASSIST_GOAL_RATE
     budget_assists_away = away_match_xg * ASSIST_GOAL_RATE
+
+    home_mf = MATCHUP_FACTOR.get(home_matchup or "", _MATCHUP_FACTOR_DEFAULT)
+    away_mf = MATCHUP_FACTOR.get(away_matchup or "", _MATCHUP_FACTOR_DEFAULT)
 
     from app.services.sub_stats import get_player_sub_stats
 
@@ -1082,6 +1260,8 @@ async def load_match_pricing(
             allocate_player(
                 s, home_match_xg, s.is_pen_taker, budget_assists_home,
                 p_sub=sub.p_sub, avg_sub_time=sub.avg_sub_time,
+                matchup_factor=home_mf,
+                team_corners_per_match=home_corners_per_match,
             )
         )
     home_allocs = sorted(_home_allocs, key=lambda a: a.prob_goal, reverse=True)
@@ -1098,6 +1278,8 @@ async def load_match_pricing(
             allocate_player(
                 s, away_match_xg, s.is_pen_taker, budget_assists_away,
                 p_sub=sub.p_sub, avg_sub_time=sub.avg_sub_time,
+                matchup_factor=away_mf,
+                team_corners_per_match=away_corners_per_match,
             )
         )
     away_allocs = sorted(_away_allocs, key=lambda a: a.prob_goal, reverse=True)
@@ -1111,6 +1293,8 @@ async def load_match_pricing(
         if away_starters else None
     )
 
+    p00 = round(math.exp(-(home_match_xg + away_match_xg)), 4)
+
     return MatchPricingResult(
         fixture_id=fixture.id,
         home_team=home_team,
@@ -1123,4 +1307,5 @@ async def load_match_pricing(
         home_lineup_players=home_lineup or None,
         away_lineup_players=away_lineup or None,
         last_scraped_at=market_result.last_snapshot_at if market_result is not None else None,
+        p00=p00,
     )
