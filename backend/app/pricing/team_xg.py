@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import math
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -84,6 +85,15 @@ INTERNATIONAL_LEAGUES: frozenset[str] = frozenset({
 def _bzz_pos_to_raw(bzz_pos: str | None) -> str | None:
     """Map Bzzoiro single-char position codes to pricing engine format."""
     return {"G": "GK", "D": "DF", "M": "MF", "F": "FW"}.get(bzz_pos or "", bzz_pos)
+
+
+def _name_key(name: str | None) -> str:
+    """Accent-insensitive lowercase key for player deduplication.
+
+    Strips diacritics so 'José' and 'Jose' collide to the same key.
+    """
+    normalized = unicodedata.normalize("NFD", (name or "").strip().lower())
+    return "".join(c for c in normalized if unicodedata.category(c) != "Mn")
 
 
 _NORM_POS_11_BUCKET: dict[str, str] = {
@@ -273,8 +283,8 @@ def compute_player_shares(
         form_w = FORM_WEIGHTS_BY_POSITION.get(pos or "", _FORM_WEIGHT_DEFAULT)
         xg_per_90 = p.get("npxg_per_90") or p.get("xg_per_90") or 0.0
         form_xg = p.get("form_xg_5")
-        if form_xg is not None and avg_mins > 0:
-            form_rate = form_xg / (5.0 * avg_mins / 90.0)
+        if form_xg is not None and exp_mins > 0:
+            form_rate = form_xg / (5.0 * exp_mins / 90.0)
             blended_xg = (1 - form_w) * xg_per_90 + form_w * form_rate
         else:
             blended_xg = xg_per_90
@@ -283,8 +293,8 @@ def compute_player_shares(
         # Assist weight — blend season xa_per_90 + form_assists_5
         xa_per_90 = p.get("xa_per_90") or 0.0
         form_xa = p.get("form_assists_5")
-        if form_xa is not None and avg_mins > 0:
-            form_xa_rate = form_xa / (5.0 * avg_mins / 90.0)
+        if form_xa is not None and exp_mins > 0:
+            form_xa_rate = form_xa / (5.0 * exp_mins / 90.0)
             blended_xa = (1 - form_w) * xa_per_90 + form_w * form_xa_rate
         else:
             blended_xa = xa_per_90
@@ -344,9 +354,18 @@ def compute_player_shares(
 
 
 def detect_penalty_taker(players: list[dict[str, Any]]) -> int | None:
-    """Auto-detect penalty taker: highest xG − npxG (= penalty xG)."""
+    """Auto-detect penalty taker: highest xG − npxG (= penalty xG).
+
+    Returns None when no player has npxG data (e.g. international matches where
+    Bzzoiro doesn't provide xG/npxG split) to avoid spurious detection.
+    Requires pen_xg > 0.05 to filter noise from data rounding errors.
+    """
+    has_any_npxg = any((p.get("npxg") or 0.0) > 0.0 for p in players)
+    if not has_any_npxg:
+        return None
+
     best_id: int | None = None
-    best_pen_xg = 0.0
+    best_pen_xg = 0.05  # minimum threshold — avoids noise from rounding
     for p in players:
         pen_xg = (p.get("xg", 0.0) or 0.0) - (p.get("npxg", 0.0) or 0.0)
         if pen_xg > best_pen_xg:
@@ -668,7 +687,7 @@ async def _load_team_players(
     for row in res.all():
         stat, player = row[0], row[1]
         name = player.name
-        name_key = (name or "").strip().lower()
+        name_key = _name_key(name)
         internal_id = player.internal_id
         if player.api_id in seen_ids:
             continue
@@ -746,7 +765,7 @@ async def _load_team_players(
         if internal_id is not None and internal_id in seen_internal_ids:
             continue
         name = player.name
-        name_key = (name or "").strip().lower()
+        name_key = _name_key(name)
         if name_key in seen_names:
             continue
 
@@ -850,7 +869,7 @@ async def _load_national_team_players(
     for row in res.all():
         stat, player = row[0], row[1]
         name = player.name
-        name_key = (name or "").strip().lower()
+        name_key = _name_key(name)
         internal_id = player.internal_id
         if player.api_id in seen_ids:
             continue
@@ -926,7 +945,7 @@ async def _load_national_team_players(
         if internal_id is not None and internal_id in seen_internal_ids:
             continue
         name = player.name
-        name_key = (name or "").strip().lower()
+        name_key = _name_key(name)
         if name_key in seen_names:
             continue
 

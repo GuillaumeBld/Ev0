@@ -494,6 +494,7 @@ async def process_scraped_fixtures(
             logger.debug("process_scraped: no pricing for fixture %d — skipping", fixture_orm.id)
             continue
 
+        match_p00 = pricing.p00
         alloc_by_norm: dict[str, Any] = {}
         for alloc in pricing.home_players + pricing.away_players:
             alloc_by_norm[normalize_selection_name(alloc.player_name)] = alloc
@@ -571,6 +572,8 @@ async def process_scraped_fixtures(
                     continue
 
                 edge = calculate_edge(fair_odds, market_odds)
+                ev = round(ev_anytime(probability, market_odds), 4)
+                ev_p00 = round(ev_anytime_p00_guarantee(probability, market_odds, match_p00), 4)
                 is_value = edge >= min_edge
 
                 rec_key = (fixture_orm.id, player_name, mkt_type, bet_type)
@@ -602,6 +605,9 @@ async def process_scraped_fixtures(
                                 "is_pen_taker": alloc.is_pen_taker,
                                 "bet_type": bet_type,
                                 "market_type": mkt_type.value,
+                                "ev_anytime": ev,
+                                "ev_p00_guarantee": ev_p00,
+                                "p00": match_p00,
                             },
                             generated_utc=now,
                             status="pending",

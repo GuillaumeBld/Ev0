@@ -1,6 +1,7 @@
 """Tests for top-down share calculation and new allocate_player."""
 import math
 import pytest
+from app.pricing.assist import ASSIST_GOAL_RATE
 from app.pricing.team_xg import compute_player_shares, allocate_player, PlayerAllocation
 
 SAMPLE_FW = {
@@ -62,30 +63,30 @@ class TestAllocatePlayerTopDown:
 
     def test_average_fw_fair_odds_goal_reasonable(self):
         share = self._get_share(SAMPLE_FW)
-        alloc = allocate_player(share, team_match_xg=1.5, is_pen_taker=False, budget_assists=1.5 * 0.65)
+        alloc = allocate_player(share, team_match_xg=1.5, is_pen_taker=False, budget_assists=1.5 * ASSIST_GOAL_RATE)
         # Should be between 2 and 10 for an average FW with 75 min expected
         assert 2.0 <= alloc.fair_odds_goal <= 10.0
 
     def test_pen_taker_has_lower_fair_odds(self):
         share = self._get_share(SAMPLE_FW)
-        alloc_no_pen = allocate_player(share, 1.5, False, 1.5 * 0.65)
-        alloc_pen = allocate_player(share, 1.5, True, 1.5 * 0.65)
+        alloc_no_pen = allocate_player(share, 1.5, False, 1.5 * ASSIST_GOAL_RATE)
+        alloc_pen = allocate_player(share, 1.5, True, 1.5 * ASSIST_GOAL_RATE)
         assert alloc_pen.fair_odds_goal < alloc_no_pen.fair_odds_goal
 
     def test_has_form_flags(self):
         share = self._get_share(SAMPLE_FW)
-        alloc = allocate_player(share, 1.5, False, 1.5 * 0.65)
+        alloc = allocate_player(share, 1.5, False, 1.5 * ASSIST_GOAL_RATE)
         assert alloc.has_form_goal is False   # form_xg_5 was None
         assert alloc.has_form_assist is False  # form_assists_5 was None
 
     def test_form_data_sets_flag(self):
         fw_form = {**SAMPLE_FW, "form_xg_5": 2.0, "form_assists_5": 1.0}
         shares = compute_player_shares([fw_form], "Team", lambda_team=1.5)
-        alloc = allocate_player(shares[0], 1.5, False, 1.5 * 0.65)
+        alloc = allocate_player(shares[0], 1.5, False, 1.5 * ASSIST_GOAL_RATE)
         assert alloc.has_form_goal is True
         assert alloc.has_form_assist is True
 
     def test_matches_played_propagated(self):
         share = self._get_share(SAMPLE_FW)
-        alloc = allocate_player(share, 1.5, False, 1.5 * 0.65)
+        alloc = allocate_player(share, 1.5, False, 1.5 * ASSIST_GOAL_RATE)
         assert alloc.matches_played == 15
