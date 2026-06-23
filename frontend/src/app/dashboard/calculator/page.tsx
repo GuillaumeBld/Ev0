@@ -289,9 +289,6 @@ function CalculatorInner() {
   const [homePenTaker, setHomePenTaker] = useState<number | null>(null)
   const [awayPenTaker, setAwayPenTaker] = useState<number | null>(null)
 
-  const [homeCorners, setHomeCorners] = useState('')
-  const [awayCorners, setAwayCorners] = useState('')
-
   // Lineup starters for compo redistribution (sent to priceMatch)
   const homeStartersRef = useRef<string[] | null>(null)
   const awayStartersRef = useRef<string[] | null>(null)
@@ -330,8 +327,7 @@ function CalculatorInner() {
         away_pen_taker_override: awayPenTaker,
         home_starters: homeStartersRef.current,
         away_starters: awayStartersRef.current,
-        home_corners_per_match: homeCorners ? Number(homeCorners) : null,
-        away_corners_per_match: awayCorners ? Number(awayCorners) : null,
+
       })
       setPricing(result)
       setLastScrapedAt(result.last_scraped_at ?? null)
@@ -366,8 +362,6 @@ function CalculatorInner() {
     setAwayPenTaker(null)
     setLastScrapedAt(null)
     setError(null)
-    setHomeCorners('')
-    setAwayCorners('')
     homeStartersRef.current = null
     awayStartersRef.current = null
     if (id) {
@@ -464,48 +458,6 @@ function CalculatorInner() {
           <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
         </div>
       </div>
-
-      {/* Corners params */}
-      {selectedFixtureId && (
-        <div className="mb-5 p-3 rounded-lg bg-gray-800/60 border border-gray-700/50">
-          <p className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mb-3">Paramètres modèle</p>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-3 max-w-xl">
-            <div>
-              <label className="block text-[10px] text-gray-400 mb-1">
-                Corners/match {pricing?.home_team ?? 'DOM.'} <span className="text-gray-600">(moy.)</span>
-              </label>
-              <input
-                type="number"
-                step="0.5"
-                min="0"
-                max="15"
-                placeholder="ex: 6.5"
-                value={homeCorners}
-                onChange={(e) => setHomeCorners(e.target.value)}
-                className="w-full text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-white placeholder-gray-600"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] text-gray-400 mb-1">
-                Corners/match {pricing?.away_team ?? 'EXT.'} <span className="text-gray-600">(moy.)</span>
-              </label>
-              <input
-                type="number"
-                step="0.5"
-                min="0"
-                max="15"
-                placeholder="ex: 4.2"
-                value={awayCorners}
-                onChange={(e) => setAwayCorners(e.target.value)}
-                className="w-full text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-white placeholder-gray-600"
-              />
-            </div>
-          </div>
-          <p className="text-[10px] text-gray-600 mt-2">
-            Corners : bonus λ CB/FB si &gt;5.5/match
-          </p>
-        </div>
-      )}
 
       {/* Recalculate button (shown when a match is selected) */}
       {selectedFixtureId && (

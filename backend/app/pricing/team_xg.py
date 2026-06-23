@@ -80,19 +80,6 @@ INTERNATIONAL_LEAGUES: frozenset[str] = frozenset({
 })
 
 # ── Matchup factor ─────────────────────────────────────────────────
-# ── CPA (Corners / Phases Arrêtées) additive module ───────────────
-# Adds a λ bonus to CB/WB/FB players from set-piece delivery.
-# Calibrated: top CPA teams (≥7 corners/match) vs bottom (≤4).
-CPA_BONUS_BY_POSITION: dict[str, float] = {
-    "CB": 0.025,   # primary aerial threat
-    "WB": 0.012,   # occasional near-post run
-    "FB": 0.008,   # rare but happens
-}
-CPA_CORNERS_THRESHOLD = 5.5   # avg corners/match above which CPA bonus applies
-CPA_CORNERS_HIGH      = 8.0   # max scaling anchor
-_CPA_BONUS_DEFAULT    = 0.0
-
-
 # ── Position normalisation ────────────────────────────────────────
 
 def _bzz_pos_to_raw(bzz_pos: str | None) -> str | None:
@@ -323,30 +310,6 @@ def assess_inputs(players: list[dict[str, Any]], team: str) -> list[InputWarning
     return warnings
 
 
-# ── CPA additive module ───────────────────────────────────────────
-
-def compute_cpa_bonus(
-    position: str | None,
-    team_corners_per_match: float | None,
-) -> float:
-    """Return additive λ bonus from set pieces for CB/WB/FB.
-
-    Scales linearly between CPA_CORNERS_THRESHOLD and CPA_CORNERS_HIGH.
-    Returns 0.0 for other positions or when corners data is unavailable.
-    """
-    base = CPA_BONUS_BY_POSITION.get(position or "", _CPA_BONUS_DEFAULT)
-    if base == 0.0 or team_corners_per_match is None:
-        return 0.0
-    if team_corners_per_match <= CPA_CORNERS_THRESHOLD:
-        return 0.0
-    scale = min(
-        (team_corners_per_match - CPA_CORNERS_THRESHOLD)
-        / (CPA_CORNERS_HIGH - CPA_CORNERS_THRESHOLD),
-        1.0,
-    )
-    return round(base * scale, 4)
-
-
 # ── Stage 2: Player shares ────────────────────────────────────────
 
 def compute_player_shares(
@@ -471,13 +434,8 @@ def allocate_player(
     league_avg_assist: dict[str, float] | None = None,
     p_sub: float = 0.35,
     avg_sub_time: float = 65.0,
-    team_corners_per_match: float | None = None,
 ) -> PlayerAllocation:
-    """Compute Poisson lambdas using new top-down formulas.
-
-    team_corners_per_match: avg corners per match for the attacking team;
-        used by compute_cpa_bonus to add set-piece λ for CB/WB/FB.
-    """
+    """Compute Poisson lambdas using new top-down formulas."""
     mins_ratio = share.expected_minutes / 90.0
 
     # ── Goalscorer ────────────────────────────────────────────────
@@ -492,8 +450,7 @@ def allocate_player(
     finishing_mult = calculate_finishing_multiplier(goal_stats, share.position)
     lambda_open_play = share.npxg_share * team_match_xg * finishing_mult
     lambda_penalty = PEN_CONVERSION * PENS_PER_MATCH * mins_ratio if is_pen_taker else 0.0
-    lambda_cpa = compute_cpa_bonus(share.position, team_corners_per_match) * mins_ratio
-    lambda_total = max(0.001, min(lambda_open_play + lambda_penalty + lambda_cpa, 3.0))
+    lambda_total = max(0.001, min(lambda_open_play + lambda_penalty, 3.0))
     prob_goal = 1 - math.exp(-lambda_total)
     fair_odds_goal = round(1 / prob_goal, 2) if prob_goal > 0 else 9999.0
 
@@ -1136,8 +1093,6 @@ async def load_match_pricing(
     away_pen_taker_override: int | None = None,
     home_starters: list[str] | None = None,
     away_starters: list[str] | None = None,
-    home_corners_per_match: float | None = None,
-    away_corners_per_match: float | None = None,
 ) -> MatchPricingResult | None:
     """Full Top-Down pricing pipeline for one fixture (Model C).
 
@@ -1244,7 +1199,6 @@ async def load_match_pricing(
             allocate_player(
                 s, home_match_xg, s.is_pen_taker, budget_assists_home,
                 p_sub=sub.p_sub, avg_sub_time=sub.avg_sub_time,
-                team_corners_per_match=home_corners_per_match,
             )
         )
     home_allocs = sorted(_home_allocs, key=lambda a: a.prob_goal, reverse=True)
@@ -1261,7 +1215,6 @@ async def load_match_pricing(
             allocate_player(
                 s, away_match_xg, s.is_pen_taker, budget_assists_away,
                 p_sub=sub.p_sub, avg_sub_time=sub.avg_sub_time,
-                team_corners_per_match=away_corners_per_match,
             )
         )
     away_allocs = sorted(_away_allocs, key=lambda a: a.prob_goal, reverse=True)

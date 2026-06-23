@@ -69,8 +69,7 @@ export interface MatchPriceRequest {
   away_pen_taker_override?: number | null
   home_starters?: string[] | null
   away_starters?: string[] | null
-  home_corners_per_match?: number | null
-  away_corners_per_match?: number | null
+
 }
 
 export interface PlayerAllocationOut {
