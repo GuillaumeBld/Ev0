@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Calculator, RefreshCw, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
-import { getFixtures, priceMatch, getPenTakers, setPenTakers, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
+import { getFixtures, priceMatch, getPenTakers, setPenTakers, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut, type MatchupType } from '@/lib/api'
 import { LineupPricingWidget } from '@/components/calculator/LineupPricingWidget'
 import { XgSourceBadge } from '@/components/XgSourceBadge'
 import { getTeamId } from '@/lib/teamLogos'
@@ -289,6 +289,12 @@ function CalculatorInner() {
   const [homePenTaker, setHomePenTaker] = useState<number | null>(null)
   const [awayPenTaker, setAwayPenTaker] = useState<number | null>(null)
 
+  // Sprint 3 params
+  const [homeMatchup, setHomeMatchup] = useState<MatchupType | ''>('')
+  const [awayMatchup, setAwayMatchup] = useState<MatchupType | ''>('')
+  const [homeCorners, setHomeCorners] = useState('')
+  const [awayCorners, setAwayCorners] = useState('')
+
   // Lineup starters for compo redistribution (sent to priceMatch)
   const homeStartersRef = useRef<string[] | null>(null)
   const awayStartersRef = useRef<string[] | null>(null)
@@ -327,6 +333,10 @@ function CalculatorInner() {
         away_pen_taker_override: awayPenTaker,
         home_starters: homeStartersRef.current,
         away_starters: awayStartersRef.current,
+        home_matchup: homeMatchup || null,
+        away_matchup: awayMatchup || null,
+        home_corners_per_match: homeCorners ? Number(homeCorners) : null,
+        away_corners_per_match: awayCorners ? Number(awayCorners) : null,
       })
       setPricing(result)
       setLastScrapedAt(result.last_scraped_at ?? null)
@@ -361,6 +371,10 @@ function CalculatorInner() {
     setAwayPenTaker(null)
     setLastScrapedAt(null)
     setError(null)
+    setHomeMatchup('')
+    setAwayMatchup('')
+    setHomeCorners('')
+    setAwayCorners('')
     homeStartersRef.current = null
     awayStartersRef.current = null
     if (id) {
@@ -458,17 +472,98 @@ function CalculatorInner() {
         </div>
       </div>
 
+      {/* Sprint 3 params — matchup + corners */}
+      {selectedFixtureId && (
+        <div className="mb-5 p-3 rounded-lg bg-gray-800/60 border border-gray-700/50">
+          <p className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mb-3">Paramètres modèle</p>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3 max-w-xl">
+            {/* Matchup */}
+            <div>
+              <label className="block text-[10px] text-gray-400 mb-1">
+                Matchup {pricing?.home_team ?? 'DOM.'}
+              </label>
+              <select
+                value={homeMatchup}
+                onChange={(e) => setHomeMatchup(e.target.value as MatchupType | '')}
+                className="w-full text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-white"
+              >
+                <option value="">— neutre —</option>
+                <option value="ligne_haute">Ligne haute (×1.15)</option>
+                <option value="neutre">Neutre (×1.00)</option>
+                <option value="bloc_bas">Bloc bas (×0.85)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] text-gray-400 mb-1">
+                Matchup {pricing?.away_team ?? 'EXT.'}
+              </label>
+              <select
+                value={awayMatchup}
+                onChange={(e) => setAwayMatchup(e.target.value as MatchupType | '')}
+                className="w-full text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-white"
+              >
+                <option value="">— neutre —</option>
+                <option value="ligne_haute">Ligne haute (×1.15)</option>
+                <option value="neutre">Neutre (×1.00)</option>
+                <option value="bloc_bas">Bloc bas (×0.85)</option>
+              </select>
+            </div>
+
+            {/* Corners */}
+            <div>
+              <label className="block text-[10px] text-gray-400 mb-1">
+                Corners/match {pricing?.home_team ?? 'DOM.'} <span className="text-gray-600">(moy.)</span>
+              </label>
+              <input
+                type="number"
+                step="0.5"
+                min="0"
+                max="15"
+                placeholder="ex: 6.5"
+                value={homeCorners}
+                onChange={(e) => setHomeCorners(e.target.value)}
+                className="w-full text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-white placeholder-gray-600"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] text-gray-400 mb-1">
+                Corners/match {pricing?.away_team ?? 'EXT.'} <span className="text-gray-600">(moy.)</span>
+              </label>
+              <input
+                type="number"
+                step="0.5"
+                min="0"
+                max="15"
+                placeholder="ex: 4.2"
+                value={awayCorners}
+                onChange={(e) => setAwayCorners(e.target.value)}
+                className="w-full text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-white placeholder-gray-600"
+              />
+            </div>
+          </div>
+          <p className="text-[10px] text-gray-600 mt-2">
+            Matchup : ajuste le xG des attaquants selon le bloc défensif adverse · Corners : bonus λ CB/FB si &gt;5.5/match
+          </p>
+        </div>
+      )}
+
       {/* Recalculate button (shown when a match is selected) */}
       {selectedFixtureId && (
-        <div className="mb-4">
+        <div className="mb-4 flex items-center gap-3">
           <button
             onClick={() => fetchPricing(selectedFixtureId)}
             disabled={loading}
             className="flex items-center gap-2 px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            Recalculer avec ces xG
+            Recalculer
           </button>
+          {pricing?.p00 != null && (
+            <span className="text-xs text-gray-400">
+              P(0-0) = <span className="font-mono text-white">{(pricing.p00 * 100).toFixed(1)}%</span>
+              <span className="text-gray-600 ml-1">(remboursé si 0-0)</span>
+            </span>
+          )}
         </div>
       )}
 
