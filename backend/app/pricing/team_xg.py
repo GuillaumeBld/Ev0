@@ -79,6 +79,28 @@ INTERNATIONAL_LEAGUES: frozenset[str] = frozenset({
     "nations_league_concacaf",
 })
 
+# ── Matchup factor ─────────────────────────────────────────────────
+# Scales team_match_xg distribution among attackers vs defenders based on
+# opponent defensive block depth. Passed explicitly at call sites.
+MATCHUP_FACTOR: dict[str, float] = {
+    "bloc_bas":    0.85,  # deep block — forwards face packed defence, fewer clear chances
+    "neutre":      1.00,  # default
+    "ligne_haute": 1.15,  # high line — more space in behind, strikers get more xG share
+}
+_MATCHUP_FACTOR_DEFAULT = 1.00
+
+# ── CPA (Corners / Phases Arrêtées) additive module ───────────────
+# Adds a λ bonus to CB/WB/FB players from set-piece delivery.
+# Calibrated: top CPA teams (≥7 corners/match) vs bottom (≤4).
+CPA_BONUS_BY_POSITION: dict[str, float] = {
+    "CB": 0.025,   # primary aerial threat
+    "WB": 0.012,   # occasional near-post run
+    "FB": 0.008,   # rare but happens
+}
+CPA_CORNERS_THRESHOLD = 5.5   # avg corners/match above which CPA bonus applies
+CPA_CORNERS_HIGH      = 8.0   # max scaling anchor
+_CPA_BONUS_DEFAULT    = 0.0
+
 
 # ── Position normalisation ────────────────────────────────────────
 
@@ -261,6 +283,79 @@ def estimate_team_match_xg(
     return max(0.3, min(4.0, attack_ratio * def_ratio * league_avg_xg * home_factor))
 
 
+# ── Guard-rail: assess_inputs ────────────────────────────────────
+
+@dataclass
+class InputWarning:
+    code: str
+    player_id: int | None
+    player_name: str | None
+    detail: str
+
+
+def assess_inputs(players: list[dict[str, Any]], team: str) -> list[InputWarning]:
+    """Validate player data before pricing. Returns warnings; never raises.
+
+    Checks:
+    - matches_played=1 with minutes_played>180 (data corruption)
+    - npxg_per_90 > 1.5 (implausible; likely ingestion error)
+    - no players found (empty squad)
+    - avg_minutes_per_match > 90 (impossible per-match average)
+    """
+    warnings: list[InputWarning] = []
+    if not players:
+        warnings.append(InputWarning("NO_PLAYERS", None, None, f"team={team}: 0 players loaded"))
+        return warnings
+    for p in players:
+        pid = p.get("player_id")
+        pname = p.get("player_name", "?")
+        matches = p.get("matches_played") or 0
+        mins = p.get("minutes_played") or 0
+        avg_mins = p.get("avg_minutes_per_match") or 0.0
+        npxg = p.get("npxg_per_90") or p.get("xg_per_90") or 0.0
+
+        if matches == 1 and mins > 180:
+            warnings.append(InputWarning(
+                "CORRUPT_MATCHES_PLAYED", pid, pname,
+                f"matches_played=1 but minutes_played={mins} (probable aggregation error)"
+            ))
+        if npxg > 1.5:
+            warnings.append(InputWarning(
+                "IMPLAUSIBLE_NPXG", pid, pname,
+                f"npxg_per_90={npxg:.3f} > 1.5 — likely ingestion error"
+            ))
+        if avg_mins > 90.0:
+            warnings.append(InputWarning(
+                "IMPOSSIBLE_AVG_MINS", pid, pname,
+                f"avg_minutes_per_match={avg_mins:.1f} > 90"
+            ))
+    return warnings
+
+
+# ── CPA additive module ───────────────────────────────────────────
+
+def compute_cpa_bonus(
+    position: str | None,
+    team_corners_per_match: float | None,
+) -> float:
+    """Return additive λ bonus from set pieces for CB/WB/FB.
+
+    Scales linearly between CPA_CORNERS_THRESHOLD and CPA_CORNERS_HIGH.
+    Returns 0.0 for other positions or when corners data is unavailable.
+    """
+    base = CPA_BONUS_BY_POSITION.get(position or "", _CPA_BONUS_DEFAULT)
+    if base == 0.0 or team_corners_per_match is None:
+        return 0.0
+    if team_corners_per_match <= CPA_CORNERS_THRESHOLD:
+        return 0.0
+    scale = min(
+        (team_corners_per_match - CPA_CORNERS_THRESHOLD)
+        / (CPA_CORNERS_HIGH - CPA_CORNERS_THRESHOLD),
+        1.0,
+    )
+    return round(base * scale, 4)
+
+
 # ── Stage 2: Player shares ────────────────────────────────────────
 
 def compute_player_shares(
@@ -385,8 +480,15 @@ def allocate_player(
     league_avg_assist: dict[str, float] | None = None,
     p_sub: float = 0.35,
     avg_sub_time: float = 65.0,
+    matchup_factor: float = _MATCHUP_FACTOR_DEFAULT,
+    team_corners_per_match: float | None = None,
 ) -> PlayerAllocation:
-    """Compute Poisson lambdas using new top-down formulas."""
+    """Compute Poisson lambdas using new top-down formulas.
+
+    matchup_factor: from MATCHUP_FACTOR dict (bloc_bas/neutre/ligne_haute).
+    team_corners_per_match: avg corners per match for the attacking team;
+        used by compute_cpa_bonus to add set-piece λ for CB/WB/FB.
+    """
     mins_ratio = share.expected_minutes / 90.0
 
     # ── Goalscorer ────────────────────────────────────────────────
@@ -399,9 +501,10 @@ def allocate_player(
         "goals": share.goals_total,
     }
     finishing_mult = calculate_finishing_multiplier(goal_stats, share.position)
-    lambda_open_play = share.npxg_share * team_match_xg * finishing_mult
+    lambda_open_play = share.npxg_share * team_match_xg * finishing_mult * matchup_factor
     lambda_penalty = PEN_CONVERSION * PENS_PER_MATCH * mins_ratio if is_pen_taker else 0.0
-    lambda_total = max(0.001, min(lambda_open_play + lambda_penalty, 3.0))
+    lambda_cpa = compute_cpa_bonus(share.position, team_corners_per_match) * mins_ratio
+    lambda_total = max(0.001, min(lambda_open_play + lambda_penalty + lambda_cpa, 3.0))
     prob_goal = 1 - math.exp(-lambda_total)
     fair_odds_goal = round(1 / prob_goal, 2) if prob_goal > 0 else 9999.0
 
@@ -1044,6 +1147,10 @@ async def load_match_pricing(
     away_pen_taker_override: int | None = None,
     home_starters: list[str] | None = None,
     away_starters: list[str] | None = None,
+    home_matchup: str | None = None,
+    away_matchup: str | None = None,
+    home_corners_per_match: float | None = None,
+    away_corners_per_match: float | None = None,
 ) -> MatchPricingResult | None:
     """Full Top-Down pricing pipeline for one fixture (Model C).
 
@@ -1121,6 +1228,11 @@ async def load_match_pricing(
     home_shares = compute_player_shares(home_players_db, home_team, lambda_team=home_match_xg)
     away_shares = compute_player_shares(away_players_db, away_team, lambda_team=away_match_xg)
 
+    for w in assess_inputs(home_players_db, home_team):
+        logger.warning("assess_inputs [%s]: %s — %s", home_team, w.field, w.message)
+    for w in assess_inputs(away_players_db, away_team):
+        logger.warning("assess_inputs [%s]: %s — %s", away_team, w.field, w.message)
+
     home_pen_id = home_pen_taker_override or detect_penalty_taker(home_players_db)
     away_pen_id = away_pen_taker_override or detect_penalty_taker(away_players_db)
     for s in home_shares:
@@ -1130,6 +1242,9 @@ async def load_match_pricing(
 
     budget_assists_home = home_match_xg * ASSIST_GOAL_RATE
     budget_assists_away = away_match_xg * ASSIST_GOAL_RATE
+
+    home_mf = MATCHUP_FACTOR.get(home_matchup or "", _MATCHUP_FACTOR_DEFAULT)
+    away_mf = MATCHUP_FACTOR.get(away_matchup or "", _MATCHUP_FACTOR_DEFAULT)
 
     from app.services.sub_stats import get_player_sub_stats
 
@@ -1145,6 +1260,8 @@ async def load_match_pricing(
             allocate_player(
                 s, home_match_xg, s.is_pen_taker, budget_assists_home,
                 p_sub=sub.p_sub, avg_sub_time=sub.avg_sub_time,
+                matchup_factor=home_mf,
+                team_corners_per_match=home_corners_per_match,
             )
         )
     home_allocs = sorted(_home_allocs, key=lambda a: a.prob_goal, reverse=True)
@@ -1161,6 +1278,8 @@ async def load_match_pricing(
             allocate_player(
                 s, away_match_xg, s.is_pen_taker, budget_assists_away,
                 p_sub=sub.p_sub, avg_sub_time=sub.avg_sub_time,
+                matchup_factor=away_mf,
+                team_corners_per_match=away_corners_per_match,
             )
         )
     away_allocs = sorted(_away_allocs, key=lambda a: a.prob_goal, reverse=True)
