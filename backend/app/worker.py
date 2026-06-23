@@ -810,10 +810,17 @@ async def job_refresh_recommendation_odds():
             if key not in odds_map or row.odds > odds_map[key][0]:
                 odds_map[key] = (row.odds, row.bookmaker)
 
-        refreshed = expired_count = 0
+        stale_cutoff = now - timedelta(hours=12)
+        refreshed = expired_count = stale_expired = 0
         for rec in recs:
             key = (rec.fixture_id, rec.player_name, rec.market_type)
             if key not in odds_map:
+                # No fresh snapshot — expire if match within 48h and odds older than 12h
+                fixture_kickoff = getattr(rec, "_fixture_kickoff", None)
+                last_snap_age = (now - rec.generated_utc).total_seconds() / 3600
+                if last_snap_age > 12:
+                    rec.status = "expired"
+                    stale_expired += 1
                 continue
             best_odds, best_bookmaker = odds_map[key]
             new_edge = best_odds * rec.fair_probability - 1
@@ -825,11 +832,11 @@ async def job_refresh_recommendation_odds():
                 expired_count += 1
             refreshed += 1
 
-        if refreshed:
+        if refreshed or stale_expired:
             await session.commit()
             logger.info(
-                "Refreshed odds on %d pending recs (%d expired EV-)",
-                refreshed, expired_count,
+                "Refreshed odds on %d pending recs (%d expired EV-, %d expired stale)",
+                refreshed, expired_count, stale_expired,
             )
 
 
