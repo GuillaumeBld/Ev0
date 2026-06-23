@@ -402,9 +402,6 @@ async def _generate_h2h_recs(
         market_odds = market_entry["odds"]
         edge = calculate_edge(fair_odds, market_odds)
 
-        if edge < 0:
-            continue
-
         classification = "VALUE" if edge >= 0.05 else "NO_VALUE"
 
         recs.append({
@@ -687,6 +684,14 @@ async def process_scraped_fixtures(
             outcome = h2h["outcome"]
             rec_key = (fixture_orm.id, h2h["display_name"], "h2h", "goal")
             existing_rec = rec_by_key.get(rec_key)
+
+            if h2h["edge"] < 0:
+                # Market no longer offers value — expire existing active rec
+                if existing_rec and existing_rec.status in ("pending", "approved"):
+                    existing_rec.status = "expired"
+                    stats["expired"] += 1
+                continue
+
             seen_value_keys.add(rec_key)
 
             if existing_rec is None:
