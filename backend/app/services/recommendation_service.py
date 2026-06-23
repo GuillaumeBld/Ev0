@@ -685,7 +685,7 @@ async def process_scraped_fixtures(
         )
         for h2h in h2h_recs:
             outcome = h2h["outcome"]
-            rec_key = (fixture_orm.id, outcome, "h2h", "goal")
+            rec_key = (fixture_orm.id, h2h["display_name"], "h2h", "goal")
             existing_rec = rec_by_key.get(rec_key)
             seen_value_keys.add(rec_key)
 
