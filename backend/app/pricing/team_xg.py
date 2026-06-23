@@ -42,18 +42,33 @@ PENS_PER_MATCH = 0.10
 PEN_CONVERSION = 0.78
 CLAMP_MULTIPLIER_MIN = 0.5
 CLAMP_MULTIPLIER_MAX = 2.0
+# Deprecated — kept for backward compat (imports, tests). Logic moved to 11-bucket POSITION_NPXG_PRIORS.
 DF_SETPIECE_DISCOUNT: float = 0.55
 
 FORM_WEIGHTS_BY_POSITION: dict[str, float] = {
+    # 11 fine-grained buckets
+    "CF_lone": 0.30, "CF_pair": 0.28, "SS": 0.25, "winger": 0.22,
+    "AM": 0.20, "CM": 0.18, "DM": 0.12,
+    "WB": 0.10, "FB": 0.08, "CB": 0.06, "GK": 0.00,
+    # Legacy 3-bucket fallback (kept for backward compat)
     "FW": 0.25, "MF": 0.20, "DF": 0.10,
 }
-_FORM_WEIGHT_DEFAULT = 0.20
+_FORM_WEIGHT_DEFAULT = 0.18
 
+# 11-bucket npxG/90 priors (calibrated on Big5 + UCL 2024-25, ≥450 min)
 POSITION_NPXG_PRIORS: dict[str, float] = {
-    "FW": 0.25, "MF": 0.08, "DF": 0.02, "GK": 0.00,
+    "CF_lone": 0.42, "CF_pair": 0.35, "SS": 0.22,
+    "winger": 0.14, "AM": 0.10, "CM": 0.05, "DM": 0.03,
+    "WB": 0.02, "FB": 0.01, "CB": 0.01, "GK": 0.00,
+    # Legacy fallback
+    "FW": 0.25, "MF": 0.08, "DF": 0.02,
 }
 POSITION_XA_PRIORS: dict[str, float] = {
-    "FW": 0.10, "MF": 0.15, "DF": 0.03, "GK": 0.00,
+    "CF_lone": 0.08, "CF_pair": 0.09, "SS": 0.14,
+    "winger": 0.18, "AM": 0.18, "CM": 0.10, "DM": 0.05,
+    "WB": 0.08, "FB": 0.06, "CB": 0.02, "GK": 0.00,
+    # Legacy fallback
+    "FW": 0.10, "MF": 0.15, "DF": 0.03,
 }
 
 INTERNATIONAL_LEAGUES: frozenset[str] = frozenset({
@@ -72,24 +87,49 @@ def _bzz_pos_to_raw(bzz_pos: str | None) -> str | None:
 
 
 def _norm_pos(raw: str | None) -> str | None:
-    """Canonical position: FW / MF / DF / GK (W and FB kept for assist weighting)."""
+    """Map Bzzoiro position codes to 11-bucket system.
+
+    Buckets: CF_lone, CF_pair, SS, winger, AM, CM, DM, WB, FB, CB, GK
+    Falls back to legacy FW/MF/DF/GK when sub-position info is absent.
+    """
     if not raw:
         return None
     p = raw.strip().upper()
-    if p in ("FW", "MF", "DF", "GK", "W", "FB", "AM"):
-        return p
-    if "GK" in p:
+    # Explicit 11-bucket pass-through
+    if p in ("CF_LONE", "CF_PAIR", "SS", "WINGER", "AM", "CM", "DM", "WB", "FB", "CB", "GK"):
+        return p.replace("_", "_")  # normalise casing
+    # GK
+    if "GK" in p or p == "G":
         return "GK"
-    if p.startswith("F") or "FW" in p:
-        return "FW"
-    if p in ("LB", "RB", "LWB", "RWB"):
+    # Defensive line
+    if p in ("CB", "SW"):
+        return "CB"
+    if p in ("LB", "RB"):
         return "FB"
-    if p in ("LW", "RW", "LM", "RM"):
-        return "W"
-    if p.startswith("D") or "DF" in p or "CB" in p:
-        return "DF"
-    if p.startswith("M") or "MF" in p or "AM" in p:
-        return "MF"
+    if p in ("LWB", "RWB"):
+        return "WB"
+    # Defensive mid
+    if p in ("DM", "CDM", "CM/DM"):
+        return "DM"
+    # Central mid
+    if p in ("CM", "MF", "M"):
+        return "CM"
+    # Attacking mid / second striker
+    if p in ("AM", "CAM", "SS", "CF_PAIR"):
+        return "AM"
+    # Wingers
+    if p in ("LW", "RW", "LM", "RM", "WINGER", "W"):
+        return "winger"
+    # Forwards — default to CF_lone when no pairing info
+    if p in ("FW", "CF", "ST", "F", "CF_LONE"):
+        return "CF_lone"
+    # Broad legacy fallback (Bzzoiro single-char already mapped by _bzz_pos_to_raw)
+    if p == "DF":
+        return "CB"
+    if p == "MF":
+        return "CM"
+    if p == "FW":
+        return "CF_lone"
     return None
 
 
@@ -233,8 +273,6 @@ def compute_player_shares(
         else:
             blended_xg = xg_per_90
         goal_weight = blended_xg * mins_ratio
-        if pos == "DF":
-            goal_weight *= DF_SETPIECE_DISCOUNT
 
         # Assist weight — blend season xa_per_90 + form_assists_5
         xa_per_90 = p.get("xa_per_90") or 0.0

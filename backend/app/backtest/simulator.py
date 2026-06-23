@@ -35,7 +35,7 @@ from app.services.recommendation_service import (
 
 logger = logging.getLogger(__name__)
 
-CALIBRATION_SCALE = 1.0  # Top-down model; old 0.62 was calibrated for bottom-up xg_per_90
+CALIBRATION_SCALE = 0.84  # Recalibrated: 18.8% empirical win rate vs 22.3% model avg → factor ~0.84
 
 
 async def simulate_historical(

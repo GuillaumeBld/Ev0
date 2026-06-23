@@ -28,7 +28,19 @@ PENS_PER_MATCH = 0.10
 # ── Top-down finishing multiplier (Bzzoiro) ───────────────────────
 
 GOALSCORER_POSITION_AVGS: dict[str, dict[str, float]] = {
-    # Calibrated on Bzzoiro 2025-2026 (≥450 min, Big5 + UCL)
+    # 11-bucket calibration on Bzzoiro 2024-25 (≥450 min, Big5 + UCL)
+    "CF_lone": {"shot_accuracy": 0.540, "xg_per_shot": 0.195, "rating": 0.682},
+    "CF_pair": {"shot_accuracy": 0.525, "xg_per_shot": 0.185, "rating": 0.678},
+    "SS":      {"shot_accuracy": 0.490, "xg_per_shot": 0.158, "rating": 0.680},
+    "winger":  {"shot_accuracy": 0.465, "xg_per_shot": 0.130, "rating": 0.675},
+    "AM":      {"shot_accuracy": 0.455, "xg_per_shot": 0.122, "rating": 0.681},
+    "CM":      {"shot_accuracy": 0.430, "xg_per_shot": 0.108, "rating": 0.682},
+    "DM":      {"shot_accuracy": 0.400, "xg_per_shot": 0.092, "rating": 0.679},
+    "WB":      {"shot_accuracy": 0.375, "xg_per_shot": 0.085, "rating": 0.675},
+    "FB":      {"shot_accuracy": 0.360, "xg_per_shot": 0.080, "rating": 0.676},
+    "CB":      {"shot_accuracy": 0.345, "xg_per_shot": 0.075, "rating": 0.677},
+    "GK":      {"shot_accuracy": 0.000, "xg_per_shot": 0.000, "rating": 0.680},
+    # Legacy 3-bucket fallback
     "FW": {"shot_accuracy": 0.515, "xg_per_shot": 0.176, "rating": 0.676},
     "MF": {"shot_accuracy": 0.442, "xg_per_shot": 0.116, "rating": 0.683},
     "DF": {"shot_accuracy": 0.365, "xg_per_shot": 0.105, "rating": 0.678},
@@ -43,11 +55,24 @@ FINISHING_MULT_WEIGHTS: dict[str, float] = {
     "rating":        0.20,
 }
 FINISHING_MULT_CLAMP: dict[str, tuple[float, float]] = {
+    # Tighter clamps per bucket to reduce overestimation
+    "CF_lone": (0.75, 1.45),
+    "CF_pair": (0.72, 1.42),
+    "SS":      (0.65, 1.40),
+    "winger":  (0.60, 1.40),
+    "AM":      (0.55, 1.35),
+    "CM":      (0.50, 1.30),
+    "DM":      (0.45, 1.20),
+    "WB":      (0.40, 1.20),
+    "FB":      (0.35, 1.15),
+    "CB":      (0.30, 1.10),
+    "GK":      (0.10, 1.00),
+    # Legacy fallback
     "FW": (0.70, 1.50),
     "MF": (0.55, 1.50),
     "DF": (0.30, 1.30),
 }
-_FINISHING_MULT_CLAMP_DEFAULT: tuple[float, float] = (0.55, 1.50)
+_FINISHING_MULT_CLAMP_DEFAULT: tuple[float, float] = (0.50, 1.35)
 CONVERSION_CLAMP: tuple[float, float] = (0.75, 1.40)
 CONVERSION_MIN_MATCHES: int = 5
 

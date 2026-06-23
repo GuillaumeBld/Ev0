@@ -82,7 +82,9 @@ class TestAssistMultiplierDefender:
         assert conv == pytest.approx(0.75, abs=0.01)
 
 
-class TestSetpieceDiscount:
+class TestPositionBuckets:
+    """11-bucket system: DF_SETPIECE_DISCOUNT removed, shares are stats-proportional."""
+
     def _make_player(self, name: str, position: str, npxg_per_90: float) -> dict:
         return {
             "player_id": abs(hash(name)) % (10**9),
@@ -116,8 +118,8 @@ class TestSetpieceDiscount:
             "finishing_delta": 0.0,
         }
 
-    def test_df_share_discounted(self):
-        """DF avec mêmes stats qu'un FW : share DF = share FW × DF_SETPIECE_DISCOUNT."""
+    def test_df_share_proportional_no_flat_discount(self):
+        """11-bucket system: FW and DF with identical stats → equal shares (no flat discount)."""
         fw = self._make_player("FW1", "FW", 0.30)
         df = self._make_player("DF1", "DF", 0.30)
 
@@ -126,9 +128,10 @@ class TestSetpieceDiscount:
         share_df = next(s for s in shares if s.player_name == "DF1").npxg_share
 
         ratio = share_df / share_fw
-        assert ratio == pytest.approx(DF_SETPIECE_DISCOUNT, abs=0.01)
+        # No flat discount applied — ratio should be ~1.0 (same npxg_per_90 input)
+        assert ratio == pytest.approx(1.0, abs=0.05)
 
-    def test_fw_share_unaffected(self):
+    def test_fw_share_unaffected_by_df(self):
         """npxg_share d'un FW est identique avec ou sans DF dans l'équipe."""
         fw = self._make_player("FW1", "FW", 0.30)
         shares_solo = compute_player_shares([fw], "TeamA", lambda_team=1.5)
@@ -140,37 +143,26 @@ class TestSetpieceDiscount:
 
         assert share_solo == pytest.approx(share_with_df, abs=0.0001)
 
-    def test_multiple_dfs_all_discounted(self):
-        """Plusieurs DF avec les mêmes stats que FW : tous discounted de 0.55."""
-        fw = self._make_player("FW1", "FW", 0.20)
-        df1 = self._make_player("DF1", "DF", 0.20)
-        df2 = self._make_player("DF2", "DF", 0.20)
+    def test_low_npxg_df_has_lower_share_than_fw(self):
+        """DF with realistic low npxg_per_90 (0.02) has much lower share than FW (0.30)."""
+        fw = self._make_player("FW1", "FW", 0.30)
+        df = self._make_player("DF1", "DF", 0.02)
 
-        shares = compute_player_shares([fw, df1, df2], "TeamA", lambda_team=1.5)
+        shares = compute_player_shares([fw, df], "TeamA", lambda_team=1.5)
         share_fw = next(s for s in shares if s.player_name == "FW1").npxg_share
-        share_df1 = next(s for s in shares if s.player_name == "DF1").npxg_share
-        share_df2 = next(s for s in shares if s.player_name == "DF2").npxg_share
+        share_df = next(s for s in shares if s.player_name == "DF1").npxg_share
 
-        ratio1 = share_df1 / share_fw
-        ratio2 = share_df2 / share_fw
+        assert share_fw > share_df * 5
 
-        assert ratio1 == pytest.approx(DF_SETPIECE_DISCOUNT, abs=0.01)
-        assert ratio2 == pytest.approx(DF_SETPIECE_DISCOUNT, abs=0.01)
-
-    def test_assist_share_unaffected_by_discount(self):
-        """Le discount 0.55 ne s'applique que sur npxg_share, pas xa_share."""
+    def test_assist_share_independent_of_goal_share(self):
+        """xa_share is computed from xa_per_90, not influenced by goal weight."""
         fw = self._make_player("FW1", "FW", 0.30)
         df = self._make_player("DF1", "DF", 0.30)
 
         shares = compute_player_shares([fw, df], "TeamA", lambda_team=1.5)
-        # Les xa_share doivent être basés sur les poids blendés (sans discount)
-        # Donc si FW et DF ont même xa_per_90, les xa_share doivent être similaires (ratio ~1.0)
-        # même si les npxg_share ont un ratio de 0.55.
-
         xa_fw = next(s for s in shares if s.player_name == "FW1").xa_share
         xa_df = next(s for s in shares if s.player_name == "DF1").xa_share
 
-        # Les assiste : DF a 0.05 xa_per_90 (même que FW) donc ratio doit être ~1.0, pas 0.55
+        # Both have same xa_per_90=0.05 → xa_share ratio ~1.0
         xa_ratio = xa_df / xa_fw if xa_fw > 0 else 0
-        # Ratio proche de 1.0, pas 0.55
         assert xa_ratio == pytest.approx(1.0, abs=0.1)
