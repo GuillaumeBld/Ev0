@@ -30,9 +30,10 @@ class Recommendation(Base, TimestampMixin):
     player_id: Mapped[int | None] = mapped_column(nullable=True)
     player_name: Mapped[str] = mapped_column(String(200))
 
-    # Market — stored as VARCHAR, not PG native enum
+    # Market — stored as VARCHAR; values_callable ensures lookup uses lowercase values
     market_type: Mapped[MarketType] = mapped_column(
-        Enum(MarketType, native_enum=False, create_type=False),
+        Enum(MarketType, native_enum=False, create_type=False,
+             values_callable=lambda obj: [e.value for e in obj]),
         nullable=False,
         default=MarketType.GOALSCORER,
         server_default=MarketType.GOALSCORER.value,
