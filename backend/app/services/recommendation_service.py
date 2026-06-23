@@ -377,18 +377,22 @@ async def _generate_h2h_recs(
             MatchOddsSnapshot.fixture_id == fixture_id,
             MatchOddsSnapshot.market_type == "h2h",
             MatchOddsSnapshot.bookmaker.in_(FR_H2H_BOOKMAKERS),
-        )
+        ).order_by(MatchOddsSnapshot.snapshot_utc.desc())
     )
     snapshots = list(snap_result.scalars().all())
 
-    best_by_outcome: dict[str, dict] = {}
+    # Keep only the most recent snapshot per (bookmaker, outcome), then take best odds across bookmakers
+    latest_by_bookie_outcome: dict[tuple, dict] = {}
     for snap in snapshots:
-        existing = best_by_outcome.get(snap.outcome)
-        if existing is None or snap.odds > existing["odds"]:
-            best_by_outcome[snap.outcome] = {
-                "bookmaker": snap.bookmaker,
-                "odds": snap.odds,
-            }
+        key = (snap.bookmaker, snap.outcome)
+        if key not in latest_by_bookie_outcome:
+            latest_by_bookie_outcome[key] = {"bookmaker": snap.bookmaker, "odds": snap.odds}
+
+    best_by_outcome: dict[str, dict] = {}
+    for (bookmaker, outcome), entry in latest_by_bookie_outcome.items():
+        existing = best_by_outcome.get(outcome)
+        if existing is None or entry["odds"] > existing["odds"]:
+            best_by_outcome[outcome] = entry
 
     recs: list[dict] = []
     for outcome, (fair_prob, lambda_intensity, display_name) in outcomes.items():
