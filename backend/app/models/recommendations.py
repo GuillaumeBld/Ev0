@@ -13,6 +13,7 @@ from app.models.base import Base, TimestampMixin
 class MarketType(str, enum.Enum):
     STANDARD = "standard"
     SUPERSUB = "supersub"
+    H2H = "h2h"  # legacy — DB enum still contains this value
 
 
 class Recommendation(Base, TimestampMixin):

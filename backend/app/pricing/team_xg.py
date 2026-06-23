@@ -1229,9 +1229,9 @@ async def load_match_pricing(
     away_shares = compute_player_shares(away_players_db, away_team, lambda_team=away_match_xg)
 
     for w in assess_inputs(home_players_db, home_team):
-        logger.warning("assess_inputs [%s]: %s — %s", home_team, w.field, w.message)
+        logger.warning("assess_inputs [%s]: %s — %s", home_team, w.code, w.detail)
     for w in assess_inputs(away_players_db, away_team):
-        logger.warning("assess_inputs [%s]: %s — %s", away_team, w.field, w.message)
+        logger.warning("assess_inputs [%s]: %s — %s", away_team, w.code, w.detail)
 
     home_pen_id = home_pen_taker_override or detect_penalty_taker(home_players_db)
     away_pen_id = away_pen_taker_override or detect_penalty_taker(away_players_db)
