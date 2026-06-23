@@ -353,11 +353,13 @@ async def _generate_h2h_recs(
     lh: float,
     la: float,
     session: AsyncSession,
+    home_team: str = "home",
+    away_team: str = "away",
 ) -> list[dict]:
     """Compute h2h recommendations for a single fixture.
 
     Returns a list of dicts (one per outcome with edge >= 0), each containing:
-      outcome, fair_prob, fair_odds, lambda_intensity,
+      outcome, display_name, fair_prob, fair_odds, lambda_intensity,
       best_bookmaker, best_odds, edge, classification
     """
     p_home = p_poisson_home_win(lh, la)
@@ -365,9 +367,9 @@ async def _generate_h2h_recs(
     p_away = p_poisson_away_win(lh, la)
 
     outcomes = {
-        "home": (p_home, lh),
-        "draw": (p_draw, (lh + la) / 2),
-        "away": (p_away, la),
+        "home": (p_home, lh, home_team),
+        "draw": (p_draw, (lh + la) / 2, "Nul"),
+        "away": (p_away, la, away_team),
     }
 
     snap_result = await session.execute(
@@ -389,7 +391,7 @@ async def _generate_h2h_recs(
             }
 
     recs: list[dict] = []
-    for outcome, (fair_prob, lambda_intensity) in outcomes.items():
+    for outcome, (fair_prob, lambda_intensity, display_name) in outcomes.items():
         if fair_prob <= 0:
             continue
         if outcome not in best_by_outcome:
@@ -407,6 +409,7 @@ async def _generate_h2h_recs(
 
         recs.append({
             "outcome": outcome,
+            "display_name": display_name,
             "fair_prob": round(fair_prob, 4),
             "fair_odds": round(fair_odds, 4),
             "lambda_intensity": round(lambda_intensity, 4),
@@ -677,6 +680,8 @@ async def process_scraped_fixtures(
             lh=pricing.home_match_xg,
             la=pricing.away_match_xg,
             session=session,
+            home_team=fixture_orm.home_team,
+            away_team=fixture_orm.away_team,
         )
         for h2h in h2h_recs:
             outcome = h2h["outcome"]
@@ -687,7 +692,7 @@ async def process_scraped_fixtures(
             if existing_rec is None:
                 new_rec = Recommendation(
                     fixture_id=fixture_orm.id,
-                    player_name=outcome,
+                    player_name=h2h["display_name"],
                     market_type="h2h",
                     lambda_intensity=h2h["lambda_intensity"],
                     fair_probability=h2h["fair_prob"],
@@ -715,6 +720,7 @@ async def process_scraped_fixtures(
 
             elif existing_rec.status == "expired":
                 existing_rec.status = "pending"
+                existing_rec.player_name = h2h["display_name"]
                 existing_rec.best_odds = h2h["best_odds"]
                 existing_rec.best_bookmaker = h2h["best_bookmaker"]
                 existing_rec.edge = h2h["edge"]
@@ -722,6 +728,7 @@ async def process_scraped_fixtures(
                 stats["resurrected"] += 1
 
             else:
+                existing_rec.player_name = h2h["display_name"]
                 if (
                     abs(h2h["best_odds"] - existing_rec.best_odds) > 0.001
                     or abs(h2h["edge"] - existing_rec.edge) > 0.001
