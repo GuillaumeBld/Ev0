@@ -86,6 +86,12 @@ def _bzz_pos_to_raw(bzz_pos: str | None) -> str | None:
     return {"G": "GK", "D": "DF", "M": "MF", "F": "FW"}.get(bzz_pos or "", bzz_pos)
 
 
+_NORM_POS_11_BUCKET: dict[str, str] = {
+    "CF_LONE": "CF_lone", "CF_PAIR": "CF_pair", "SS": "SS", "WINGER": "winger",
+    "AM": "AM", "CM": "CM", "DM": "DM", "WB": "WB", "FB": "FB", "CB": "CB", "GK": "GK",
+}
+
+
 def _norm_pos(raw: str | None) -> str | None:
     """Map Bzzoiro position codes to 11-bucket system.
 
@@ -95,9 +101,9 @@ def _norm_pos(raw: str | None) -> str | None:
     if not raw:
         return None
     p = raw.strip().upper()
-    # Explicit 11-bucket pass-through
-    if p in ("CF_LONE", "CF_PAIR", "SS", "WINGER", "AM", "CM", "DM", "WB", "FB", "CB", "GK"):
-        return p.replace("_", "_")  # normalise casing
+    # Explicit 11-bucket pass-through (case-insensitive → canonical casing)
+    if p in _NORM_POS_11_BUCKET:
+        return _NORM_POS_11_BUCKET[p]
     # GK
     if "GK" in p or p == "G":
         return "GK"
@@ -115,21 +121,19 @@ def _norm_pos(raw: str | None) -> str | None:
     if p in ("CM", "MF", "M"):
         return "CM"
     # Attacking mid / second striker
-    if p in ("AM", "CAM", "SS", "CF_PAIR"):
+    if p in ("AM", "CAM"):
         return "AM"
     # Wingers
-    if p in ("LW", "RW", "LM", "RM", "WINGER", "W"):
+    if p in ("LW", "RW", "LM", "RM", "W"):
         return "winger"
     # Forwards — default to CF_lone when no pairing info
-    if p in ("FW", "CF", "ST", "F", "CF_LONE"):
+    if p in ("FW", "CF", "ST", "F"):
         return "CF_lone"
     # Broad legacy fallback (Bzzoiro single-char already mapped by _bzz_pos_to_raw)
     if p == "DF":
         return "CB"
-    if p == "MF":
-        return "CM"
-    if p == "FW":
-        return "CF_lone"
+    if p == "AM":
+        return "AM"
     return None
 
 
