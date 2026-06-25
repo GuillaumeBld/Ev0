@@ -121,7 +121,7 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
     void_count = 0
     stuck_fixture_ids: set[int] = set()
     for rec, fixture in rows:
-        market = str(rec.market_type)
+        market = rec.market_type.value if hasattr(rec.market_type, "value") else str(rec.market_type)
 
         # ── H2H: settle against match score ────────────────────────────────────
         if market == "h2h":
@@ -167,7 +167,8 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
 
         # ── Standard / Supersub: use bet_type to find event types ──────────────
         if market in ("standard", "supersub"):
-            event_types = _BET_TYPE_TO_EVENTS.get(str(rec.bet_type), ["goal", "penalty_goal"])
+            bet = rec.bet_type.value if hasattr(rec.bet_type, "value") else str(rec.bet_type)
+            event_types = _BET_TYPE_TO_EVENTS.get(bet, ["goal", "penalty_goal"])
         else:
             event_types = _MARKET_TO_EVENTS.get(market)
 
