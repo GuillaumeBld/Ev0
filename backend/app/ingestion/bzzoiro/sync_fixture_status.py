@@ -114,6 +114,13 @@ async def sync_fixture_status_from_bzz(session: AsyncSession) -> int:
         norm_away = normalize_team_name(fixture.away_team or "")
         candidates = bzz_index.get((norm_home, norm_away), [])
 
+        # Neutral-venue WC games: BzzEvent may have home/away reversed vs our fixture.
+        reversed_match = False
+        if not candidates:
+            candidates = bzz_index.get((norm_away, norm_home), [])
+            if candidates:
+                reversed_match = True
+
         if not candidates:
             continue
 
@@ -166,13 +173,16 @@ async def sync_fixture_status_from_bzz(session: AsyncSession) -> int:
             fixture.status = mapped_status
             changed = True
 
-        # Update scores only when BzzEvent is finished and scores are available
+        # Update scores only when BzzEvent is finished and scores are available.
+        # If home/away are reversed in the BzzEvent, swap scores to match fixture orientation.
         if best.status == "finished":
-            if best.home_score is not None and fixture.home_score != best.home_score:
-                fixture.home_score = best.home_score
+            fix_hs = best.away_score if reversed_match else best.home_score
+            fix_as = best.home_score if reversed_match else best.away_score
+            if fix_hs is not None and fixture.home_score != fix_hs:
+                fixture.home_score = fix_hs
                 changed = True
-            if best.away_score is not None and fixture.away_score != best.away_score:
-                fixture.away_score = best.away_score
+            if fix_as is not None and fixture.away_score != fix_as:
+                fixture.away_score = fix_as
                 changed = True
 
         if changed:
