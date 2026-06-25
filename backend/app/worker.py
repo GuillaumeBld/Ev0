@@ -1279,6 +1279,18 @@ async def job_sync_bzzoiro_lineups() -> None:
 # ── WC2026 Match Stats Job ───────────────────────────────────────
 
 
+async def job_sync_fixture_status() -> None:
+    """Every hour: sync fixture status and scores from BzzEvent."""
+    try:
+        from app.ingestion.bzzoiro.sync_fixture_status import sync_fixture_status_from_bzz
+        async with async_session() as session:
+            updated = await sync_fixture_status_from_bzz(session)
+        if updated:
+            logger.info("job_sync_fixture_status: %d fixtures updated", updated)
+    except Exception as exc:
+        logger.exception("job_sync_fixture_status failed: %s", exc)
+
+
 async def job_sync_wc_match_stats() -> None:
     """Every hour: fetch player stats for finished WC2026 matches that have none yet."""
     logger.info("job_sync_wc_match_stats: start")
@@ -1496,6 +1508,17 @@ def create_scheduler() -> AsyncIOScheduler:
         id="sync_bzzoiro_lineups",
         replace_existing=True,
         max_instances=1,
+    )
+
+    # Fixture status + scores: every hour — marks finished + populates home/away scores
+    scheduler.add_job(
+        job_sync_fixture_status,
+        IntervalTrigger(hours=1),
+        id="sync_fixture_status",
+        name="Sync fixture status and scores from BzzEvent",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
 
     # WC2026 squads: daily at 05:00 UTC (squads rarely change; covers late call-ups)

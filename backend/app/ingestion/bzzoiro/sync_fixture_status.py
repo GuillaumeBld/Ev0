@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.fixture_matcher import normalize_team_name
@@ -41,14 +41,19 @@ _KICKOFF_THRESHOLD_SECONDS = 1800  # 30 minutes
 async def sync_fixture_status_from_bzz(session: AsyncSession) -> int:
     """Update Fixture rows from matching BzzEvent rows. Returns count updated."""
 
-    # 1. Load all non-finished fixtures
+    # 1. Load non-finished fixtures + finished fixtures that still have NULL scores
     fixture_result = await session.execute(
-        select(Fixture).where(Fixture.status != "finished")
+        select(Fixture).where(
+            or_(
+                Fixture.status != "finished",
+                Fixture.home_score.is_(None),
+            )
+        )
     )
     fixtures = list(fixture_result.scalars().all())
 
     if not fixtures:
-        logger.info("No non-finished fixtures to sync")
+        logger.info("No fixtures need status/score sync")
         return 0
 
     # 2. Determine date range from their kickoff_utc (±5 days)

@@ -79,6 +79,12 @@ _MARKET_TO_EVENTS: dict[str, list[str]] = {
     "anytime_assist": ["assist"],
 }
 
+# bet_type → event types (for standard/supersub recs that use bet_type, not market_type)
+_BET_TYPE_TO_EVENTS: dict[str, list[str]] = {
+    "goal": ["goal", "penalty_goal"],
+    "assist": ["assist"],
+}
+
 
 async def settle_approved_recommendations(db: AsyncSession) -> dict:
     """Settle all unsettled approved recommendations for finished fixtures.
@@ -115,7 +121,56 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
     void_count = 0
     stuck_fixture_ids: set[int] = set()
     for rec, fixture in rows:
-        event_types = _MARKET_TO_EVENTS.get(rec.market_type)
+        market = str(rec.market_type)
+
+        # ── H2H: settle against match score ────────────────────────────────────
+        if market == "h2h":
+            if fixture.home_score is None or fixture.away_score is None:
+                stuck_fixture_ids.add(fixture.id)
+                logger.debug(
+                    "auto_settle: h2h rec %d — fixture %d has no score yet, skipping",
+                    rec.id, fixture.id,
+                )
+                continue
+
+            outcome = rec.player_name  # team name or "Nul"
+            hs, as_ = fixture.home_score, fixture.away_score
+
+            if _normalize_name(outcome) in ("nul", "draw", "x"):
+                won = hs == as_
+            elif _names_match(outcome, fixture.home_team or ""):
+                won = hs > as_
+            elif _names_match(outcome, fixture.away_team or ""):
+                won = as_ > hs
+            else:
+                logger.warning(
+                    "auto_settle: h2h rec %d — cannot match outcome '%s' to '%s' vs '%s'",
+                    rec.id, outcome, fixture.home_team, fixture.away_team,
+                )
+                continue
+
+            result = "won" if won else "lost"
+            pnl = round(10.0 * (rec.best_odds - 1), 2) if won else -10.0
+            rec.result = result
+            rec.pnl = pnl
+            rec.settled_utc = datetime.now(UTC)
+            settled += 1
+            if won:
+                won_count += 1
+            else:
+                lost_count += 1
+            logger.info(
+                "auto_settle: h2h rec %d (%s) → %s (score %d-%d) pnl=%.2f",
+                rec.id, outcome, result, hs, as_, pnl,
+            )
+            continue
+
+        # ── Standard / Supersub: use bet_type to find event types ──────────────
+        if market in ("standard", "supersub"):
+            event_types = _BET_TYPE_TO_EVENTS.get(str(rec.bet_type), ["goal", "penalty_goal"])
+        else:
+            event_types = _MARKET_TO_EVENTS.get(market)
+
         if event_types is None:
             logger.warning("auto_settle: unknown market_type '%s' for rec %d", rec.market_type, rec.id)
             continue
