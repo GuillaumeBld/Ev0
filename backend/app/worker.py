@@ -1567,6 +1567,7 @@ async def main():
     async with async_session() as session:
         await sync_fixture_status_from_bzz(session)
     await job_sync_match_events()
+    await job_sync_wc_match_stats()
 
     # Keep running
     try:
