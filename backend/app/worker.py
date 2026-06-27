@@ -949,8 +949,26 @@ async def job_auto_finish_fixtures():
 
 
 async def job_settle_pipeline():
-    """Every 30 min: Bzzoiro status sync → auto-finish → sync match events → settle."""
+    """Every 30 min: WC events refresh → Bzzoiro status sync → auto-finish → sync match events → settle → WC stats."""
     logger.info("=== Settlement pipeline: start ===")
+
+    # Refresh WC2026 BzzEvents from Bzzoiro API so status reflects finished matches.
+    # This runs every 30 min (not every 6h like the full event sync) so WC match
+    # stats are available within 30 min of a match ending, not up to 7h later.
+    if settings.bzzoiro_api_key:
+        try:
+            from app.ingestion.bzzoiro.sync_events import sync_events
+            from app.ingestion.bzzoiro.constants import INTERNATIONAL_LEAGUE_INTERNAL_IDS
+            async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
+                wc_internal_id = INTERNATIONAL_LEAGUE_INTERNAL_IDS["world_cup_2026"]
+                await sync_events(
+                    session, client,
+                    league_internal_ids=[wc_internal_id],
+                    days_back=3, days_forward=14,
+                )
+        except Exception as exc:
+            logger.error("Settlement pipeline: WC events refresh failed: %s", exc, exc_info=True)
+
     from app.ingestion.bzzoiro.sync_fixture_status import sync_fixture_status_from_bzz
     try:
         async with async_session() as session:
