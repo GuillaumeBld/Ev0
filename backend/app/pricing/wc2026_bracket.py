@@ -29,11 +29,7 @@ STAGES = ["r32", "r16", "qf", "sf", "finalist", "winner"]
 # ── ELO Engine ────────────────────────────────────────────────────────────────
 
 def _elo_from_team_bm() -> dict[str, float]:
-    """Initialise ELO ratings from TEAM_BM bookmaker budgets.
-
-    Uses a log10 scale anchored to the geometric mean of all BM values so that
-    the average ELO across the 48 nations is approximately 1500.
-    """
+    """Initialise ELO ratings from TEAM_BM using a log10 scale anchored to the geometric mean."""
     from app.ingestion.wc2026.team_bm import TEAM_BM
     geo_mean = math.exp(
         sum(math.log(bm) for bm in TEAM_BM.values()) / len(TEAM_BM)
