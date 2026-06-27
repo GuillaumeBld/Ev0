@@ -62,8 +62,7 @@ def _update_elo(
 def _match_proba_group(elo_a: float, elo_b: float) -> tuple[float, float, float]:
     """Return (p_win_a, p_draw, p_win_b) for a group-stage match."""
     ea = 1.0 / (1.0 + 10.0 ** ((elo_b - elo_a) / 400.0))
-    # p_draw is highest when teams are equal (ea=0.5, so 2*ea-1=0)
-    p_draw = 0.35 * (1.0 - abs(2.0 * ea - 1.0))
+    p_draw = 0.28 * (1.0 - abs(2.0 * ea - 1.0))
     p_win_a = ea * (1.0 - p_draw)
     p_win_b = (1.0 - ea) * (1.0 - p_draw)
     return p_win_a, p_draw, p_win_b
