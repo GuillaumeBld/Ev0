@@ -11,7 +11,7 @@ class WC2026TeamAdvancement(Base):
     __tablename__ = "wc2026_team_advancement"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    nation: Mapped[str] = mapped_column(String(60), nullable=False, unique=True, index=True)
+    nation: Mapped[str] = mapped_column(String(60), nullable=False, unique=True)
     elo: Mapped[float] = mapped_column(Float, nullable=False)
     p_r32: Mapped[float] = mapped_column(Float, nullable=False)
     p_r16: Mapped[float] = mapped_column(Float, nullable=False)

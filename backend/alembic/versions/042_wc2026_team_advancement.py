@@ -38,11 +38,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("nation", name="uq_wc2026_team_advancement_nation"),
     )
-    op.create_index(
-        "ix_wc2026_team_advancement_nation", "wc2026_team_advancement", ["nation"]
-    )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_wc2026_team_advancement_nation", "wc2026_team_advancement")
     op.drop_table("wc2026_team_advancement")
