@@ -203,19 +203,15 @@ def _simulate_group(
 
 # ── Bracket Placement ──────────────────────────────────────────────────────────
 
-# WC2026 R32 bracket: the 12 predefined W vs R matchups.
-# Format: ("W_X", "R_Y") means winner of group X faces runner-up of group Y.
-# Based on FIFA WC2026 announced bracket structure.
-# 8 slots for 3rd-placed teams are interleaved; simplified assignment uses
-# alphabetical order of source group for deterministic slot mapping.
-_R32_W_R_PAIRS: list[tuple[str, str]] = [
-    ("W_A", "R_B"), ("W_C", "R_D"), ("W_E", "R_F"),
-    ("W_G", "R_H"), ("W_I", "R_J"), ("W_K", "R_L"),
-    ("W_B", "R_A"), ("W_D", "R_C"), ("W_F", "R_E"),
-    ("W_H", "R_G"), ("W_J", "R_I"), ("W_L", "R_K"),
+# WC2026: 12 groups → 4 regions of 3 groups each.
+# Each region: 3 winners + 3 runners-up + 2 best thirds = 8 teams → 4 R32 matches.
+# 4 regions × 4 matches = 16 R32 matches. ✓
+_REGIONS: list[tuple[str, str, str]] = [
+    ("A", "B", "C"),   # Region I
+    ("D", "E", "F"),   # Region II
+    ("G", "H", "I"),   # Region III
+    ("J", "K", "L"),   # Region IV
 ]
-# Indices into _R32_W_R_PAIRS (0-11) where a 3rd-placed team replaces the runner-up slot
-_R32_THIRD_SLOTS: frozenset[int] = frozenset({1, 3, 5, 7, 9, 10, 11})
 
 
 def _build_bracket(
@@ -223,26 +219,38 @@ def _build_bracket(
     standings: dict[str, dict[str, dict]],
     thirds_teams: list[str],
 ) -> list[tuple[str, str]]:
-    """Build 16 R32 matchup pairs from group standings and qualified thirds."""
-    pos_to_team: dict[str, str] = {}
+    """Build 16 R32 matchup pairs (4 regions × 4 matches each).
+
+    Within each region (groups X, Y, Z) with 2 thirds T1, T2:
+      Match 1: W_X vs R_Y   Match 2: W_Y vs T1
+      Match 3: W_Z vs R_X   Match 4: R_Z vs T2
+    This ensures no same-group teams meet before R16.
+    """
+    # Resolve group positions to team names
+    pos: dict[str, str] = {}
     for gid, teams in groups.items():
         ranked = _rank_group(standings[gid])
-        pos_to_team[f"W_{gid}"] = ranked[0]
-        pos_to_team[f"R_{gid}"] = ranked[1]
+        pos[f"W_{gid}"] = ranked[0]
+        pos[f"R_{gid}"] = ranked[1]
 
+    # Assign 2 thirds per region in alphabetical order
     pairs: list[tuple[str, str]] = []
     third_idx = 0
 
-    for i, (pos_a, pos_b) in enumerate(_R32_W_R_PAIRS):
-        team_a = pos_to_team.get(pos_a, pos_a)
-        if i in _R32_THIRD_SLOTS and third_idx < len(thirds_teams):
-            team_b = thirds_teams[third_idx]
-            third_idx += 1
-        else:
-            team_b = pos_to_team.get(pos_b, pos_b)
-        pairs.append((team_a, team_b))
+    for x, y, z in _REGIONS:
+        if f"W_{x}" not in pos or f"W_{y}" not in pos or f"W_{z}" not in pos:
+            continue  # skip regions not yet determined
 
-    return pairs
+        t1 = thirds_teams[third_idx]     if third_idx < len(thirds_teams) else pos.get(f"R_{y}", "?")
+        t2 = thirds_teams[third_idx + 1] if third_idx + 1 < len(thirds_teams) else pos.get(f"R_{z}", "?")
+        third_idx += 2
+
+        pairs.append((pos[f"W_{x}"], pos[f"R_{y}"]))
+        pairs.append((pos[f"W_{y}"], t1))
+        pairs.append((pos[f"W_{z}"], pos[f"R_{x}"]))
+        pairs.append((pos[f"R_{z}"], t2))
+
+    return pairs  # 16 pairs
 
 
 def _simulate_ko_round(
