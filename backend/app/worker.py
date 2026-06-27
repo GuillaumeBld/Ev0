@@ -979,6 +979,9 @@ async def job_settle_pipeline():
     await job_sync_match_events()
     await job_auto_settle()
 
+    # Recompute bracket advancement probabilities after any newly finished match
+    await job_sync_wc_bracket()
+
     # Sync WC2026 player stats for any match that just became finished
     try:
         from app.ingestion.wc2026.sync_wc_match_stats import sync_wc_match_stats
@@ -1327,6 +1330,26 @@ async def job_sync_wc_match_stats() -> None:
         logger.exception("job_sync_wc_match_stats failed: %s", exc)
 
 
+async def job_sync_wc_bracket() -> None:
+    """Every hour: recompute WC2026 team advancement probabilities via ELO + Monte Carlo."""
+    logger.info("job_sync_wc_bracket: start")
+    try:
+        from app.pricing.wc2026_bracket import compute_wc_advancement
+        from app.models.wc2026_advancement import WC2026TeamAdvancement
+        async with async_session() as session:
+            rows = await compute_wc_advancement(session)
+            if not rows:
+                logger.warning("job_sync_wc_bracket: no rows computed — skipping truncate")
+                return
+            await session.execute(text("TRUNCATE TABLE wc2026_team_advancement RESTART IDENTITY"))
+            for row in rows:
+                session.add(WC2026TeamAdvancement(**row))
+            await session.commit()
+        logger.info("job_sync_wc_bracket: %d nations computed", len(rows))
+    except Exception as exc:
+        logger.exception("job_sync_wc_bracket failed: %s", exc)
+
+
 # ── WC2026 Outrights Job ──────────────────────────────────────────
 
 
@@ -1559,6 +1582,17 @@ def create_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
 
+    # WC2026 bracket simulation: every hour — recomputes ELO + advancement probs
+    scheduler.add_job(
+        job_sync_wc_bracket,
+        IntervalTrigger(hours=1),
+        id="sync_wc_bracket",
+        name="Recompute WC2026 bracket advancement probabilities (ELO + Monte Carlo)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     return scheduler
 
 
@@ -1585,6 +1619,7 @@ async def main():
     async with async_session() as session:
         await sync_fixture_status_from_bzz(session)
     await job_sync_match_events()
+    await job_sync_wc_bracket()
     await job_sync_wc_match_stats()
 
     # Keep running
