@@ -1,10 +1,16 @@
 import math
 import pytest
+import numpy as np
 from app.pricing.wc2026_bracket import (
+    _apply_result,
+    _build_groups,
     _elo_from_team_bm,
-    _update_elo,
     _match_proba_group,
     _match_proba_ko,
+    _rank_group,
+    _select_best_thirds,
+    _simulate_group,
+    _update_elo,
 )
 
 
@@ -87,13 +93,6 @@ def test_match_proba_ko_symmetric():
     assert abs(p_ab + p_ba - 1.0) < 1e-9
 
 
-from app.pricing.wc2026_bracket import (
-    _build_groups,
-    _rank_group,
-    _select_best_thirds,
-)
-
-
 # ── Group helpers ──────────────────────────────────────────────────────────────
 
 def _make_event(home: str, away: str, sh: int, sa: int, finished: bool = True, rnd: int = 1):
@@ -105,6 +104,50 @@ def _make_event(home: str, away: str, sh: int, sa: int, finished: bool = True, r
         "status": "finished" if finished else "not_started",
         "round_number": rnd,
     }
+
+
+def _empty_standing(*teams: str) -> dict:
+    return {t: {"pts": 0, "gd": 0, "gf": 0, "elo": 1500.0} for t in teams}
+
+
+def test_apply_result_win():
+    st = _empty_standing("A", "B")
+    _apply_result(st, "A", "B", 2, 1)
+    assert st["A"]["pts"] == 3
+    assert st["B"]["pts"] == 0
+    assert st["A"]["gf"] == 2
+    assert st["B"]["gf"] == 1
+    assert st["A"]["gd"] == 1
+    assert st["B"]["gd"] == -1
+
+
+def test_apply_result_draw():
+    st = _empty_standing("A", "B")
+    _apply_result(st, "A", "B", 1, 1)
+    assert st["A"]["pts"] == 1
+    assert st["B"]["pts"] == 1
+    assert st["A"]["gd"] == 0
+    assert st["B"]["gd"] == 0
+
+
+def test_simulate_group_uses_real_scores():
+    # When all matches are finished, _simulate_group should reflect exact standings
+    elo = {"A": 1500.0, "B": 1500.0, "C": 1500.0, "D": 1500.0}
+    # A wins all 3, B wins 2, C wins 1, D wins 0
+    events = [
+        {"home_team": "A", "away_team": "B", "home_score": 1, "away_score": 0, "status": "finished", "round_number": 1},
+        {"home_team": "A", "away_team": "C", "home_score": 1, "away_score": 0, "status": "finished", "round_number": 2},
+        {"home_team": "A", "away_team": "D", "home_score": 1, "away_score": 0, "status": "finished", "round_number": 3},
+        {"home_team": "B", "away_team": "C", "home_score": 1, "away_score": 0, "status": "finished", "round_number": 1},
+        {"home_team": "B", "away_team": "D", "home_score": 1, "away_score": 0, "status": "finished", "round_number": 2},
+        {"home_team": "C", "away_team": "D", "home_score": 1, "away_score": 0, "status": "finished", "round_number": 3},
+    ]
+    rng = np.random.default_rng(42)
+    standing = _simulate_group(["A", "B", "C", "D"], events, elo, rng)
+    assert standing["A"]["pts"] == 9
+    assert standing["B"]["pts"] == 6
+    assert standing["C"]["pts"] == 3
+    assert standing["D"]["pts"] == 0
 
 
 def test_build_groups_two_groups():

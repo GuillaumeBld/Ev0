@@ -159,15 +159,25 @@ def _simulate_group(
     elo: dict[str, float],
     rng: np.random.Generator,
 ) -> dict[str, dict]:
-    """Simulate a group: finished matches use real scores; unplayed are sampled."""
+    """Simulate a group: finished matches use real scores; unplayed are sampled.
+
+    ELO is frozen at entry — it reflects all finished matches before this
+    simulation call, updated once in compute_wc_advancement, not per-match here.
+    """
     standing: dict[str, dict] = {
         t: {"pts": 0, "gd": 0, "gf": 0, "elo": elo.get(t, _BASE_ELO)}
         for t in group_teams
     }
+    # Build O(1) lookup for this group's real results
+    event_map: dict[frozenset, dict] = {
+        frozenset({ev["home_team"], ev["away_team"]}): ev
+        for ev in events
+        if ev.get("round_number") in _GROUP_ROUNDS
+    }
 
     for i, ta in enumerate(group_teams):
         for tb in group_teams[i + 1:]:
-            match = _find_match(events, ta, tb)
+            match = event_map.get(frozenset({ta, tb}))
             if match and match["status"] == "finished":
                 sh, sa = match["home_score"], match["away_score"]
                 if match["home_team"] == ta:
