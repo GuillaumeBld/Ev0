@@ -360,10 +360,7 @@ def simulate_bracket(
 
 
 def _e_games_from_probs(probs: dict[str, float]) -> float:
-    """Compute expected games from simulation probabilities.
-
-    E[games] = 3 + p_r32 + p_r16 + p_qf + 2*p_sf + p_finalist
-    """
+    """E[games] = 3 + p_r32 + p_r16 + p_qf + 2*p_sf + p_finalist — mirrors wc2026_tournament.py formula for calibration consistency."""
     return (
         3.0
         + probs["r32"]
