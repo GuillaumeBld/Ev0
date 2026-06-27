@@ -203,17 +203,6 @@ def _simulate_group(
 
 # ── Bracket Placement ──────────────────────────────────────────────────────────
 
-# WC2026: 12 groups → 4 regions of 3 groups each.
-# Each region: 3 winners + 3 runners-up + 2 best thirds = 8 teams → 4 R32 matches.
-# 4 regions × 4 matches = 16 R32 matches. ✓
-_REGIONS: list[tuple[str, str, str]] = [
-    ("A", "B", "C"),   # Region I
-    ("D", "E", "F"),   # Region II
-    ("G", "H", "I"),   # Region III
-    ("J", "K", "L"),   # Region IV
-]
-
-
 def _build_bracket(
     groups: dict[str, list[str]],
     standings: dict[str, dict[str, dict]],
@@ -221,10 +210,10 @@ def _build_bracket(
 ) -> list[tuple[str, str]]:
     """Build 16 R32 matchup pairs (4 regions × 4 matches each).
 
+    Groups are sorted by key and partitioned into regions of 3.
     Within each region (groups X, Y, Z) with 2 thirds T1, T2:
       Match 1: W_X vs R_Y   Match 2: W_Y vs T1
       Match 3: W_Z vs R_X   Match 4: R_Z vs T2
-    This ensures no same-group teams meet before R16.
     """
     # Resolve group positions to team names
     pos: dict[str, str] = {}
@@ -233,13 +222,13 @@ def _build_bracket(
         pos[f"W_{gid}"] = ranked[0]
         pos[f"R_{gid}"] = ranked[1]
 
-    # Assign 2 thirds per region in alphabetical order
+    # Partition sorted group IDs into regions of 3
+    sorted_gids = sorted(groups.keys())
     pairs: list[tuple[str, str]] = []
     third_idx = 0
 
-    for x, y, z in _REGIONS:
-        if f"W_{x}" not in pos or f"W_{y}" not in pos or f"W_{z}" not in pos:
-            continue  # skip regions not yet determined
+    for i in range(0, len(sorted_gids) - 2, 3):
+        x, y, z = sorted_gids[i], sorted_gids[i + 1], sorted_gids[i + 2]
 
         t1 = thirds_teams[third_idx]     if third_idx < len(thirds_teams) else pos.get(f"R_{y}", "?")
         t2 = thirds_teams[third_idx + 1] if third_idx + 1 < len(thirds_teams) else pos.get(f"R_{z}", "?")
@@ -250,7 +239,7 @@ def _build_bracket(
         pairs.append((pos[f"W_{z}"], pos[f"R_{x}"]))
         pairs.append((pos[f"R_{z}"], t2))
 
-    return pairs  # 16 pairs
+    return pairs  # 16 pairs for 12 groups
 
 
 def _simulate_ko_round(
