@@ -160,6 +160,18 @@ async def compute_expected_games(db: AsyncSession) -> dict[str, float]:
         + 2 × p(top4 = reach SF)   # SF game + 3rd-or-Final game (guaranteed for top4)
         + p(finalist)               # Final game (only the 2 finalists)
     """
+    # Priority 1: dynamic bracket simulation results
+    adv_rows = (await db.execute(text(
+        "SELECT nation, e_games FROM wc2026_team_advancement"
+    ))).mappings().all()
+    if adv_rows:
+        logger.info(
+            "compute_expected_games: using bracket simulation (%d nations)", len(adv_rows)
+        )
+        return {r["nation"]: float(r["e_games"]) for r in adv_rows}
+
+    # Fallback: bookmaker outright odds (existing implementation below)
+    logger.info("compute_expected_games: advancement table empty — falling back to bookmaker odds")
     # Fetch all individual odds records, then compute median after name normalization.
     # This avoids double-counting when bookmakers use different name variants for the same nation
     # (e.g. PMU uses "Spain" while Betclic/Unibet use "Espagne" → both map to canonical "Spain").
