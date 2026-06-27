@@ -1,7 +1,6 @@
 """WC2026 match center — list + detail with on-demand sync from Bzzoiro."""
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Any
 
@@ -22,8 +21,8 @@ WC_LEAGUE_API_ID = 27
 
 
 def _bzz_client() -> BzzoiroClient:
-    key = os.environ.get("BZZOIRO_API_KEY", "")
-    return BzzoiroClient(key)
+    from app.config import settings
+    return BzzoiroClient(settings.bzzoiro_api_key or "")
 
 
 # ── Pydantic out models ───────────────────────────────────────────────────────
