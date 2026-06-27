@@ -221,3 +221,49 @@ def test_select_best_thirds_picks_eight():
     assert len(best) == 8
     assert best[0]["team"] == "T0"
     assert best[7]["team"] == "T7"
+
+
+from app.pricing.wc2026_bracket import simulate_bracket, _e_games_from_probs
+
+
+def test_simulate_bracket_probabilities_in_range():
+    elo = _elo_from_team_bm()
+    from app.ingestion.wc2026.team_bm import TEAM_BM
+    nations = list(TEAM_BM.keys())
+    groups = {chr(ord("A") + i): nations[i * 4: i * 4 + 4] for i in range(12)}
+    results = simulate_bracket(elo, groups, events=[], n_sim=500)
+    assert len(results) == 48
+    for nation, probs in results.items():
+        for stage in ["r32", "r16", "qf", "sf", "finalist", "winner"]:
+            assert 0.0 <= probs[stage] <= 1.0, f"{nation}/{stage}={probs[stage]} out of [0,1]"
+
+
+def test_simulate_bracket_favourites_advance_more():
+    elo = _elo_from_team_bm()
+    from app.ingestion.wc2026.team_bm import TEAM_BM
+    nations = list(TEAM_BM.keys())
+    groups = {chr(ord("A") + i): nations[i * 4: i * 4 + 4] for i in range(12)}
+    results = simulate_bracket(elo, groups, events=[], n_sim=1_000)
+    assert results["Spain"]["finalist"] > results["Iraq"]["finalist"]
+
+
+def test_e_games_from_probs_range():
+    from app.pricing.wc2026_bracket import _e_games_from_probs
+    # Team that exits group stage
+    probs_early = {"r32": 0.0, "r16": 0.0, "qf": 0.0, "sf": 0.0, "finalist": 0.0, "winner": 0.0}
+    assert _e_games_from_probs(probs_early) == 3.0
+    # Perfect winner (wins everything with p=1)
+    probs_winner = {"r32": 1.0, "r16": 1.0, "qf": 1.0, "sf": 1.0, "finalist": 1.0, "winner": 1.0}
+    assert _e_games_from_probs(probs_winner) == 3.0 + 1 + 1 + 1 + 2 + 1  # = 9.0
+
+
+def test_simulate_bracket_e_games_in_range():
+    elo = _elo_from_team_bm()
+    from app.ingestion.wc2026.team_bm import TEAM_BM
+    from app.pricing.wc2026_bracket import _e_games_from_probs
+    nations = list(TEAM_BM.keys())
+    groups = {chr(ord("A") + i): nations[i * 4: i * 4 + 4] for i in range(12)}
+    results = simulate_bracket(elo, groups, events=[], n_sim=500)
+    for nation, probs in results.items():
+        eg = _e_games_from_probs(probs)
+        assert 3.0 <= eg <= 9.0, f"{nation}: e_games={eg}"

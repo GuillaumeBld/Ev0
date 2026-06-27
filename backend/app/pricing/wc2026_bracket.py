@@ -199,3 +199,250 @@ def _simulate_group(
             _apply_result(standing, ta, tb, ga, gb)
 
     return standing
+
+
+# ── Bracket Placement ──────────────────────────────────────────────────────────
+
+# WC2026 R32 bracket: the 12 predefined W vs R matchups.
+# Format: ("W_X", "R_Y") means winner of group X faces runner-up of group Y.
+# Based on FIFA WC2026 announced bracket structure.
+# 8 slots for 3rd-placed teams are interleaved; simplified assignment uses
+# alphabetical order of source group for deterministic slot mapping.
+_R32_W_R_PAIRS: list[tuple[str, str]] = [
+    ("W_A", "R_B"), ("W_C", "R_D"), ("W_E", "R_F"),
+    ("W_G", "R_H"), ("W_I", "R_J"), ("W_K", "R_L"),
+    ("W_B", "R_A"), ("W_D", "R_C"), ("W_F", "R_E"),
+    ("W_H", "R_G"), ("W_J", "R_I"), ("W_L", "R_K"),
+]
+# Indices into _R32_W_R_PAIRS (0-11) where a 3rd-placed team replaces the runner-up slot
+_R32_THIRD_SLOTS: frozenset[int] = frozenset({1, 3, 5, 7, 9, 10, 11})
+
+
+def _build_bracket(
+    groups: dict[str, list[str]],
+    standings: dict[str, dict[str, dict]],
+    thirds_teams: list[str],
+) -> list[tuple[str, str]]:
+    """Build 16 R32 matchup pairs from group standings and qualified thirds."""
+    pos_to_team: dict[str, str] = {}
+    for gid, teams in groups.items():
+        ranked = _rank_group(standings[gid])
+        pos_to_team[f"W_{gid}"] = ranked[0]
+        pos_to_team[f"R_{gid}"] = ranked[1]
+
+    pairs: list[tuple[str, str]] = []
+    third_idx = 0
+
+    for i, (pos_a, pos_b) in enumerate(_R32_W_R_PAIRS):
+        team_a = pos_to_team.get(pos_a, pos_a)
+        if i in _R32_THIRD_SLOTS and third_idx < len(thirds_teams):
+            team_b = thirds_teams[third_idx]
+            third_idx += 1
+        else:
+            team_b = pos_to_team.get(pos_b, pos_b)
+        pairs.append((team_a, team_b))
+
+    return pairs
+
+
+def _simulate_ko_round(
+    pairs: list[tuple[str, str]],
+    elo: dict[str, float],
+    rng: np.random.Generator,
+) -> tuple[list[str], list[str]]:
+    """Simulate one knockout round. Returns (winners, losers)."""
+    winners, losers = [], []
+    for ta, tb in pairs:
+        p_a = _match_proba_ko(elo.get(ta, _BASE_ELO), elo.get(tb, _BASE_ELO))
+        if rng.random() < p_a:
+            winners.append(ta)
+            losers.append(tb)
+        else:
+            winners.append(tb)
+            losers.append(ta)
+    return winners, losers
+
+
+# ── Monte Carlo ────────────────────────────────────────────────────────────────
+
+def simulate_bracket(
+    elo: dict[str, float],
+    groups: dict[str, list[str]],
+    events: list[dict],
+    n_sim: int = N_SIM,
+) -> dict[str, dict[str, float]]:
+    """Run Monte Carlo simulation of the WC2026 bracket.
+
+    Returns {nation: {stage: probability}} for all nations in elo.
+    Stages: r32, r16, qf, sf, finalist, winner.
+    """
+    rng = np.random.default_rng(42)
+    counters: dict[str, dict[str, int]] = {
+        n: {s: 0 for s in STAGES} for n in elo
+    }
+
+    for _ in range(n_sim):
+        # 1. Simulate remaining group matches → standings
+        standings: dict[str, dict[str, dict]] = {}
+        for gid, teams in groups.items():
+            standings[gid] = _simulate_group(teams, events, elo, rng)
+
+        # 2. Collect thirds and pick best 8
+        all_thirds: list[dict] = []
+        for gid, teams in groups.items():
+            ranked = _rank_group(standings[gid])
+            if len(ranked) >= 3:
+                third = ranked[2]
+                st = standings[gid][third]
+                all_thirds.append({
+                    "team": third,
+                    "pts": st["pts"],
+                    "gd": st["gd"],
+                    "gf": st["gf"],
+                })
+        best8 = _select_best_thirds(all_thirds)
+        thirds_teams = sorted(t["team"] for t in best8)
+
+        # 3. Mark r32 qualifiers
+        for gid in groups:
+            ranked = _rank_group(standings[gid])
+            for t in ranked[:2]:
+                if t in counters:
+                    counters[t]["r32"] += 1
+        for t in thirds_teams:
+            if t in counters:
+                counters[t]["r32"] += 1
+
+        # 4. Build bracket and simulate knockouts
+        pairs_r32 = _build_bracket(groups, standings, thirds_teams)
+        winners_r32, _ = _simulate_ko_round(pairs_r32, elo, rng)
+        for t in winners_r32:
+            if t in counters:
+                counters[t]["r16"] += 1
+
+        pairs_r16 = list(zip(winners_r32[::2], winners_r32[1::2]))
+        winners_r16, _ = _simulate_ko_round(pairs_r16, elo, rng)
+        for t in winners_r16:
+            if t in counters:
+                counters[t]["qf"] += 1
+
+        pairs_qf = list(zip(winners_r16[::2], winners_r16[1::2]))
+        winners_qf, _ = _simulate_ko_round(pairs_qf, elo, rng)
+        for t in winners_qf:
+            if t in counters:
+                counters[t]["sf"] += 1
+
+        pairs_sf = list(zip(winners_qf[::2], winners_qf[1::2]))
+        winners_sf, _ = _simulate_ko_round(pairs_sf, elo, rng)
+        for t in winners_sf:
+            if t in counters:
+                counters[t]["finalist"] += 1
+
+        if len(winners_sf) >= 2:
+            pairs_final = [(winners_sf[0], winners_sf[1])]
+            winners_final, _ = _simulate_ko_round(pairs_final, elo, rng)
+            for t in winners_final:
+                if t in counters:
+                    counters[t]["winner"] += 1
+
+    return {
+        nation: {stage: count / n_sim for stage, count in stages.items()}
+        for nation, stages in counters.items()
+    }
+
+
+def _e_games_from_probs(probs: dict[str, float]) -> float:
+    """Compute expected games from simulation probabilities.
+
+    E[games] = 3 + p_r32 + p_r16 + p_qf + 2*p_sf + p_finalist
+    """
+    return (
+        3.0
+        + probs["r32"]
+        + probs["r16"]
+        + probs["qf"]
+        + 2.0 * probs["sf"]
+        + probs["finalist"]
+    )
+
+
+# ── Public Entry Point ─────────────────────────────────────────────────────────
+
+async def compute_wc_advancement(session: Any) -> list[dict]:
+    """Compute WC2026 team advancement probabilities via ELO + Monte Carlo.
+
+    Reads all WC events from bzz_events, applies ELO updates for finished
+    matches, then runs simulate_bracket(). Returns a list of dicts ready for
+    DB INSERT into wc2026_team_advancement.
+    """
+    from sqlalchemy import text
+
+    rows = (await session.execute(text("""
+        SELECT
+            e.round_number,
+            e.status,
+            e.home_score,
+            e.away_score,
+            ht.name AS home_team,
+            at.name AS away_team
+        FROM bzz_events e
+        JOIN bzz_teams ht ON ht.api_id = e.home_team_api_id
+        JOIN bzz_teams at ON at.api_id = e.away_team_api_id
+        WHERE e.league_api_id = :lid
+        ORDER BY e.event_date ASC
+    """), {"lid": WC_LEAGUE_API_ID})).mappings().all()
+
+    events = [dict(r) for r in rows]
+
+    # Build reverse map: bzz team name → TEAM_BM canonical key
+    from app.ingestion.wc2026.team_bm import TEAM_BM, WC2026_NATION_NAME_ALIASES
+    bzz_to_canon: dict[str, str] = {
+        bzz_name: canon
+        for canon, bzz_name in WC2026_NATION_NAME_ALIASES.items()
+    }
+    for canon in TEAM_BM:
+        bzz_to_canon.setdefault(canon, canon)
+
+    norm_events = []
+    for ev in events:
+        home = bzz_to_canon.get(ev["home_team"])
+        away = bzz_to_canon.get(ev["away_team"])
+        if home and away:
+            norm_events.append({**ev, "home_team": home, "away_team": away})
+
+    # Initialise ELO and apply all finished matches
+    elo = _elo_from_team_bm()
+    for ev in norm_events:
+        if ev["status"] == "finished" and ev["home_score"] is not None:
+            _update_elo(elo, ev["home_team"], ev["away_team"],
+                        ev["home_score"], ev["away_score"])
+
+    groups = _build_groups(norm_events)
+    if not groups:
+        logger.warning("compute_wc_advancement: no group events found — returning empty")
+        return []
+
+    logger.info(
+        "compute_wc_advancement: %d groups, %d nations, running %d simulations",
+        len(groups), len(elo), N_SIM,
+    )
+
+    probs = simulate_bracket(elo, groups, norm_events, n_sim=N_SIM)
+
+    now = datetime.now(timezone.utc)
+    return [
+        {
+            "nation":      nation,
+            "elo":         round(elo.get(nation, _BASE_ELO), 1),
+            "p_r32":       round(p["r32"],      6),
+            "p_r16":       round(p["r16"],      6),
+            "p_qf":        round(p["qf"],       6),
+            "p_sf":        round(p["sf"],       6),
+            "p_finalist":  round(p["finalist"], 6),
+            "p_winner":    round(p["winner"],   6),
+            "e_games":     round(_e_games_from_probs(p), 4),
+            "n_sim":       N_SIM,
+            "computed_at": now,
+        }
+        for nation, p in probs.items()
+    ]
