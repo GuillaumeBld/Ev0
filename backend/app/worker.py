@@ -1331,7 +1331,7 @@ async def job_sync_wc_match_stats() -> None:
 
 
 async def job_sync_wc_bracket() -> None:
-    """Every hour: recompute WC2026 team advancement probabilities via ELO + Monte Carlo."""
+    """Every hour: recompute WC2026 team advancement probabilities via ELO + Monte Carlo, then reprice players."""
     logger.info("job_sync_wc_bracket: start")
     try:
         from app.pricing.wc2026_bracket import compute_wc_advancement
@@ -1348,6 +1348,20 @@ async def job_sync_wc_bracket() -> None:
         logger.info("job_sync_wc_bracket: %d nations computed", len(rows))
     except Exception as exc:
         logger.exception("job_sync_wc_bracket failed: %s", exc)
+        return
+
+    try:
+        from app.pricing.wc2026_tournament import compute_tournament_pricing
+        from app.models.wc2026_pricing import WC2026PlayerPricing
+        async with async_session() as session:
+            pricing_rows = await compute_tournament_pricing(session)
+            await session.execute(text("TRUNCATE TABLE wc2026_player_pricing RESTART IDENTITY"))
+            for row in pricing_rows:
+                session.add(WC2026PlayerPricing(**row))
+            await session.commit()
+        logger.info("job_sync_wc_bracket: %d players repriced", len(pricing_rows))
+    except Exception as exc:
+        logger.exception("job_sync_wc_bracket: player repricing failed: %s", exc)
 
 
 # ── WC2026 Outrights Job ──────────────────────────────────────────
