@@ -99,7 +99,7 @@ export default function WC2026BracketPage() {
         {loading ? (
           <p className="text-gray-500 text-sm p-4">Chargement…</p>
         ) : teams.length === 0 ? (
-          <p className="text-gray-500 text-sm p-4">Aucune donnée — le job bracket n'a pas encore tourné.</p>
+          <p className="text-gray-500 text-sm p-4">Aucune donnée — le job bracket n&apos;a pas encore tourné.</p>
         ) : (
           <table className="w-full text-xs border-collapse">
             <thead className="sticky top-0 bg-gray-900 z-10">
