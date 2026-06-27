@@ -21,6 +21,7 @@ import {
   Shield,
   X,
   BarChart2,
+  Trophy,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 
@@ -57,6 +58,7 @@ const navGroups = [
       { name: 'Stats', href: '/dashboard/wc2026/stats', icon: BarChart2 },
       { name: 'Compos', href: '/dashboard/wc2026/lineups', icon: ClipboardList },
       { name: 'Pricing', href: '/dashboard/wc2026/pricing', icon: Calculator },
+      { name: 'Bracket', href: '/dashboard/wc2026/bracket', icon: Trophy },
     ],
   },
   {

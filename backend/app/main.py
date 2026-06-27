@@ -30,6 +30,7 @@ from app.api import wc2026 as wc2026_api
 from app.api import wc2026_lineups as wc2026_lineups_api
 from app.api import wc2026_matches as wc2026_matches_api
 from app.api import wc2026_pricing as wc2026_pricing_api
+from app.api import wc2026_advancement as wc2026_advancement_api
 from app.api import wc2026_stats as wc2026_stats_api
 from app.cache import close_redis
 from app.config import settings
@@ -87,4 +88,5 @@ app.include_router(wc2026_lineups_api.router, prefix="/api/v1", tags=["wc2026"])
 app.include_router(wc2026_pricing_api.router, prefix="/api/v1", tags=["wc2026"])
 app.include_router(wc2026_matches_api.router, prefix="/api/v1", tags=["wc2026"])
 app.include_router(wc2026_stats_api.router, prefix="/api/v1", tags=["wc2026"])
+app.include_router(wc2026_advancement_api.router, prefix="/api/v1", tags=["wc2026"])
 app.include_router(config_api.router, prefix="/api", tags=["config"])

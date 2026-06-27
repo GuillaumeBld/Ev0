@@ -1243,3 +1243,22 @@ export async function syncWCStats(): Promise<SyncStatsResult> {
   const { data } = await api.post('/api/v1/wc2026/matches/sync-stats', {}, { timeout: 120_000 })
   return data
 }
+
+export interface WCTeamAdvancement {
+  nation: string
+  elo: number
+  p_r32: number
+  p_r16: number
+  p_qf: number
+  p_sf: number
+  p_finalist: number
+  p_winner: number
+  e_games: number
+  n_sim: number
+  computed_at: string
+}
+
+export async function getWCAdvancement(): Promise<WCTeamAdvancement[]> {
+  const { data } = await api.get('/api/v1/wc2026/advancement')
+  return data
+}
