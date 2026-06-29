@@ -1,53 +1,81 @@
-# Sources de données et Protocoles de Robustesse
+# Sources de données
 
-## Sources de Données Primaires
+## Stats joueurs — Bzzoiro API
 
-### 🥇 FBref (StatsBomb)
-*   **Usage** : Source de vérité pour les metrics xG, xA, Minutes.
-*   **Fréquence** : Quotidienne (J+1 après match).
-*   **Critère de Qualité** : Doit contenir `npxG` et `Minutes`.
+Source principale pour toutes les statistiques joueurs et fixtures. Clé : `BZZOIRO_API_KEY`.
 
-### 🥈 Bookmakers FR (Betclic, Unibet)
-*   **Usage** : Source des cotes "Soft" à battre.
-*   **Fréquence** : Horaire (ou On-Demand).
+| Données | Endpoint / table destination |
+|---------|------------------------------|
+| Fixtures (matchs) | `bzz_events` |
+| Stats joueurs par match | `bzz_player_match_stats` |
+| Stats joueurs par saison | `bzz_player_season_stats` |
+| Joueurs | `bzz_players` |
+| Équipes | `bzz_teams` |
+| Ligues | `bzz_leagues` |
+| Compos prédites | `bzz_predictions` |
 
----
-
-## Infrastructure & Réseau (Politique Locale)
-
-Pour la version V1, l'exécution se fait **localement** (IP Résidentielle).
-
-*   **Pourquoi ?** FBref et les Bookmakers bloquent agressivement les IPs de Datacenter (AWS, GCP, DigitalOcean).
-*   **Contrainte** : Le script d'ingestion doit tourner sur une machine physique (Laptop ou Mini-PC) connectée à un FAI résidentiel.
-*   **Proxies** : Pas de Smart Proxies coûteux pour la V1. Si blocage, pause de 24h.
+**Ligues couvertes** : Ligue 1, Premier League, Bundesliga, Serie A, La Liga, Ligue des Champions, WC2026 (`league_api_id=27`).
 
 ---
 
-## Protocoles de Fallback (Gestion des Pannes)
+## Cotes bookmakers
 
-### Cas 1 : FBref indisponible ou bloqué
-**Impact** : Impossible de mettre à jour les moyennes xG/90 des joueurs après le dernier match.
+### OddsPortal (scraping HTML)
 
-**Procédure Automatique** :
-1.  **Mode Dégradé (Stale Data)** : Le système continue de pricer avec les snapshots de la veille (`T-1`).
-2.  **Alerte** : Flag `DATA_STALE` ajouté à toutes les recommandations.
-3.  **Limite** : Si panne > 7 jours, arrêt complet du pricing (les formes ne sont plus à jour).
+xG de marché implicite via les cotes WDW (1X2). Source primaire pour `MarketXgService`.
+Tables : `odds_snapshots`, `match_odds_snapshots`, `oddsportal_poll_state`.
 
-### Cas 2 : Cotes indisponibles sur un Bookmaker
-**Impact** : Impossible de calculer l'Edge exact pour ce book.
+### Betclic (scraping gRPC)
 
-**Règle de Gestion** :
-1.  Ignorer le bookmaker défaillant.
-2.  Si aucun bookmaker FR n'est disponible : **ARRÊT**. Pas de pari sans contrepartie.
+Cotes buteur/passeur joueur. Marché FR principal.
+Table : `player_odds_snapshots`.
+
+### Unibet (scraping LVS)
+
+Cotes buteur/passeur joueur. Marché FR secondaire.
+Table : `player_odds_snapshots` (même table, champ `bookmaker`).
+
+### Bzzoiro (xG live)
+
+Bzzoiro fournit aussi des xG live en cours de match via ses cotes. Activé quand disponibles et récents (`xg_source = "bzzoiro"`).
 
 ---
 
-## Validation de la Donnée (Sanity Checks)
+## WC2026 — Sources spécifiques
 
-Chaque pipeline d'ingestion doit passer ces tests bloquants :
+### Bzzoiro (scores et stats)
 
-| Test | Condition | Action si Échec |
-|------|-----------|-----------------|
-| **Sum Probabilities** | Somme des probas implicites bookmaker > 1.0 (Overround normal) et < 1.30. | Rejet Snapshot (Erreur parsing) |
-| **Outliers xG** | Un joueur a > 3.0 xG sur un match. | Flag Warning (Possible mais rare) |
-| **Negative Stats** | npxG < 0 ou Minutes < 0. | Rejet Snapshot (Bug source) |
+Résultats et stats joueurs WC2026 via `league_api_id=27`. Même pipeline que les ligues championnat.
+
+### Sofascore (events de buts — import local)
+
+Bzzoiro et FotMob retournent 403 depuis le VPS pour les détails de match.
+Solution : fetch Sofascore localement et import via script dans le container.
+- Ligue 1 : `tournament_id=34`, `season_id=77356`
+- Premier League : `tournament_id=17`, `season_id=76986`
+- Incidents endpoint : `https://api.sofascore.com/api/v1/event/{event_id}/incidents`
+
+### API-Football (ID mapping)
+
+Utilisé ponctuellement pour mapper les IDs d'équipes (`fix_api_football_ids.py`).
+
+---
+
+## Priorité et fallbacks xG
+
+```
+1. Override manuel (opérateur)      → xg_source = "override"
+2. Bzzoiro live xG                  → xg_source = "bzzoiro"
+3. Market-implied (OddsPortal)      → xg_source = "market_implied"
+4. Market-implied flagged (ancien)  → xg_source = "market_implied_flagged"
+```
+
+Si aucune source n'est disponible, le calcul échoue avec une erreur explicite (pas de fallback silencieux).
+
+---
+
+## Données WC2026 outrights (TEAM_BM)
+
+Cotes bookmaker pour l'avancement au tournoi (vainqueur, top 2, top 4, top 8) stockées dans `wc2026_outright_odds`. Utilisées comme :
+1. Initialisation des ELO (via `_elo_from_team_bm`)
+2. Fallback de `compute_expected_games()` si la table `wc2026_team_advancement` est vide

@@ -1,72 +1,78 @@
 # Stack technique
 
 ## Backend
-- **Python 3.11+**
-- **FastAPI** pour les APIs
-- **Pandas, NumPy** pour le traitement de données
-- **SciPy** pour distributions Poisson et stats
-- **scikit-learn** pour calibration (isotonique, Platt scaling)
-- **SQLAlchemy** pour l'accès DB
-- **Pydantic** pour validation des schémas
-- **APScheduler** ou **Celery** pour jobs planifiés
 
-## Scraping / Data
-- **soccerdata** (probberechts) - FBref, Understat, FotMob
-- **ScraperFC** (oseymour) - Alternative pip installable
-- **httpx** ou **requests** pour APIs
-- **beautifulsoup4** / **selectolax** pour parsing HTML
+| Lib | Usage |
+|-----|-------|
+| Python 3.13 | Langage principal |
+| FastAPI | API REST |
+| SQLAlchemy (async) | ORM + requêtes DB |
+| Alembic | Migrations DB |
+| APScheduler | Jobs planifiés (worker) |
+| Pydantic v2 | Validation schémas API |
+| NumPy | Monte Carlo (bracket WC2026) |
+| httpx | Requêtes HTTP async (Bzzoiro, scraping) |
+| Playwright | Scraping Betclic (gRPC) |
 
-## Storage
-- **PostgreSQL** comme datastore principal
-- **Redis** optionnel pour cache et état des jobs
-- **Object storage** optionnel pour snapshots bruts (Parquet)
+## Scraping
+
+| Source | Méthode |
+|--------|---------|
+| Bzzoiro | API REST (clé BZZOIRO_API_KEY) |
+| OddsPortal | Scraping HTML + httpx |
+| Betclic | Scraping gRPC via Playwright |
+| Unibet | Scraping LVS (API interne) |
+| Sofascore | Fetch local + import script (WC2026 events uniquement) |
+
+## Base de données
+
+| Service | Usage |
+|---------|-------|
+| PostgreSQL 15 | Datastore principal |
+| Redis 7 | Cache + état des jobs APScheduler |
 
 ## Frontend
-- **Next.js** (React) avec TypeScript
-- **Tailwind CSS** pour le styling
-- **TanStack Query** (React Query) pour data fetching
-- **Recharts** ou **Chart.js** pour les graphiques
 
-## DevOps
-- **Docker** et **Docker Compose**
-- **GitHub Actions** pour CI (lint, tests, type checks)
-- **Pre-commit hooks** (ruff, black, mypy)
-- Observabilité :
-  - Prometheus metrics endpoint
-  - Grafana dashboards optionnel
+| Lib | Usage |
+|-----|-------|
+| Next.js 14 (App Router) | Framework React |
+| TypeScript | Typage |
+| Tailwind CSS | Styling |
+| clsx | Classes conditionnelles |
+| lucide-react | Icônes |
+| next-auth | Authentification (credentials) |
+| axios | Requêtes API backend |
 
-## Sources de cotes
-- **The Odds API** (https://the-odds-api.com) - Agrégateur
-- **Scraping** Betclic, Parions Sport, Unibet (avec respect ToS)
+## Infrastructure
 
-## Repos de référence
-| Repo | Usage |
-|------|-------|
-| `probberechts/soccerdata` | Scraping FBref, Understat |
-| `oseymour/ScraperFC` | Alternative scraping |
-| `ML-KULeuven/soccer_xg` | Modèles xG |
-| `dashee87/blogScripts` | Baseline Poisson |
-| `eddwebster/football_analytics` | Notebooks référence |
+| Outil | Usage |
+|-------|-------|
+| Docker + Docker Compose | Conteneurisation |
+| Dokploy | Gestion déploiement VPS |
+| Traefik | Reverse proxy + HTTPS |
+| VPS OVH | Hébergement (213.130.144.204) |
+| GitHub | Source de vérité du code |
 
 ## Structure du projet
+
 ```
 Ev0/
 ├── backend/
-│   ├── api/              # FastAPI app
-│   ├── ingestion/        # Jobs d'ingestion
-│   ├── models/           # Modèles SQLAlchemy
-│   ├── pricing/          # Moteurs de pricing
-│   │   ├── goalscorer.py # Module Buteur
-│   │   └── assist.py     # Module Passeur
-│   ├── strategy/         # Logique de sélection
-│   └── backtest/         # Framework de backtest
+│   ├── app/
+│   │   ├── api/          # Endpoints FastAPI
+│   │   ├── ingestion/    # Clients Bzzoiro, OddsPortal, Betclic, Unibet
+│   │   ├── models/       # Modèles SQLAlchemy
+│   │   ├── pricing/      # Moteurs de pricing (goalscorer, assist, supersub, wc2026_*)
+│   │   ├── services/     # MarketXgService, recommendation engine
+│   │   └── worker.py     # APScheduler jobs
+│   ├── alembic/          # Migrations DB
+│   ├── scripts/          # Scripts utilitaires ponctuels
+│   └── tests/
 ├── frontend/
-│   └── ...               # Next.js app
-├── infra/
-│   ├── docker-compose.yml
-│   └── ...
-├── docs/
-│   └── ...               # Documentation
-└── tests/
-    └── ...
+│   └── src/
+│       ├── app/dashboard/   # Pages Next.js
+│       ├── components/      # Composants React
+│       └── lib/             # API client, helpers
+├── docs/                    # Documentation
+└── docker-compose.yml
 ```
