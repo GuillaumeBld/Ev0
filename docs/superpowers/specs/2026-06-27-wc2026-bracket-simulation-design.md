@@ -9,8 +9,8 @@ Replace the current static `compute_expected_games()` (based on pre-tournament b
 ```
 bzz_events (résultats réels WC2026)
     ↓
-[pricing/wc2026_bracket.py]  — NEW
-  1. _build_groups()           → 12 groupes de 4 équipes
+[pricing/wc2026_bracket.py]
+  1. _build_groups()           → 12 groupes de 4 équipes (Union-Find)
   2. _elo_from_team_bm()       → ELO initial depuis TEAM_BM
   3. _update_elo()             → mise à jour K=30 après chaque match joué
   4. simulate_group_stage()    → classements finaux (matchs restants simulés)
@@ -18,13 +18,16 @@ bzz_events (résultats réels WC2026)
   6. _simulate_knockout()      → R32→R16→QF→SF→Finale
   compute_wc_advancement()     → public entry point
     ↓
-wc2026_team_advancement  — NEW TABLE
+wc2026_team_advancement        (TRUNCATE + INSERT à chaque run)
+    ↓ (e_games lus par compute_expected_games())
+[pricing/wc2026_tournament.py]
+  compute_expected_games()     → lit e_games depuis wc2026_team_advancement
+                                 (fallback: cotes bookmakers si table vide)
+  compute_tournament_pricing() → lambdas joueurs × e_games × parts Poisson
     ↓
-[pricing/wc2026_tournament.py]  — MODIFIED
-  compute_expected_games() lit wc2026_team_advancement.e_games
-  (fallback: cotes bookmakers si table vide)
+wc2026_player_pricing          (TRUNCATE + INSERT automatique après chaque bracket run)
     ↓
-wc2026_player_pricing  — EXISTANT INCHANGÉ
+[API /wc2026/pricing]          → frontend Calculateur CDM
 ```
 
 **Tech stack:** Pure Python + NumPy (Monte Carlo), SQLAlchemy async, APScheduler (déjà en place).
@@ -198,6 +201,9 @@ TRUNCATE + INSERT à chaque recalcul (même pattern que `wc2026_player_pricing`)
 
 ### Nouveau job `job_sync_wc_bracket()`
 
+Le job fait **deux choses en séquence** — si la première échoue, la deuxième est ignorée (pas de repricing sur des données corrompues) :
+
+**Phase 1 — Recalcul ELO + Monte Carlo → `wc2026_team_advancement`**
 ```python
 async def job_sync_wc_bracket() -> None:
     logger.info("job_sync_wc_bracket: start")
@@ -206,6 +212,9 @@ async def job_sync_wc_bracket() -> None:
         from app.models.wc2026_advancement import WC2026TeamAdvancement
         async with async_session() as session:
             rows = await compute_wc_advancement(session)
+            if not rows:
+                logger.warning("job_sync_wc_bracket: no rows computed — skipping truncate")
+                return
             await session.execute(text("TRUNCATE TABLE wc2026_team_advancement RESTART IDENTITY"))
             for row in rows:
                 session.add(WC2026TeamAdvancement(**row))
@@ -213,22 +222,44 @@ async def job_sync_wc_bracket() -> None:
         logger.info("job_sync_wc_bracket: %d nations computed", len(rows))
     except Exception as exc:
         logger.exception("job_sync_wc_bracket failed: %s", exc)
+        return  # ← ne pas reprendre le pricing si le bracket a échoué
 ```
+
+**Phase 2 — Auto-repricing des joueurs → `wc2026_player_pricing`**
+
+Immédiatement après chaque run bracket réussi, le job recalcule et sauvegarde le pricing joueur. `e_games` vient d'être mis à jour, donc les lambdas intègrent les nouvelles probabilités de qualification.
+
+```python
+    try:
+        from app.pricing.wc2026_tournament import compute_tournament_pricing
+        from app.models.wc2026_pricing import WC2026PlayerPricing
+        async with async_session() as session:
+            pricing_rows = await compute_tournament_pricing(session)
+            await session.execute(text("TRUNCATE TABLE wc2026_player_pricing RESTART IDENTITY"))
+            for row in pricing_rows:
+                session.add(WC2026PlayerPricing(**row))
+            await session.commit()
+        logger.info("job_sync_wc_bracket: %d players repriced", len(pricing_rows))
+    except Exception as exc:
+        logger.exception("job_sync_wc_bracket: player repricing failed: %s", exc)
+```
+
+> **Note :** La spec initiale de `wc2026_tournament_pricing` indiquait "recalcul manuel uniquement". Ce n'est plus le cas — le repricing est **automatique** après chaque run bracket.
 
 ### Position dans `job_settle_pipeline`
 
 ```python
 async def job_settle_pipeline():
     # ... WC BzzEvents refresh, fixture status sync, auto-finish, match events, settle ...
-    await job_sync_wc_bracket()           # ← NOUVEAU (avant wc_match_stats)
-    await job_sync_wc_match_stats()       # stats joueurs + pricing joueur
+    await job_sync_wc_bracket()           # ← bracket ELO + Monte Carlo + repricing joueurs
+    await job_sync_wc_match_stats()       # stats joueurs (lambda_remaining, buts, passes)
 ```
 
-Également appelé au startup (après `job_sync_wc_match_stats` dans la séquence initiale).
+Également appelé au startup (avant `job_sync_wc_match_stats` dans la séquence initiale).
 
-### Job horaire dédié (optionnel)
+### Job horaire dédié
 
-Un `IntervalTrigger(hours=1)` pour `job_sync_wc_bracket` peut être ajouté en complément du pipeline 30 min pour garantir un recalcul même si un tick rate saute.
+Un `IntervalTrigger(hours=1, max_instances=1, coalesce=True)` garantit un recalcul même si un tick pipeline est sauté. Le repricing joueur est inclus dans ce job horaire.
 
 ---
 
