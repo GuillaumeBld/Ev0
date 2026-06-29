@@ -15,6 +15,17 @@ import { MatchDetailPanel } from '@/components/wc2026/MatchDetailPanel'
 
 type StatusFilter = 'all' | 'finished' | 'upcoming'
 
+const ROUND_ORDER = [1, 2, 3, 6, 5, 27, 28, 29, 50]
+const ROUND_LABELS: Record<number, string> = {
+  1: 'Journée 1', 2: 'Journée 2', 3: 'Journée 3',
+  6: '16es de finale', 5: '8es de finale',
+  27: 'Quarts de finale', 28: 'Demi-finales', 29: 'Finale', 50: '3e place',
+}
+const ROUND_SHORT: Record<number, string> = {
+  1: 'J1', 2: 'J2', 3: 'J3',
+  6: '16e', 5: '8e', 27: 'QF', 28: 'SF', 29: 'Fin', 50: '3e',
+}
+
 function statusColor(status: string | null) {
   if (status === 'finished') return 'text-gray-500'
   if (status === 'live' || status === 'inprogress') return 'text-green-400'
@@ -58,7 +69,7 @@ function MatchCard({
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-xs text-gray-500">{formatDate(match.event_date)}</span>
         {match.round_number && (
-          <span className="text-xs text-gray-600">J{match.round_number}</span>
+          <span className="text-xs text-gray-600">{ROUND_SHORT[match.round_number] ?? `J${match.round_number}`}</span>
         )}
       </div>
 
@@ -167,7 +178,11 @@ export default function WC2026MatchesPage() {
     }
   }
 
-  const rounds = Array.from(new Set(matches.map(m => m.round_number ?? 0))).sort((a, b) => a - b)
+  const rounds = Array.from(new Set(matches.map(m => m.round_number ?? 0))).sort((a, b) => {
+    const ia = ROUND_ORDER.indexOf(a)
+    const ib = ROUND_ORDER.indexOf(b)
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib)
+  })
 
   const filtered = matches.filter(m => {
     if (statusFilter === 'finished' && m.status !== 'finished') return false
@@ -180,16 +195,6 @@ export default function WC2026MatchesPage() {
   for (const m of filtered) {
     const r = m.round_number ?? 0
     ;(byRound[r] ??= []).push(m)
-  }
-
-  const roundLabels: Record<number, string> = {
-    1: 'Journée 1',
-    2: 'Journée 2',
-    3: 'Journée 3',
-    4: 'Huitièmes de finale',
-    5: 'Quarts de finale',
-    6: 'Demi-finales',
-    7: 'Finale',
   }
 
   return (
@@ -275,7 +280,7 @@ export default function WC2026MatchesPage() {
                     : 'border-gray-700 text-gray-500 hover:text-gray-300',
                 )}
               >
-                J{r}
+                {ROUND_SHORT[r] ?? `J${r}`}
               </button>
             ))}
           </div>
@@ -287,11 +292,15 @@ export default function WC2026MatchesPage() {
             <p className="text-gray-600 text-sm text-center py-8">Chargement…</p>
           ) : (
             Object.entries(byRound)
-              .sort(([a], [b]) => Number(a) - Number(b))
+              .sort(([a], [b]) => {
+                const ia = ROUND_ORDER.indexOf(Number(a))
+                const ib = ROUND_ORDER.indexOf(Number(b))
+                return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib)
+              })
               .map(([round, roundMatches]) => (
                 <div key={round}>
                   <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 px-1">
-                    {roundLabels[Number(round)] ?? `Journée ${round}`}
+                    {ROUND_LABELS[Number(round)] ?? `Journée ${round}`}
                   </div>
                   <div className="space-y-1.5">
                     {roundMatches.map(m => (
