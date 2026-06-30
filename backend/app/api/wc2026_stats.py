@@ -164,10 +164,12 @@ async def get_rankings(
         await session.execute(
             text("""
                 WITH deduped AS (
+                    -- Une ligne par (joueur, match) — on garde le player_api_id le plus récent
+                    -- pour éviter les doublons quand Bzzoiro change d'ID pour le même joueur.
                     SELECT DISTINCT ON (p.name, ps.event_api_id)
-                        p.name       AS player_name,
-                        p.position   AS bzz_pos,
-                        t.name       AS team_name,
+                        p.name                  AS player_name,
+                        p.position              AS bzz_pos,
+                        p.national_team_api_id  AS nat_team_api_id,
                         ps.minutes_played,
                         ps.goals,
                         ps.goal_assist,
@@ -178,13 +180,6 @@ async def get_rankings(
                     FROM bzz_player_match_stats ps
                     JOIN bzz_players p ON p.api_id = ps.player_api_id
                     JOIN bzz_events  e ON e.api_id = ps.event_api_id
-                    LEFT JOIN bzz_teams t ON t.api_id = COALESCE(
-                        ps.team_api_id,
-                        CASE WHEN ps.is_home = true  THEN e.home_team_api_id
-                             WHEN ps.is_home = false THEN e.away_team_api_id
-                             ELSE NULL END,
-                        p.national_team_api_id
-                    )
                     WHERE e.league_api_id = :lid
                       AND COALESCE(ps.minutes_played, 1) > 0
                     ORDER BY p.name, ps.event_api_id, ps.player_api_id DESC
@@ -192,7 +187,10 @@ async def get_rankings(
                 SELECT
                     player_name                              AS bzz_name,
                     bzz_pos,
-                    team_name,
+                    -- Nom d'équipe national depuis le profil joueur Bzzoiro (plus fiable
+                    -- que la team déduite du match, qui peut être mal attribuée en cas de
+                    -- is_home/team_api_id manquants).
+                    nt.name                                  AS national_team_name,
                     COUNT(*)                                 AS matches,
                     COALESCE(SUM(minutes_played), 0)         AS minutes,
                     COALESCE(SUM(goals), 0)                  AS goals,
@@ -202,7 +200,8 @@ async def get_rankings(
                     COALESCE(SUM(total_shots), 0)            AS shots,
                     COALESCE(SUM(shots_on_target), 0)        AS shots_on_target
                 FROM deduped
-                GROUP BY player_name, bzz_pos, team_name
+                LEFT JOIN bzz_teams nt ON nt.api_id = nat_team_api_id
+                GROUP BY player_name, bzz_pos, nt.name
                 ORDER BY xg DESC
             """),
             {"lid": WC_LEAGUE_ID},
@@ -238,8 +237,8 @@ async def get_rankings(
             flag_emoji = squad_entry["flag_emoji"]
             position   = squad_entry["position"]
         else:
-            # Fallback : nation via le nom d'équipe Bzzoiro (anglais → français)
-            nation     = BZZ_TEAM_TO_NATION.get(r["team_name"] or "")
+            # Fallback : nation via l'équipe nationale Bzzoiro du joueur (anglais → français)
+            nation     = BZZ_TEAM_TO_NATION.get(r["national_team_name"] or "")
             # Emoji du drapeau : prendre le premier joueur du squad pour cette nation
             nation_squad = squad_by_nation.get(nation or "", [])
             flag_emoji = nation_squad[0]["flag_emoji"] if nation_squad else None
