@@ -69,6 +69,60 @@ BM_XG: dict[str, float] = {
 }
 
 
+# Mapping nom Bzzoiro (anglais) → nom nation français (wc2026_squad_players).
+# Fallback utilisé quand le nom du joueur ne matche pas directement dans le squad.
+BZZ_TEAM_TO_NATION: dict[str, str] = {
+    "Algeria":             "Algérie",
+    "Argentina":           "Argentine",
+    "Australia":           "Australie",
+    "Austria":             "Autriche",
+    "Belgium":             "Belgique",
+    "Bosnia & Herzegovina": "Bosnie-Herzégovine",
+    "Brazil":              "Brésil",
+    "Cabo Verde":          "Cap-Vert",
+    "Canada":              "Canada",
+    "Colombia":            "Colombie",
+    "Croatia":             "Croatie",
+    "Curaçao":             "Curaçao",
+    "Czechia":             "République Tchèque",
+    "Côte d'Ivoire":       "Côte d'Ivoire",
+    "DR Congo":            "RD Congo",
+    "Ecuador":             "Équateur",
+    "Egypt":               "Égypte",
+    "England":             "Angleterre",
+    "France":              "France",
+    "Germany":             "Allemagne",
+    "Ghana":               "Ghana",
+    "Haiti":               "Haïti",
+    "Iran":                "Iran",
+    "Iraq":                "Irak",
+    "Japan":               "Japon",
+    "Jordan":              "Jordanie",
+    "Mexico":              "Mexique",
+    "Morocco":             "Maroc",
+    "Netherlands":         "Pays-Bas",
+    "New Zealand":         "Nouvelle-Zélande",
+    "Norway":              "Norvège",
+    "Panama":              "Panama",
+    "Paraguay":            "Paraguay",
+    "Portugal":            "Portugal",
+    "Qatar":               "Qatar",
+    "Saudi Arabia":        "Arabie Saoudite",
+    "Scotland":            "Écosse",
+    "Senegal":             "Sénégal",
+    "South Africa":        "Afrique du Sud",
+    "South Korea":         "Corée du Sud",
+    "Spain":               "Espagne",
+    "Sweden":              "Suède",
+    "Switzerland":         "Suisse",
+    "Tunisia":             "Tunisie",
+    "Türkiye":             "Turquie",
+    "USA":                 "États-Unis",
+    "Uruguay":             "Uruguay",
+    "Uzbekistan":          "Ouzbékistan",
+}
+
+
 def _norm(name: str) -> str:
     n = unicodedata.normalize("NFKD", name.lower().strip())
     return "".join(c for c in n if not unicodedata.combining(c))
@@ -165,15 +219,30 @@ async def get_rankings(
         _norm(r["player_name"]): dict(r) for r in squad_rows
     }
 
+    # Index secondaire : nation → liste d'entrées squad (pour le fallback emoji/position)
+    squad_by_nation: dict[str, list[dict]] = {}
+    for entry in squad.values():
+        n = entry.get("nation")
+        if n:
+            squad_by_nation.setdefault(n, []).append(entry)
+
     # ── 3. Première passe — construction intermédiaire ────────────────────────
     intermediate: list[dict] = []
     for r in rows:
         bzz_name: str = r["bzz_name"]
         squad_entry = squad.get(_norm(bzz_name))
 
-        nation     = squad_entry["nation"]     if squad_entry else None
-        flag_emoji = squad_entry["flag_emoji"] if squad_entry else None
-        position   = squad_entry["position"]   if squad_entry else _bzz_pos_to_squad(r["bzz_pos"])
+        if squad_entry:
+            nation     = squad_entry["nation"]
+            flag_emoji = squad_entry["flag_emoji"]
+            position   = squad_entry["position"]
+        else:
+            # Fallback : nation via le nom d'équipe Bzzoiro (anglais → français)
+            nation     = BZZ_TEAM_TO_NATION.get(r["team_name"] or "")
+            # Emoji du drapeau : prendre le premier joueur du squad pour cette nation
+            nation_squad = squad_by_nation.get(nation or "", [])
+            flag_emoji = nation_squad[0]["flag_emoji"] if nation_squad else None
+            position   = _bzz_pos_to_squad(r["bzz_pos"])
 
         intermediate.append({
             "player_name": bzz_name,
