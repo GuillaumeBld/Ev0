@@ -1389,10 +1389,12 @@ def create_scheduler() -> AsyncIOScheduler:
     """Create and configure the scheduler."""
     scheduler = AsyncIOScheduler()
 
-    # Fixtures: Daily at 06:00 UTC (Bzzoiro — create missing + fix placeholders)
+    # Fixtures: Every 30 min (Bzzoiro — create missing + fix placeholders).
+    # Frequent interval needed during knockout stages so team names are resolved
+    # shortly after each match result is known in Bzzoiro.
     scheduler.add_job(
         job_sync_fixtures,
-        CronTrigger(hour=6, minute=0),
+        IntervalTrigger(minutes=30),
         id="sync_fixtures",
         name="Sync fixtures from Bzzoiro (create + placeholder resolution)",
         replace_existing=True,

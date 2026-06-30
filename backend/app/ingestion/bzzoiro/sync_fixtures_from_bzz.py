@@ -54,9 +54,19 @@ for _key, _id in INTERNATIONAL_LEAGUE_INTERNAL_IDS.items():
 # How far ahead to look for upcoming fixtures
 _DAYS_FORWARD = 30
 
-# A team name is a placeholder when it matches these patterns
+# A team name is a placeholder when it matches these patterns.
+# Generic patterns: winner/loser/tbd/tba/qf/sf/semi-final/quarter-final/match N
+# WC2026-specific patterns:
+#   - "2E", "1I", "G1", "H2"  → positional group qualifiers (digit+letter or letter+digit)
+#   - "W73", "L101"            → winner/loser of match N (Bzzoiro internal codes)
+#   - "3C/3D/3F/3G/3H"        → best-third-place combo codes (contain "/")
+#   - "R32 TBD 1"             → caught by "tbd" above
 _PLACEHOLDER_RE = re.compile(
-    r"winner|loser|tbd|tba|qf\d*|sf\d*|semi.?final|quarter.?final|match\s*\d+",
+    r"winner|loser|tbd|tba|qf\d*|sf\d*|semi.?final|quarter.?final|match\s*\d+"
+    r"|^\d[A-Z]$"        # e.g. "2E", "1I" — Nth place of group X
+    r"|^[A-Z]\d$"        # e.g. "G1", "H2" — group X place N
+    r"|^[WL]\d+$"        # e.g. "W73", "L101" — winner/loser of match N
+    r"|/",               # e.g. "3C/3D/3F" — best-third-place group combos
     re.IGNORECASE,
 )
 
