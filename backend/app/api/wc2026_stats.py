@@ -167,9 +167,8 @@ async def get_rankings(
                     -- Une ligne par (joueur, match) — on garde le player_api_id le plus récent
                     -- pour éviter les doublons quand Bzzoiro change d'ID pour le même joueur.
                     SELECT DISTINCT ON (p.name, ps.event_api_id)
-                        p.name                  AS player_name,
-                        p.position              AS bzz_pos,
-                        p.national_team_api_id  AS nat_team_api_id,
+                        p.name       AS player_name,
+                        p.position   AS bzz_pos,
                         ps.minutes_played,
                         ps.goals,
                         ps.goal_assist,
@@ -187,10 +186,6 @@ async def get_rankings(
                 SELECT
                     player_name                              AS bzz_name,
                     bzz_pos,
-                    -- Nom d'équipe national depuis le profil joueur Bzzoiro (plus fiable
-                    -- que la team déduite du match, qui peut être mal attribuée en cas de
-                    -- is_home/team_api_id manquants).
-                    nt.name                                  AS national_team_name,
                     COUNT(*)                                 AS matches,
                     COALESCE(SUM(minutes_played), 0)         AS minutes,
                     COALESCE(SUM(goals), 0)                  AS goals,
@@ -200,8 +195,7 @@ async def get_rankings(
                     COALESCE(SUM(total_shots), 0)            AS shots,
                     COALESCE(SUM(shots_on_target), 0)        AS shots_on_target
                 FROM deduped
-                LEFT JOIN bzz_teams nt ON nt.api_id = nat_team_api_id
-                GROUP BY player_name, bzz_pos, nt.name
+                GROUP BY player_name, bzz_pos
                 ORDER BY xg DESC
             """),
             {"lid": WC_LEAGUE_ID},
@@ -215,33 +209,52 @@ async def get_rankings(
         )
     ).mappings().all()
 
-    squad: dict[str, dict] = {
-        _norm(r["player_name"]): dict(r) for r in squad_rows
-    }
+    # Index principal : nom normalisé → liste d'entrées (gère les homonymes inter-nations)
+    squad_by_norm: dict[str, list[dict]] = {}
+    for r in squad_rows:
+        key = _norm(r["player_name"])
+        squad_by_norm.setdefault(key, []).append(dict(r))
 
-    # Index secondaire : nation → liste d'entrées squad (pour le fallback emoji/position)
-    squad_by_nation: dict[str, list[dict]] = {}
-    for entry in squad.values():
-        n = entry.get("nation")
-        if n:
-            squad_by_nation.setdefault(n, []).append(entry)
+    def _squad_lookup(bzz_name: str) -> dict | None:
+        """Cherche l'entrée squad pour un nom Bzzoiro.
+
+        1. Correspondance normalisée exacte — uniquement si non-ambiguë (1 nation).
+        2. Correspondance par sous-ensemble de mots (ex. 'Éderson' ↔ 'Ederson Moraes',
+           'Pablo Gavi' ↔ 'Gavi') — uniquement si 1 candidat unique.
+        Les noms ambigus (même nom, nations différentes) retournent None.
+        """
+        norm = _norm(bzz_name)
+
+        # 1. Exact
+        hits = squad_by_norm.get(norm, [])
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            return None  # ambigu — ex. "Emiliano Martínez" en ARG et URU
+
+        # 2. Sous-ensemble de mots
+        words_bzz = set(norm.split())
+        candidates: list[dict] = []
+        for squad_norm, entries in squad_by_norm.items():
+            words_sq = set(squad_norm.split())
+            if words_sq <= words_bzz or words_bzz <= words_sq:
+                candidates.extend(entries)
+        return candidates[0] if len(candidates) == 1 else None
 
     # ── 3. Première passe — construction intermédiaire ────────────────────────
     intermediate: list[dict] = []
     for r in rows:
         bzz_name: str = r["bzz_name"]
-        squad_entry = squad.get(_norm(bzz_name))
+        squad_entry = _squad_lookup(bzz_name)
 
         if squad_entry:
             nation     = squad_entry["nation"]
             flag_emoji = squad_entry["flag_emoji"]
             position   = squad_entry["position"]
         else:
-            # Fallback : nation via l'équipe nationale Bzzoiro du joueur (anglais → français)
-            nation     = BZZ_TEAM_TO_NATION.get(r["national_team_name"] or "")
-            # Emoji du drapeau : prendre le premier joueur du squad pour cette nation
-            nation_squad = squad_by_nation.get(nation or "", [])
-            flag_emoji = nation_squad[0]["flag_emoji"] if nation_squad else None
+            # Pas de correspondance fiable → nation inconnue, exclu des filtres.
+            nation     = None
+            flag_emoji = None
             position   = _bzz_pos_to_squad(r["bzz_pos"])
 
         intermediate.append({
