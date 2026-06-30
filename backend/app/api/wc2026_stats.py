@@ -182,7 +182,8 @@ async def get_rankings(
                         ps.team_api_id,
                         CASE WHEN ps.is_home = true  THEN e.home_team_api_id
                              WHEN ps.is_home = false THEN e.away_team_api_id
-                             ELSE NULL END
+                             ELSE NULL END,
+                        p.national_team_api_id
                     )
                     WHERE e.league_api_id = :lid
                       AND COALESCE(ps.minutes_played, 1) > 0
