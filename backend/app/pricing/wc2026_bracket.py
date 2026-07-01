@@ -12,8 +12,11 @@ logger = logging.getLogger(__name__)
 
 WC_LEAGUE_API_ID = 27
 N_SIM = 50_000
-_K = 30.0
-_BASE_ELO = 1500.0
+_K_GROUP   = 20.0   # Poule : rotation possible, enjeux variables
+_K_KO      = 30.0   # KO décisif (score ≠) : équipes à 100%
+_K_KO_TIE  = 10.0   # KO nul (score =) : prolongations/penaltys ≈ tirage au sort
+_BASE_ELO  = 1500.0
+_ELO_D     = 400.0  # Dénominateur ELO (calibré empiriquement sur cotes Pinnacle)
 
 # WC2026 round_number scheme (from bzz_events)
 _GROUP_ROUNDS = frozenset({1, 2, 3})
@@ -25,19 +28,25 @@ _ROUND_FINAL = 29
 
 STAGES = ["r32", "r16", "qf", "sf", "finalist", "winner"]
 
+# Résultats KO décidés aux prolongations/penaltys (score = dans bzz_events,
+# vainqueur réel inconnu de la DB). Clé = frozenset({gagnant, perdant}).
+# Mise à jour manuelle au fil du tournoi.
+_MANUAL_KO_WINNERS: dict[frozenset, str] = {
+    frozenset({"Morocco",     "Netherlands"}): "Morocco",    # R32 — penaltys
+    frozenset({"Paraguay",    "Germany"}):     "Paraguay",   # R32 — penaltys
+}
+
 
 # ── ELO Engine ────────────────────────────────────────────────────────────────
 
-def _elo_from_team_bm() -> dict[str, float]:
-    """Initialise ELO ratings from TEAM_BM using a log10 scale anchored to the geometric mean."""
-    from app.ingestion.wc2026.team_bm import TEAM_BM
-    geo_mean = math.exp(
-        sum(math.log(bm) for bm in TEAM_BM.values()) / len(TEAM_BM)
-    )
-    return {
-        nation: round(_BASE_ELO + 400.0 * math.log10(bm / geo_mean), 1)
-        for nation, bm in TEAM_BM.items()
-    }
+def _elo_from_historical() -> dict[str, float]:
+    """Initialise ELO ratings from historical international match results (2018–2026-06-10).
+
+    Computed by scripts/compute_historical_elo.py from ~3700 international matches.
+    Uses competition-weighted K factors: K=60 WC, K=50 continental, K=40 qualifiers, K=15 friendly.
+    """
+    from app.ingestion.wc2026.historical_elo import HISTORICAL_ELO
+    return dict(HISTORICAL_ELO)
 
 
 def _update_elo(
@@ -46,18 +55,29 @@ def _update_elo(
     team_b: str,
     score_a: int,
     score_b: int,
+    is_ko: bool = False,
 ) -> None:
-    """Update ELO ratings in-place after a match (K=30, conservative)."""
-    ea = 1.0 / (1.0 + 10.0 ** ((elo[team_b] - elo[team_a]) / 400.0))
+    """Update ELO ratings in-place after a match.
+
+    K varie selon le contexte :
+    - Poule (is_ko=False)         → K=20 (signal bruité, rotation possible)
+    - KO décisif (score ≠)        → K=30 (équipes à 100%, résultat fiable)
+    - KO nul (score =, is_ko=True) → K=10 (prolongations/penaltys ≈ aléatoire)
+    """
+    ea = 1.0 / (1.0 + 10.0 ** ((elo[team_b] - elo[team_a]) / _ELO_D))
     result_a = 1.0 if score_a > score_b else (0.5 if score_a == score_b else 0.0)
-    delta = _K * (result_a - ea)
+    if is_ko:
+        k = _K_KO_TIE if score_a == score_b else _K_KO
+    else:
+        k = _K_GROUP
+    delta = k * (result_a - ea)
     elo[team_a] += delta
     elo[team_b] -= delta
 
 
 def _match_proba_group(elo_a: float, elo_b: float) -> tuple[float, float, float]:
     """Return (p_win_a, p_draw, p_win_b) for a group-stage match."""
-    ea = 1.0 / (1.0 + 10.0 ** ((elo_b - elo_a) / 400.0))
+    ea = 1.0 / (1.0 + 10.0 ** ((elo_b - elo_a) / _ELO_D))
     p_draw = 0.28 * (1.0 - abs(2.0 * ea - 1.0))
     p_win_a = ea * (1.0 - p_draw)
     p_win_b = (1.0 - ea) * (1.0 - p_draw)
@@ -66,7 +86,7 @@ def _match_proba_group(elo_a: float, elo_b: float) -> tuple[float, float, float]
 
 def _match_proba_ko(elo_a: float, elo_b: float) -> float:
     """Return P(team_a advances) in a knockout match (no draw)."""
-    return 1.0 / (1.0 + 10.0 ** ((elo_b - elo_a) / 400.0))
+    return 1.0 / (1.0 + 10.0 ** ((elo_b - elo_a) / _ELO_D))
 
 
 # ── Group Stage ────────────────────────────────────────────────────────────────
@@ -246,17 +266,30 @@ def _simulate_ko_round(
     pairs: list[tuple[str, str]],
     elo: dict[str, float],
     rng: np.random.Generator,
+    locked: dict[frozenset, str] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Simulate one knockout round. Returns (winners, losers)."""
+    """Simulate one knockout round. Returns (winners, losers).
+
+    locked : résultats KO déjà joués {frozenset({ta, tb}): winner}.
+    Si la paire est dans locked, le vrai gagnant est utilisé directement.
+    Les matchs nuls après 90 min (prolongations/penaltys) ne sont PAS dans
+    locked car on ne connaît pas le vainqueur depuis la DB — ils restent
+    simulés probabilistement.
+    """
     winners, losers = [], []
     for ta, tb in pairs:
-        p_a = _match_proba_ko(elo.get(ta, _BASE_ELO), elo.get(tb, _BASE_ELO))
-        if rng.random() < p_a:
-            winners.append(ta)
-            losers.append(tb)
+        key = frozenset({ta, tb})
+        if locked and key in locked:
+            winner = locked[key]
+            loser = tb if winner == ta else ta
         else:
-            winners.append(tb)
-            losers.append(ta)
+            p_a = _match_proba_ko(elo.get(ta, _BASE_ELO), elo.get(tb, _BASE_ELO))
+            if rng.random() < p_a:
+                winner, loser = ta, tb
+            else:
+                winner, loser = tb, ta
+        winners.append(winner)
+        losers.append(loser)
     return winners, losers
 
 
@@ -272,7 +305,70 @@ def simulate_bracket(
 
     Returns {nation: {stage: probability}} for all nations in elo.
     Stages: r32, r16, qf, sf, finalist, winner.
+
+    Les résultats KO décisifs (score ≠) sont verrouillés : la simulation
+    utilise le vrai gagnant pour ces matchs. Les matchs nuls après 90 min
+    (prolongations/penaltys, score = en DB) restent probabilistes car on
+    ne connaît pas le vainqueur réel depuis bzz_events.
     """
+    # Pré-calculer les résultats KO verrouillés :
+    # 1) matchs décisifs (score ≠) depuis bzz_events
+    # 2) matchs nuls en DB mais décidés aux penaltys (overrides manuels)
+    locked_ko: dict[frozenset, str] = dict(_MANUAL_KO_WINNERS)
+    for ev in events:
+        if (
+            ev.get("round_number") not in _GROUP_ROUNDS
+            and ev.get("status") == "finished"
+            and ev.get("home_score") is not None
+            and ev["home_score"] != ev["away_score"]
+        ):
+            winner = ev["home_team"] if ev["home_score"] > ev["away_score"] else ev["away_team"]
+            locked_ko[frozenset({ev["home_team"], ev["away_team"]})] = winner
+
+    # Faits établis sur l'avancement réel en KO.
+    # stage_ceiling[team] = dernier stade atteint (r32 = a qualifié des groupes,
+    # r16 = a passé les 1/16, etc.). Les équipes éliminées sur score ≠ ont un
+    # plafond clair ; les matchs à égalité (ET/penaltys) ne donnent pas de certitude.
+    _KO_ROUND_TO_STAGE = {
+        _ROUND_R32:   ("r32",       "r16"),
+        _ROUND_R16:   ("r16",       "qf"),
+        _ROUND_QF:    ("qf",        "sf"),
+        _ROUND_SF:    ("sf",        "finalist"),
+        _ROUND_FINAL: ("finalist",  "winner"),
+    }
+    # definite_max[team] = index du dernier stage garanti (tout ce qui suit → 0%)
+    definite_eliminated: dict[str, int] = {}  # team → index dans STAGES après lequel tout est 0
+    definite_min: dict[str, int] = {}         # team → index minimal garanti (tout ce qui précède → 100%)
+    # Intégrer les overrides manuels (penaltys) dans les faits établis
+    for pair, winner in _MANUAL_KO_WINNERS.items():
+        teams = list(pair)
+        loser = teams[1] if teams[0] == winner else teams[0]
+        # On ne connaît pas le round exactement — on cherche dans events
+        for ev in events:
+            if frozenset({ev.get("home_team"), ev.get("away_team")}) == pair:
+                rnd = ev.get("round_number")
+                if rnd in _KO_ROUND_TO_STAGE:
+                    loser_stage, winner_next = _KO_ROUND_TO_STAGE[rnd]
+                    definite_eliminated[loser]  = STAGES.index(loser_stage)
+                    definite_min[winner]        = max(definite_min.get(winner, -1), STAGES.index(winner_next))
+                break
+    for ev in events:
+        rnd = ev.get("round_number")
+        if rnd not in _KO_ROUND_TO_STAGE:
+            continue
+        if ev.get("status") != "finished" or ev.get("home_score") is None:
+            continue
+        if ev["home_score"] == ev["away_score"]:
+            continue  # ET/pens — vainqueur inconnu, pas de certitude
+        winner = ev["home_team"] if ev["home_score"] > ev["away_score"] else ev["away_team"]
+        loser  = ev["away_team"] if winner == ev["home_team"] else ev["home_team"]
+        loser_stage, winner_next = _KO_ROUND_TO_STAGE[rnd]
+        loser_idx  = STAGES.index(loser_stage)
+        winner_idx = STAGES.index(winner_next)
+        # Le perdant a atteint loser_stage mais pas winner_next
+        definite_eliminated[loser]  = loser_idx   # tout après loser_idx → 0%
+        definite_min[winner]        = max(definite_min.get(winner, -1), winner_idx)
+
     rng = np.random.default_rng(42)
     counters: dict[str, dict[str, int]] = {
         n: {s: 0 for s in STAGES} for n in elo
@@ -310,42 +406,60 @@ def simulate_bracket(
             if t in counters:
                 counters[t]["r32"] += 1
 
-        # 4. Build bracket and simulate knockouts
+        # 4. Build bracket and simulate knockouts (résultats réels verrouillés)
         pairs_r32 = _build_bracket(groups, standings, thirds_teams)
-        winners_r32, _ = _simulate_ko_round(pairs_r32, elo, rng)
+        winners_r32, _ = _simulate_ko_round(pairs_r32, elo, rng, locked_ko)
         for t in winners_r32:
             if t in counters:
                 counters[t]["r16"] += 1
 
         pairs_r16 = list(zip(winners_r32[::2], winners_r32[1::2]))
-        winners_r16, _ = _simulate_ko_round(pairs_r16, elo, rng)
+        winners_r16, _ = _simulate_ko_round(pairs_r16, elo, rng, locked_ko)
         for t in winners_r16:
             if t in counters:
                 counters[t]["qf"] += 1
 
         pairs_qf = list(zip(winners_r16[::2], winners_r16[1::2]))
-        winners_qf, _ = _simulate_ko_round(pairs_qf, elo, rng)
+        winners_qf, _ = _simulate_ko_round(pairs_qf, elo, rng, locked_ko)
         for t in winners_qf:
             if t in counters:
                 counters[t]["sf"] += 1
 
         pairs_sf = list(zip(winners_qf[::2], winners_qf[1::2]))
-        winners_sf, _ = _simulate_ko_round(pairs_sf, elo, rng)
+        winners_sf, _ = _simulate_ko_round(pairs_sf, elo, rng, locked_ko)
         for t in winners_sf:
             if t in counters:
                 counters[t]["finalist"] += 1
 
         if len(winners_sf) >= 2:
             pairs_final = [(winners_sf[0], winners_sf[1])]
-            winners_final, _ = _simulate_ko_round(pairs_final, elo, rng)
+            winners_final, _ = _simulate_ko_round(pairs_final, elo, rng, locked_ko)
             for t in winners_final:
                 if t in counters:
                     counters[t]["winner"] += 1
 
-    return {
+    raw = {
         nation: {stage: count / n_sim for stage, count in stages.items()}
         for nation, stages in counters.items()
     }
+
+    # Écrase les probabilités incompatibles avec les résultats KO réels :
+    # - les équipes éliminées sur score ≠ ont 0% pour tout stade ultérieur
+    # - les équipes qui ont gagné un match KO décisif ont 100% pour les stades
+    #   qu'elles ont nécessairement atteints
+    for nation, probs in raw.items():
+        if nation in definite_eliminated:
+            ceiling = definite_eliminated[nation]
+            for i, stage in enumerate(STAGES):
+                if i > ceiling:
+                    probs[stage] = 0.0
+        if nation in definite_min:
+            floor_idx = definite_min[nation]
+            for i, stage in enumerate(STAGES):
+                if i <= floor_idx:
+                    probs[stage] = 1.0
+
+    return raw
 
 
 def _e_games_from_probs(probs: dict[str, float]) -> float:
@@ -388,13 +502,14 @@ async def compute_wc_advancement(session: Any) -> list[dict]:
 
     events = [dict(r) for r in rows]
 
-    # Build reverse map: bzz team name → TEAM_BM canonical key
-    from app.ingestion.wc2026.team_bm import TEAM_BM, WC2026_NATION_NAME_ALIASES
+    # Build reverse map: bzz team name → canonical nation name
+    from app.ingestion.wc2026.team_bm import WC2026_NATION_NAME_ALIASES
+    from app.ingestion.wc2026.historical_elo import HISTORICAL_ELO
     bzz_to_canon: dict[str, str] = {
         bzz_name: canon
         for canon, bzz_name in WC2026_NATION_NAME_ALIASES.items()
     }
-    for canon in TEAM_BM:
+    for canon in HISTORICAL_ELO:
         bzz_to_canon.setdefault(canon, canon)
 
     norm_events = []
@@ -405,11 +520,12 @@ async def compute_wc_advancement(session: Any) -> list[dict]:
             norm_events.append({**ev, "home_team": home, "away_team": away})
 
     # Initialise ELO and apply all finished matches
-    elo = _elo_from_team_bm()
+    elo = _elo_from_historical()
     for ev in norm_events:
         if ev["status"] == "finished" and ev["home_score"] is not None:
+            is_ko = ev.get("round_number") not in _GROUP_ROUNDS
             _update_elo(elo, ev["home_team"], ev["away_team"],
-                        ev["home_score"], ev["away_score"])
+                        ev["home_score"], ev["away_score"], is_ko=is_ko)
 
     groups = _build_groups(norm_events)
     if not groups:
