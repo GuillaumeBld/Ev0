@@ -785,7 +785,7 @@ function ValeurTab({
           <tr className="border-b border-gray-700 text-[10px] font-semibold uppercase tracking-wider">
             <th className="px-3 py-2 text-left text-gray-500">Tour</th>
             <th className="px-3 py-2 text-left text-gray-500">Équipe</th>
-            <th className="px-3 py-2 text-right text-orange-400">ELO P%</th>
+            <th className="px-3 py-2 text-right text-orange-400">Qualif. P%</th>
             <th className="px-3 py-2 text-right text-gray-400 border-l border-gray-800">Pinnacle</th>
             <th className="px-3 py-2 text-right text-blue-400">P% nette</th>
             <th className="px-3 py-2 text-right text-gray-400">Edge</th>
@@ -797,10 +797,14 @@ function ValeurTab({
           {sorted.map((m) => {
             const pin = pinnacleImp(m.lines)
             const fr  = bestFROdds(m.lines)
-            const eloH = byNation[m.home_team]?.elo ?? 1500
-            const eloA = byNation[m.away_team]?.elo ?? 1500
-            const pEloH = eloWinProb(eloH, eloA)
-            const pEloA = 1 - pEloH
+            // Monte Carlo P(qualify) — uses Pinnacle-calibrated simulation for known R32 matchups
+            const mwToIdx: Record<number, number> = Object.fromEntries(BK_ROUNDS.map(r => [r.matchweek, r.idx]))
+            const stageIdx = mwToIdx[m.matchweek ?? -1] ?? -1
+            const stageKey = stageIdx >= 0 ? NEXT_STAGE_KEY[stageIdx] : null
+            const pMonteH = stageKey
+              ? ((byNation[m.home_team]?.[stageKey] as number) ?? 0)
+              : eloWinProb(byNation[m.home_team]?.elo ?? 1500, byNation[m.away_team]?.elo ?? 1500)
+            const pMonteA = 1 - pMonteH
             const finished = m.status === 'finished'
             const roundLabel = ROUND_LABELS[m.matchweek ?? 0] ?? '?'
 
@@ -828,7 +832,7 @@ function ValeurTab({
                   </div>
                 </td>
                 <td className="px-3 py-1.5 text-right">
-                  <span className="text-orange-300 font-semibold">{Math.round(pEloH * 100)}%</span>
+                  <span className="text-orange-300 font-semibold">{Math.round(pMonteH * 100)}%</span>
                 </td>
                 {/* Pinnacle */}
                 <td className="px-3 py-1.5 text-right border-l border-gray-800">
@@ -840,7 +844,7 @@ function ValeurTab({
                     : <span className="text-gray-700">—</span>}
                 </td>
                 <td className="px-3 py-1.5 text-right">
-                  {pin ? <EdgeCell elo={pEloH} market={pin.home} /> : <span className="text-gray-700">—</span>}
+                  {pin ? <EdgeCell elo={pMonteH} market={pin.home} /> : <span className="text-gray-700">—</span>}
                 </td>
                 {/* Best FR */}
                 <td className="px-3 py-1.5 text-right border-l border-gray-800">
@@ -869,7 +873,7 @@ function ValeurTab({
                   </div>
                 </td>
                 <td className="px-3 py-1.5 text-right">
-                  <span className="text-orange-300 font-semibold">{Math.round(pEloA * 100)}%</span>
+                  <span className="text-orange-300 font-semibold">{Math.round(pMonteA * 100)}%</span>
                 </td>
                 <td className="px-3 py-1.5 text-right border-l border-gray-800">
                   <OddsCell value={pin?.a ?? null} />
@@ -880,7 +884,7 @@ function ValeurTab({
                     : <span className="text-gray-700">—</span>}
                 </td>
                 <td className="px-3 py-1.5 text-right">
-                  {pin ? <EdgeCell elo={pEloA} market={pin.away} /> : <span className="text-gray-700">—</span>}
+                  {pin ? <EdgeCell elo={pMonteA} market={pin.away} /> : <span className="text-gray-700">—</span>}
                 </td>
                 <td className="px-3 py-1.5 text-right border-l border-gray-800">
                   <OddsCell value={fr.away} highlight={!!pin && !!fr.away && fr.away > pin.a!} />
@@ -892,6 +896,7 @@ function ValeurTab({
       </table>
 
       <div className="flex items-center gap-6 px-3 py-3 border-t border-gray-800 flex-wrap text-[10px]">
+        <span className="text-orange-400/70">Qualif. P% = Monte Carlo (ELO + calibration Pinnacle R32)</span>
         <span className="text-gray-600">P% nette = prob. implicite Pinnacle vig-removed, draw splitté 50/50</span>
         <span className="text-yellow-600">Meil. FR en blanc = meilleure que Pinnacle (opportunité d&apos;arbitrage)</span>
         <div className="flex items-center gap-3 ml-auto">
