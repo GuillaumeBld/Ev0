@@ -519,6 +519,14 @@ async def compute_wc_advancement(session: Any) -> list[dict]:
     }
     for canon in HISTORICAL_ELO:
         bzz_to_canon.setdefault(canon, canon)
+    # Normalisation supplémentaire : variantes d'écriture courantes dans bzz_teams
+    _EXTRA_BZZ_ALIASES = {
+        "Bosnia & Herzegovina": "Bosnia-Herzegovina",  # bzz_teams utilise "&" pas "and"
+        "Türkiye": "Turkey",
+        "Korea Republic": "South Korea",
+    }
+    for alt, canon in _EXTRA_BZZ_ALIASES.items():
+        bzz_to_canon.setdefault(alt, canon)
 
     norm_events = []
     for ev in events:
