@@ -267,14 +267,13 @@ def _simulate_ko_round(
     elo: dict[str, float],
     rng: np.random.Generator,
     locked: dict[frozenset, str] | None = None,
+    market_probs: dict[frozenset, tuple[str, float]] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Simulate one knockout round. Returns (winners, losers).
 
     locked : résultats KO déjà joués {frozenset({ta, tb}): winner}.
-    Si la paire est dans locked, le vrai gagnant est utilisé directement.
-    Les matchs nuls après 90 min (prolongations/penaltys) ne sont PAS dans
-    locked car on ne connaît pas le vainqueur depuis la DB — ils restent
-    simulés probabilistement.
+    market_probs : {frozenset({ta, tb}): (ref_team, P(ref_team qualifies))}.
+      ref_team est l'équipe "home" de la fixture. Quand disponible, remplace ELO.
     """
     winners, losers = [], []
     for ta, tb in pairs:
@@ -283,7 +282,11 @@ def _simulate_ko_round(
             winner = locked[key]
             loser = tb if winner == ta else ta
         else:
-            p_a = _match_proba_ko(elo.get(ta, _BASE_ELO), elo.get(tb, _BASE_ELO))
+            if market_probs and key in market_probs:
+                ref_team, p_ref = market_probs[key]
+                p_a = p_ref if ta == ref_team else 1.0 - p_ref
+            else:
+                p_a = _match_proba_ko(elo.get(ta, _BASE_ELO), elo.get(tb, _BASE_ELO))
             if rng.random() < p_a:
                 winner, loser = ta, tb
             else:
@@ -300,16 +303,16 @@ def simulate_bracket(
     groups: dict[str, list[str]],
     events: list[dict],
     n_sim: int = N_SIM,
+    market_r32_probs: dict[frozenset, tuple[str, float]] | None = None,
 ) -> dict[str, dict[str, float]]:
     """Run Monte Carlo simulation of the WC2026 bracket.
 
     Returns {nation: {stage: probability}} for all nations in elo.
     Stages: r32, r16, qf, sf, finalist, winner.
 
-    Les résultats KO décisifs (score ≠) sont verrouillés : la simulation
-    utilise le vrai gagnant pour ces matchs. Les matchs nuls après 90 min
-    (prolongations/penaltys, score = en DB) restent probabilistes car on
-    ne connaît pas le vainqueur réel depuis bzz_events.
+    market_r32_probs : {frozenset({home, away}): (home_team, P(home qualifies))} depuis Pinnacle.
+      Pour les matchs R32 avec cotes disponibles, remplace la probabilité ELO.
+      Pour les rounds suivants (adversaires inconnus), ELO est toujours utilisé.
     """
     # Pré-calculer les résultats KO verrouillés :
     # 1) matchs décisifs (score ≠) depuis bzz_events
@@ -408,7 +411,7 @@ def simulate_bracket(
 
         # 4. Build bracket and simulate knockouts (résultats réels verrouillés)
         pairs_r32 = _build_bracket(groups, standings, thirds_teams)
-        winners_r32, _ = _simulate_ko_round(pairs_r32, elo, rng, locked_ko)
+        winners_r32, _ = _simulate_ko_round(pairs_r32, elo, rng, locked_ko, market_r32_probs)
         for t in winners_r32:
             if t in counters:
                 counters[t]["r16"] += 1
@@ -532,12 +535,28 @@ async def compute_wc_advancement(session: Any) -> list[dict]:
         logger.warning("compute_wc_advancement: no group events found — returning empty")
         return []
 
+    # Charger les probabilités marché Pinnacle pour les matchs R32 avec cotes disponibles.
+    # Clé = frozenset({home_team, away_team}) en noms canoniques.
+    # Valeur = (home_canonical, P(home qualifies)) — nécessaire pour retrouver la direction.
+    market_r32_probs: dict[frozenset, tuple[str, float]] = {}
+    pred_rows = (await session.execute(text("""
+        SELECT home_team, away_team, pin_prob_home
+        FROM wc2026_ko_predictions
+        WHERE matchweek = :r32_mw
+          AND pin_prob_home IS NOT NULL
+          AND winner IS NULL
+    """), {"r32_mw": _ROUND_R32})).mappings().all()
+    for pr in pred_rows:
+        h = bzz_to_canon.get(pr["home_team"], pr["home_team"])
+        a = bzz_to_canon.get(pr["away_team"], pr["away_team"])
+        market_r32_probs[frozenset({h, a})] = (h, float(pr["pin_prob_home"]))
+
     logger.info(
-        "compute_wc_advancement: %d groups, %d nations, running %d simulations",
-        len(groups), len(elo), N_SIM,
+        "compute_wc_advancement: %d groups, %d nations, %d matchs R32 avec cotes Pinnacle, running %d simulations",
+        len(groups), len(elo), len(market_r32_probs), N_SIM,
     )
 
-    probs = simulate_bracket(elo, groups, norm_events, n_sim=N_SIM)
+    probs = simulate_bracket(elo, groups, norm_events, n_sim=N_SIM, market_r32_probs=market_r32_probs or None)
 
     now = datetime.now(timezone.utc)
     return [
