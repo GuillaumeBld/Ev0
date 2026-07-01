@@ -304,6 +304,7 @@ def simulate_bracket(
     events: list[dict],
     n_sim: int = N_SIM,
     market_r32_probs: dict[frozenset, tuple[str, float]] | None = None,
+    actual_r32_pairs: list[tuple[str, str]] | None = None,
 ) -> dict[str, dict[str, float]]:
     """Run Monte Carlo simulation of the WC2026 bracket.
 
@@ -312,7 +313,8 @@ def simulate_bracket(
 
     market_r32_probs : {frozenset({home, away}): (home_team, P(home qualifies))} depuis Pinnacle.
       Pour les matchs R32 avec cotes disponibles, remplace la probabilité ELO.
-      Pour les rounds suivants (adversaires inconnus), ELO est toujours utilisé.
+    actual_r32_pairs : si fourni, remplace _build_bracket et garantit les vrais appariements R32.
+      Chaque tuple = (équipe_home, équipe_away) depuis les fixtures réelles.
     """
     # Pré-calculer les résultats KO verrouillés :
     # 1) matchs décisifs (score ≠) depuis bzz_events
@@ -410,7 +412,10 @@ def simulate_bracket(
                 counters[t]["r32"] += 1
 
         # 4. Build bracket and simulate knockouts (résultats réels verrouillés)
-        pairs_r32 = _build_bracket(groups, standings, thirds_teams)
+        if actual_r32_pairs is not None:
+            pairs_r32 = actual_r32_pairs
+        else:
+            pairs_r32 = _build_bracket(groups, standings, thirds_teams)
         winners_r32, _ = _simulate_ko_round(pairs_r32, elo, rng, locked_ko, market_r32_probs)
         for t in winners_r32:
             if t in counters:
@@ -551,12 +556,36 @@ async def compute_wc_advancement(session: Any) -> list[dict]:
         a = bzz_to_canon.get(pr["away_team"], pr["away_team"])
         market_r32_probs[frozenset({h, a})] = (h, float(pr["pin_prob_home"]))
 
+    # Charger les vrais appariements R32 depuis bzz_events (matchweek=6, round_number=6).
+    # Cela garantit que Belgium affronte toujours Senegal (etc.) dans chaque simulation,
+    # indépendamment de l'approximation de _build_bracket.
+    r32_pair_rows = (await session.execute(text("""
+        SELECT ht.name AS home_team, at.name AS away_team
+        FROM bzz_events e
+        JOIN bzz_teams ht ON ht.api_id = e.home_team_api_id
+        JOIN bzz_teams at ON at.api_id = e.away_team_api_id
+        WHERE e.league_api_id = :lid AND e.round_number = :r32
+        ORDER BY e.event_date
+    """), {"lid": WC_LEAGUE_API_ID, "r32": _ROUND_R32})).mappings().all()
+
+    actual_r32_pairs: list[tuple[str, str]] = []
+    for rp in r32_pair_rows:
+        h = bzz_to_canon.get(rp["home_team"])
+        a = bzz_to_canon.get(rp["away_team"])
+        if h and a:
+            actual_r32_pairs.append((h, a))
+
     logger.info(
-        "compute_wc_advancement: %d groups, %d nations, %d matchs R32 avec cotes Pinnacle, running %d simulations",
-        len(groups), len(elo), len(market_r32_probs), N_SIM,
+        "compute_wc_advancement: %d groups, %d nations, %d paires R32 réelles, "
+        "%d matchs avec cotes Pinnacle, running %d simulations",
+        len(groups), len(elo), len(actual_r32_pairs), len(market_r32_probs), N_SIM,
     )
 
-    probs = simulate_bracket(elo, groups, norm_events, n_sim=N_SIM, market_r32_probs=market_r32_probs or None)
+    probs = simulate_bracket(
+        elo, groups, norm_events, n_sim=N_SIM,
+        market_r32_probs=market_r32_probs or None,
+        actual_r32_pairs=actual_r32_pairs or None,
+    )
 
     now = datetime.now(timezone.utc)
     return [
