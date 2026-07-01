@@ -797,13 +797,15 @@ function ValeurTab({
           {sorted.map((m) => {
             const pin = pinnacleImp(m.lines)
             const fr  = bestFROdds(m.lines)
-            // Monte Carlo P(qualify) — uses Pinnacle-calibrated simulation for known R32 matchups
-            const mwToIdx: Record<number, number> = Object.fromEntries(BK_ROUNDS.map(r => [r.matchweek, r.idx]))
-            const stageIdx = mwToIdx[m.matchweek ?? -1] ?? -1
-            const stageKey = stageIdx >= 0 ? NEXT_STAGE_KEY[stageIdx] : null
-            const pMonteH = stageKey
-              ? ((byNation[m.home_team]?.[stageKey] as number) ?? 0)
-              : eloWinProb(byNation[m.home_team]?.elo ?? 1500, byNation[m.away_team]?.elo ?? 1500)
+            // Qualif. P% = P(gagner CE match) pour chaque équipe
+            // R32 : p_r16 du Monte Carlo (calibré Pinnacle) = exactement P(win R32)
+            // R16+ : ELO sur le matchup réel (p_qf etc. sont cumulatifs, pas conditionnels)
+            const eloH = byNation[m.home_team]?.elo ?? 1500
+            const eloA = byNation[m.away_team]?.elo ?? 1500
+            const isR32 = m.matchweek === 6
+            const pMonteH = isR32
+              ? ((byNation[m.home_team]?.p_r16 as number) ?? eloWinProb(eloH, eloA))
+              : eloWinProb(eloH, eloA)
             const pMonteA = 1 - pMonteH
             const finished = m.status === 'finished'
             const roundLabel = ROUND_LABELS[m.matchweek ?? 0] ?? '?'
@@ -896,7 +898,7 @@ function ValeurTab({
       </table>
 
       <div className="flex items-center gap-6 px-3 py-3 border-t border-gray-800 flex-wrap text-[10px]">
-        <span className="text-orange-400/70">Qualif. P% = Monte Carlo (ELO + calibration Pinnacle R32)</span>
+        <span className="text-orange-400/70">Qualif. P% = Monte Carlo R32 (calibré Pinnacle) · ELO pour les tours suivants</span>
         <span className="text-gray-600">P% nette = prob. implicite Pinnacle vig-removed, draw splitté 50/50</span>
         <span className="text-yellow-600">Meil. FR en blanc = meilleure que Pinnacle (opportunité d&apos;arbitrage)</span>
         <div className="flex items-center gap-3 ml-auto">
