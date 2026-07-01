@@ -1363,6 +1363,17 @@ async def job_sync_wc_bracket() -> None:
     except Exception as exc:
         logger.exception("job_sync_wc_bracket: player repricing failed: %s", exc)
 
+    # Backtest: snapshot pre-match + update results post-match
+    try:
+        from app.api.wc2026_stats import _snapshot_ko_predictions, _update_ko_results
+        async with async_session() as session:
+            created = await _snapshot_ko_predictions(session)
+            updated = await _update_ko_results(session)
+        if created or updated:
+            logger.info("ko_predictions: %d snapshots, %d results updated", created, updated)
+    except Exception as exc:
+        logger.exception("ko_predictions failed: %s", exc)
+
 
 # ── WC2026 Outrights Job ──────────────────────────────────────────
 

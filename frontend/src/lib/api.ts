@@ -1262,3 +1262,56 @@ export async function getWCAdvancement(): Promise<WCTeamAdvancement[]> {
   const { data } = await api.get('/api/v1/wc2026/advancement')
   return data
 }
+
+export interface BookmakerLine {
+  bookmaker: string
+  home: number | null
+  draw: number | null
+  away: number | null
+}
+
+export interface KOMatchH2H {
+  fixture_id: number
+  home_team: string
+  away_team: string
+  matchweek: number | null
+  kickoff_utc: string
+  status: string
+  home_score: number | null
+  away_score: number | null
+  lines: BookmakerLine[]
+  best_home: number | null
+  best_draw: number | null
+  best_away: number | null
+}
+
+export async function getWCKoH2H(): Promise<KOMatchH2H[]> {
+  const { data } = await api.get('/api/v1/wc2026/stats/ko-h2h')
+  return data
+}
+
+export interface KOPrediction {
+  fixture_id: number
+  home_team: string
+  away_team: string
+  matchweek: number | null
+  kickoff_utc: string | null
+  elo_home: number | null
+  elo_away: number | null
+  elo_prob_home: number | null
+  pin_prob_home: number | null
+  pin_odds_home: number | null
+  pin_odds_draw: number | null
+  pin_odds_away: number | null
+  fr_odds_home: number | null
+  fr_odds_away: number | null
+  home_score: number | null
+  away_score: number | null
+  winner: 'home' | 'away' | 'draw' | null
+  snapshot_utc: string | null
+}
+
+export async function getKOPredictions(): Promise<KOPrediction[]> {
+  const { data } = await api.get('/api/v1/wc2026/stats/ko-predictions')
+  return data
+}

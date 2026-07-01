@@ -13,6 +13,112 @@ from app.db import get_db
 
 router = APIRouter(prefix="/wc2026/stats", tags=["wc2026"])
 
+KO_MATCHWEEKS = (6, 5, 27, 28, 29, 50)
+
+
+# ── Models pour cotes KO ──────────────────────────────────────────────────────
+
+class BookmakerLine(BaseModel):
+    bookmaker: str
+    home: float | None
+    draw: float | None
+    away: float | None
+
+
+class KOMatchH2H(BaseModel):
+    fixture_id: int
+    home_team: str
+    away_team: str
+    matchweek: int | None
+    kickoff_utc: str
+    status: str
+    home_score: int | None
+    away_score: int | None
+    lines: list[BookmakerLine]
+    best_home: float | None
+    best_draw: float | None
+    best_away: float | None
+
+
+@router.get("/ko-h2h", response_model=list[KOMatchH2H])
+async def get_ko_h2h(session: AsyncSession = Depends(get_db)) -> list[KOMatchH2H]:
+    """Dernières cotes h2h (home/draw/away) pour tous les matchs KO du CDM 2026."""
+    rows = (
+        await session.execute(
+            text("""
+                WITH latest AS (
+                    SELECT DISTINCT ON (mos.fixture_id, mos.bookmaker, mos.outcome)
+                        mos.fixture_id,
+                        mos.bookmaker,
+                        mos.outcome,
+                        mos.odds
+                    FROM match_odds_snapshots mos
+                    WHERE mos.market_type = 'h2h'
+                    ORDER BY mos.fixture_id, mos.bookmaker, mos.outcome, mos.snapshot_utc DESC
+                )
+                SELECT
+                    f.id          AS fixture_id,
+                    f.home_team,
+                    f.away_team,
+                    f.matchweek,
+                    f.kickoff_utc,
+                    f.status,
+                    f.home_score,
+                    f.away_score,
+                    l.bookmaker,
+                    MAX(CASE WHEN l.outcome = 'home' THEN l.odds END) AS home_odds,
+                    MAX(CASE WHEN l.outcome = 'draw' THEN l.odds END) AS draw_odds,
+                    MAX(CASE WHEN l.outcome = 'away' THEN l.odds END) AS away_odds
+                FROM fixtures f
+                JOIN latest l ON l.fixture_id = f.id
+                WHERE f.league = 'world_cup_2026'
+                  AND f.matchweek = ANY(:mws)
+                GROUP BY f.id, f.home_team, f.away_team, f.matchweek,
+                         f.kickoff_utc, f.status, f.home_score, f.away_score, l.bookmaker
+                ORDER BY f.kickoff_utc, f.id, l.bookmaker
+            """),
+            {"mws": list(KO_MATCHWEEKS)},
+        )
+    ).mappings().all()
+
+    # Regrouper par fixture
+    from collections import OrderedDict
+    fixtures_map: dict[int, dict] = OrderedDict()
+    for r in rows:
+        fid = r["fixture_id"]
+        if fid not in fixtures_map:
+            fixtures_map[fid] = {
+                "fixture_id": fid,
+                "home_team": r["home_team"],
+                "away_team": r["away_team"],
+                "matchweek": r["matchweek"],
+                "kickoff_utc": str(r["kickoff_utc"]),
+                "status": r["status"],
+                "home_score": r["home_score"],
+                "away_score": r["away_score"],
+                "lines": [],
+            }
+        h = float(r["home_odds"]) if r["home_odds"] is not None else None
+        d = float(r["draw_odds"]) if r["draw_odds"] is not None else None
+        a = float(r["away_odds"]) if r["away_odds"] is not None else None
+        if h is not None or d is not None or a is not None:
+            fixtures_map[fid]["lines"].append(BookmakerLine(bookmaker=r["bookmaker"], home=h, draw=d, away=a))
+
+    result: list[KOMatchH2H] = []
+    for fdata in fixtures_map.values():
+        lines = fdata["lines"]
+        homes = [ln.home for ln in lines if ln.home is not None]
+        draws = [ln.draw for ln in lines if ln.draw is not None]
+        aways = [ln.away for ln in lines if ln.away is not None]
+        result.append(KOMatchH2H(
+            **{k: v for k, v in fdata.items() if k != "lines"},
+            lines=lines,
+            best_home=max(homes) if homes else None,
+            best_draw=max(draws) if draws else None,
+            best_away=max(aways) if aways else None,
+        ))
+    return result
+
 WC_LEAGUE_ID = 27
 
 # xG attendus pour l'ensemble du tournoi, par bookmaker (source externe).
@@ -124,7 +230,8 @@ BZZ_TEAM_TO_NATION: dict[str, str] = {
 
 
 def _norm(name: str) -> str:
-    n = unicodedata.normalize("NFKD", name.lower().strip())
+    # Hyphens treated as spaces so "In-Beom" and "In Beom" normalize identically.
+    n = unicodedata.normalize("NFKD", name.lower().strip().replace("-", " "))
     return "".join(c for c in n if not unicodedata.combining(c))
 
 
@@ -160,15 +267,18 @@ async def get_rankings(
     # ── 1. Aggregation depuis bzz_player_match_stats ──────────────────────────
     # DISTINCT ON (name, event) : Bzzoiro peut renvoyer des player_id différents
     # pour le même joueur entre deux syncs (ID historique vs ID CDM spécifique).
+    # canonical_team : certains joueurs ont deux player_api_id dans bzz_players,
+    # l'un avec national_team_api_id renseigné, l'autre sans. Le CTE canonical_team
+    # résout la nation non-nulle en priorité (NULLS LAST) pour éviter les doublons
+    # dans le GROUP BY final.
     rows: list[dict[str, Any]] = (
         await session.execute(
             text("""
                 WITH deduped AS (
-                    -- Une ligne par (joueur, match) — on garde le player_api_id le plus récent
-                    -- pour éviter les doublons quand Bzzoiro change d'ID pour le même joueur.
                     SELECT DISTINCT ON (p.name, ps.event_api_id)
                         p.name       AS player_name,
                         p.position   AS bzz_pos,
+                        bt.name      AS national_team_name,
                         ps.minutes_played,
                         ps.goals,
                         ps.goal_assist,
@@ -179,81 +289,117 @@ async def get_rankings(
                     FROM bzz_player_match_stats ps
                     JOIN bzz_players p ON p.api_id = ps.player_api_id
                     JOIN bzz_events  e ON e.api_id = ps.event_api_id
+                    LEFT JOIN bzz_teams bt ON bt.api_id = p.national_team_api_id
                     WHERE e.league_api_id = :lid
                       AND COALESCE(ps.minutes_played, 1) > 0
-                    ORDER BY p.name, ps.event_api_id, ps.player_api_id DESC
+                    ORDER BY p.name, ps.event_api_id, bt.name NULLS LAST, ps.player_api_id DESC
+                ),
+                canonical_team AS (
+                    SELECT DISTINCT ON (player_name)
+                        player_name,
+                        national_team_name
+                    FROM deduped
+                    ORDER BY player_name, national_team_name NULLS LAST
                 )
                 SELECT
-                    player_name                              AS bzz_name,
-                    bzz_pos,
+                    d.player_name                            AS bzz_name,
+                    MAX(d.bzz_pos)                           AS bzz_pos,
+                    ct.national_team_name,
                     COUNT(*)                                 AS matches,
-                    COALESCE(SUM(minutes_played), 0)         AS minutes,
-                    COALESCE(SUM(goals), 0)                  AS goals,
-                    COALESCE(SUM(goal_assist), 0)            AS assists,
-                    COALESCE(SUM(expected_goals), 0.0)       AS xg,
-                    COALESCE(SUM(expected_assists), 0.0)     AS xa,
-                    COALESCE(SUM(total_shots), 0)            AS shots,
-                    COALESCE(SUM(shots_on_target), 0)        AS shots_on_target
-                FROM deduped
-                GROUP BY player_name, bzz_pos
+                    COALESCE(SUM(d.minutes_played), 0)       AS minutes,
+                    COALESCE(SUM(d.goals), 0)                AS goals,
+                    COALESCE(SUM(d.goal_assist), 0)          AS assists,
+                    COALESCE(SUM(d.expected_goals), 0.0)     AS xg,
+                    COALESCE(SUM(d.expected_assists), 0.0)   AS xa,
+                    COALESCE(SUM(d.total_shots), 0)          AS shots,
+                    COALESCE(SUM(d.shots_on_target), 0)      AS shots_on_target
+                FROM deduped d
+                JOIN canonical_team ct ON ct.player_name = d.player_name
+                GROUP BY d.player_name, ct.national_team_name
                 ORDER BY xg DESC
             """),
             {"lid": WC_LEAGUE_ID},
         )
     ).mappings().all()
 
-    # ── 2. Chargement du squad WC2026 pour enrichissement ─────────────────────
+    # ── 2. Chargement du squad WC2026 pour enrichissement (flag + position) ───
     squad_rows = (
         await session.execute(
             text("SELECT player_name, nation, flag_emoji, position FROM wc2026_squad_players")
         )
     ).mappings().all()
 
-    # Index principal : nom normalisé → liste d'entrées (gère les homonymes inter-nations)
+    # Index 1 : nom normalisé → liste d'entrées (pour le fallback nation)
     squad_by_norm: dict[str, list[dict]] = {}
+    # Index 2 : (nation_fr, nom_normalisé) → entrée (pour flag/position sans risque inter-nation)
+    squad_by_nation_norm: dict[tuple[str, str], dict] = {}
     for r in squad_rows:
         key = _norm(r["player_name"])
         squad_by_norm.setdefault(key, []).append(dict(r))
+        squad_by_nation_norm[(r["nation"], key)] = dict(r)
 
-    def _squad_lookup(bzz_name: str) -> dict | None:
-        """Cherche l'entrée squad pour un nom Bzzoiro.
+    def _token_match(bzz_name: str) -> list[dict]:
+        """Token-subset fallback : une entrée squad matche si tous ses tokens sont dans
+        le nom Bzzoiro ou vice-versa. Gère les prénoms intermédiaires, réordonnements
+        et traits d'union (déjà normalisés en espaces par _norm).
+        """
+        tokens_bzz = set(_norm(bzz_name).split())
+        if not tokens_bzz:
+            return []
+        hits: list[dict] = []
+        for norm_key, entries in squad_by_norm.items():
+            tokens_sq = set(norm_key.split())
+            if tokens_sq and (tokens_sq <= tokens_bzz or tokens_bzz <= tokens_sq):
+                hits.extend(entries)
+        return hits
 
-        1. Correspondance normalisée exacte — uniquement si non-ambiguë (1 nation).
-        2. Correspondance par sous-ensemble de mots (ex. 'Éderson' ↔ 'Ederson Moraes',
-           'Pablo Gavi' ↔ 'Gavi') — uniquement si 1 candidat unique.
-        Les noms ambigus (même nom, nations différentes) retournent None.
+    def _enrich_from_squad(bzz_name: str, nation_fr: str | None) -> dict | None:
+        """Retourne l'entrée squad pour enrichissement flag/position.
+
+        1. Lookup exact dans la nation connue (O(1), sans risque inter-nation).
+        2. Fallback token-subset dans la nation connue (si 1 seul résultat).
+        3. Sans nation : exact non-ambigu, puis token-subset non-ambigu.
         """
         norm = _norm(bzz_name)
-
-        # 1. Exact
+        if nation_fr:
+            entry = squad_by_nation_norm.get((nation_fr, norm))
+            if entry:
+                return entry
+            fuzzy = [e for e in _token_match(bzz_name) if e["nation"] == nation_fr]
+            return fuzzy[0] if len(fuzzy) == 1 else None
         hits = squad_by_norm.get(norm, [])
         if len(hits) == 1:
             return hits[0]
-        if len(hits) > 1:
-            return None  # ambigu — ex. "Emiliano Martínez" en ARG et URU
-
-        # 2. Sous-ensemble de mots
-        words_bzz = set(norm.split())
-        candidates: list[dict] = []
-        for squad_norm, entries in squad_by_norm.items():
-            words_sq = set(squad_norm.split())
-            if words_sq <= words_bzz or words_bzz <= words_sq:
-                candidates.extend(entries)
-        return candidates[0] if len(candidates) == 1 else None
+        fuzzy = _token_match(bzz_name)
+        return fuzzy[0] if len(fuzzy) == 1 else None
 
     # ── 3. Première passe — construction intermédiaire ────────────────────────
     intermediate: list[dict] = []
     for r in rows:
         bzz_name: str = r["bzz_name"]
-        squad_entry = _squad_lookup(bzz_name)
+        national_team_name: str | None = r["national_team_name"]
 
+        # Nation depuis la DB (fiable) — évite tout matching textuel flou
+        nation = BZZ_TEAM_TO_NATION.get(national_team_name) if national_team_name else None
+
+        # Fallback pour les joueurs sans national_team_api_id :
+        # 1) exact non-ambigu, 2) token-subset non-ambigu (une seule nation possible)
+        if nation is None:
+            exact_hits = squad_by_norm.get(_norm(bzz_name), [])
+            if len(exact_hits) == 1:
+                nation = exact_hits[0]["nation"]
+            else:
+                fuzzy_hits = _token_match(bzz_name)
+                nations = {e["nation"] for e in fuzzy_hits}
+                if len(nations) == 1:
+                    nation = next(iter(nations))
+
+        # Enrichissement flag + position dans la nation connue uniquement
+        squad_entry = _enrich_from_squad(bzz_name, nation)
         if squad_entry:
-            nation     = squad_entry["nation"]
             flag_emoji = squad_entry["flag_emoji"]
             position   = squad_entry["position"]
         else:
-            # Pas de correspondance fiable → nation inconnue, exclu des filtres.
-            nation     = None
             flag_emoji = None
             position   = _bzz_pos_to_squad(r["bzz_pos"])
 
@@ -329,3 +475,210 @@ async def get_rankings(
 def _bzz_pos_to_squad(pos: str | None) -> str | None:
     """Convertit la position Bzzoiro (G/D/M/F) vers le format squad (GK/DEF/MID/FWD)."""
     return {"G": "GK", "D": "DEF", "M": "MID", "F": "FWD"}.get(pos or "", None)
+
+
+# ── Backtest KO ────────────────────────────────────────────────────────────────
+
+_FR_BOOKS = frozenset({"betclic", "unibet", "pmu"})
+_ELO_D = 400.0
+
+
+def _vig_removed_home(h: float, d: float, a: float) -> float:
+    """Probabilité implicite home vig-removed, draw splitté 50/50."""
+    rh, rd, ra = 1 / h, 1 / d, 1 / a
+    total = rh + rd + ra
+    return rh / total + (rd / total) / 2
+
+
+def _elo_prob(elo_a: float, elo_b: float) -> float:
+    return 1.0 / (1.0 + 10.0 ** ((elo_b - elo_a) / _ELO_D))
+
+
+class KOPredictionOut(BaseModel):
+    fixture_id: int
+    home_team: str
+    away_team: str
+    matchweek: int | None
+    kickoff_utc: str | None
+    # Prédictions
+    elo_home: float | None
+    elo_away: float | None
+    elo_prob_home: float | None
+    pin_prob_home: float | None
+    pin_odds_home: float | None
+    pin_odds_draw: float | None
+    pin_odds_away: float | None
+    fr_odds_home: float | None
+    fr_odds_away: float | None
+    # Résultat
+    home_score: int | None
+    away_score: int | None
+    winner: str | None
+    snapshot_utc: str | None
+
+
+async def _snapshot_ko_predictions(session: AsyncSession) -> int:
+    """Snapshot ELO + cotes pour tous les matchs KO scheduled sans prédiction enregistrée.
+
+    Appelé par le worker avant chaque match KO. Retourne le nombre de lignes créées.
+    """
+    from datetime import datetime, timezone
+    from app.models.wc2026_predictions import WC2026KOPrediction
+
+    # Fixtures KO scheduled sans snapshot
+    rows = (await session.execute(text("""
+        SELECT f.id, f.home_team, f.away_team, f.matchweek, f.kickoff_utc
+        FROM fixtures f
+        WHERE f.league = 'world_cup_2026'
+          AND f.matchweek = ANY(:mws)
+          AND f.status = 'scheduled'
+          AND NOT EXISTS (
+              SELECT 1 FROM wc2026_ko_predictions p WHERE p.fixture_id = f.id
+          )
+        ORDER BY f.kickoff_utc
+    """), {"mws": list(KO_MATCHWEEKS)})).mappings().all()
+
+    if not rows:
+        return 0
+
+    # ELO courant depuis wc2026_team_advancement
+    elo_rows = (await session.execute(text(
+        "SELECT nation, elo FROM wc2026_team_advancement"
+    ))).mappings().all()
+    elo_map: dict[str, float] = {r["nation"]: r["elo"] for r in elo_rows}
+
+    # Dernières cotes Pinnacle + FR par fixture
+    odds_rows = (await session.execute(text("""
+        WITH latest AS (
+            SELECT DISTINCT ON (fixture_id, bookmaker, outcome)
+                fixture_id, bookmaker, outcome, odds
+            FROM match_odds_snapshots
+            WHERE market_type = 'h2h'
+            ORDER BY fixture_id, bookmaker, outcome, snapshot_utc DESC
+        )
+        SELECT fixture_id, bookmaker,
+            MAX(CASE WHEN outcome='home' THEN odds END) h,
+            MAX(CASE WHEN outcome='draw' THEN odds END) d,
+            MAX(CASE WHEN outcome='away' THEN odds END) a
+        FROM latest
+        WHERE fixture_id = ANY(:fids)
+        GROUP BY fixture_id, bookmaker
+    """), {"fids": [r["id"] for r in rows]})).mappings().all()
+
+    # Organiser par fixture
+    from collections import defaultdict
+    odds_by_fixture: dict[int, list[dict]] = defaultdict(list)
+    for o in odds_rows:
+        odds_by_fixture[o["fixture_id"]].append(dict(o))
+
+    now = datetime.now(timezone.utc)
+    created = 0
+    for f in rows:
+        fid = f["id"]
+        home = f["home_team"]
+        away = f["away_team"]
+
+        elo_h = elo_map.get(home)
+        elo_a = elo_map.get(away)
+        elo_prob = _elo_prob(elo_h, elo_a) if elo_h and elo_a else None
+
+        pin = next((o for o in odds_by_fixture[fid] if o["bookmaker"] == "pinnacle"), None)
+        pin_h = float(pin["h"]) if pin and pin["h"] else None
+        pin_d = float(pin["d"]) if pin and pin["d"] else None
+        pin_a = float(pin["a"]) if pin and pin["a"] else None
+        pin_prob = _vig_removed_home(pin_h, pin_d, pin_a) if pin_h and pin_d and pin_a else None
+
+        fr = [o for o in odds_by_fixture[fid] if o["bookmaker"] in _FR_BOOKS]
+        fr_homes = [float(o["h"]) for o in fr if o["h"]]
+        fr_aways = [float(o["a"]) for o in fr if o["a"]]
+        fr_h = max(fr_homes) if fr_homes else None
+        fr_a = max(fr_aways) if fr_aways else None
+
+        session.add(WC2026KOPrediction(
+            fixture_id=fid,
+            home_team=home,
+            away_team=away,
+            matchweek=f["matchweek"],
+            kickoff_utc=f["kickoff_utc"],
+            elo_home=elo_h,
+            elo_away=elo_a,
+            elo_prob_home=elo_prob,
+            pin_odds_home=pin_h,
+            pin_odds_draw=pin_d,
+            pin_odds_away=pin_a,
+            pin_prob_home=pin_prob,
+            fr_odds_home=fr_h,
+            fr_odds_away=fr_a,
+            snapshot_utc=now,
+        ))
+        created += 1
+
+    await session.commit()
+    return created
+
+
+async def _update_ko_results(session: AsyncSession) -> int:
+    """Met à jour le winner pour les prédictions dont le match est terminé."""
+    from datetime import datetime, timezone
+    from app.models.wc2026_predictions import WC2026KOPrediction
+    from sqlalchemy import select
+
+    pending = (await session.execute(
+        select(WC2026KOPrediction).where(WC2026KOPrediction.winner.is_(None))
+    )).scalars().all()
+
+    if not pending:
+        return 0
+
+    fids = [p.fixture_id for p in pending]
+    results = (await session.execute(text("""
+        SELECT id, home_score, away_score, status
+        FROM fixtures
+        WHERE id = ANY(:fids) AND status = 'finished'
+    """), {"fids": fids})).mappings().all()
+    results_map = {r["id"]: r for r in results}
+
+    now = datetime.now(timezone.utc)
+    updated = 0
+    for pred in pending:
+        r = results_map.get(pred.fixture_id)
+        if not r or r["home_score"] is None:
+            continue
+        if r["home_score"] > r["away_score"]:
+            pred.winner = "home"
+        elif r["away_score"] > r["home_score"]:
+            pred.winner = "away"
+        else:
+            pred.winner = "draw"
+        pred.home_score = r["home_score"]
+        pred.away_score = r["away_score"]
+        pred.result_recorded_utc = now
+        updated += 1
+
+    if updated:
+        await session.commit()
+    return updated
+
+
+@router.post("/ko-predictions/snapshot")
+async def snapshot_ko_predictions(session: AsyncSession = Depends(get_db)):
+    """Snapshot ELO + cotes pre-match pour tous les KO scheduled non encore enregistrés."""
+    created = await _snapshot_ko_predictions(session)
+    updated = await _update_ko_results(session)
+    return {"created": created, "results_updated": updated}
+
+
+@router.get("/ko-predictions", response_model=list[KOPredictionOut])
+async def get_ko_predictions(session: AsyncSession = Depends(get_db)):
+    """Retourne toutes les prédictions KO (avec résultats quand disponibles) pour backtest."""
+    rows = (await session.execute(text("""
+        SELECT
+            fixture_id, home_team, away_team, matchweek,
+            kickoff_utc::text, elo_home, elo_away, elo_prob_home,
+            pin_prob_home, pin_odds_home, pin_odds_draw, pin_odds_away,
+            fr_odds_home, fr_odds_away,
+            home_score, away_score, winner, snapshot_utc::text
+        FROM wc2026_ko_predictions
+        ORDER BY kickoff_utc
+    """))).mappings().all()
+    return [KOPredictionOut(**dict(r)) for r in rows]
