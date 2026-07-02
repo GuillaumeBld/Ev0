@@ -1374,14 +1374,22 @@ async def job_sync_wc_bracket() -> None:
     except Exception as exc:
         logger.exception("job_sync_wc_bracket: player repricing failed: %s", exc)
 
-    # Backtest: snapshot pre-match + update results post-match
+    # Backtest: nettoyer les prédictions placeholders, puis snapshot + résultats
     try:
-        from app.api.wc2026_stats import _snapshot_ko_predictions, _update_ko_results
+        from app.api.wc2026_stats import (
+            _cleanup_placeholder_predictions,
+            _snapshot_ko_predictions,
+            _update_ko_results,
+        )
         async with async_session() as session:
+            deleted = await _cleanup_placeholder_predictions(session)
             created = await _snapshot_ko_predictions(session)
             updated = await _update_ko_results(session)
-        if created or updated:
-            logger.info("ko_predictions: %d snapshots, %d results updated", created, updated)
+        if deleted or created or updated:
+            logger.info(
+                "ko_predictions: %d placeholders supprimés, %d snapshots, %d résultats",
+                deleted, created, updated,
+            )
     except Exception as exc:
         logger.exception("ko_predictions failed: %s", exc)
 

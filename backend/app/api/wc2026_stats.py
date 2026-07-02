@@ -1,6 +1,7 @@
 """WC2026 player rankings — stats cumulées depuis bzz_player_match_stats."""
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any
 
@@ -14,6 +15,16 @@ from app.db import get_db
 router = APIRouter(prefix="/wc2026/stats", tags=["wc2026"])
 
 KO_MATCHWEEKS = (6, 5, 27, 28, 29, 50)
+
+_PLACEHOLDER_RE = re.compile(
+    r"winner|loser|tbd|tba|qf\d*|sf\d*|semi.?final|quarter.?final|match\s*\d+"
+    r"|^\d[A-Z]$|^[A-Z]\d$|^[WL]\d+$|/",
+    re.IGNORECASE,
+)
+
+
+def _is_placeholder(name: str) -> bool:
+    return not name or bool(_PLACEHOLDER_RE.search(name))
 
 
 # ── Models pour cotes KO ──────────────────────────────────────────────────────
@@ -578,6 +589,10 @@ async def _snapshot_ko_predictions(session: AsyncSession) -> int:
         home = f["home_team"]
         away = f["away_team"]
 
+        # Ne pas snapshoter avant de connaître les deux équipes
+        if _is_placeholder(home) or _is_placeholder(away):
+            continue
+
         elo_h = elo_map.get(home)
         elo_a = elo_map.get(away)
         elo_prob = _elo_prob(elo_h, elo_a) if elo_h and elo_a else None
@@ -615,6 +630,28 @@ async def _snapshot_ko_predictions(session: AsyncSession) -> int:
 
     await session.commit()
     return created
+
+
+async def _cleanup_placeholder_predictions(session: AsyncSession) -> int:
+    """Supprime les prédictions dont les noms d'équipes sont des placeholders (W83, W89...).
+
+    Appelé dans la settlement pipeline après sync_fixtures_from_bzz. Après suppression,
+    _snapshot_ko_predictions re-créera les snapshots avec les vrais noms.
+    Retourne le nombre de lignes supprimées.
+    """
+    result = await session.execute(text("""
+        DELETE FROM wc2026_ko_predictions
+        WHERE home_team ~ '^[WL][0-9]'
+           OR away_team ~ '^[WL][0-9]'
+           OR home_team ~ '^[0-9][A-Z]$'
+           OR away_team ~ '^[0-9][A-Z]$'
+           OR home_team ~ '^[A-Z][0-9]$'
+           OR away_team ~ '^[A-Z][0-9]$'
+    """))
+    deleted = result.rowcount
+    if deleted:
+        await session.commit()
+    return deleted
 
 
 async def _update_ko_results(session: AsyncSession) -> int:

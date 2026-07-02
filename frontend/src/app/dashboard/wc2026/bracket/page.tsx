@@ -511,8 +511,9 @@ function BracketTree({
 const ROUND_LABEL: Record<number, string> = { 6: '32es', 5: '16es', 27: 'QF', 28: 'SF', 29: 'Fin' }
 
 function BacktestTab({ predictions }: { predictions: KOPrediction[] }) {
-  const finished = predictions.filter(p => p.winner !== null)
-  const pending  = predictions.filter(p => p.winner === null)
+  const real = predictions.filter(p => isRealTeam(p.home_team) && isRealTeam(p.away_team))
+  const finished = real.filter(p => p.winner !== null)
+  const pending  = real.filter(p => p.winner === null)
 
   // Summary stats on finished matches
   const stats = finished.reduce(
