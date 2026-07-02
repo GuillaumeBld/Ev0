@@ -20,12 +20,23 @@ interface LineupPricingWidgetProps {
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-const POS_ORDER: Record<string, number> = { FW: 0, MF: 1, DF: 2 }
+// Map 11-bucket positions (CF_lone, CM, CB, winger…) + legacy (FW/MF/DF/GK) to simple groups
+function toGroupPos(pos: string | null): 'GK' | 'FW' | 'MF' | 'DF' | null {
+  if (!pos) return null
+  const p = pos.toLowerCase()
+  if (p === 'gk') return 'GK'
+  if (['fw', 'fwd', 'cf_lone', 'cf_pair', 'ss', 'winger'].includes(p)) return 'FW'
+  if (['mf', 'mid', 'am', 'cm', 'dm', 'wb'].includes(p)) return 'MF'
+  if (['df', 'def', 'cb', 'fb'].includes(p)) return 'DF'
+  return null
+}
+
+const POS_ORDER: Record<string, number> = { FW: 0, MF: 1, DF: 2, GK: 3 }
 
 function sortByPositionThenName(players: PlayerAllocationOut[]): PlayerAllocationOut[] {
   return [...players].sort((a, b) => {
-    const pa = POS_ORDER[a.position ?? ''] ?? 3
-    const pb = POS_ORDER[b.position ?? ''] ?? 3
+    const pa = POS_ORDER[toGroupPos(a.position) ?? ''] ?? 3
+    const pb = POS_ORDER[toGroupPos(b.position) ?? ''] ?? 3
     if (pa !== pb) return pa - pb
     return a.player_name.localeCompare(b.player_name)
   })
@@ -43,6 +54,7 @@ const POS_COLOR: Record<string, string> = {
   FW: 'text-orange-400',
   MF: 'text-blue-400',
   DF: 'text-gray-400',
+  GK: 'text-yellow-600',
 }
 
 // ── Component ─────────────────────────────────────────────────────
@@ -170,9 +182,10 @@ export function LineupPricingWidget({
               </p>
               {(() => {
                 const POS_GROUPS: { key: string; label: string; color: string; filter: (pos: string | null) => boolean }[] = [
-                  { key: 'FW', label: 'Attaquants', color: 'text-orange-400', filter: (p) => p === 'FW' },
-                  { key: 'MF', label: 'Milieux',    color: 'text-blue-400',   filter: (p) => p === 'MF' },
-                  { key: 'DF', label: 'Défenseurs', color: 'text-gray-400',   filter: (p) => p === 'DF' },
+                  { key: 'FW', label: 'Attaquants', color: 'text-orange-400',  filter: (p) => toGroupPos(p) === 'FW' },
+                  { key: 'MF', label: 'Milieux',    color: 'text-blue-400',    filter: (p) => toGroupPos(p) === 'MF' },
+                  { key: 'DF', label: 'Défenseurs', color: 'text-gray-400',    filter: (p) => toGroupPos(p) === 'DF' },
+                  { key: 'GK', label: 'Gardiens',   color: 'text-yellow-600',  filter: (p) => toGroupPos(p) === 'GK' },
                 ]
                 const sorted = sortByPositionThenName(teamPlayers)
                 return (
@@ -267,8 +280,8 @@ export function LineupPricingWidget({
                           </span>
                         </td>
                         <td className="px-2 py-1.5 text-center">
-                          <span className={POS_COLOR[p.position ?? ''] ?? 'text-gray-400'}>
-                            {p.position ?? '—'}
+                          <span className={POS_COLOR[toGroupPos(p.position) ?? ''] ?? 'text-gray-400'}>
+                            {toGroupPos(p.position) ?? p.position ?? '—'}
                           </span>
                         </td>
                         <td className="px-3 py-1.5 text-center border-l border-gray-700/50">
