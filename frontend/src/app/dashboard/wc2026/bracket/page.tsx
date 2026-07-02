@@ -331,6 +331,24 @@ function BracketMatchCard({
   const ph_h = isPlaceholder(home)
   const ph_a = isPlaceholder(away)
 
+  // Rendre le slot vide tant que les deux équipes ne sont pas connues
+  if (ph_h && ph_a) {
+    return (
+      <div
+        style={{ width: BK_CARD_W, height: BK_CARD_H }}
+        className="rounded border border-gray-800/60 bg-gray-900/30 flex flex-col overflow-hidden"
+      >
+        <div className="flex-1 flex items-center px-2">
+          <span className="text-gray-800 text-[10px]">—</span>
+        </div>
+        <div className="h-px bg-gray-800 shrink-0" />
+        <div className="flex-1 flex items-center px-2">
+          <span className="text-gray-800 text-[10px]">—</span>
+        </div>
+      </div>
+    )
+  }
+
   let homeWins = false, awayWins = false, isPen = false
   if (finished && hs != null && as != null) {
     if (hs > as) homeWins = true
