@@ -975,6 +975,17 @@ async def job_settle_pipeline():
             await sync_fixture_status_from_bzz(session)
     except Exception as exc:
         logger.error("Settlement pipeline: bzz status sync failed: %s", exc, exc_info=True)
+
+    # Resolve placeholder team names (W73, 2E, …) → real names using freshly-synced BzzEvents.
+    # Must run after sync_events so R16+ bzz_events already have the correct team_api_ids.
+    try:
+        async with async_session() as session:
+            created, updated = await sync_fixtures_from_bzz(session)
+        if created or updated:
+            logger.info("Settlement pipeline: fixtures resolved created=%d updated=%d", created, updated)
+    except Exception as exc:
+        logger.error("Settlement pipeline: fixture name resolution failed: %s", exc, exc_info=True)
+
     await job_auto_finish_fixtures()
     await job_sync_match_events()
     await job_auto_settle()

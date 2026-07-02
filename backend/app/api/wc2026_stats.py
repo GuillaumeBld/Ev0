@@ -70,7 +70,7 @@ async def get_ko_h2h(session: AsyncSession = Depends(get_db)) -> list[KOMatchH2H
                     MAX(CASE WHEN l.outcome = 'draw' THEN l.odds END) AS draw_odds,
                     MAX(CASE WHEN l.outcome = 'away' THEN l.odds END) AS away_odds
                 FROM fixtures f
-                JOIN latest l ON l.fixture_id = f.id
+                LEFT JOIN latest l ON l.fixture_id = f.id
                 WHERE f.league = 'world_cup_2026'
                   AND f.matchweek = ANY(:mws)
                 GROUP BY f.id, f.home_team, f.away_team, f.matchweek,

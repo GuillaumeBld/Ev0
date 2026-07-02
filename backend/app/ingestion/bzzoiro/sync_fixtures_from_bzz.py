@@ -53,6 +53,8 @@ for _key, _id in INTERNATIONAL_LEAGUE_INTERNAL_IDS.items():
 
 # How far ahead to look for upcoming fixtures
 _DAYS_FORWARD = 30
+# How far back to look — lets us fix placeholder names on recently-finished matches
+_DAYS_BACK = 7
 
 # A team name is a placeholder when it matches these patterns.
 # Generic patterns: winner/loser/tbd/tba/qf/sf/semi-final/quarter-final/match N
@@ -78,6 +80,7 @@ def _is_placeholder(name: str) -> bool:
 async def sync_fixtures_from_bzz(
     session: AsyncSession,
     days_forward: int = _DAYS_FORWARD,
+    days_back: int = _DAYS_BACK,
 ) -> tuple[int, int]:
     """Create missing Fixtures and fix placeholder names from BzzEvents.
 
@@ -85,11 +88,12 @@ async def sync_fixtures_from_bzz(
     """
     now = datetime.now(UTC)
     horizon = now + timedelta(days=days_forward)
+    lookback = now - timedelta(days=days_back)
 
-    # 1. Load upcoming non-finished BzzEvents for target leagues
+    # 1. Load BzzEvents for target leagues (past + future window)
     events_result = await session.execute(
         select(BzzEvent).where(
-            BzzEvent.event_date >= now,
+            BzzEvent.event_date >= lookback,
             BzzEvent.event_date <= horizon,
             BzzEvent.league_api_id.in_(list(_LEAGUE_API_ID_TO_KEY.keys())),
         ).order_by(BzzEvent.event_date)
@@ -127,11 +131,10 @@ async def sync_fixtures_from_bzz(
         for ct_id, bzz_id in ct_result.all():
             canonical_map[bzz_id] = ct_id
 
-    # 3. Load all non-finished Fixtures in the same window (for dedup)
+    # 3. Load all Fixtures in the same window (including finished — to fix placeholder names)
     fixtures_result = await session.execute(
         select(Fixture).where(
-            Fixture.status != "finished",
-            Fixture.kickoff_utc >= now - timedelta(days=1),
+            Fixture.kickoff_utc >= lookback,
             Fixture.kickoff_utc <= horizon,
         )
     )
