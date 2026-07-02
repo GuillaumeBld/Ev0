@@ -79,6 +79,13 @@ INTERNATIONAL_LEAGUES: frozenset[str] = frozenset({
     "nations_league_concacaf",
 })
 
+# CDM tournament stats blend (WC2026 — integrates in-tournament match-by-match data)
+WC2026_LEAGUE_API_ID: int = 27
+_TOURNAMENT_CLUB_WEIGHT: float = 0.40    # club season stats weight
+_TOURNAMENT_CDM_WEIGHT: float = 0.60     # CDM in-tournament stats weight
+_TOURNAMENT_GOALS_XG_ALPHA: float = 0.60 # goal-rate vs xG blend within CDM stats
+_TOURNAMENT_MIN_MINUTES: int = 45        # min CDM minutes to apply blend
+
 # ── Matchup factor ─────────────────────────────────────────────────
 # ── Position normalisation ────────────────────────────────────────
 
@@ -1047,6 +1054,140 @@ async def _load_national_team_players(
     return players
 
 
+# ── Tournament (CDM) stats blend ──────────────────────────────────
+
+async def _load_tournament_match_stats(
+    db: AsyncSession,
+    player_api_ids: list[int],
+    league_api_id: int,
+) -> dict[int, dict[str, Any]]:
+    """Aggregate in-tournament match-by-match stats for a list of players.
+
+    Returns {player_api_id: aggregated stats dict} for players with at least
+    _TOURNAMENT_MIN_MINUTES total CDM minutes.
+    """
+    from app.models.bzzoiro import BzzEvent, BzzPlayerMatchStat
+
+    if not player_api_ids:
+        return {}
+
+    agg = (
+        select(
+            BzzPlayerMatchStat.player_api_id,
+            func.sum(BzzPlayerMatchStat.minutes_played).label("total_minutes"),
+            func.sum(BzzPlayerMatchStat.goals).label("total_goals"),
+            func.sum(BzzPlayerMatchStat.expected_goals).label("total_xg"),
+            func.sum(BzzPlayerMatchStat.goal_assist).label("total_assists"),
+            func.sum(BzzPlayerMatchStat.expected_assists).label("total_xa"),
+            func.avg(BzzPlayerMatchStat.rating).label("avg_rating"),
+            func.avg(BzzPlayerMatchStat.shot_accuracy).label("avg_shot_accuracy"),
+            func.avg(BzzPlayerMatchStat.xg_per_shot).label("avg_xg_per_shot"),
+            func.count().label("matches_played"),
+        )
+        .join(BzzEvent, BzzEvent.api_id == BzzPlayerMatchStat.event_api_id)
+        .where(
+            BzzEvent.league_api_id == league_api_id,
+            BzzPlayerMatchStat.player_api_id.in_(player_api_ids),
+        )
+        .group_by(BzzPlayerMatchStat.player_api_id)
+    )
+
+    rows = (await db.execute(agg)).all()
+    out: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        total_minutes = row.total_minutes or 0
+        if total_minutes < _TOURNAMENT_MIN_MINUTES:
+            continue
+        minutes_per_90 = total_minutes / 90.0
+        total_goals = row.total_goals or 0
+        total_xg = row.total_xg or 0.0
+        total_assists = row.total_assists or 0
+        total_xa = row.total_xa or 0.0
+        out[row.player_api_id] = {
+            "total_minutes": total_minutes,
+            "matches_played": row.matches_played or 0,
+            "cdm_goals_per_90": total_goals / minutes_per_90,
+            "cdm_xg_per_90": total_xg / minutes_per_90,
+            "cdm_assists_per_90": total_assists / minutes_per_90,
+            "cdm_xa_per_90": total_xa / minutes_per_90,
+            "total_goals": total_goals,
+            "total_xg": total_xg,
+            "total_assists": total_assists,
+            "total_xa": total_xa,
+            "avg_rating": row.avg_rating or 0.0,
+            "avg_shot_accuracy": row.avg_shot_accuracy or 0.0,
+            "avg_xg_per_shot": row.avg_xg_per_shot or 0.0,
+        }
+    return out
+
+
+def _blend_tournament_stats(
+    players: list[dict[str, Any]],
+    tournament_stats: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Blend club season stats with CDM in-tournament stats (in-place).
+
+    Blend formula per player with CDM data:
+      effective_cdm_xg = ALPHA * cdm_goals/90 + (1-ALPHA) * cdm_xg/90
+      blended_xg/90   = CLUB_W * club_xg/90 + CDM_W * effective_cdm_xg
+    Same pattern for assists. Also blends avg_rating and shot quality.
+    """
+    for p in players:
+        ts = tournament_stats.get(p.get("player_id", -1))
+        if ts is None:
+            continue
+
+        a = _TOURNAMENT_GOALS_XG_ALPHA
+        effective_cdm_xg = a * ts["cdm_goals_per_90"] + (1 - a) * ts["cdm_xg_per_90"]
+        effective_cdm_xa = a * ts["cdm_assists_per_90"] + (1 - a) * ts["cdm_xa_per_90"]
+
+        club_xg = p.get("npxg_per_90") or p.get("xg_per_90") or 0.0
+        club_xa = p.get("xa_per_90") or 0.0
+
+        blended_xg = _TOURNAMENT_CLUB_WEIGHT * club_xg + _TOURNAMENT_CDM_WEIGHT * effective_cdm_xg
+        blended_xa = _TOURNAMENT_CLUB_WEIGHT * club_xa + _TOURNAMENT_CDM_WEIGHT * effective_cdm_xa
+
+        p["npxg_per_90"] = blended_xg
+        p["xg_per_90"] = blended_xg
+        p["xa_per_90"] = blended_xa
+
+        # Update totals so conversion_rate in allocate_player reflects CDM reality
+        p["npxg_total"] = ts["total_xg"]
+        p["goals_total"] = ts["total_goals"]
+        p["xa_total"] = ts["total_xa"]
+        p["assists_total"] = ts["total_assists"]
+        p["finishing_delta"] = ts["total_goals"] - ts["total_xg"]
+
+        # Blend rating (skip if either side is zero)
+        cdm_r = ts.get("avg_rating") or 0.0
+        club_r = p.get("avg_rating") or 0.0
+        if cdm_r > 0:
+            p["avg_rating"] = (
+                _TOURNAMENT_CLUB_WEIGHT * club_r + _TOURNAMENT_CDM_WEIGHT * cdm_r
+                if club_r > 0 else cdm_r
+            )
+
+        # Shot quality blend
+        cdm_sa = ts.get("avg_shot_accuracy") or 0.0
+        if cdm_sa > 0:
+            p["shot_accuracy"] = (
+                _TOURNAMENT_CLUB_WEIGHT * (p.get("shot_accuracy") or 0.0)
+                + _TOURNAMENT_CDM_WEIGHT * cdm_sa
+            )
+        cdm_xps = ts.get("avg_xg_per_shot") or 0.0
+        if cdm_xps > 0:
+            p["xg_per_shot"] = (
+                _TOURNAMENT_CLUB_WEIGHT * (p.get("xg_per_shot") or 0.0)
+                + _TOURNAMENT_CDM_WEIGHT * cdm_xps
+            )
+
+        logger.debug(
+            "_blend_tournament_stats [%s]: club_xg/90=%.3f effective_cdm_xg/90=%.3f → blended=%.3f",
+            p.get("player_name", "?"), club_xg, effective_cdm_xg, blended_xg,
+        )
+    return players
+
+
 # ── Lineup pricing (optional redistribution) ─────────────────────
 
 def compute_lineup_allocation(
@@ -1142,6 +1283,16 @@ async def load_match_pricing(
             away_players_db = await _load_national_team_players(
                 db, national_team_api_id=bzz_event.away_team_api_id
             )
+            if fixture.league == "world_cup_2026":
+                all_ids = [p["player_id"] for p in home_players_db + away_players_db]
+                t_stats = await _load_tournament_match_stats(db, all_ids, WC2026_LEAGUE_API_ID)
+                if t_stats:
+                    logger.info(
+                        "load_match_pricing: CDM stats blend — %d / %d joueurs",
+                        len(t_stats), len(all_ids),
+                    )
+                    home_players_db = _blend_tournament_stats(home_players_db, t_stats)
+                    away_players_db = _blend_tournament_stats(away_players_db, t_stats)
         else:
             logger.warning(
                 "load_match_pricing: international fixture %s (league=%r, external_id=%r) "
