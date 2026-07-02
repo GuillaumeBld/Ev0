@@ -1079,6 +1079,7 @@ async def _load_tournament_match_stats(
             func.sum(BzzPlayerMatchStat.expected_goals).label("total_xg"),
             func.sum(BzzPlayerMatchStat.goal_assist).label("total_assists"),
             func.sum(BzzPlayerMatchStat.expected_assists).label("total_xa"),
+            func.sum(BzzPlayerMatchStat.total_shots).label("total_shots"),
             func.avg(BzzPlayerMatchStat.rating).label("avg_rating"),
             func.avg(BzzPlayerMatchStat.shot_accuracy).label("avg_shot_accuracy"),
             func.avg(BzzPlayerMatchStat.xg_per_shot).label("avg_xg_per_shot"),
@@ -1103,6 +1104,9 @@ async def _load_tournament_match_stats(
         total_xg = row.total_xg or 0.0
         total_assists = row.total_assists or 0
         total_xa = row.total_xa or 0.0
+        total_shots = row.total_shots or 0
+        # goals_per_shot captures actual finishing ability (vs xg_per_shot from xG model)
+        goals_per_shot = min(total_goals / total_shots, 0.50) if total_shots > 0 else 0.0
         out[row.player_api_id] = {
             "total_minutes": total_minutes,
             "matches_played": row.matches_played or 0,
@@ -1114,6 +1118,8 @@ async def _load_tournament_match_stats(
             "total_xg": total_xg,
             "total_assists": total_assists,
             "total_xa": total_xa,
+            "total_shots": total_shots,
+            "goals_per_shot": goals_per_shot,
             "avg_rating": row.avg_rating or 0.0,
             "avg_shot_accuracy": row.avg_shot_accuracy or 0.0,
             "avg_xg_per_shot": row.avg_xg_per_shot or 0.0,
@@ -1167,19 +1173,27 @@ def _blend_tournament_stats(
                 if club_r > 0 else cdm_r
             )
 
-        # Shot quality blend
+        # Shot quality blend — prefer goals/shot (actual finishing) over xg_per_shot (model)
         cdm_sa = ts.get("avg_shot_accuracy") or 0.0
         if cdm_sa > 0:
             p["shot_accuracy"] = (
                 _TOURNAMENT_CLUB_WEIGHT * (p.get("shot_accuracy") or 0.0)
                 + _TOURNAMENT_CDM_WEIGHT * cdm_sa
             )
-        cdm_xps = ts.get("avg_xg_per_shot") or 0.0
-        if cdm_xps > 0:
+        cdm_gps = ts.get("goals_per_shot") or 0.0
+        club_xps = p.get("xg_per_shot") or 0.0
+        if cdm_gps > 0:
+            p["xg_per_shot"] = _TOURNAMENT_CLUB_WEIGHT * club_xps + _TOURNAMENT_CDM_WEIGHT * cdm_gps
+        elif ts.get("avg_xg_per_shot") or 0.0 > 0:
             p["xg_per_shot"] = (
-                _TOURNAMENT_CLUB_WEIGHT * (p.get("xg_per_shot") or 0.0)
-                + _TOURNAMENT_CDM_WEIGHT * cdm_xps
+                _TOURNAMENT_CLUB_WEIGHT * club_xps
+                + _TOURNAMENT_CDM_WEIGHT * (ts["avg_xg_per_shot"] or 0.0)
             )
+
+        # Replace club form signal with CDM form (goals/assists in tournament)
+        # form_xg_5 = total CDM goals; form_rate = total_goals / (5 * exp_mins/90) ≈ cdm_goals/90
+        p["form_xg_5"] = float(ts["total_goals"])
+        p["form_assists_5"] = float(ts["total_assists"])
 
         logger.debug(
             "_blend_tournament_stats [%s]: club_xg/90=%.3f effective_cdm_xg/90=%.3f → blended=%.3f",
