@@ -84,7 +84,11 @@ WC2026_LEAGUE_API_ID: int = 27
 _TOURNAMENT_CLUB_WEIGHT: float = 0.40    # club season stats weight
 _TOURNAMENT_CDM_WEIGHT: float = 0.60     # CDM in-tournament stats weight
 _TOURNAMENT_GOALS_XG_ALPHA: float = 0.60 # goal-rate vs xG blend within CDM stats
-_TOURNAMENT_MIN_MINUTES: int = 45        # min CDM minutes to apply blend
+_TOURNAMENT_MIN_MINUTES: int = 45        # min CDM minutes to apply top-down share blend
+# Direct lambda blend: after top-down allocation, blend in CDM goals/90 as a direct signal.
+# Bypasses the team-xG distribution ceiling that structurally limits individual lambdas.
+_WC_DIRECT_LAMBDA_WEIGHT: float = 0.35  # weight on CDM direct lambda (vs top-down)
+_WC_DIRECT_LAMBDA_MIN_MINUTES: int = 135  # min CDM minutes to apply direct blend (~1.5 matches)
 
 # ── Matchup factor ─────────────────────────────────────────────────
 # ── Position normalisation ────────────────────────────────────────
@@ -1280,6 +1284,8 @@ async def load_match_pricing(
     home_bzz_team_id = getattr(fixture, "home_bzz_team_id", None)
     away_bzz_team_id = getattr(fixture, "away_bzz_team_id", None)
 
+    t_stats: dict[int, dict[str, Any]] = {}
+
     if fixture.league in INTERNATIONAL_LEAGUES:
         from app.models.bzzoiro import BzzEvent
         bzz_api_id_str = (fixture.external_id or "").removeprefix("bzz_")
@@ -1383,6 +1389,30 @@ async def load_match_pricing(
             )
         )
     away_allocs = sorted(_away_allocs, key=lambda a: a.prob_goal, reverse=True)
+
+    # ── WC2026: direct CDM lambda blend ──────────────────────────────
+    # For players with ≥ _WC_DIRECT_LAMBDA_MIN_MINUTES in the tournament, blend the
+    # top-down lambda with a direct CDM signal (goals/90 × mins_ratio).
+    # This bypasses the team-xG ceiling that structurally limits top-down lambdas.
+    if fixture.league == "world_cup_2026" and t_stats:
+        for alloc in home_allocs + away_allocs:
+            ts_d = t_stats.get(alloc.player_id)
+            if ts_d is None:
+                continue
+            if ts_d.get("total_minutes", 0) < _WC_DIRECT_LAMBDA_MIN_MINUTES:
+                continue
+            cdm_goals_per_90 = ts_d.get("cdm_goals_per_90", 0.0) or 0.0
+            if cdm_goals_per_90 <= 0:
+                continue
+            mins_ratio = alloc.expected_minutes / 90.0
+            lambda_cdm_direct = cdm_goals_per_90 * mins_ratio
+            w = _WC_DIRECT_LAMBDA_WEIGHT
+            lambda_blended = (1 - w) * alloc.lambda_total + w * lambda_cdm_direct
+            lambda_blended = max(0.001, min(lambda_blended, 3.0))
+            prob_goal = 1 - math.exp(-lambda_blended)
+            alloc.lambda_total = lambda_blended
+            alloc.prob_goal = prob_goal
+            alloc.fair_odds_goal = round(1 / prob_goal, 2) if prob_goal > 0 else 9999.0
 
     home_lineup = (
         compute_lineup_allocation(home_players_db, home_starters, home_team, home_match_xg)
