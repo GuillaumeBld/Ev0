@@ -153,6 +153,12 @@ async def list_fixtures(
         )
     stmt = _apply_upcoming_only_filter(stmt, upcoming_only)
 
+    # Exclure les fixtures dont un nom d'équipe est un placeholder (W83, L101, 1A, 2B…)
+    stmt = stmt.where(
+        ~Fixture.home_team.op("~")(r"^[WL][0-9]|^[0-9][A-Z]$|^[A-Z][0-9]$"),
+        ~Fixture.away_team.op("~")(r"^[WL][0-9]|^[0-9][A-Z]$|^[A-Z][0-9]$"),
+    )
+
     result = await db.execute(stmt)
     rows = result.all()
 
