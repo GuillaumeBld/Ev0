@@ -444,7 +444,7 @@ function CalculatorInner() {
             <option value="">
               {loadingFixtures ? 'Chargement…' : '— Choisir un match —'}
             </option>
-            {fixtures.map(f => (
+            {fixtures.filter(f => !/^[WL]\d+$/.test(f.home_team) && !/^[WL]\d+$/.test(f.away_team)).map(f => (
               <option key={f.id} value={f.id}>
                 {f.home_team} vs {f.away_team}
                 {' · '}
