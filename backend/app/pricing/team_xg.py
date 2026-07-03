@@ -1047,6 +1047,28 @@ async def _load_national_team_players(
 
 # ── Tournament (CDM) stats blend ──────────────────────────────────
 
+async def _get_tournament_player_ids(
+    db: AsyncSession,
+    player_api_ids: list[int],
+    league_api_id: int,
+) -> set[int]:
+    """Return IDs of players who appeared in any match of the tournament (>0 min)."""
+    from app.models.bzzoiro import BzzEvent, BzzPlayerMatchStat
+
+    q = (
+        select(BzzPlayerMatchStat.player_api_id)
+        .join(BzzEvent, BzzEvent.api_id == BzzPlayerMatchStat.event_api_id)
+        .where(
+            BzzEvent.league_api_id == league_api_id,
+            BzzPlayerMatchStat.player_api_id.in_(player_api_ids),
+            BzzPlayerMatchStat.minutes_played > 0,
+        )
+        .distinct()
+    )
+    rows = (await db.execute(q)).all()
+    return {row[0] for row in rows}
+
+
 async def _load_tournament_match_stats(
     db: AsyncSession,
     player_api_ids: list[int],
@@ -1315,11 +1337,15 @@ async def load_match_pricing(
             )
             if fixture.league == "world_cup_2026":
                 all_ids = [p["player_id"] for p in home_players_db + away_players_db]
-                t_stats = await _load_tournament_match_stats(db, all_ids, WC2026_LEAGUE_API_ID)
+                # Filtrer au groupe effectif : seuls les joueurs ayant joué au tournoi.
+                squad_ids = await _get_tournament_player_ids(db, all_ids, WC2026_LEAGUE_API_ID)
+                home_players_db = [p for p in home_players_db if p["player_id"] in squad_ids]
+                away_players_db = [p for p in away_players_db if p["player_id"] in squad_ids]
+                t_stats = await _load_tournament_match_stats(db, list(squad_ids), WC2026_LEAGUE_API_ID)
                 if t_stats:
                     logger.info(
-                        "load_match_pricing: CDM stats blend — %d / %d joueurs",
-                        len(t_stats), len(all_ids),
+                        "load_match_pricing: CDM stats blend — %d / %d joueurs du groupe",
+                        len(t_stats), len(squad_ids),
                     )
                     home_players_db = _blend_tournament_stats(home_players_db, t_stats)
                     away_players_db = _blend_tournament_stats(away_players_db, t_stats)
