@@ -192,15 +192,14 @@ def calculate_supersub_prob(
     position: str = "FW",
 ) -> float:
     """
-    P(pari gagné avec mécanique supersub).
+    P(ce joueur marque, compte tenu de sa probabilité d'être sorti/entré).
 
-    P = (1 - p_sub) × (1 - e^(-λ_A))
-      + p_sub       × (1 - e^(-(λ_A×t_sub/90 + λ_B×(90-t_sub)/90)))
+    P = (1 - p_sub) × (1 - e^(-λ_A))           [joue tout le match]
+      + p_sub       × (1 - e^(-λ_A × t_sub/90)) [sort/entre à t_sub — seules SES minutes comptent]
+
+    λ_B exclue : un pari "joueur X marque" n'est pas gagné si son remplaçant marque.
     """
-    if lambda_B_sub is None:
-        lambda_B_sub = SUB_GOAL_LAMBDA.get(position, 0.08)
-    lA_adj  = lambda_A * (t_sub / 90.0)
-    lB_adj  = lambda_B_sub * ((90.0 - t_sub) / 90.0)
+    lA_until_sub = lambda_A * (t_sub / 90.0)
     p_full  = (1.0 - p_sub) * (1.0 - math.exp(-lambda_A))
-    p_chain = p_sub          * (1.0 - math.exp(-(lA_adj + lB_adj)))
+    p_chain = p_sub          * (1.0 - math.exp(-lA_until_sub))
     return p_full + p_chain

@@ -174,15 +174,12 @@ def calculate_supersub_prob_assist(
     position: str = "MF",
 ) -> float:
     """
-    P(passe décisive gagnée avec mécanique supersub).
-    Même formule que pour les buts, λ_B_sub issu de SUB_ASSIST_LAMBDA.
+    P(ce joueur fait une passe décisive, compte tenu de sa probabilité d'être sorti/entré).
+    λ_B exclue — seules les minutes de ce joueur comptent pour son pari.
     """
-    if lambda_B_sub is None:
-        lambda_B_sub = SUB_ASSIST_LAMBDA.get(position, 0.07)
-    lA_adj  = lambda_A * (t_sub / 90.0)
-    lB_adj  = lambda_B_sub * ((90.0 - t_sub) / 90.0)
+    lA_until_sub = lambda_A * (t_sub / 90.0)
     p_full  = (1.0 - p_sub) * (1.0 - math.exp(-lambda_A))
-    p_chain = p_sub          * (1.0 - math.exp(-(lA_adj + lB_adj)))
+    p_chain = p_sub          * (1.0 - math.exp(-lA_until_sub))
     return p_full + p_chain
 
 

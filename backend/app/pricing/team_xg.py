@@ -1413,6 +1413,16 @@ async def load_match_pricing(
             alloc.lambda_total = lambda_blended
             alloc.prob_goal = prob_goal
             alloc.fair_odds_goal = round(1 / prob_goal, 2) if prob_goal > 0 else 9999.0
+            # Recompute supersub with the blended lambda so both columns are consistent.
+            lambda_blended_90 = lambda_blended / mins_ratio if mins_ratio > 0 else lambda_blended
+            p_goal_ss = calculate_supersub_prob(
+                lambda_A=lambda_blended_90,
+                p_sub=alloc.p_sub,
+                t_sub=alloc.avg_sub_time,
+                position=alloc.position or "MF",
+            )
+            alloc.p_goal_supersub = round(p_goal_ss, 4)
+            alloc.fair_odds_goal_supersub = round(1.0 / p_goal_ss, 2) if p_goal_ss > 0 else 99.0
 
     home_lineup = (
         compute_lineup_allocation(home_players_db, home_starters, home_team, home_match_xg)
