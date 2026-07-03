@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useSearchParams, useRouter } from 'next/navigation'
 import { Calculator, RefreshCw, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
 import { getFixtures, priceMatch, getPenTakers, setPenTakers, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
@@ -273,6 +273,7 @@ function TeamTable({
 
 function CalculatorInner() {
   const searchParams = useSearchParams()
+  const router = useRouter()
   const matchParam = searchParams.get('match')
 
   const [fixtures, setFixtures] = useState<FixtureOut[]>([])
@@ -299,16 +300,27 @@ function CalculatorInner() {
   useEffect(() => { homeXgRef.current = homeXgOverride }, [homeXgOverride])
   useEffect(() => { awayXgRef.current = awayXgOverride }, [awayXgOverride])
 
-  // Load upcoming fixtures, auto-select if ?match= param present
+  // Load upcoming + live fixtures, auto-select if ?match= param present
   useEffect(() => {
     setLoadingFixtures(true)
-    getFixtures({ status: 'scheduled', limit: 200, upcoming_only: true })
-      .then((res) => {
-        setFixtures(res.fixtures)
+    // Fetch scheduled (upcoming) and live matches together
+    Promise.all([
+      getFixtures({ status: 'scheduled', limit: 150, upcoming_only: false }),
+      getFixtures({ status: 'live', limit: 50 }),
+    ])
+      .then(([scheduledRes, liveRes]) => {
+        // Merge, deduplicate by id, keep live at the top
+        const seen = new Set<number>()
+        const merged: FixtureOut[] = []
+        for (const f of [...liveRes.fixtures, ...scheduledRes.fixtures]) {
+          if (!seen.has(f.id)) { seen.add(f.id); merged.push(f) }
+        }
+        setFixtures(merged)
         if (matchParam) {
           const id = Number(matchParam)
-          const found = res.fixtures.find(f => f.id === id)
-          if (found) setSelectedFixtureId(id)
+          // Auto-select whether or not the fixture is in the loaded list
+          // (user might have a direct link to a fixture that's not yet live)
+          setSelectedFixtureId(id)
         }
       })
       .catch(() => setFixtures([]))
@@ -354,6 +366,8 @@ function CalculatorInner() {
 
   function handleFixtureSelect(e: React.ChangeEvent<HTMLSelectElement>) {
     const id = Number(e.target.value)
+    // Persist fixture in URL so page reload auto-restores + re-fetches fresh data
+    router.replace(id ? `?match=${id}` : '?', { scroll: false })
     setSelectedFixtureId(id || null)
     setPricing(null)
     setHomeXgOverride('')
@@ -446,12 +460,12 @@ function CalculatorInner() {
             </option>
             {fixtures.filter(f => !/^[WL]\d+|TBD/i.test(f.home_team) && !/^[WL]\d+|TBD/i.test(f.away_team)).map(f => (
               <option key={f.id} value={f.id}>
-                {f.home_team} vs {f.away_team}
+                {f.status === 'live' ? '🔴 ' : ''}{f.home_team} vs {f.away_team}
                 {' · '}
                 {new Date(f.kickoff_utc).toLocaleDateString('fr-FR', {
                   day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
                 })}
-                {' · '}{f.league.replace('_', ' ').toUpperCase()}
+                {' · '}{f.league.replace(/_/g, ' ').toUpperCase()}
               </option>
             ))}
           </select>
