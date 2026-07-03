@@ -1413,10 +1413,11 @@ async def load_match_pricing(
                 continue
             cdm_goals_per_90 = ts_d.get("cdm_goals_per_90", 0.0) or 0.0
             cdm_xg_per_90 = ts_d.get("cdm_xg_per_90", 0.0) or 0.0
-            # Use goals/90 when available; fall back to xG/90 with half weight
-            # (xG is a weaker signal than actual goals — no finishing bonus).
+            # Signal CDM = max(goals/90, xG/90) quand les deux sont dispo.
+            # Pour les joueurs à fort xG mais peu de buts marqués (e.g. Lautaro),
+            # xG/90 reflète mieux la qualité que goals/90.
             if cdm_goals_per_90 > 0:
-                cdm_signal = cdm_goals_per_90
+                cdm_signal = max(cdm_goals_per_90, cdm_xg_per_90)
                 w = _WC_DIRECT_LAMBDA_WEIGHT
             elif cdm_xg_per_90 > 0:
                 cdm_signal = cdm_xg_per_90
