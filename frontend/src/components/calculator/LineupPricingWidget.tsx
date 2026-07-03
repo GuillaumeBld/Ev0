@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Users, ChevronDown, Save, Play } from 'lucide-react'
 import { clsx } from 'clsx'
 import { type PlayerAllocationOut } from '@/lib/api'
@@ -15,6 +15,7 @@ interface LineupPricingWidgetProps {
   teamPlayers: PlayerAllocationOut[]  // full-squad allocations (for player list)
   lineupPlayers: PlayerAllocationOut[] | null  // redistributed result from backend
   isHome: boolean
+  autoApplied?: boolean  // true when lineup was auto-fetched from BZZ on load
   onCalculate: (starters: string[]) => void
 }
 
@@ -65,10 +66,18 @@ export function LineupPricingWidget({
   teamPlayers,
   lineupPlayers,
   isHome,
+  autoApplied = false,
   onCalculate,
 }: LineupPricingWidgetProps) {
   const [open, setOpen] = useState(false)
   const [mode, setMode] = useState<Mode | null>(null)
+
+  // Auto-open when lineup was applied automatically and results are available
+  useEffect(() => {
+    if (autoApplied && lineupPlayers && lineupPlayers.length > 0) {
+      setOpen(true)
+    }
+  }, [autoApplied, lineupPlayers])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
@@ -139,6 +148,11 @@ export function LineupPricingWidget({
         <span className="flex items-center gap-2 text-gray-300">
           <Users className="w-4 h-4" />
           Mode Compo
+          {autoApplied && lineupPlayers && lineupPlayers.length > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-semibold tracking-wide">
+              BZZ auto
+            </span>
+          )}
         </span>
         <ChevronDown className={clsx('w-4 h-4 text-gray-400 transition-transform', open && 'rotate-180')} />
       </button>

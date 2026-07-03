@@ -294,6 +294,10 @@ function CalculatorInner() {
   const homeStartersRef = useRef<string[] | null>(null)
   const awayStartersRef = useRef<string[] | null>(null)
 
+  // Auto-apply BZZ lineup state
+  const [lineupAutoApplied, setLineupAutoApplied] = useState<{ home: boolean; away: boolean }>({ home: false, away: false })
+  const lastLineupFetchedForRef = useRef<number | null>(null)
+
   // xG refs so fetchPricing doesn't need them as deps (avoids re-fetch on each keystroke)
   const homeXgRef = useRef(homeXgOverride)
   const awayXgRef = useRef(awayXgOverride)
@@ -357,11 +361,35 @@ function CalculatorInner() {
     }
   }, [homePenTaker, awayPenTaker])
 
-  // Auto-fetch only on fixture change or pen taker change — NOT on xG (use button)
+  // Auto-fetch pricing. On fixture change, try to auto-apply BZZ lineup first.
+  // On pen taker change only, skip lineup re-fetch (starters refs already set).
   useEffect(() => {
-    if (selectedFixtureId !== null) {
+    if (selectedFixtureId === null) return
+
+    const run = async () => {
+      if (lastLineupFetchedForRef.current !== selectedFixtureId) {
+        lastLineupFetchedForRef.current = selectedFixtureId
+        try {
+          const r = await fetch(`/api/v1/lineups/fixture/${selectedFixtureId}`)
+          if (r.ok) {
+            const d = await r.json()
+            const homeS: string[] = (d.home?.players ?? [])
+              .filter((p: { is_starter: boolean }) => p.is_starter)
+              .map((p: { player_name: string }) => p.player_name)
+            const awayS: string[] = (d.away?.players ?? [])
+              .filter((p: { is_starter: boolean }) => p.is_starter)
+              .map((p: { player_name: string }) => p.player_name)
+            if (homeS.length >= 5) homeStartersRef.current = homeS
+            if (awayS.length >= 5) awayStartersRef.current = awayS
+            setLineupAutoApplied({ home: homeS.length >= 5, away: awayS.length >= 5 })
+          }
+        } catch {
+          // pas de compo disponible, on price sans
+        }
+      }
       fetchPricing(selectedFixtureId)
     }
+    run()
   }, [selectedFixtureId, homePenTaker, awayPenTaker, fetchPricing])
 
   function handleFixtureSelect(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -378,6 +406,8 @@ function CalculatorInner() {
     setError(null)
     homeStartersRef.current = null
     awayStartersRef.current = null
+    setLineupAutoApplied({ home: false, away: false })
+    lastLineupFetchedForRef.current = null
     if (id) {
       getPenTakers(id).then(data => {
         setHomePenTaker(data.home_pen_taker_id)
@@ -561,6 +591,7 @@ function CalculatorInner() {
               teamPlayers={pricing.home_players}
               lineupPlayers={pricing.home_lineup_players ?? null}
               isHome={true}
+              autoApplied={lineupAutoApplied.home}
               onCalculate={(starters) => handleCalculateWithLineup('home', starters)}
             />
           </div>
@@ -584,6 +615,7 @@ function CalculatorInner() {
               teamPlayers={pricing.away_players}
               lineupPlayers={pricing.away_lineup_players ?? null}
               isHome={false}
+              autoApplied={lineupAutoApplied.away}
               onCalculate={(starters) => handleCalculateWithLineup('away', starters)}
             />
           </div>
