@@ -1419,11 +1419,19 @@ async def load_match_pricing(
             if ts_d.get("total_minutes", 0) < _WC_DIRECT_LAMBDA_MIN_MINUTES:
                 continue
             cdm_goals_per_90 = ts_d.get("cdm_goals_per_90", 0.0) or 0.0
-            if cdm_goals_per_90 <= 0:
+            cdm_xg_per_90 = ts_d.get("cdm_xg_per_90", 0.0) or 0.0
+            # Use goals/90 when available; fall back to xG/90 with half weight
+            # (xG is a weaker signal than actual goals — no finishing bonus).
+            if cdm_goals_per_90 > 0:
+                cdm_signal = cdm_goals_per_90
+                w = _WC_DIRECT_LAMBDA_WEIGHT
+            elif cdm_xg_per_90 > 0:
+                cdm_signal = cdm_xg_per_90
+                w = _WC_DIRECT_LAMBDA_WEIGHT * 0.5  # halved weight — xG less certain
+            else:
                 continue
             mins_ratio = alloc.expected_minutes / 90.0
-            lambda_cdm_direct = cdm_goals_per_90 * mins_ratio
-            w = _WC_DIRECT_LAMBDA_WEIGHT
+            lambda_cdm_direct = cdm_signal * mins_ratio
             lambda_blended = (1 - w) * alloc.lambda_total + w * lambda_cdm_direct
             lambda_blended = max(0.001, min(lambda_blended, 3.0))
             prob_goal = 1 - math.exp(-lambda_blended)
