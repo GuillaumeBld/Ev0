@@ -1255,8 +1255,8 @@ def compute_lineup_allocation(
     Returns [] if fewer than 5 starters matched in the DB (name mismatch /
     missing data safety fallback).
     """
-    norm = {n.strip().lower() for n in starter_names}
-    starters = [p for p in players if p["player_name"].strip().lower() in norm]
+    norm = {_name_key(n) for n in starter_names}
+    starters = [p for p in players if _name_key(p["player_name"]) in norm]
     if len(starters) < 5:
         return []
 
