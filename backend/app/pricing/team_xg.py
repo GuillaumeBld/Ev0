@@ -19,7 +19,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from sqlalchemy import func, literal, or_, select
+from sqlalchemy import Integer, case, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.pricing.assist import (
@@ -1071,6 +1071,7 @@ async def _load_tournament_match_stats(
     _TOURNAMENT_MIN_MINUTES total CDM minutes.
     """
     from app.models.bzzoiro import BzzEvent, BzzPlayerMatchStat
+    from app.pricing.sub_constants import T_SUB_DEFAULT
 
     if not player_api_ids:
         return {}
@@ -1088,6 +1089,16 @@ async def _load_tournament_match_stats(
             func.avg(BzzPlayerMatchStat.shot_accuracy).label("avg_shot_accuracy"),
             func.avg(BzzPlayerMatchStat.xg_per_shot).label("avg_xg_per_shot"),
             func.count().label("matches_played"),
+            # Sub stats derived from CDM games (mirrors get_player_sub_stats logic)
+            func.sum(
+                func.cast(BzzPlayerMatchStat.minutes_played < 85, Integer)
+            ).label("sub_games"),
+            func.avg(
+                case(
+                    (BzzPlayerMatchStat.minutes_played < 85, BzzPlayerMatchStat.minutes_played),
+                    else_=None,
+                )
+            ).label("avg_sub_minutes"),
         )
         .join(BzzEvent, BzzEvent.api_id == BzzPlayerMatchStat.event_api_id)
         .where(
@@ -1103,17 +1114,21 @@ async def _load_tournament_match_stats(
         total_minutes = row.total_minutes or 0
         if total_minutes < _TOURNAMENT_MIN_MINUTES:
             continue
+        matches_played = row.matches_played or 1
         minutes_per_90 = total_minutes / 90.0
         total_goals = row.total_goals or 0
         total_xg = row.total_xg or 0.0
         total_assists = row.total_assists or 0
         total_xa = row.total_xa or 0.0
         total_shots = row.total_shots or 0
-        # goals_per_shot captures actual finishing ability (vs xg_per_shot from xG model)
         goals_per_shot = min(total_goals / total_shots, 0.50) if total_shots > 0 else 0.0
+        # CDM-derived sub stats: p_sub = fraction of games with <85 min, avg_sub_time = avg of those
+        sub_games = row.sub_games or 0
+        p_sub_cdm = sub_games / matches_played if matches_played > 0 else 0.35
+        avg_sub_time_cdm = float(row.avg_sub_minutes) if row.avg_sub_minutes is not None else T_SUB_DEFAULT
         out[row.player_api_id] = {
             "total_minutes": total_minutes,
-            "matches_played": row.matches_played or 0,
+            "matches_played": matches_played,
             "cdm_goals_per_90": total_goals / minutes_per_90,
             "cdm_xg_per_90": total_xg / minutes_per_90,
             "cdm_assists_per_90": total_assists / minutes_per_90,
@@ -1127,6 +1142,8 @@ async def _load_tournament_match_stats(
             "avg_rating": row.avg_rating or 0.0,
             "avg_shot_accuracy": row.avg_shot_accuracy or 0.0,
             "avg_xg_per_shot": row.avg_xg_per_shot or 0.0,
+            "p_sub_cdm": p_sub_cdm,
+            "avg_sub_time_cdm": avg_sub_time_cdm,
         }
     return out
 
@@ -1413,12 +1430,18 @@ async def load_match_pricing(
             alloc.lambda_total = lambda_blended
             alloc.prob_goal = prob_goal
             alloc.fair_odds_goal = round(1 / prob_goal, 2) if prob_goal > 0 else 9999.0
-            # Recompute supersub with the blended lambda so both columns are consistent.
+            # Recompute supersub using CDM sub stats — not Understat (club) data.
+            # For WC players like Messi who enters late for Argentina, club data
+            # gives wrong avg_sub_time and p_sub.
+            p_sub_cdm = ts_d.get("p_sub_cdm", alloc.p_sub)
+            avg_sub_time_cdm = ts_d.get("avg_sub_time_cdm", alloc.avg_sub_time)
+            alloc.p_sub = round(p_sub_cdm, 4)
+            alloc.avg_sub_time = round(avg_sub_time_cdm, 1)
             lambda_blended_90 = lambda_blended / mins_ratio if mins_ratio > 0 else lambda_blended
             p_goal_ss = calculate_supersub_prob(
                 lambda_A=lambda_blended_90,
-                p_sub=alloc.p_sub,
-                t_sub=alloc.avg_sub_time,
+                p_sub=p_sub_cdm,
+                t_sub=avg_sub_time_cdm,
                 position=alloc.position or "MF",
             )
             alloc.p_goal_supersub = round(p_goal_ss, 4)
