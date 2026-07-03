@@ -374,10 +374,10 @@ function CalculatorInner() {
           if (r.ok) {
             const d = await r.json()
             const homeS: string[] = (d.home?.players ?? [])
-              .filter((p: { is_starter: boolean }) => p.is_starter)
+              .filter((p: { is_starter: boolean; position?: string }) => p.is_starter && p.position !== 'GK')
               .map((p: { player_name: string }) => p.player_name)
             const awayS: string[] = (d.away?.players ?? [])
-              .filter((p: { is_starter: boolean }) => p.is_starter)
+              .filter((p: { is_starter: boolean; position?: string }) => p.is_starter && p.position !== 'GK')
               .map((p: { player_name: string }) => p.player_name)
             if (homeS.length >= 5) homeStartersRef.current = homeS
             if (awayS.length >= 5) awayStartersRef.current = awayS

@@ -1317,6 +1317,8 @@ async def load_match_pricing(
     away_bzz_team_id = getattr(fixture, "away_bzz_team_id", None)
 
     t_stats: dict[int, dict[str, Any]] = {}
+    home_players_for_lineup: list[dict[str, Any]] | None = None
+    away_players_for_lineup: list[dict[str, Any]] | None = None
 
     if fixture.league in INTERNATIONAL_LEAGUES:
         from app.models.bzzoiro import BzzEvent
@@ -1339,8 +1341,6 @@ async def load_match_pricing(
                 all_ids = [p["player_id"] for p in home_players_db + away_players_db]
                 # Filtrer au groupe effectif : seuls les joueurs ayant joué au tournoi.
                 squad_ids = await _get_tournament_player_ids(db, all_ids, WC2026_LEAGUE_API_ID)
-                home_players_db = [p for p in home_players_db if p["player_id"] in squad_ids]
-                away_players_db = [p for p in away_players_db if p["player_id"] in squad_ids]
                 t_stats = await _load_tournament_match_stats(db, list(squad_ids), WC2026_LEAGUE_API_ID)
                 if t_stats:
                     logger.info(
@@ -1349,6 +1349,13 @@ async def load_match_pricing(
                     )
                     home_players_db = _blend_tournament_stats(home_players_db, t_stats)
                     away_players_db = _blend_tournament_stats(away_players_db, t_stats)
+                # Conserver la liste complète pour l'allocation lineup (inclut les
+                # joueurs à leur premier match du tournoi ce soir, absents de squad_ids).
+                home_players_for_lineup = home_players_db[:]
+                away_players_for_lineup = away_players_db[:]
+                # Filtrer l'affichage au groupe ayant déjà joué.
+                home_players_db = [p for p in home_players_db if p["player_id"] in squad_ids]
+                away_players_db = [p for p in away_players_db if p["player_id"] in squad_ids]
         else:
             logger.warning(
                 "load_match_pricing: international fixture %s (league=%r, external_id=%r) "
@@ -1360,6 +1367,12 @@ async def load_match_pricing(
     else:
         home_players_db = await _load_team_players(db, home_team, bzz_team_id=home_bzz_team_id)
         away_players_db = await _load_team_players(db, away_team, bzz_team_id=away_bzz_team_id)
+
+    # For non-WC2026, lineup allocation uses the same pool as display.
+    if home_players_for_lineup is None:
+        home_players_for_lineup = home_players_db
+    if away_players_for_lineup is None:
+        away_players_for_lineup = away_players_db
 
     if not home_players_db:
         logger.warning(
@@ -1472,11 +1485,11 @@ async def load_match_pricing(
             alloc.fair_odds_goal_supersub = round(1.0 / p_goal_ss, 2) if p_goal_ss > 0 else 99.0
 
     home_lineup = (
-        compute_lineup_allocation(home_players_db, home_starters, home_team, home_match_xg)
+        compute_lineup_allocation(home_players_for_lineup, home_starters, home_team, home_match_xg)
         if home_starters else None
     )
     away_lineup = (
-        compute_lineup_allocation(away_players_db, away_starters, away_team, away_match_xg)
+        compute_lineup_allocation(away_players_for_lineup, away_starters, away_team, away_match_xg)
         if away_starters else None
     )
 

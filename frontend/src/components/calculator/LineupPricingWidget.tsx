@@ -92,7 +92,7 @@ export function LineupPricingWidget({
       const side = isHome ? d.home : d.away
       if (!side) return
       const starters: string[] = side.players
-        .filter((p: { is_starter: boolean; player_name: string }) => p.is_starter)
+        .filter((p: { is_starter: boolean; position?: string; player_name: string }) => p.is_starter && p.position !== 'GK')
         .map((p: { player_name: string }) => p.player_name)
       if (starters.length >= 5) {
         setSelected(new Set(starters))
