@@ -481,28 +481,15 @@ def allocate_player(
     prob_assist = 1 - math.exp(-lambda_assist)
     fair_odds_assist = round(1 / prob_assist, 2) if prob_assist > 0 else 9999.0
 
-    # ── Supersub ──────────────────────────────────────────────────
-    # calculate_supersub_prob expects the full 90-min lambda; lambda_total and
-    # lambda_assist are already scaled by mins_ratio (via npxg_share / xa_share),
-    # so we must un-scale them before passing to the formula.
-    position_str = share.position or "MF"
+    # ── Supersub (qualité 90 min) ─────────────────────────────────
+    # C.But+Sub = cote si le joueur jouait 90 minutes à son rythme actuel.
+    # Signal de qualité pure, indépendant du rôle (titulaire / entrant).
+    # Toujours ≤ C.But (meilleures cotes) car 90 min ≥ expected_minutes.
     lambda_total_90 = lambda_total / mins_ratio if mins_ratio > 0 else lambda_total
     lambda_assist_90 = lambda_assist / mins_ratio if mins_ratio > 0 else lambda_assist
-
-    p_goal_ss = calculate_supersub_prob(
-        lambda_A=lambda_total_90,
-        p_sub=p_sub,
-        t_sub=avg_sub_time,
-        position=position_str,
-    )
+    p_goal_ss = 1.0 - math.exp(-lambda_total_90)
     fair_odds_goal_ss = round(1.0 / p_goal_ss, 2) if p_goal_ss > 0 else 99.0
-
-    p_assist_ss = calculate_supersub_prob_assist(
-        lambda_A=lambda_assist_90,
-        p_sub=p_sub,
-        t_sub=avg_sub_time,
-        position=position_str,
-    )
+    p_assist_ss = 1.0 - math.exp(-lambda_assist_90)
     fair_odds_assist_ss = round(1.0 / p_assist_ss, 2) if p_assist_ss > 0 else 99.0
 
     sub_premium_goal   = round(p_goal_ss   - prob_goal,   4)
@@ -1089,13 +1076,19 @@ async def _load_tournament_match_stats(
             func.avg(BzzPlayerMatchStat.shot_accuracy).label("avg_shot_accuracy"),
             func.avg(BzzPlayerMatchStat.xg_per_shot).label("avg_xg_per_shot"),
             func.count().label("matches_played"),
-            # Sub stats derived from CDM games (mirrors get_player_sub_stats logic)
+            # Sub stats from CDM games: games where 0 < minutes < 85 (mirrors sub_stats.py)
             func.sum(
-                func.cast(BzzPlayerMatchStat.minutes_played < 85, Integer)
+                func.cast(
+                    (BzzPlayerMatchStat.minutes_played > 0) & (BzzPlayerMatchStat.minutes_played < 85),
+                    Integer,
+                )
             ).label("sub_games"),
             func.avg(
                 case(
-                    (BzzPlayerMatchStat.minutes_played < 85, BzzPlayerMatchStat.minutes_played),
+                    (
+                        (BzzPlayerMatchStat.minutes_played > 0) & (BzzPlayerMatchStat.minutes_played < 85),
+                        BzzPlayerMatchStat.minutes_played,
+                    ),
                     else_=None,
                 )
             ).label("avg_sub_minutes"),
@@ -1445,13 +1438,9 @@ async def load_match_pricing(
             avg_sub_time_cdm = ts_d.get("avg_sub_time_cdm", alloc.avg_sub_time)
             alloc.p_sub = round(p_sub_cdm, 4)
             alloc.avg_sub_time = round(avg_sub_time_cdm, 1)
+            # C.But+Sub = cote à 90 min (qualité pure), cohérent avec allocate_player.
             lambda_blended_90 = lambda_blended / mins_ratio if mins_ratio > 0 else lambda_blended
-            p_goal_ss = calculate_supersub_prob(
-                lambda_A=lambda_blended_90,
-                p_sub=p_sub_cdm,
-                t_sub=avg_sub_time_cdm,
-                position=alloc.position or "MF",
-            )
+            p_goal_ss = 1.0 - math.exp(-lambda_blended_90)
             alloc.p_goal_supersub = round(p_goal_ss, 4)
             alloc.fair_odds_goal_supersub = round(1.0 / p_goal_ss, 2) if p_goal_ss > 0 else 99.0
 
