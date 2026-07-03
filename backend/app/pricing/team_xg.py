@@ -1045,6 +1045,144 @@ async def _load_national_team_players(
     return players
 
 
+async def _load_players_by_api_ids(
+    db: AsyncSession,
+    api_ids: list[int],
+) -> list[dict[str, Any]]:
+    """Load player data for specific BZZ player API IDs (no national_team_api_id filter).
+
+    Used to supplement the pool with players who are in the BZZ event lineup but
+    whose national_team_api_id is missing or incorrect in bzz_players.
+    """
+    from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat
+
+    if not api_ids:
+        return []
+
+    latest_subq = (
+        select(
+            BzzPlayerSeasonStat.player_api_id,
+            func.max(BzzPlayerSeasonStat.season).label("max_season"),
+        )
+        .where(BzzPlayerSeasonStat.player_api_id.in_(api_ids))
+        .group_by(BzzPlayerSeasonStat.player_api_id)
+        .subquery()
+    )
+
+    stats_q = (
+        select(BzzPlayerSeasonStat, BzzPlayer)
+        .join(BzzPlayer, BzzPlayer.api_id == BzzPlayerSeasonStat.player_api_id)
+        .join(
+            latest_subq,
+            (BzzPlayerSeasonStat.player_api_id == latest_subq.c.player_api_id)
+            & (BzzPlayerSeasonStat.season == latest_subq.c.max_season),
+        )
+        .where(BzzPlayerSeasonStat.player_api_id.in_(api_ids))
+    )
+
+    res = await db.execute(stats_q)
+    seen_ids: set[int] = set()
+    players: list[dict[str, Any]] = []
+    for row in res.all():
+        stat, player = row[0], row[1]
+        if player.api_id in seen_ids:
+            continue
+        seen_ids.add(player.api_id)
+        raw_pos = _bzz_pos_to_raw(player.position)
+        position = _norm_pos(raw_pos)
+        if position == "GK":
+            continue
+        xg_total = stat.expected_goals or 0.0
+        goals_total = stat.goals or 0
+        players.append({
+            "player_id": player.api_id,
+            "player_name": player.name,
+            "name": player.name,
+            "position": position,
+            "matches_played": stat.matches_played or 0,
+            "minutes_played": stat.minutes_played or 0,
+            "goals": goals_total,
+            "xg": xg_total,
+            "npxg": xg_total,
+            "xa": stat.expected_assists or 0.0,
+            "npxg_per_90": stat.xg_per_90 or 0.0,
+            "xa_per_90": stat.xa_per_90 or 0.0,
+            "xgchain_per_90": 0.0,
+            "xg_per_90": stat.xg_per_90 or 0.0,
+            "shot_accuracy": stat.shot_accuracy or 0.0,
+            "xg_per_shot": stat.xg_per_shot or 0.0,
+            "avg_rating": stat.avg_rating or 0.0,
+            "cross_accuracy": stat.cross_accuracy or 0.0,
+            "xa_total": stat.expected_assists or 0.0,
+            "assists_total": stat.goal_assist or 0,
+            "form_assists_5": stat.form_assists_5,
+            "npxg_total": xg_total,
+            "goals_total": goals_total,
+            "key_pass_per_90": stat.key_pass_per_90 or 0.0,
+            "accurate_cross_per_90": stat.accurate_cross_per_90 or 0.0,
+            "form_xg_5": stat.form_xg_5 if stat.form_xg_5 else None,
+            "finishing_delta": goals_total - xg_total,
+            "shots_on_target_per_90": stat.shots_on_target_per_90 or 0.0,
+            "touches_attack_pen_area_per_90": 0.0,
+            "bcc_per_90": 0.0,
+            "accurate_crosses_per_90": stat.accurate_cross_per_90 or 0.0,
+            "through_balls_per_90": 0.0,
+            "has_bzz_stats": True,
+        })
+
+    # Fallback for players without season stats
+    no_stat_ids = [i for i in api_ids if i not in seen_ids]
+    if no_stat_ids:
+        roster_res = await db.execute(
+            select(BzzPlayer).where(BzzPlayer.api_id.in_(no_stat_ids))
+        )
+        for player in roster_res.scalars().all():
+            if player.api_id in seen_ids:
+                continue
+            raw_pos = _bzz_pos_to_raw(player.position)
+            position = _norm_pos(raw_pos)
+            if position == "GK":
+                continue
+            seen_ids.add(player.api_id)
+            players.append({
+                "player_id": player.api_id,
+                "player_name": player.name,
+                "name": player.name,
+                "position": position,
+                "matches_played": 0,
+                "minutes_played": 0,
+                "goals": 0,
+                "xg": 0.0,
+                "npxg": 0.0,
+                "xa": 0.0,
+                "npxg_per_90": 0.0,
+                "xa_per_90": 0.0,
+                "xgchain_per_90": 0.0,
+                "xg_per_90": 0.0,
+                "shot_accuracy": 0.0,
+                "xg_per_shot": 0.0,
+                "avg_rating": 0.0,
+                "cross_accuracy": 0.0,
+                "xa_total": 0.0,
+                "assists_total": 0,
+                "form_assists_5": None,
+                "npxg_total": 0.0,
+                "goals_total": 0,
+                "key_pass_per_90": 0.0,
+                "accurate_cross_per_90": 0.0,
+                "form_xg_5": None,
+                "finishing_delta": 0.0,
+                "shots_on_target_per_90": 0.0,
+                "touches_attack_pen_area_per_90": 0.0,
+                "bcc_per_90": 0.0,
+                "accurate_crosses_per_90": 0.0,
+                "through_balls_per_90": 0.0,
+                "has_bzz_stats": False,
+            })
+
+    return players
+
+
 # ── Tournament (CDM) stats blend ──────────────────────────────────
 
 async def _get_tournament_player_ids(
@@ -1356,6 +1494,40 @@ async def load_match_pricing(
                 # Filtrer l'affichage au groupe ayant déjà joué.
                 home_players_db = [p for p in home_players_db if p["player_id"] in squad_ids]
                 away_players_db = [p for p in away_players_db if p["player_id"] in squad_ids]
+
+                # Compléter les pools lineup avec les joueurs présents dans le JSONB BZZ
+                # mais absents du pool (national_team_api_id manquant ou incorrect).
+                # On extrait directement les player_api_id du JSONB pour chaque côté.
+                if bzz_event.lineups:
+                    pool_home_ids = {p["player_id"] for p in home_players_for_lineup}
+                    pool_away_ids = {p["player_id"] for p in away_players_for_lineup}
+                    bzz_home_ids: set[int] = set()
+                    bzz_away_ids: set[int] = set()
+                    for section in ("players", "substitutes"):
+                        for p in (bzz_event.lineups.get("home") or {}).get(section) or []:
+                            if p.get("id"):
+                                bzz_home_ids.add(int(p["id"]))
+                        for p in (bzz_event.lineups.get("away") or {}).get(section) or []:
+                            if p.get("id"):
+                                bzz_away_ids.add(int(p["id"]))
+                    missing_home = list(bzz_home_ids - pool_home_ids)
+                    missing_away = list(bzz_away_ids - pool_away_ids)
+                    if missing_home:
+                        extra = await _load_players_by_api_ids(db, missing_home)
+                        if extra:
+                            logger.info(
+                                "load_match_pricing: %d joueurs %s hors pool ajoutés depuis JSONB BZZ: %s",
+                                len(extra), home_team, [p["player_name"] for p in extra],
+                            )
+                            home_players_for_lineup.extend(extra)
+                    if missing_away:
+                        extra = await _load_players_by_api_ids(db, missing_away)
+                        if extra:
+                            logger.info(
+                                "load_match_pricing: %d joueurs %s hors pool ajoutés depuis JSONB BZZ: %s",
+                                len(extra), away_team, [p["player_name"] for p in extra],
+                            )
+                            away_players_for_lineup.extend(extra)
         else:
             logger.warning(
                 "load_match_pricing: international fixture %s (league=%r, external_id=%r) "
