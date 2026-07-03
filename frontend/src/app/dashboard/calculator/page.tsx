@@ -122,18 +122,16 @@ function TeamTable({
               <th className="text-left px-3 py-2 font-medium">Joueur</th>
               <th className="px-2 py-2 font-medium">Pos</th>
               <th className="px-2 py-2 font-medium">Min</th>
-              {/* Standard odds — primary */}
-              <th className="px-3 py-2 font-medium text-white border-l border-gray-700">P(but)</th>
-              <th className="px-3 py-2 font-medium text-white">C.But</th>
-              <th className="px-3 py-2 font-medium text-white">P(ass)</th>
-              <th className="px-3 py-2 font-medium text-white">C.Ass</th>
-              {/* Supersub — secondary */}
               <th className="px-2 py-2 font-medium text-orange-400 border-l border-gray-700">P(sub)</th>
               <th className="px-2 py-2 font-medium text-orange-400">t̄sub</th>
               <th className="px-3 py-2 font-medium text-blue-400 border-l border-gray-700">P(but+sub)</th>
               <th className="px-3 py-2 font-medium text-blue-400">C.But+Sub</th>
               <th className="px-3 py-2 font-medium text-blue-400">P(ass+sub)</th>
               <th className="px-3 py-2 font-medium text-blue-400">C.Ass+Sub</th>
+              <th className="px-3 py-2 font-medium text-gray-500 border-l border-gray-700">P(but)</th>
+              <th className="px-3 py-2 font-medium text-gray-500">C.But</th>
+              <th className="px-3 py-2 font-medium text-gray-500">P(ass)</th>
+              <th className="px-3 py-2 font-medium text-gray-500">C.Ass</th>
             </tr>
           </thead>
           <tbody>
@@ -188,33 +186,6 @@ function TeamTable({
                     {fmtMins(p.expected_minutes)}
                   </td>
 
-                  {/* Standard but — primaire, blanc */}
-                  <td className="px-3 py-2 text-center border-l border-gray-700/50">
-                    <span className="text-gray-300 text-xs">
-                      {fmtPct(p.prob_goal)}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    <span className={clsx(
-                      'font-semibold text-sm',
-                      isPenTaker ? 'text-amber-300' : 'text-white',
-                    )}>
-                      {fmtOdds(p.fair_odds_goal)}
-                    </span>
-                  </td>
-
-                  {/* Standard assist — primaire, blanc */}
-                  <td className="px-3 py-2 text-center">
-                    <span className="text-gray-300 text-xs">
-                      {fmtPct(p.prob_assist)}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    <span className="font-semibold text-sm text-white">
-                      {fmtOdds(p.fair_odds_assist)}
-                    </span>
-                  </td>
-
                   {/* P(sub) */}
                   <td className="px-2 py-2 text-center border-l border-gray-700/50">
                     <span className={clsx(
@@ -227,31 +198,58 @@ function TeamTable({
                   </td>
 
                   {/* t̄sub */}
-                  <td className="px-2 py-2 text-center text-gray-500 text-xs">
+                  <td className="px-2 py-2 text-center text-gray-400 text-xs">
                     {(p.avg_sub_time ?? 65).toFixed(0)}&apos;
                   </td>
 
-                  {/* Supersub but — secondaire, bleu */}
+                  {/* Supersub but — primaire, bleu */}
                   <td className="px-3 py-2 text-center border-l border-gray-700/50">
-                    <span className="text-blue-400 text-xs">
+                    <span className="font-semibold text-blue-300">
                       {((p.p_goal_supersub ?? 0) * 100).toFixed(1)}%
                     </span>
                   </td>
                   <td className="px-3 py-2 text-center">
-                    <span className="text-blue-400 text-xs">
+                    <span className="font-semibold text-blue-300">
                       {fmtOdds(p.fair_odds_goal_supersub ?? 99)}
                     </span>
                   </td>
 
-                  {/* Supersub assist — secondaire, bleu */}
+                  {/* Supersub assist — primaire, bleu */}
                   <td className="px-3 py-2 text-center">
-                    <span className="text-blue-400 text-xs">
+                    <span className="font-semibold text-blue-300">
                       {((p.p_assist_supersub ?? 0) * 100).toFixed(1)}%
                     </span>
                   </td>
                   <td className="px-3 py-2 text-center">
-                    <span className="text-blue-400 text-xs">
+                    <span className="font-semibold text-blue-300">
                       {fmtOdds(p.fair_odds_assist_supersub ?? 99)}
+                    </span>
+                  </td>
+
+                  {/* Standard but — secondaire, gris atténué */}
+                  <td className="px-3 py-2 text-center border-l border-gray-700/50">
+                    <span className="text-gray-500 text-xs">
+                      {fmtPct(p.prob_goal)}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-center">
+                    <span className={clsx(
+                      'text-xs',
+                      isPenTaker ? 'text-amber-400' : 'text-gray-500',
+                    )}>
+                      {fmtOdds(p.fair_odds_goal)}
+                    </span>
+                  </td>
+
+                  {/* Standard assist — secondaire, gris atténué */}
+                  <td className="px-3 py-2 text-center">
+                    <span className="text-gray-500 text-xs">
+                      {fmtPct(p.prob_assist)}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-center">
+                    <span className="text-gray-500 text-xs">
+                      {fmtOdds(p.fair_odds_assist)}
                     </span>
                   </td>
                 </tr>
