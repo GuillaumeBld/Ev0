@@ -93,7 +93,7 @@ const ga = (p: WCPlayerPricing) => (p.wc_goals ?? 0) + (p.wc_assists ?? 0)
 
 type SortKey =
   | 'player_name' | 'nation' | 'position'
-  | 'ga' | 'lambda' | 'cut1' | 'cut2' | 'cut3' | 'cut4'
+  | 'ga' | 'lambda'
   | 'top' | 'top3' | 'bk_uni' | 'bk_bet' | 'bk_pmu' | 'bk' | 'edge'
 
 function sortPlayers(
@@ -112,10 +112,6 @@ function sortPlayers(
         return mode === 'goals'   ? p.lambda_goals :
                mode === 'assists' ? p.lambda_assists :
                                     p.lambda_goals + p.lambda_assists
-      case 'cut1':        return mode === 'goals' ? p.fair_1g : p.fair_1a
-      case 'cut2':        return mode === 'goals' ? p.fair_2g : p.fair_2a
-      case 'cut3':        return mode === 'goals' ? p.fair_3g : p.fair_3a
-      case 'cut4':        return mode === 'goals' ? p.fair_4g : null
       case 'top':
         return mode === 'goals'   ? p.fair_top_scorer :
                mode === 'assists' ? p.fair_top_assister :
@@ -246,14 +242,6 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
             {/* Pricing */}
             <Th col="lambda" label="λ tot." right
               title={isDecisive ? 'Lambda G+A total projeté tournoi' : 'Lambda total projeté tournoi'} />
-            {!isDecisive && (
-              <>
-                <Th col="cut1" label="≥1" right />
-                <Th col="cut2" label="≥2" right />
-                <Th col="cut3" label="≥3" right />
-                {isGoals && <Th col="cut4" label="≥4" right />}
-              </>
-            )}
             <Th col="top" label={topLabel} right title={topTitle} />
             <th className="py-2 px-2 text-right text-[10px] font-medium text-amber-400/70 whitespace-nowrap"
                 title="Cote proposée (fair / marge)">Prop.</th>
@@ -277,10 +265,6 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
             const lambda  = isGoals ? p.lambda_goals
               : mode === 'assists' ? p.lambda_assists
               : p.lambda_goals + p.lambda_assists
-            const cut1    = isGoals ? p.fair_1g           : p.fair_1a
-            const cut2    = isGoals ? p.fair_2g           : p.fair_2a
-            const cut3    = isGoals ? p.fair_3g           : p.fair_3a
-            const cut4    = isGoals ? p.fair_4g           : null
             const fairOut = isGoals ? p.fair_top_scorer
               : mode === 'assists' ? p.fair_top_assister
               : p.fair_most_decisive
@@ -343,14 +327,6 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
                   </>
                 )}
                 <td className="py-1.5 px-2 text-right"><LambdaCell value={lambda} /></td>
-                {!isDecisive && (
-                  <>
-                    <td className="py-1.5 px-2 text-right"><FairOddsCell value={cut1} /></td>
-                    <td className="py-1.5 px-2 text-right"><FairOddsCell value={cut2} /></td>
-                    <td className="py-1.5 px-2 text-right"><FairOddsCell value={cut3} /></td>
-                    {isGoals && <td className="py-1.5 px-2 text-right"><FairOddsCell value={cut4} /></td>}
-                  </>
-                )}
                 <td className="py-1.5 px-2 text-right"><FairOddsCell value={fairOut} /></td>
                 <td className="py-1.5 px-2 text-right"><OfferedOddsCell fair={fairOut} margin={margin} /></td>
                 <td className="py-1.5 px-2 text-right"><FairOddsCell value={fairTop3} /></td>
