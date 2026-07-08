@@ -1,12 +1,16 @@
 """Sync player stats for finished WC2026 matches.
 
 Two modes:
-- sync_wc_match_stats(): standard hourly job — fetches matches with 0 stats
+- sync_wc_match_stats(): standard job (every 5 min) — fetches matches with 0 stats
 - resync_all_wc_match_stats(): repair job — force re-fetches ALL finished matches
+
+After each successful sync, recomputes team advancement then player pricing,
+so the decisive/top-scorer/top-assister rankings and odds follow every
+finished match.
 
 Called by:
 - POST /api/v1/wc2026/matches/sync-stats  (manual trigger via UI)
-- job_sync_wc_match_stats  (worker, every hour)
+- job_sync_wc_match_stats  (worker, every 5 min)
 """
 from __future__ import annotations
 
@@ -44,8 +48,24 @@ async def _fetch_and_save(bzz_id: int, session: AsyncSession) -> None:
 
 
 async def _recompute_pricing(session: AsyncSession) -> None:
-    from app.pricing.wc2026_tournament import compute_tournament_pricing
+    from app.models.wc2026_advancement import WC2026TeamAdvancement
     from app.models.wc2026_pricing import WC2026PlayerPricing
+    from app.pricing.wc2026_bracket import compute_wc_advancement
+    from app.pricing.wc2026_tournament import compute_tournament_pricing
+
+    # Advancement d'abord : un match terminé change les e_games (élimination /
+    # qualification) et le pricing fige les λ restants via cette table.
+    try:
+        adv_rows = await compute_wc_advancement(session)
+        if adv_rows:
+            await session.execute(text("TRUNCATE TABLE wc2026_team_advancement RESTART IDENTITY"))
+            for row in adv_rows:
+                session.add(WC2026TeamAdvancement(**row))
+            await session.commit()
+            logger.info("advancement recomputed (%d nations)", len(adv_rows))
+    except Exception as exc:
+        logger.error("advancement recompute failed (pricing continue): %s", exc)
+        await session.rollback()
 
     rows = await compute_tournament_pricing(session)
     await session.execute(text("TRUNCATE TABLE wc2026_player_pricing RESTART IDENTITY"))

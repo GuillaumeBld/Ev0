@@ -973,6 +973,16 @@ export interface WCPlayerPricing {
   p_top_assister: number | null
   fair_top_scorer: number | null
   fair_top_assister: number | null
+  // outrights décisif (G+A) + top 3 (dead-heat)
+  p_most_decisive: number | null
+  fair_most_decisive: number | null
+  p_top3_decisive: number | null
+  fair_top3_decisive: number | null
+  p_top3_scorer: number | null
+  fair_top3_scorer: number | null
+  p_top3_assister: number | null
+  fair_top3_assister: number | null
+  computed_at: string | null
   // bookmaker edge
   bk_top_scorer: number | null
   bk_top_scorer_unibet: number | null

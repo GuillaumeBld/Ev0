@@ -55,6 +55,16 @@ class WC2026PlayerPricing(Base):
     fair_top_scorer: Mapped[float | None] = mapped_column(Float, nullable=True)
     fair_top_assister: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # Outrights décisif (G+A) et top 3 — dead-heat en cas d'égalité
+    p_most_decisive: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fair_most_decisive: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p_top3_decisive: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fair_top3_decisive: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p_top3_scorer: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fair_top3_scorer: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p_top3_assister: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fair_top3_assister: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

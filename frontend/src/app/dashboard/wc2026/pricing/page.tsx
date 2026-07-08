@@ -17,7 +17,7 @@ import {
 import { PricingTable } from '@/components/wc2026/PricingTable'
 import { NationsOddsTable } from '@/components/wc2026/NationsOddsTable'
 
-type Tab = 'goals' | 'assists' | 'nations'
+type Tab = 'goals' | 'assists' | 'decisive' | 'nations'
 type PosFilter = '' | 'FW' | 'MF' | 'DF'
 type Bookmaker = 'unibet' | 'pmu' | 'betclic'
 
@@ -119,8 +119,19 @@ export default function WC2026PricingPage() {
     nations.map((n) => [n.nation, n.flag_emoji])
   )
 
-  const isPlayerTab = tab === 'goals' || tab === 'assists'
+  const isPlayerTab = tab === 'goals' || tab === 'assists' || tab === 'decisive'
   const anySyncing = BOOKMAKERS.some((b) => syncStates[b].loading)
+
+  // Fraîcheur du pricing (computed_at identique pour toutes les lignes)
+  const computedAt = players.length > 0 ? players[0].computed_at : null
+  const freshness = (() => {
+    if (!computedAt) return null
+    const mins = Math.max(0, Math.round((Date.now() - new Date(computedAt).getTime()) / 60000))
+    if (mins < 1) return "à l'instant"
+    if (mins < 60) return `il y a ${mins} min`
+    const h = Math.floor(mins / 60)
+    return `il y a ${h} h ${mins % 60 > 0 ? `${mins % 60} min` : ''}`.trim()
+  })()
 
   return (
     <div className="p-4 flex flex-col h-full gap-4">
@@ -177,6 +188,11 @@ export default function WC2026PricingPage() {
         )}
 
         <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
+          {isPlayerTab && freshness && (
+            <span className="text-[11px] text-gray-500" title={computedAt ?? undefined}>
+              MAJ {freshness}
+            </span>
+          )}
           {computeMsg && <span className="text-xs text-gray-400">{computeMsg}</span>}
 
           {isPlayerTab && (
@@ -258,7 +274,7 @@ export default function WC2026PricingPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-700 pb-0">
-        {(['goals', 'assists', 'nations'] as Tab[]).map((t) => (
+        {(['goals', 'assists', 'decisive', 'nations'] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -269,7 +285,7 @@ export default function WC2026PricingPage() {
                 : 'border-transparent text-gray-400 hover:text-white',
             )}
           >
-            {t === 'goals' ? 'Buts' : t === 'assists' ? 'Passes' : 'Nations'}
+            {t === 'goals' ? 'Buts' : t === 'assists' ? 'Passes' : t === 'decisive' ? 'Décisif' : 'Nations'}
           </button>
         ))}
       </div>
@@ -285,7 +301,7 @@ export default function WC2026PricingPage() {
         ) : loading ? (
           <p className="text-gray-500 text-sm p-4">Chargement…</p>
         ) : (
-          <PricingTable players={players} mode={tab} nationFlags={nationFlags} />
+          <PricingTable key={tab} players={players} mode={tab} nationFlags={nationFlags} />
         )}
       </div>
     </div>

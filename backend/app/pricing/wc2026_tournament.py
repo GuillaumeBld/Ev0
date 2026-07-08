@@ -233,6 +233,29 @@ def _norm_name(name: str) -> str:
     return "".join(c for c in n if not unicodedata.combining(c))
 
 
+def _name_tokens(name: str) -> set[str]:
+    return {
+        t for t in _norm_name(name).replace("-", " ").replace("'", " ").split()
+        if len(t) >= 3
+    }
+
+
+def _names_similar(a: str, b: str) -> bool:
+    """True si deux noms désignent plausiblement le même joueur.
+
+    Les deux univers d'IDs Bzzoiro stockent des variantes (Alex/Alejandro
+    Baena, Møller/Möller Wolfe) mais certains internal_id pointent vers un
+    autre joueur (ex. Rashford↔Ronaldo) : sans ce garde-fou, la
+    réconciliation fusionnerait deux joueurs distincts.
+    """
+    ta, tb = _name_tokens(a), _name_tokens(b)
+    if not ta or not tb:
+        return False
+    if ta & tb:
+        return True
+    return any(x.startswith(y) or y.startswith(x) for x in ta for y in tb)
+
+
 def poisson_ge(lam: float, k: int) -> float:
     """P(X >= k) where X ~ Poisson(lam). Pure math, no scipy."""
     if lam <= 0:
@@ -249,48 +272,115 @@ async def load_wc_match_stats(db: AsyncSession) -> dict[str, dict]:
     """Aggregate actual WC tournament stats from bzz_player_match_stats.
 
     Returns {norm_player_name: {goals, assists, minutes, xg_per_90, xa_per_90}}.
-    Uses DISTINCT ON to guard against duplicate rows from different sync runs.
+
+    La base contient chaque joueur en double (deux univers d'api_id liés par
+    internal_id). On réconcilie par internal_id + similarité de noms, on
+    dédoublonne par (identité, match), puis on émet l'agrégat sous TOUTES les
+    variantes de nom de l'identité pour que le matching lineup par nom
+    fonctionne quelle que soit la variante utilisée.
     """
     rows = (await db.execute(text("""
-        WITH deduped AS (
-            SELECT DISTINCT ON (p.name, ps.event_api_id)
-                p.name                              AS player_name,
-                COALESCE(ps.minutes_played, 0)      AS minutes_played,
-                COALESCE(ps.goals, 0)               AS goals,
-                COALESCE(ps.goal_assist, 0)         AS assists,
-                COALESCE(ps.expected_goals, 0.0)    AS xg,
-                COALESCE(ps.expected_assists, 0.0)  AS xa
-            FROM bzz_player_match_stats ps
-            JOIN bzz_players p ON p.api_id = ps.player_api_id
-            JOIN bzz_events  e ON e.api_id = ps.event_api_id
-            WHERE e.league_api_id = :lid
-              AND COALESCE(ps.minutes_played, 1) > 0
-            ORDER BY p.name, ps.event_api_id, ps.player_api_id DESC
-        )
         SELECT
-            player_name,
-            SUM(minutes_played) AS minutes,
-            SUM(goals)          AS goals,
-            SUM(assists)        AS assists,
-            SUM(xg)             AS xg,
-            SUM(xa)             AS xa
-        FROM deduped
-        GROUP BY player_name
+            ps.player_api_id,
+            p.internal_id,
+            p.name                              AS player_name,
+            ps.event_api_id,
+            COALESCE(ps.minutes_played, 0)      AS minutes_played,
+            COALESCE(ps.goals, 0)               AS goals,
+            COALESCE(ps.goal_assist, 0)         AS assists,
+            COALESCE(ps.expected_goals, 0.0)    AS xg,
+            COALESCE(ps.expected_assists, 0.0)  AS xa
+        FROM bzz_player_match_stats ps
+        JOIN bzz_players p ON p.api_id = ps.player_api_id
+        JOIN bzz_events  e ON e.api_id = ps.event_api_id
+        WHERE e.league_api_id = :lid
+          AND COALESCE(ps.minutes_played, 1) > 0
     """), {"lid": WC_LEAGUE_API_ID})).mappings().all()
 
+    name_by_api: dict[int, str] = {}
+    for r in rows:
+        name_by_api[int(r["player_api_id"])] = r["player_name"]
+
+    def _resolve_pid(r) -> int:
+        api = int(r["player_api_id"])
+        internal = r["internal_id"]
+        if internal is not None and int(internal) != api:
+            target = name_by_api.get(int(internal))
+            if target is not None and _names_similar(target, r["player_name"]):
+                return int(internal)
+        return api
+
+    deduped: dict[tuple[int, int], Any] = {}
+    names_by_pid: dict[int, set[str]] = {}
+    for r in rows:
+        pid = _resolve_pid(r)
+        names_by_pid.setdefault(pid, set()).add(r["player_name"])
+        deduped.setdefault((pid, int(r["event_api_id"])), r)
+
+    agg: dict[int, dict] = {}
+    for (pid, _event), r in deduped.items():
+        d = agg.setdefault(pid, {"goals": 0, "assists": 0, "minutes": 0.0, "xg": 0.0, "xa": 0.0})
+        d["goals"] += int(r["goals"])
+        d["assists"] += int(r["assists"])
+        d["minutes"] += float(r["minutes_played"])
+        d["xg"] += float(r["xg"])
+        d["xa"] += float(r["xa"])
+
+    # Validation : les buts attribués aux joueurs ne peuvent pas dépasser les
+    # buts réellement marqués (l'écart normal = csc non attribués).
+    real_goals = (await db.execute(text("""
+        SELECT COALESCE(SUM(home_score + away_score), 0)
+        FROM bzz_events
+        WHERE league_api_id = :lid AND status = 'finished'
+    """), {"lid": WC_LEAGUE_API_ID})).scalar_one()
+    player_goals = sum(d["goals"] for d in agg.values())
+    if real_goals and player_goals > int(real_goals):
+        logger.warning(
+            "wc2026_pricing: %d buts joueurs > %d buts réels — doublons résiduels probables",
+            player_goals, int(real_goals),
+        )
+
     result: dict[str, dict] = {}
-    for row in rows:
-        minutes = float(row["minutes"] or 0)
-        xg = float(row["xg"] or 0)
-        xa = float(row["xa"] or 0)
-        result[_norm_name(row["player_name"])] = {
-            "goals":     int(row["goals"] or 0),
-            "assists":   int(row["assists"] or 0),
+    for pid, d in agg.items():
+        minutes = d["minutes"]
+        stats = {
+            "goals":     d["goals"],
+            "assists":   d["assists"],
             "minutes":   int(minutes),
-            "xg_per_90": round(xg / minutes * 90, 4) if minutes >= 45 else 0.0,
-            "xa_per_90": round(xa / minutes * 90, 4) if minutes >= 45 else 0.0,
+            "xg_per_90": round(d["xg"] / minutes * 90, 4) if minutes >= 45 else 0.0,
+            "xa_per_90": round(d["xa"] / minutes * 90, 4) if minutes >= 45 else 0.0,
         }
+        for name in names_by_pid[pid]:
+            result[_norm_name(name)] = stats
     return result
+
+
+def _winner_share(sim: np.ndarray) -> np.ndarray:
+    """P(termine 1er) par joueur, avec partage dead-heat en cas d'égalité."""
+    top = sim.max(axis=0)
+    tied = sim == top
+    shares = tied / tied.sum(axis=0, dtype=np.float32)
+    return shares.mean(axis=1)
+
+
+def _top3_share(sim: np.ndarray) -> np.ndarray:
+    """P(termine top 3) par joueur — 3 places, dead-heat sur la place restante.
+
+    Pour un joueur à la valeur v : h = nb strictement au-dessus, k = nb à
+    égalité. Si h >= 3 → 0 ; sinon part = (3-h)/k (toujours <= 1 car au moins
+    3 valeurs sont >= la 3e plus grande, donc h+k >= 3).
+    """
+    n = sim.shape[0]
+    if n <= 3:
+        return np.ones(n, dtype=np.float32)
+    v3 = np.partition(sim, -3, axis=0)[-3]  # 3e plus grande valeur par simulation
+    above = sim > v3
+    tied = sim == v3
+    h = above.sum(axis=0, dtype=np.int32)
+    k = tied.sum(axis=0, dtype=np.int32)
+    seat = ((3 - h) / k).astype(np.float32)
+    shares = above + tied * seat
+    return shares.mean(axis=1)
 
 
 def run_monte_carlo(
@@ -301,24 +391,39 @@ def run_monte_carlo(
     n_sim: int = N_MONTE_CARLO,
     seed: int = _MC_SEED,
 ) -> list[dict[str, float]]:
-    """Simulate total = already_scored + Poisson(lambda_remaining) for each player."""
+    """Simulate total = already_scored + Poisson(lambda_remaining) for each player.
+
+    Six marchés outright, tous avec règle dead-heat :
+    top buteur / top passeur / plus décisif (G+A), et leurs variantes top 3.
+    """
     rng = np.random.default_rng(seed)
     n = len(lambdas_remaining_goals)
     lg = np.maximum(np.array(lambdas_remaining_goals, dtype=float), 0)
     la = np.maximum(np.array(lambdas_remaining_assists, dtype=float), 0)
-    wg = np.array(wc_goals, dtype=int)
-    wa = np.array(wc_assists, dtype=int)
-    goals_sim   = wg[:, None] + rng.poisson(lg[:, None], size=(n, n_sim))
-    assists_sim = wa[:, None] + rng.poisson(la[:, None], size=(n, n_sim))
-    top_scorer_idx   = goals_sim.argmax(axis=0)
-    top_assister_idx = assists_sim.argmax(axis=0)
-    results = []
-    for i in range(n):
-        results.append({
-            "p_top_scorer":   float((top_scorer_idx   == i).sum()) / n_sim,
-            "p_top_assister": float((top_assister_idx == i).sum()) / n_sim,
-        })
-    return results
+    wg = np.array(wc_goals, dtype=np.int32)
+    wa = np.array(wc_assists, dtype=np.int32)
+    goals_sim = wg[:, None] + rng.poisson(lg[:, None], size=(n, n_sim)).astype(np.int32)
+    assists_sim = wa[:, None] + rng.poisson(la[:, None], size=(n, n_sim)).astype(np.int32)
+    decisive_sim = goals_sim + assists_sim
+
+    p_top_scorer = _winner_share(goals_sim)
+    p_top_assister = _winner_share(assists_sim)
+    p_most_decisive = _winner_share(decisive_sim)
+    p_top3_scorer = _top3_share(goals_sim)
+    p_top3_assister = _top3_share(assists_sim)
+    p_top3_decisive = _top3_share(decisive_sim)
+
+    return [
+        {
+            "p_top_scorer":    float(p_top_scorer[i]),
+            "p_top_assister":  float(p_top_assister[i]),
+            "p_most_decisive": float(p_most_decisive[i]),
+            "p_top3_scorer":   float(p_top3_scorer[i]),
+            "p_top3_assister": float(p_top3_assister[i]),
+            "p_top3_decisive": float(p_top3_decisive[i]),
+        }
+        for i in range(n)
+    ]
 
 
 async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
@@ -552,6 +657,14 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
             "p_top_assister":           round(p_ta, 6),
             "fair_top_scorer":          _fair_odds(p_ts),
             "fair_top_assister":        _fair_odds(p_ta),
+            "p_most_decisive":          round(mc["p_most_decisive"], 6),
+            "fair_most_decisive":       _fair_odds(mc["p_most_decisive"]),
+            "p_top3_decisive":          round(mc["p_top3_decisive"], 6),
+            "fair_top3_decisive":       _fair_odds(mc["p_top3_decisive"]),
+            "p_top3_scorer":            round(mc["p_top3_scorer"], 6),
+            "fair_top3_scorer":         _fair_odds(mc["p_top3_scorer"]),
+            "p_top3_assister":          round(mc["p_top3_assister"], 6),
+            "fair_top3_assister":       _fair_odds(mc["p_top3_assister"]),
             "computed_at":              now,
         })
 

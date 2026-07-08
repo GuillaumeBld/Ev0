@@ -1617,10 +1617,13 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # WC2026 match stats: every hour — picks up newly finished matches automatically
+    # WC2026 match stats: every 5 min — picks up newly finished matches
+    # automatically. Idle runs cost one DB query (early return when no new
+    # finished match lacks stats); when a match finishes, stats sync then
+    # advancement + player pricing recompute (classement + cotes à jour).
     scheduler.add_job(
         job_sync_wc_match_stats,
-        IntervalTrigger(hours=1),
+        IntervalTrigger(minutes=5),
         id="sync_wc_match_stats",
         name="Sync WC2026 player stats for finished matches",
         replace_existing=True,

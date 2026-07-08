@@ -62,6 +62,15 @@ class PlayerPricingOut(BaseModel):
     p_top_assister: float | None
     fair_top_scorer: float | None
     fair_top_assister: float | None
+    p_most_decisive: float | None = None
+    fair_most_decisive: float | None = None
+    p_top3_decisive: float | None = None
+    fair_top3_decisive: float | None = None
+    p_top3_scorer: float | None = None
+    fair_top3_scorer: float | None = None
+    p_top3_assister: float | None = None
+    fair_top3_assister: float | None = None
+    computed_at: datetime | None = None
     bk_top_scorer: float | None = None          # meilleure cote toutes books
     bk_top_scorer_unibet: float | None = None
     bk_top_scorer_betclic: float | None = None
@@ -169,6 +178,15 @@ async def get_pricing_players(
             p_top_assister=p.p_top_assister,
             fair_top_scorer=p.fair_top_scorer,
             fair_top_assister=p.fair_top_assister,
+            p_most_decisive=p.p_most_decisive,
+            fair_most_decisive=p.fair_most_decisive,
+            p_top3_decisive=p.p_top3_decisive,
+            fair_top3_decisive=p.fair_top3_decisive,
+            p_top3_scorer=p.p_top3_scorer,
+            fair_top3_scorer=p.fair_top3_scorer,
+            p_top3_assister=p.p_top3_assister,
+            fair_top3_assister=p.fair_top3_assister,
+            computed_at=p.computed_at,
             bk_top_scorer=bk_ts_best,
             bk_top_scorer_unibet=ts.get("unibet"),
             bk_top_scorer_betclic=ts.get("betclic"),
