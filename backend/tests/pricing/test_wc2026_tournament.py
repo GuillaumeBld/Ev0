@@ -171,3 +171,30 @@ def test_names_similar_rejects_different_players():
     # Collision réelle en base : internal_id de Rashford pointait vers Ronaldo
     assert not _names_similar("Marcus Rashford", "Cristiano Ronaldo")
     assert not _names_similar("Harry Kane", "Erling Haaland")
+
+
+# ── Fraction restante au niveau équipe ───────────────────────────────────────
+
+def test_remaining_fraction_eliminated_team_is_frozen():
+    from app.pricing.wc2026_tournament import _remaining_fraction
+    # Éliminée : plus aucune projection, même si e_games est périmé (> matchs joués)
+    assert _remaining_fraction(5.98, 4, alive=False) == 0.0
+    assert _remaining_fraction(5.0, 5, alive=False) == 0.0
+
+
+def test_remaining_fraction_alive_team():
+    from app.pricing.wc2026_tournament import _remaining_fraction
+    # France : e_games 6.93, 5 matchs joués → ~28% du budget restant
+    assert _remaining_fraction(6.93, 5, alive=True) == pytest.approx(1.93 / 6.93, abs=1e-9)
+
+
+def test_remaining_fraction_alive_team_with_stale_e_games():
+    from app.pricing.wc2026_tournament import _remaining_fraction
+    # En lice avec e_games périmé (≤ matchs joués) : au moins 1 match à venir
+    assert _remaining_fraction(5.0, 5, alive=True) == pytest.approx(1 / 5.0)
+    assert _remaining_fraction(4.5, 5, alive=True) == pytest.approx(1 / 4.5)
+
+
+def test_remaining_fraction_degenerate_e_games():
+    from app.pricing.wc2026_tournament import _remaining_fraction
+    assert _remaining_fraction(0.0, 0, alive=True) == 0.0

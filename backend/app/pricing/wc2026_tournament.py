@@ -268,6 +268,47 @@ def _fair_odds(p: float) -> float | None:
     return round(1.0 / p, 2) if p > 0.001 else None
 
 
+def _remaining_fraction(e_games: float, played: int, alive: bool) -> float:
+    """Fraction du budget tournoi encore à jouer, au niveau ÉQUIPE.
+
+    Une équipe éliminée ne projette plus rien (0.0), quels que soient les
+    minutes ou le matching des stats de ses joueurs. Une équipe en lice a au
+    moins 1 match à venir même si l'advancement (e_games) est périmé.
+    """
+    if not alive:
+        return 0.0
+    if e_games <= 0:
+        return 0.0
+    remaining = max(1.0, e_games - played)
+    return min(1.0, remaining / e_games)
+
+
+async def load_team_tournament_state(db: AsyncSession) -> dict[str, dict]:
+    """Par nation canonique: matchs WC joués et statut en lice.
+
+    alive = l'équipe apparaît dans au moins un match WC à venir (les
+    placeholders W97/W98 n'ont pas de team_api_id, donc seules les équipes
+    réellement qualifiées comptent).
+    """
+    rows = (await db.execute(text("""
+        SELECT t.name AS team, e.status, count(*) AS n
+        FROM bzz_events e
+        JOIN bzz_teams t ON t.api_id IN (e.home_team_api_id, e.away_team_api_id)
+        WHERE e.league_api_id = :lid AND e.status IN ('finished', 'notstarted')
+        GROUP BY t.name, e.status
+    """), {"lid": WC_LEAGUE_API_ID})).mappings().all()
+
+    state: dict[str, dict] = {}
+    for row in rows:
+        canon = _ODDS_TO_BM.get(row["team"], row["team"])
+        s = state.setdefault(canon, {"played": 0, "alive": False})
+        if row["status"] == "finished":
+            s["played"] += int(row["n"])
+        else:
+            s["alive"] = True
+    return state
+
+
 async def load_wc_match_stats(db: AsyncSession) -> dict[str, dict]:
     """Aggregate actual WC tournament stats from bzz_player_match_stats.
 
@@ -452,7 +493,11 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
     # 0. Load odds-based expected games + actual WC tournament stats
     e_games_map = await compute_expected_games(db)
     wc_stats = await load_wc_match_stats(db)
-    logger.info("wc2026_pricing: loaded WC tournament stats for %d players", len(wc_stats))
+    team_state = await load_team_tournament_state(db)
+    logger.info(
+        "wc2026_pricing: loaded WC tournament stats for %d players, %d teams (%d en lice)",
+        len(wc_stats), len(team_state), sum(1 for s in team_state.values() if s["alive"]),
+    )
 
     all_entries: list[dict[str, Any]] = []
 
@@ -463,6 +508,18 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
         # odds-derived E[games] gives the true tournament lambda budget.
         e_games = e_games_map.get(nation, _E_GAMES_BASELINE)
         adjusted_bm = bm * (e_games / _E_GAMES_BASELINE)
+
+        # Fraction du tournoi restante — au niveau ÉQUIPE. Basée sur les
+        # matchs réellement joués et le statut en lice, pas sur les minutes
+        # des joueurs : les éliminés sont figés à 0 même quand leurs stats
+        # WC n'ont pas été matchées par nom, et les remplaçants ne sont plus
+        # sur-projetés.
+        st = team_state.get(nation)
+        if st is None:
+            logger.warning("wc2026_pricing: no WC events matched for %s — treated as eliminated", nation)
+            fraction_rem = 0.0
+        else:
+            fraction_rem = _remaining_fraction(e_games, st["played"], st["alive"])
 
         # 1. Load default lineup (DB stores nation names in French)
         lineup_nation = WC2026_LINEUP_NATION_MAP.get(nation, nation)
@@ -568,12 +625,6 @@ async def compute_tournament_pricing(db: AsyncSession) -> list[dict[str, Any]]:
         for p in matched:
             lambda_total_g = round((p["w_g"] / total_g) * adjusted_bm,   4)
             lambda_total_a = round((p["w_a"] / total_a) * budget_assists, 4)
-
-            # Fraction of tournament still to be played, based on matches remaining.
-            # lineup["minutes"] is per-match expected playing time (≈90 min), not total.
-            # We estimate matches played from WC minutes (90 min ≈ 1 full match).
-            matches_played_approx = p["wc_minutes"] / 90.0
-            fraction_rem = max(0.0, (e_games - matches_played_approx) / e_games) if e_games > 0 else 1.0
 
             all_entries.append({
                 "nation":                  nation,
