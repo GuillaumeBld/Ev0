@@ -309,7 +309,7 @@ async def job_generate_recommendations():
 
                         # Notify on new VALUE bets
                         if rec.get("classification") == "VALUE":
-                            from app.notifications import send_telegram_alert
+                            from app.alerts import send_alert
                             player = rec.get("player_name", "?")
                             fixture_name = rec.get("fixture_name", fixture_ext_id)
                             odds = rec.get("market_odds", "?")
@@ -322,7 +322,7 @@ async def job_generate_recommendations():
                                 f"📈 Odds: {odds} ({book}) | Edge: +{edge:.1%}\n"
                                 f"🤖 Ev0 Autopilot"
                             )
-                            await send_telegram_alert(msg)
+                            await send_alert(msg, channel="recos")
                     except Exception as exc:
                         logger.warning("Failed to store recommendation: %s", exc)
                         await session.rollback()
@@ -888,7 +888,7 @@ async def job_auto_settle():
     from datetime import timedelta
 
     from app.models.fixtures import Fixture
-    from app.notifications import send_telegram_alert
+    from app.alerts import send_alert
 
     try:
         async with async_session() as session:
@@ -898,7 +898,7 @@ async def job_auto_settle():
         logger.info("auto_settle: settled %d recommendations", settled)
 
         if settled > 0:
-            await send_telegram_alert(
+            await send_alert(
                 f"✅ <b>[Ev0] Settlement automatique</b>\n\n"
                 f"{settled} pari(s) réglé(s) :\n"
                 f"• Gagnés : {stats['won']}\n"
@@ -923,7 +923,7 @@ async def job_auto_settle():
                     f"• {fx.home_team} vs {fx.away_team} ({fx.kickoff_utc.strftime('%d/%m')})"
                     for fx in old_stuck[:5]
                 )
-                await send_telegram_alert(
+                await send_alert(
                     f"🚨 <b>[Ev0] Settlement bloqué</b>\n\n"
                     f"{len(old_stuck)} match(s) terminé(s) depuis >48h impossible(s) à settler :\n"
                     f"{names}\n\n"
@@ -947,7 +947,7 @@ async def job_auto_finish_fixtures():
     from datetime import timedelta
 
     from app.models.fixtures import Fixture
-    from app.notifications import send_telegram_alert
+    from app.alerts import send_alert
 
     now = datetime.now(UTC)
     cutoff = now - timedelta(hours=2)
@@ -979,7 +979,7 @@ async def job_auto_finish_fixtures():
             f"• {fx.home_team} vs {fx.away_team} ({fx.kickoff_utc.strftime('%d/%m %H:%M')} UTC)"
             for fx in fixtures[:10]
         )
-        await send_telegram_alert(
+        await send_alert(
             f"⏱️ <b>[Ev0] Auto-finish fixtures</b>\n\n"
             f"{len(fixtures)} match(s) passés en <b>finished</b> (kickoff +2h dépassé) :\n"
             f"{names}"
@@ -1466,6 +1466,51 @@ async def job_deactivate_stale_wc_odds() -> None:
 
 
 
+async def job_daily_health_report() -> None:
+    """Daily 08:00 UTC: résumé santé sur le canal ops — détecte les morts
+    silencieuses qui ne lèvent aucune exception (scraper arrêté, données figées)."""
+    try:
+        from app.alerts import send_alert
+
+        async with async_session() as session:
+            row = (await session.execute(text("""
+                SELECT
+                  (SELECT max(scraped_at) FROM player_odds_snapshots)          AS last_player_odds,
+                  (SELECT max(created_at) FROM match_odds_snapshots)           AS last_match_odds,
+                  (SELECT count(*) FROM wc2026_outright_odds WHERE is_active)  AS wc_odds_actives,
+                  (SELECT max(computed_at) FROM wc2026_player_pricing)         AS wc_pricing_at,
+                  (SELECT count(*) FROM recommendations
+                    WHERE created_at > now() - interval '24 hours')            AS recs_24h,
+                  (SELECT count(*) FROM recommendations
+                    WHERE status = 'pending')                                  AS recs_pending,
+                  (SELECT count(*) FROM autopilot_decisions d
+                    JOIN recommendations r ON r.id = d.recommendation_id
+                    JOIN fixtures f ON f.id = r.fixture_id
+                    WHERE d.result IS NULL AND f.status = 'finished')          AS backlog_settle
+            """))).mappings().one()
+
+        now = datetime.now(UTC)
+
+        def age(ts) -> str:
+            if ts is None:
+                return "jamais"
+            h = (now - ts).total_seconds() / 3600
+            return f"il y a {h:.1f}h" if h < 48 else f"il y a {h / 24:.0f}j ⚠️"
+
+        msg = (
+            "🩺 <b>[Ev0] Santé quotidienne</b>\n\n"
+            f"Cotes joueurs : {age(row['last_player_odds'])}\n"
+            f"Cotes matchs : {age(row['last_match_odds'])}\n"
+            f"Outrights WC actifs : {row['wc_odds_actives']}\n"
+            f"Pricing WC : {age(row['wc_pricing_at'])}\n"
+            f"Recos 24h : {row['recs_24h']} (pending: {row['recs_pending']})\n"
+            f"Backlog settle : {row['backlog_settle']} décision(s)"
+        )
+        await send_alert(msg, channel="ops")
+    except Exception as exc:
+        logger.exception("job_daily_health_report failed: %s", exc)
+
+
 # ── Scheduler Setup ───────────────────────────────────────────────
 
 
@@ -1671,6 +1716,15 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
+    # Santé quotidienne sur le canal ops (08:00 UTC)
+    scheduler.add_job(
+        job_daily_health_report,
+        CronTrigger(hour=8, minute=0),
+        id="daily_health_report",
+        name="Résumé santé quotidien (fraîcheur données, backlog) → alerte ops",
+        replace_existing=True,
+    )
+
     # WC2026 stale outright odds: hourly safety net — a dead odds line shown
     # as active fabricates false edges on the pricing page.
     scheduler.add_job(
@@ -1718,7 +1772,26 @@ async def main():
     """Main worker entry point."""
     logger.info("Starting Ev0 worker...")
 
+    # Alerte ops sur toute erreur loggée (les jobs attrapent leurs exceptions,
+    # donc un listener APScheduler seul ne suffit pas). Dédup 15 min intégrée.
+    from apscheduler.events import EVENT_JOB_ERROR
+
+    from app.alerts import ErrorAlertHandler, alert_bg
+
+    _error_handler = ErrorAlertHandler(level=logging.ERROR)
+    logging.getLogger("app").addHandler(_error_handler)
+    logging.getLogger("__main__").addHandler(_error_handler)
+
     scheduler = create_scheduler()
+
+    def _on_job_error(event) -> None:
+        alert_bg(
+            f"🔴 [Ev0 worker] Job '{event.job_id}' a levé une exception:\n"
+            f"{event.exception}",
+            channel="ops",
+        )
+
+    scheduler.add_listener(_on_job_error, EVENT_JOB_ERROR)
     scheduler.start()
 
     logger.info("Scheduler started. Jobs:")

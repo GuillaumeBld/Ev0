@@ -769,7 +769,7 @@ async def process_scraped_fixtures(
 
     for alert in new_value_alerts:
         try:
-            from app.notifications import send_telegram_alert
+            from app.alerts import send_alert
             prefix = "♻️ <b>VALUE BET RESSUSCITÉ</b>" if alert["resurrected"] else "🎯 <b>VALUE BET</b>"
             msg = (
                 f"{prefix}\n"
@@ -778,7 +778,7 @@ async def process_scraped_fixtures(
                 f"📈 Cote: {alert['odds']} ({alert['bookmaker']}) | Edge: +{alert['edge']:.1%}\n"
                 f"🤖 Ev0 Autopilot"
             )
-            await send_telegram_alert(msg)
+            await send_alert(msg, channel="recos")
         except Exception as exc:
             logger.warning("Failed to send Telegram alert: %s", exc)
 

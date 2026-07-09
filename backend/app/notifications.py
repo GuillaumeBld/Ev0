@@ -7,8 +7,8 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Personal chat ID — change to group ID after adding @Ev0972_bot to the group
-TELEGRAM_CHAT_ID = "8589235488"
+# Chat ID configurable par env TELEGRAM_CHAT_ID (défaut = ID perso historique)
+TELEGRAM_CHAT_ID = settings.telegram_chat_id
 
 _ACTION_LABELS = {
     0: "SKIP",
@@ -116,7 +116,9 @@ async def notify_autopilot_position(
         f"Action : {action_label}  |  Mise : <b>€{stake:.2f}</b>"
         + _scorecard(settled, won, total_pnl, staked_total, fine_tune_runs, odds_api_remaining)
     )
-    await send_telegram_alert(msg)
+    from app.alerts import send_alert
+
+    await send_alert(msg, channel="recos")
 
 
 async def notify_autopilot_fine_tune(
@@ -138,7 +140,9 @@ async def notify_autopilot_fine_tune(
         f"TD error moyen : {td_error_mean:+.4f}"
         + _scorecard(settled, won, total_pnl, staked_total, fine_tune_runs, odds_api_remaining)
     )
-    await send_telegram_alert(msg)
+    from app.alerts import send_alert
+
+    await send_alert(msg, channel="ops")
 
 
 async def notify_autopilot_settle(
@@ -161,4 +165,6 @@ async def notify_autopilot_settle(
         f"Cumulé : {total_settled} paris réglés, €{total_pnl:+.2f}"
         + _scorecard(total_settled, total_won, total_pnl, staked_total, fine_tune_runs, odds_api_remaining)
     )
-    await send_telegram_alert(msg)
+    from app.alerts import send_alert
+
+    await send_alert(msg, channel="ops")

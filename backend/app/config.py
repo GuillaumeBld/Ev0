@@ -18,6 +18,13 @@ class Settings(BaseSettings):  # type: ignore[misc]
     # API Keys (optional)
     odds_api_key: str | None = None
     telegram_bot_token: str = ""
+    telegram_chat_id: str = "8589235488"  # surchargable par env (plus de hardcode)
+
+    # Alertes WhatsApp via CallMeBot — canal ops (incidents/santé) et recos (value bets)
+    whatsapp_ops_phone: str = ""
+    whatsapp_ops_apikey: str = ""
+    whatsapp_recos_phone: str = ""    # fallback sur ops si vide
+    whatsapp_recos_apikey: str = ""
 
     # Data Ingestion APIs
     firecrawl_api_key: str | None = None  # Firecrawl for web scraping
