@@ -4,7 +4,7 @@ import numpy as np
 from app.pricing.wc2026_bracket import (
     _apply_result,
     _build_groups,
-    _elo_from_team_bm,
+    _elo_from_historical,
     _match_proba_group,
     _match_proba_ko,
     _rank_group,
@@ -15,7 +15,7 @@ from app.pricing.wc2026_bracket import (
 
 
 def test_elo_init_ordering():
-    elo = _elo_from_team_bm()
+    elo = _elo_from_historical()
     # Spain and France are favourites, Iraq is an underdog
     assert elo["Spain"] > 1500
     assert elo["France"] > 1500
@@ -24,13 +24,13 @@ def test_elo_init_ordering():
 
 
 def test_elo_init_centred():
-    elo = _elo_from_team_bm()
+    elo = _elo_from_historical()
     values = list(elo.values())
     assert 1400 < sum(values) / len(values) < 1600
 
 
 def test_elo_init_48_nations():
-    elo = _elo_from_team_bm()
+    elo = _elo_from_historical()
     assert len(elo) == 48
 
 
@@ -227,7 +227,7 @@ from app.pricing.wc2026_bracket import simulate_bracket, _e_games_from_probs
 
 
 def test_simulate_bracket_probabilities_in_range():
-    elo = _elo_from_team_bm()
+    elo = _elo_from_historical()
     from app.ingestion.wc2026.team_bm import TEAM_BM
     nations = list(TEAM_BM.keys())
     groups = {chr(ord("A") + i): nations[i * 4: i * 4 + 4] for i in range(12)}
@@ -239,7 +239,7 @@ def test_simulate_bracket_probabilities_in_range():
 
 
 def test_simulate_bracket_favourites_advance_more():
-    elo = _elo_from_team_bm()
+    elo = _elo_from_historical()
     from app.ingestion.wc2026.team_bm import TEAM_BM
     nations = list(TEAM_BM.keys())
     groups = {chr(ord("A") + i): nations[i * 4: i * 4 + 4] for i in range(12)}
@@ -258,7 +258,7 @@ def test_e_games_from_probs_range():
 
 
 def test_simulate_bracket_e_games_in_range():
-    elo = _elo_from_team_bm()
+    elo = _elo_from_historical()
     from app.ingestion.wc2026.team_bm import TEAM_BM
     from app.pricing.wc2026_bracket import _e_games_from_probs
     nations = list(TEAM_BM.keys())

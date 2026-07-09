@@ -128,4 +128,4 @@ class TestAssistLambda:
         assert lam == 0.01  # CLAMP_LAMBDA_MIN
 
     def test_assist_goal_rate_constant(self):
-        assert ASSIST_GOAL_RATE == pytest.approx(0.65, abs=0.001)
+        assert ASSIST_GOAL_RATE == pytest.approx(0.72, abs=0.001)  # Sprint 2 (9b7084d)

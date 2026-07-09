@@ -68,15 +68,16 @@ class TestParseMatchItems:
         "e100": {"a": "PSG", "b": "Marseille", "start": "2604051930"},
         # markettypeId=31 : buteur anytime
         "m200": {"parent": "e100", "markettypeId": 31, "desc": "Buteur"},
-        # markettypeId=100002524 : passeur décisif
-        "m201": {"parent": "e100", "markettypeId": 100002524, "desc": "Passeur décisif"},
+        # markettypeId=100001899 : nbre de passes décisives (format actuel Unibet)
+        "m201": {"parent": "e100", "markettypeId": 100001899, "desc": "Nbre de passes décisives"},
         # markettypeId=4 : 1er buteur (doit être dédupliqué au profit de l'anytime)
         "m202": {"parent": "e100", "markettypeId": 4, "desc": "1er Buteur"},
         # Outcomes buteur anytime
         "o300": {"parent": "m200", "desc": "Mbappé", "price": "2,75"},
         "o301": {"parent": "m200", "desc": "Neymar", "price": "3,50"},
-        # Outcome passeur décisif
-        "o302": {"parent": "m201", "desc": "Mbappé", "price": "3,20"},
+        # Outcomes passes décisives — seuils "1+"/"2+", le parseur garde le 1+
+        "o302": {"parent": "m201", "desc": "Mbappé 1+", "price": "3,20"},
+        "o302b": {"parent": "m201", "desc": "Mbappé 2+", "price": "9,00"},
         # Outcome 1er buteur pour Mbappé — doit être ignoré au profit de o300 (anytime)
         "o303": {"parent": "m202", "desc": "Mbappé", "price": "4,00"},
         # Outcome suspendu (price=None) — doit être ignoré
@@ -149,8 +150,8 @@ class TestParseMatchItemsMatchOdds:
         "o1": {"parent": "m1", "desc": "PSG", "price": "2,10"},
         "o2": {"parent": "m1", "desc": "Match nul", "price": "3,40"},
         "o3": {"parent": "m1", "desc": "Lyon", "price": "3,60"},
-        # totals
-        "m2": {"markettypeId": 994001271, "parent": "e100", "desc": "Total buts"},
+        # totals — markettypeId=994001025, un marché par seuil X.5
+        "m2": {"markettypeId": 994001025, "parent": "e100", "desc": "Plus / Moins 2,5 But(s)"},
         "o4": {"parent": "m2", "desc": "Plus de 2,5", "price": "1,80"},
         "o5": {"parent": "m2", "desc": "Moins de 2,5", "price": "2,00"},
         # btts

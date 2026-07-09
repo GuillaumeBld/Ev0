@@ -89,8 +89,9 @@ class TestGenerateH2hRecs:
         assert not any(r["outcome"] == "home" for r in recs)
 
     @pytest.mark.asyncio
-    async def test_excludes_negative_edge_outcomes(self):
-        """Outcomes with edge < 0 (AVOID) are not returned."""
+    async def test_negative_edge_outcomes_marked_no_value(self):
+        """Outcomes à edge négatif sont retournés mais classés NO_VALUE
+        (l'expiration des recos a besoin de voir toutes les cotes fraîches)."""
         # lh=la=1.2 → all fair prices are close market prices; squeeze odds to be lower
         snapshots = [
             self._make_snapshot("betclic", "home", 1.80),  # well below fair ~2.3
@@ -104,7 +105,9 @@ class TestGenerateH2hRecs:
 
         recs = await _generate_h2h_recs(fixture_id=1, lh=1.2, la=1.2, session=session)
 
-        assert not any(r["outcome"] == "home" for r in recs)
+        home = next(r for r in recs if r["outcome"] == "home")
+        assert home["classification"] == "NO_VALUE"
+        assert home["edge"] < 0.05
 
     @pytest.mark.asyncio
     async def test_picks_best_odds_across_bookmakers(self):
@@ -207,4 +210,5 @@ class TestProcessScrapedFixturesH2h:
 
         assert stats["created"] >= 1
         outcomes_created = {r.player_name for r in added_recs if r.market_type == "h2h"}
-        assert "home" in outcomes_created
+        # rec_key h2h utilise le display_name (nom d'équipe), pas l'outcome (9ddd084)
+        assert "PSG" in outcomes_created

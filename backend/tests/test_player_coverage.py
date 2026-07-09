@@ -146,12 +146,13 @@ async def test_load_team_players_includes_players_without_stats():
     assert bob["matches_played"] == 0
     assert bob["xg"] == 0.0
     assert bob["has_bzz_stats"] is False
-    assert bob["rating"] == 0.0
+    assert bob["avg_rating"] == 0.0
 
-    # Player with stats: "rating" (not "avg_rating") must equal avg_rating / 10.0
+    # Player with stats: avg_rating exposé brut (0-10), la normalisation
+    # se fait plus loin dans le pipeline (PlayerShare)
     alice = next(p for p in result if p["name"] == "Alice Forward")
-    assert "rating" in alice
-    assert alice["rating"] == pytest.approx(stat.avg_rating / 10.0)
+    assert alice["avg_rating"] == pytest.approx(7.0)
+    assert alice["has_bzz_stats"] is True
 
 
 @pytest.mark.asyncio

@@ -169,7 +169,7 @@ async def test_sync_player_stats_for_player():
         session, client, player_api_id=101, player_internal_id=42
     )
     assert count == 2
-    client.get_all.assert_called_once_with("/api/player-stats/", {"player_id": 42})
+    client.get_all.assert_called_once_with("/api/player-stats/", {"player": 42})
 
 
 @pytest.mark.asyncio

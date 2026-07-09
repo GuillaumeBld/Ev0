@@ -49,7 +49,13 @@ async def test_job_sync_bzzoiro_events_calls_sync():
 
         await job_sync_bzzoiro_events()
 
-        mock_sync.assert_called_once_with(mock_session, mock_client)
+        # 2 appels : ligues domestiques (days_back=3) + internationales (WC etc.)
+        assert mock_sync.call_count == 2
+        first_call = mock_sync.call_args_list[0]
+        assert first_call.args == (mock_session, mock_client)
+        assert first_call.kwargs == {"days_back": 3, "days_forward": 30}
+        second_call = mock_sync.call_args_list[1]
+        assert "league_internal_ids" in second_call.kwargs
 
 
 # ---------------------------------------------------------------------------

@@ -27,8 +27,8 @@ class TestPreferredBookmaker:
 
 
 class TestMaxSnapshotAge:
-    def test_max_snapshot_age_is_3_hours(self):
-        assert MAX_SNAPSHOT_AGE == timedelta(hours=3)
+    def test_max_snapshot_age_is_4_hours(self):
+        assert MAX_SNAPSHOT_AGE == timedelta(hours=4)  # élargi par 61f58d1
 
 
 class TestMarketXgResultFields:

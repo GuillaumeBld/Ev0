@@ -118,6 +118,59 @@ def _make_match_stat(
     return ms
 
 
+
+
+# ---------------------------------------------------------------------------
+# Helpers sur modèles réels — l'API actuelle utilise scalars().all()/first()
+# et recalcule les per-90 depuis les totaux ; les mocks historiques ne
+# correspondent plus à ces formes.
+# ---------------------------------------------------------------------------
+
+from app.models.bzzoiro import BzzPlayer, BzzPlayerMatchStat, BzzPlayerSeasonStat
+
+
+def _player(api_id: int = 1, name: str = "Player One", position: str = "F",
+            team: str = "Real Madrid") -> BzzPlayer:
+    return BzzPlayer(
+        api_id=api_id, internal_id=api_id, name=name,
+        short_name=name.split()[-1], position=position,
+        nationality="French", height=180, jersey_number=10,
+        market_value=50_000_000, current_team_api_id=100,
+        current_team_name=team,
+    )
+
+
+def _season_stat(player_api_id: int = 1, expected_goals: float = 6.5,
+                 avg_rating: float = 7.4) -> BzzPlayerSeasonStat:
+    return BzzPlayerSeasonStat(
+        player_api_id=player_api_id, season="2025-2026", league_api_id=42,
+        matches_played=20, minutes_played=1800, starts=18,
+        goals=8, goal_assist=4, total_shots=50, shots_on_target=25,
+        key_pass=30, expected_goals=expected_goals, expected_assists=3.2,
+        avg_rating=avg_rating,
+        form_xg_5=1.8, form_rating_5=7.6, form_goals_5=3, form_assists_5=1,
+        rating_trend=0.1,
+    )
+
+
+def _match_stat(event_api_id: int = 456, team_api_id: int = 100) -> BzzPlayerMatchStat:
+    return BzzPlayerMatchStat(
+        player_api_id=1, event_api_id=event_api_id, team_api_id=team_api_id,
+        is_home=True, minutes_played=90, rating=8.2, touches=55,
+        goals=1, goal_assist=0, expected_goals=0.73, expected_assists=0.15,
+        total_shots=4, shots_on_target=3, total_pass=42, accurate_pass=36,
+        key_pass=2, total_long_balls=3, accurate_long_balls=2,
+        total_cross=1, accurate_cross=0, duel_won=5, duel_lost=3,
+        aerial_won=2, aerial_lost=1, total_tackle=4, won_tackle=3,
+        total_clearance=0, interception=1, ball_recovery=4,
+        yellow_card=0, red_card=0, fouls=1, was_fouled=2,
+        dispossessed=1, possession_lost=3, saves=0, goals_conceded=0,
+        shot_accuracy=0.75, xg_per_shot=0.18, finishing_delta=0.05,
+        xa_delta=0.02, pass_completion=0.857, long_ball_accuracy=0.67,
+        cross_accuracy=0.0, duel_win_rate=0.625, aerial_win_rate=0.67,
+        tackle_success_rate=0.75,
+    )
+
 # ---------------------------------------------------------------------------
 # Test: list players — empty result
 # ---------------------------------------------------------------------------
@@ -156,19 +209,17 @@ async def test_list_players_empty():
 async def test_list_players_basic():
     from app.api.players import list_players
 
-    p1 = _make_player(api_id=1, name="Alpha Player")
-    p2 = _make_player(api_id=2, name="Beta Player", position="M")
-    s1 = _make_season_stat(player_api_id=1)
-    s2 = _make_season_stat(player_api_id=2)
-    s2.xg_per_90 = 0.18
+    p1 = _player(api_id=1, name="Alpha Player", team="Real Madrid")
+    p2 = _player(api_id=2, name="Beta Player", position="M", team="Barcelona")
+    s1 = _season_stat(player_api_id=1)                      # xg/90 = 6.5/20 = 0.325
+    s2 = _season_stat(player_api_id=2, expected_goals=3.6)  # xg/90 = 0.18
 
+    players_res = MagicMock()
+    players_res.scalars.return_value.all.return_value = [p1, p2]
+    stats_res = MagicMock()
+    stats_res.scalars.return_value.all.return_value = [s1, s2]
     mock_db = AsyncMock()
-    result = MagicMock()
-    result.all.return_value = [
-        (p1, s1, "Real Madrid"),
-        (p2, s2, "Barcelona"),
-    ]
-    mock_db.execute = AsyncMock(return_value=result)
+    mock_db.execute = AsyncMock(side_effect=[players_res, stats_res])
 
     response = await list_players(
         session=mock_db,
@@ -191,14 +242,14 @@ async def test_list_players_basic():
     assert item0["position"] == "F"
     assert item0["team_name"] == "Real Madrid"
     assert item0["nationality"] == "French"
-    assert item0["xg_per_90"] == 0.33
+    assert item0["xg_per_90"] == pytest.approx(0.325)
     assert item0["matches_played"] == 20
     assert item0["minutes_played"] == 1800
     assert item0["season"] == "2025-2026"
 
     item1 = response[1]
     assert item1["player_api_id"] == 2
-    assert item1["xg_per_90"] == 0.18
+    assert item1["xg_per_90"] == pytest.approx(0.18)
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +263,7 @@ async def test_get_player_not_found():
 
     mock_db = AsyncMock()
     result = MagicMock()
-    result.first.return_value = None
+    result.scalars.return_value.first.return_value = None
     mock_db.execute = AsyncMock(return_value=result)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -231,32 +282,26 @@ async def test_get_player_not_found():
 async def test_get_player_detail():
     from app.api.players import get_player
 
-    player = _make_player(api_id=1, name="Kylian Mbappe")
-    season_stat = _make_season_stat(player_api_id=1)
+    player = _player(api_id=1, name="Kylian Mbappe")
+    season_stat = _season_stat(player_api_id=1)
 
-    ms1 = _make_match_stat(player_api_id=1, event_api_id=100, is_home=True)
-    ms2 = _make_match_stat(player_api_id=1, event_api_id=101, is_home=False)
+    ms1 = _match_stat(event_api_id=100)
+    ms2 = _match_stat(event_api_id=101)
 
     dt1 = datetime(2025, 12, 15, 20, 45, tzinfo=UTC)
     dt2 = datetime(2025, 12, 8, 18, 0, tzinfo=UTC)
 
-    # Three execute calls:
-    # 1. player + team_name
-    # 2. season stats
-    # 3. recent matches
-
+    # Trois execute : joueur (scalars.first), stats saison (scalars.all), matchs (all)
     player_result = MagicMock()
-    player_result.first.return_value = (player, "Real Madrid")
+    player_result.scalars.return_value.first.return_value = player
 
     season_result = MagicMock()
-    season_scalars = MagicMock()
-    season_scalars.first.return_value = season_stat
-    season_result.scalars.return_value = season_scalars
+    season_result.scalars.return_value.all.return_value = [season_stat]
 
     recent_result = MagicMock()
     recent_result.all.return_value = [
         (ms1, dt1, 100, 200, "Real Madrid", "Barcelona"),
-        (ms2, dt2, 100, 200, "Real Madrid", "Atletico"),
+        (ms2, dt2, 200, 100, "Atletico", "Real Madrid"),
     ]
 
     mock_db = AsyncMock()
@@ -272,12 +317,14 @@ async def test_get_player_detail():
     assert response["nationality"] == "French"
     assert response["height"] == 180
 
-    # Season stats
+    # Season stats — per-90 recalculés depuis les totaux, forme depuis les matchs récents
     ss = response["season_stats"]
     assert ss is not None
-    assert ss.xg_per_90 == 0.33
+    assert ss.xg_per_90 == pytest.approx(6.5 / 20)
     assert ss.matches_played == 20
-    assert ss.form_xg_5 == 1.8
+    assert ss.form_xg_5 == pytest.approx(0.73 * 2)
+    assert ss.form_goals_5 == 2
+    assert ss.rating_trend == pytest.approx(8.2 - 7.4)
 
     # Recent matches
     recent = response["recent_matches"]
@@ -296,7 +343,7 @@ async def test_get_player_detail():
     m1 = recent[1]
     assert m1.event_api_id == 101
     assert m1.is_home is False
-    assert m1.opponent == "Real Madrid"
+    assert m1.opponent == "Atletico"
 
 
 @pytest.mark.asyncio
@@ -304,19 +351,17 @@ async def test_get_player_detail_full_match_stats():
     """Recent match entries expose all BzzPlayerMatchStat fields."""
     from app.api.players import get_player
 
-    player = _make_player(api_id=1, name="Test Player")
-    season_stat = _make_season_stat(player_api_id=1)
-    ms = _make_match_stat(player_api_id=1, event_api_id=777, is_home=True)
+    player = _player(api_id=1, name="Test Player", team="Arsenal")
+    season_stat = _season_stat(player_api_id=1)
+    ms = _match_stat(event_api_id=777)
 
     dt = datetime(2026, 1, 10, 20, 0, tzinfo=UTC)
 
     player_result = MagicMock()
-    player_result.first.return_value = (player, "Arsenal")
+    player_result.scalars.return_value.first.return_value = player
 
     season_result = MagicMock()
-    season_scalars = MagicMock()
-    season_scalars.first.return_value = season_stat
-    season_result.scalars.return_value = season_scalars
+    season_result.scalars.return_value.all.return_value = [season_stat]
 
     recent_result = MagicMock()
     recent_result.all.return_value = [
@@ -381,35 +426,44 @@ async def test_list_player_leagues():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_list_player_teams_no_filter():
-    from app.api.players import list_player_teams
+async def test_list_player_teams_no_filter(monkeypatch):
+    from app.api import players as players_mod
+
+    async def fake_dominant(session, season="2025-2026"):
+        return {"Arsenal": 25, "Chelsea": -1}
+
+    monkeypatch.setattr(players_mod, "_get_team_dominant_leagues", fake_dominant)
 
     result = MagicMock()
     result.all.return_value = [(100, "Arsenal"), (200, "Chelsea")]
-
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(return_value=result)
 
-    response = await list_player_teams(session=mock_db, league_api_id=None, season="2025-2026")
+    response = await players_mod.list_player_teams(session=mock_db, league_api_id=None)
     assert len(response) == 2
     assert response[0] == {"api_id": 100, "name": "Arsenal"}
+    assert response[1] == {"api_id": 200, "name": "Chelsea"}
 
 
 # ---------------------------------------------------------------------------
-# Test: list_teams — filtered by league
+# Test: list_teams — filtered by league (via ligues dominantes)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_list_player_teams_with_league():
-    from app.api.players import list_player_teams
+async def test_list_player_teams_with_league(monkeypatch):
+    from app.api import players as players_mod
+
+    async def fake_dominant(session, season="2025-2026"):
+        return {"Arsenal": 25, "Chelsea": -1}
+
+    monkeypatch.setattr(players_mod, "_get_team_dominant_leagues", fake_dominant)
 
     result = MagicMock()
-    result.all.return_value = [(100, "Arsenal")]
-
+    result.all.return_value = [(100, "Arsenal"), (200, "Chelsea")]
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(return_value=result)
 
-    response = await list_player_teams(session=mock_db, league_api_id=25, season="2025-2026")
+    response = await players_mod.list_player_teams(session=mock_db, league_api_id=25)
     assert response == [{"api_id": 100, "name": "Arsenal"}]
     mock_db.execute.assert_called_once()
 
@@ -422,13 +476,17 @@ async def test_list_player_teams_with_league():
 async def test_list_players_sort_by_avg_rating():
     from app.api.players import list_players
 
-    p1 = _make_player(api_id=1)
-    s1 = _make_season_stat(player_api_id=1)
+    p1 = _player(api_id=1, name="Alpha Player")
+    p2 = _player(api_id=2, name="Beta Player")
+    s1 = _season_stat(player_api_id=1, avg_rating=7.4)
+    s2 = _season_stat(player_api_id=2, avg_rating=6.9)
 
+    players_res = MagicMock()
+    players_res.scalars.return_value.all.return_value = [p1, p2]
+    stats_res = MagicMock()
+    stats_res.scalars.return_value.all.return_value = [s1, s2]
     mock_db = AsyncMock()
-    result = MagicMock()
-    result.all.return_value = [(p1, s1, "Arsenal")]
-    mock_db.execute = AsyncMock(return_value=result)
+    mock_db.execute = AsyncMock(side_effect=[players_res, stats_res])
 
     response = await list_players(
         session=mock_db,
@@ -442,4 +500,4 @@ async def test_list_players_sort_by_avg_rating():
         limit=50,
         offset=0,
     )
-    assert len(response) == 1
+    assert [r["player_api_id"] for r in response] == [2, 1]

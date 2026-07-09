@@ -1,5 +1,20 @@
 """Tests for view-all pagination in recommendations API."""
 import pytest
+
+from app.models.recommendations import MarketType
+
+
+@pytest.fixture(autouse=True)
+def _no_bzz_team_lookup(monkeypatch):
+    """L'endpoint fait désormais une 3e requête (_batch_player_teams) que les
+    mocks à 2 résultats ne couvrent pas — on la neutralise ici."""
+    async def _empty(db, player_names):
+        return {}
+
+    import app.api.recommendations as recs_mod
+
+    monkeypatch.setattr(recs_mod, "_batch_player_teams", _empty)
+
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import date, datetime, timezone
 
@@ -10,7 +25,7 @@ def _make_rec(**kwargs) -> Recommendation:
     defaults = dict(
         id=1, fixture_id="ext-1", fixture_name="PSG vs Lyon",
         kickoff_utc="2026-04-10T18:45:00+00:00",
-        player_name="Mbappe", team="PSG", market_type="goalscorer",
+        player_name="Mbappe", team="PSG", market_type=MarketType.GOALSCORER,
         fair_odds=3.5, best_bookmaker="Betclic", best_odds=4.0,
         edge=0.14, classification="VALUE", confidence=0.72, explanation={},
     )
@@ -55,7 +70,7 @@ class TestRecommendationsResponsePagination:
 class TestGetRecommendationsViewAll:
     """Tests for the view-all code path (no target_date)."""
 
-    def _make_db_rec(self, id_=1, market_type="goalscorer", edge=0.14, status="pending"):
+    def _make_db_rec(self, id_=1, market_type=MarketType.GOALSCORER, edge=0.14, status="pending"):
         rec = MagicMock()
         rec.id = id_
         rec.player_name = "Mbappe"
@@ -69,6 +84,9 @@ class TestGetRecommendationsViewAll:
         rec.explanation = {}
         rec.status = status
         rec.xg_source = None
+        rec.decided_utc = None
+        rec.bet_type = None
+        rec.is_pen_taker = False
         return rec
 
     def _make_db_fix(self, external_id="ext-1"):
@@ -131,7 +149,7 @@ class TestGetRecommendationsViewAll:
         items_result = MagicMock()
         # Only return the goalscorer record; the assist record is excluded by the DB filter.
         items_result.all.return_value = [
-            (self._make_db_rec(id_=1, market_type="goalscorer"), self._make_db_fix("ext-1")),
+            (self._make_db_rec(id_=1, market_type=MarketType.GOALSCORER), self._make_db_fix("ext-1")),
         ]
         mock_db.execute = AsyncMock(side_effect=[count_result, items_result])
 
@@ -208,7 +226,7 @@ class TestGetExpiredRecommendationsViewAll:
         rec = MagicMock()
         rec.id = id_
         rec.player_name = "Mbappe"
-        rec.market_type = "goalscorer"
+        rec.market_type = MarketType.GOALSCORER
         rec.fair_odds = 3.5
         rec.best_bookmaker = "Betclic"
         rec.best_odds = 4.0
@@ -218,6 +236,9 @@ class TestGetExpiredRecommendationsViewAll:
         rec.explanation = {}
         rec.status = "expired"
         rec.xg_source = None
+        rec.decided_utc = None
+        rec.bet_type = None
+        rec.is_pen_taker = False
         return rec
 
     def _make_db_fix(self, external_id="ext-1"):
