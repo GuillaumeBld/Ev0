@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +28,12 @@ logger = logging.getLogger(__name__)
 # Sentinel player_name used to mark a fixture as processed when it had 0 goals.
 _SENTINEL = "__processed__"
 _SENTINEL_TYPE = "match_processed"
+
+# Sentinel stocké quand Bzzoiro renvoie un 404 permanent (événement supprimé
+# upstream) : la fixture sort de la sélection au lieu d'être re-fetchée en
+# boucle. auto_settle et le settle autopilot traitent ce type en VOID.
+SENTINEL_UNAVAILABLE = "__incidents_unavailable__"
+SENTINEL_UNAVAILABLE_TYPE = "incidents_unavailable"
 
 
 def _parse_incidents(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -137,6 +144,28 @@ async def sync_incidents(
 
         try:
             data = await client.get_page(f"/api/v2/events/{bzz_api_id}/incidents/")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                # 404 permanent (événement supprimé côté Bzzoiro) : sentinel
+                # pour sortir la fixture de la sélection — fin de la boucle.
+                await _store_events(session, fixture.id, [{
+                    "player_name": SENTINEL_UNAVAILABLE,
+                    "event_type": SENTINEL_UNAVAILABLE_TYPE,
+                    "minute": None,
+                }])
+                await session.commit()
+                logger.warning(
+                    "sync_incidents: fixture %d (bzz_id=%d) → 404 permanent, "
+                    "sentinel 'incidents_unavailable' stocké — plus de retry",
+                    fixture.id, bzz_api_id,
+                )
+                processed += 1
+            else:
+                logger.warning(
+                    "sync_incidents: failed to fetch incidents for fixture %d (bzz_id=%d): %s",
+                    fixture.id, bzz_api_id, exc,
+                )
+            continue
         except Exception as exc:
             logger.warning(
                 "sync_incidents: failed to fetch incidents for fixture %d (bzz_id=%d): %s",

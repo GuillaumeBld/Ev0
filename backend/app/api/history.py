@@ -175,15 +175,19 @@ async def get_autoflat_history(
         computed_pnl = rec.pnl
 
         if computed_result is None and fixture.status == "finished":
+            from app.ingestion.auto_settle import _names_match
+
             event_type = _market_to_event.get(rec.market_type, rec.market_type)
             ev = await db.execute(
                 select(MatchEvent).where(
                     MatchEvent.fixture_id == fixture.id,
-                    MatchEvent.player_name == rec.player_name,
                     MatchEvent.event_type == event_type,
-                ).limit(1)
+                )
             )
-            won = ev.scalar_one_or_none() is not None
+            won = any(
+                _names_match(e.player_name, rec.player_name)
+                for e in ev.scalars().all()
+            )
             computed_result = "won" if won else "lost"
             computed_pnl = round(10.0 * (rec.best_odds - 1) if won else -10.0, 2)
 

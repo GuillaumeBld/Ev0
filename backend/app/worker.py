@@ -554,6 +554,7 @@ async def job_autopilot_settle():
 
     try:
         from app.autopilot.trainer import fine_tune_from_db
+        from app.ingestion.auto_settle import _names_match
         from app.models.autopilot import AutopilotDecision
         from app.models.fixtures import Fixture
         from app.models.match_events import MatchEvent
@@ -588,8 +589,33 @@ async def job_autopilot_settle():
             batch_won = 0
             batch_lost = 0
             batch_pnl = 0.0
+            # event_types distincts par fixture (cache — le backlog peut être gros)
+            _fixture_event_types: dict[int, set] = {}
             for decision, rec, fixture in rows:
                 if not rec or not fixture:
+                    continue
+
+                if fixture.id not in _fixture_event_types:
+                    _ev_types_res = await session.execute(
+                        select(MatchEvent.event_type)
+                        .where(MatchEvent.fixture_id == fixture.id)
+                        .distinct()
+                    )
+                    _fixture_event_types[fixture.id] = {t for (t,) in _ev_types_res.all()}
+                _ev_types = _fixture_event_types[fixture.id]
+
+                # Events pas encore synchronisés → on attend le prochain run
+                # (sinon on réglerait LOST à tort sur un match sans données).
+                if not _ev_types:
+                    continue
+
+                # Incidents définitivement indisponibles (404 Bzzoiro) → VOID
+                if _ev_types <= {"incidents_unavailable"}:
+                    decision.result = "void"
+                    decision.pnl = 0.0
+                    decision.reward = 0.0
+                    decision.settled_at = datetime.now(UTC)
+                    settled_count += 1
                     continue
 
                 # Reward shaping for skip decisions (action_idx == 0)
@@ -605,16 +631,16 @@ async def job_autopilot_settle():
                         rec.market_type, rec.market_type
                     )
 
-                    from sqlalchemy import func as sa_func
                     ev_skip_result = await session.execute(
                         select(MatchEvent).where(
                             MatchEvent.fixture_id == fixture.id,
-                            sa_func.lower(MatchEvent.player_name)
-                            == sa_func.lower(decision.player_name),
                             MatchEvent.event_type == _skip_event_type,
                         )
                     )
-                    would_have_won = ev_skip_result.scalars().first() is not None
+                    would_have_won = any(
+                        _names_match(ev.player_name, decision.player_name)
+                        for ev in ev_skip_result.scalars().all()
+                    )
 
                     if would_have_won:
                         # Skip was wrong — missed a winner
@@ -640,21 +666,23 @@ async def job_autopilot_settle():
                 }
                 _event_type = _market_to_event.get(rec.market_type, rec.market_type)
 
-                # Check match events for outcome
+                # Check match events for outcome (même matching de noms que
+                # le settlement principal : accents/tirets/2e prénom)
                 ev_result = await session.execute(
                     select(MatchEvent).where(
                         MatchEvent.fixture_id == fixture.id,
-                        MatchEvent.player_name == rec.player_name,
                         MatchEvent.event_type == _event_type,
                     )
                 )
-                events = ev_result.scalars().all()
-                won = len(events) > 0
+                won = any(
+                    _names_match(ev.player_name, rec.player_name)
+                    for ev in ev_result.scalars().all()
+                )
 
                 result_str = "won" if won else "lost"
-                pnl = round(
-                    stake * (decision.best_odds - 1) if won else -stake, 2
-                )
+                stake = decision.stake or 0.0
+                odds = decision.best_odds or rec.best_odds or 1.0
+                pnl = round(stake * (odds - 1) if won else -stake, 2)
 
                 # Approx bankroll at decision time for reward scaling
                 reward = pnl / max(1000.0, 1.0)
@@ -1411,6 +1439,18 @@ async def job_sync_wc_squads() -> None:
         logger.exception("job_sync_wc_squads failed: %s", exc)
 
 
+async def job_deactivate_stale_wc_odds() -> None:
+    """Hourly: deactivate WC outright odds not re-seen recently (dead markets)."""
+    try:
+        from app.ingestion.wc2026.sync_wc_outrights import deactivate_stale_outrights
+        async with async_session() as session:
+            count = await deactivate_stale_outrights(session)
+        if count:
+            logger.info("job_deactivate_stale_wc_odds: %d cotes désactivées", count)
+    except Exception as exc:
+        logger.exception("job_deactivate_stale_wc_odds failed: %s", exc)
+
+
 
 # ── Scheduler Setup ───────────────────────────────────────────────
 
@@ -1615,6 +1655,18 @@ def create_scheduler() -> AsyncIOScheduler:
         id="sync_wc_squads",
         name="Sync WC2026 official squads from Bzzoiro",
         replace_existing=True,
+    )
+
+    # WC2026 stale outright odds: hourly safety net — a dead odds line shown
+    # as active fabricates false edges on the pricing page.
+    scheduler.add_job(
+        job_deactivate_stale_wc_odds,
+        IntervalTrigger(hours=1),
+        id="deactivate_stale_wc_odds",
+        name="Deactivate WC2026 outright odds not seen for 3+ days",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
 
     # WC2026 match stats: every 5 min — picks up newly finished matches

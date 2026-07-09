@@ -13,6 +13,7 @@ For each approved recommendation with result=None:
 """
 
 import logging
+import unicodedata
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -29,11 +30,13 @@ logger = logging.getLogger(__name__)
 def _normalize_name(name: str) -> str:
     """Normalize a player name for fuzzy matching.
 
-    Removes hyphens, apostrophes, spaces, lowercases.
+    Removes accents, hyphens, apostrophes, spaces, lowercases.
     Examples: 'Al-Tamari' == 'Al Tamari' == 'Altamari'
               "N'Diaye" == 'Ndiaye' == 'N Diaye'
+              'Gueye' == 'Guey\u00e9'
     """
-    normalized = name.lower().strip()
+    normalized = unicodedata.normalize("NFKD", name.lower().strip())
+    normalized = "".join(c for c in normalized if not unicodedata.combining(c))
     normalized = normalized.replace("-", "").replace("'", "").replace("\u2019", "").replace(" ", "")
     return normalized
 
@@ -113,7 +116,8 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
 
     # Cache all PMM rows per fixture_id (None = not loaded yet, [] = loaded but empty)
     _pmm_cache: dict[int, list] = {}
-    _events_cache: dict[int, bool] = {}
+    # event_types distincts par fixture (set vide = aucun event synchronisé)
+    _events_cache: dict[int, set] = {}
 
     settled = 0
     won_count = 0
@@ -188,12 +192,30 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
 
         # --- Load MatchEvents ---
         if fixture.id not in _events_cache:
-            any_event = await db.execute(
-                select(MatchEvent).where(MatchEvent.fixture_id == fixture.id).limit(1)
+            ev_types_res = await db.execute(
+                select(MatchEvent.event_type)
+                .where(MatchEvent.fixture_id == fixture.id)
+                .distinct()
             )
-            _events_cache[fixture.id] = any_event.scalar_one_or_none() is not None
+            _events_cache[fixture.id] = {t for (t,) in ev_types_res.all()}
 
-        has_events = _events_cache[fixture.id]
+        fixture_event_types = _events_cache[fixture.id]
+
+        # Incidents définitivement indisponibles (404 Bzzoiro) : impossible de
+        # vérifier le résultat → VOID plutôt que LOST ou blocage éternel.
+        if fixture_event_types and fixture_event_types <= {"incidents_unavailable"}:
+            rec.result = "void"
+            rec.pnl = 0.0
+            rec.settled_utc = datetime.now(UTC)
+            settled += 1
+            void_count += 1
+            logger.info(
+                "auto_settle: rec %d (%s %s) → VOID (incidents indisponibles pour fixture %d)",
+                rec.id, rec.player_name, rec.market_type, fixture.id,
+            )
+            continue
+
+        has_events = bool(fixture_event_types)
 
         if has_events:
             # MatchEvents available: check PMM for VOID first (if available)

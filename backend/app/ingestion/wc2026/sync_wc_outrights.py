@@ -643,3 +643,35 @@ async def sync_all_wc_outrights(session: AsyncSession) -> int:
         len(unibet_results), len(pmu_results), len(betclic_results), total,
     )
     return total
+
+
+STALE_ODDS_MAX_AGE_DAYS = 3
+
+
+async def deactivate_stale_outrights(
+    session: AsyncSession,
+    max_age_days: int = STALE_ODDS_MAX_AGE_DAYS,
+) -> int:
+    """Désactive les cotes outright non revues depuis plus de max_age_days.
+
+    Filet de sécurité quand les scrapers ne tournent plus : une cote morte
+    affichée comme active fabrique de faux edges (vu le 09/07/2026 — cotes
+    du 12-19 juin encore actives en pleine phase finale). Le front et l'API
+    filtrent sur is_active, donc la désactivation suffit à les retirer.
+    """
+    result = await session.execute(
+        text(
+            "UPDATE wc2026_outright_odds SET is_active = FALSE "
+            "WHERE is_active = TRUE AND last_seen_at < now() - make_interval(days => :d)"
+        ),
+        {"d": max_age_days},
+    )
+    await session.commit()
+    count = result.rowcount or 0
+    if count:
+        logger.warning(
+            "deactivate_stale_outrights: %d cotes désactivées (last_seen > %dj) — "
+            "les scrapers outright ne tournent probablement plus",
+            count, max_age_days,
+        )
+    return count

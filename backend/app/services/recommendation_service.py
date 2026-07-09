@@ -7,7 +7,7 @@ actionable betting recommendations.
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -29,6 +29,10 @@ from app.services.recommendations_service import build_recommendations_for_playe
 from app.strategy.selector import RecommendationFilter, select_bets
 
 logger = logging.getLogger(__name__)
+
+# Une cote plus vieille que ça n'est plus considérée jouable (marché suspendu,
+# ligne bougée, scraper arrêté) — elle n'entre plus dans le calcul d'edge.
+_ODDS_MAX_AGE_HOURS = 24
 
 # Position-based xG/xA defaults for players with stats in DB but missing per-90 values
 POSITION_DEFAULTS: dict[str, dict[str, float]] = {
@@ -274,24 +278,38 @@ async def get_recommendations_for_date(
             }
         )
 
-        # Load odds from DB for this fixture
+        # Load odds from DB for this fixture — uniquement le DERNIER snapshot
+        # par (joueur, marché, bookmaker) et pas plus vieux que 24h. Prendre le
+        # max sur tout l'historique fabriquait de faux edges : une vieille cote
+        # gonflée (ligne bougée, marché suspendu, scraper mort) gagnait le
+        # "best odds" alors qu'elle n'est plus jouable.
+        odds_cutoff = datetime.now(UTC) - timedelta(hours=_ODDS_MAX_AGE_HOURS)
         odds_result = await db.execute(
             select(OddsSnapshotModel)
-            .where(OddsSnapshotModel.fixture_id == f.id)
+            .where(
+                OddsSnapshotModel.fixture_id == f.id,
+                OddsSnapshotModel.scraped_at >= odds_cutoff,
+            )
             .order_by(OddsSnapshotModel.scraped_at.desc())
         )
-        # Keep best odds per (player, market) — avoids duplicates from multiple bookmakers/snapshots
-        best_odds: dict[tuple[str, str], dict[str, Any]] = {}
+        # 1er passage (trié du plus récent au plus ancien) = dernier snapshot par book
+        latest_per_book: dict[tuple[str, str, str], dict[str, Any]] = {}
         for o in odds_result.scalars().all():
-            key = (o.player_name, o.market_type)
-            existing = best_odds.get(key)
-            if existing is None or o.odds > existing["odds"]:
-                best_odds[key] = {
+            bk_key = (o.player_name, o.market_type, o.bookmaker)
+            if bk_key not in latest_per_book:
+                latest_per_book[bk_key] = {
                     "player_name": o.player_name,
                     "market_type": o.market_type,
                     "odds": o.odds,
                     "bookmaker": o.bookmaker,
                 }
+        # Puis meilleure cote ACTUELLE entre bookmakers
+        best_odds: dict[tuple[str, str], dict[str, Any]] = {}
+        for entry in latest_per_book.values():
+            key = (entry["player_name"], entry["market_type"])
+            existing = best_odds.get(key)
+            if existing is None or entry["odds"] > existing["odds"]:
+                best_odds[key] = entry
         odds_data[fixture_id] = list(best_odds.values())
 
     if not fixtures:
