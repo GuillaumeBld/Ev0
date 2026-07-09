@@ -81,6 +81,12 @@ _LVS_WC2026_OUTRIGHT_EVENT = 3217261
 
 def _lvs_detect_market_type(title: str) -> str | None:
     t = title.lower()
+    # Marché préfixé par une équipe ("Argentine : Meilleur Buteur") = marché
+    # d'ÉQUIPE, pas du tournoi — en phase KO Unibet ne propose plus que ceux-là
+    # et le mot-clé "meilleur buteur" les capturait à tort (vu le 09/07 :
+    # 22 lignes 100% argentines stockées comme top_scorer du tournoi).
+    if " : " in title or ": " in title.split(" ")[0]:
+        return None
     for keyword, mtype in _LVS_MARKET_TITLE_MAP:
         if keyword in t:
             return mtype
