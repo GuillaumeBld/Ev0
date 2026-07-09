@@ -589,33 +589,46 @@ async def job_autopilot_settle():
             batch_won = 0
             batch_lost = 0
             batch_pnl = 0.0
-            # event_types distincts par fixture (cache — le backlog peut être gros)
-            _fixture_event_types: dict[int, set] = {}
+            # Par fixture : types d'events présents + nb d'events "but"
+            # (cache — le backlog peut être gros)
+            from sqlalchemy import func as sa_func
+            _GOAL_TYPES = ("goal", "own_goal", "penalty_goal")
+            _fixture_events_info: dict[int, dict] = {}
             for decision, rec, fixture in rows:
                 if not rec or not fixture:
                     continue
 
-                if fixture.id not in _fixture_event_types:
-                    _ev_types_res = await session.execute(
-                        select(MatchEvent.event_type)
+                if fixture.id not in _fixture_events_info:
+                    _ev_res = await session.execute(
+                        select(MatchEvent.event_type, sa_func.count())
                         .where(MatchEvent.fixture_id == fixture.id)
-                        .distinct()
+                        .group_by(MatchEvent.event_type)
                     )
-                    _fixture_event_types[fixture.id] = {t for (t,) in _ev_types_res.all()}
-                _ev_types = _fixture_event_types[fixture.id]
+                    _counts = dict(_ev_res.all())
+                    _fixture_events_info[fixture.id] = {
+                        "types": set(_counts),
+                        "goals": sum(_counts.get(t, 0) for t in _GOAL_TYPES),
+                    }
+                _ev_info = _fixture_events_info[fixture.id]
 
-                # Events pas encore synchronisés → on attend le prochain run
-                # (sinon on réglerait LOST à tort sur un match sans données).
-                if not _ev_types:
-                    continue
-
-                # Incidents définitivement indisponibles (404 Bzzoiro) → VOID
-                if _ev_types <= {"incidents_unavailable"}:
-                    decision.result = "void"
-                    decision.pnl = 0.0
-                    decision.reward = 0.0
-                    decision.settled_at = datetime.now(UTC)
-                    settled_count += 1
+                # Couverture events COMPLÈTE exigée avant tout règlement :
+                # régler sur des events partiels marque LOST des paris gagnants
+                # (constaté le 09/07 : ~40% de couverture → 638 lost dont une
+                # partie était en réalité gagnée).
+                _complete = (
+                    fixture.home_score is not None
+                    and fixture.away_score is not None
+                    and _ev_info["goals"] == fixture.home_score + fixture.away_score
+                )
+                if not _complete:
+                    # Incidents définitivement indisponibles (404 Bzzoiro),
+                    # jamais complétables → VOID. Sinon on attend le backfill.
+                    if "incidents_unavailable" in _ev_info["types"]:
+                        decision.result = "void"
+                        decision.pnl = 0.0
+                        decision.reward = 0.0
+                        decision.settled_at = datetime.now(UTC)
+                        settled_count += 1
                     continue
 
                 # Reward shaping for skip decisions (action_idx == 0)

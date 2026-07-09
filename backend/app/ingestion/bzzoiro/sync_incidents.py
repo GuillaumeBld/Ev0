@@ -12,6 +12,7 @@ Flow:
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -112,24 +113,45 @@ async def sync_incidents(
     Returns:
         Number of fixtures successfully processed.
     """
-    # Fixtures already processed (have at least one match_events row)
-    processed_subq = select(MatchEvent.fixture_id).distinct().subquery()
+    # Fixtures sans events OU avec couverture incomplète (nb events "but" <>
+    # score) : le re-fetch complète via l'upsert on_conflict_do_nothing.
+    # Les fixtures marquées incidents_unavailable (404 permanent) sont exclues.
+    from sqlalchemy import text as sa_text
 
-    result = await session.execute(
-        select(Fixture)
-        .where(
-            Fixture.status == "finished",
-            Fixture.external_id.like("bzz_%"),
-            Fixture.id.notin_(select(processed_subq.c.fixture_id)),
-        )
-        .order_by(Fixture.kickoff_utc.desc())
-        .limit(limit)
+    ids_res = await session.execute(
+        sa_text("""
+            SELECT f.id FROM fixtures f
+            WHERE f.status = 'finished'
+              AND f.external_id LIKE 'bzz\\_%'
+              AND NOT EXISTS (
+                  SELECT 1 FROM match_events e2
+                  WHERE e2.fixture_id = f.id
+                    AND e2.event_type = 'incidents_unavailable'
+              )
+              AND (
+                  NOT EXISTS (SELECT 1 FROM match_events e WHERE e.fixture_id = f.id)
+                  OR (
+                      f.home_score IS NOT NULL AND f.away_score IS NOT NULL
+                      AND (SELECT count(*) FROM match_events e
+                           WHERE e.fixture_id = f.id
+                             AND e.event_type IN ('goal', 'own_goal', 'penalty_goal'))
+                          <> f.home_score + f.away_score
+                  )
+              )
+            ORDER BY f.kickoff_utc DESC
+            LIMIT :lim
+        """),
+        {"lim": limit},
     )
-    fixtures = list(result.scalars().all())
+    fixture_ids = [r[0] for r in ids_res.all()]
 
-    if not fixtures:
-        logger.info("sync_incidents: no finished fixtures missing events")
+    if not fixture_ids:
+        logger.info("sync_incidents: no finished fixtures missing or incomplete events")
         return 0
+
+    result = await session.execute(select(Fixture).where(Fixture.id.in_(fixture_ids)))
+    _by_id = {f.id: f for f in result.scalars().all()}
+    fixtures = [_by_id[i] for i in fixture_ids if i in _by_id]  # garde l'ordre SQL
 
     logger.info("sync_incidents: %d fixtures to process", len(fixtures))
     processed = 0
@@ -193,6 +215,37 @@ async def sync_incidents(
                 "sync_incidents: %s vs %s → 0 goals, sentinel stored",
                 fixture.home_team, fixture.away_team,
             )
+
+        # Anti-boucle : si après re-fetch la couverture reste incomplète et que
+        # le match est fini depuis plus de 48h, les données upstream sont
+        # définitivement déficientes → sentinel terminal (les paris concernés
+        # passeront VOID au settlement au lieu d'être re-fetchés à l'infini).
+        if fixture.home_score is not None and fixture.away_score is not None:
+            goal_count_res = await session.execute(
+                sa_text(
+                    "SELECT count(*) FROM match_events WHERE fixture_id = :fid "
+                    "AND event_type IN ('goal', 'own_goal', 'penalty_goal')"
+                ),
+                {"fid": fixture.id},
+            )
+            goal_count = goal_count_res.scalar_one()
+            still_incomplete = goal_count != fixture.home_score + fixture.away_score
+            old_enough = (
+                fixture.kickoff_utc is not None
+                and fixture.kickoff_utc < datetime.now(UTC) - timedelta(hours=48)
+            )
+            if still_incomplete and old_enough:
+                await _store_events(session, fixture.id, [{
+                    "player_name": SENTINEL_UNAVAILABLE,
+                    "event_type": SENTINEL_UNAVAILABLE_TYPE,
+                    "minute": None,
+                }])
+                logger.warning(
+                    "sync_incidents: fixture %d (%s vs %s) reste incomplète après re-fetch "
+                    "(%d events buts pour %d-%d) — sentinel terminal stocké",
+                    fixture.id, fixture.home_team, fixture.away_team,
+                    goal_count, fixture.home_score, fixture.away_score,
+                )
 
         processed += 1
         await session.commit()

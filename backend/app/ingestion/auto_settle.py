@@ -190,20 +190,37 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
 
         pmm_rows = _pmm_cache[fixture.id]
 
-        # --- Load MatchEvents ---
+        # --- Load MatchEvents (types + nb d'events "but") ---
         if fixture.id not in _events_cache:
-            ev_types_res = await db.execute(
-                select(MatchEvent.event_type)
+            from sqlalchemy import func as sa_func
+
+            ev_res = await db.execute(
+                select(MatchEvent.event_type, sa_func.count())
                 .where(MatchEvent.fixture_id == fixture.id)
-                .distinct()
+                .group_by(MatchEvent.event_type)
             )
-            _events_cache[fixture.id] = {t for (t,) in ev_types_res.all()}
+            counts = dict(ev_res.all())
+            _events_cache[fixture.id] = {
+                "types": set(counts),
+                "goals": sum(counts.get(t, 0) for t in ("goal", "own_goal", "penalty_goal")),
+            }
 
-        fixture_event_types = _events_cache[fixture.id]
+        ev_info = _events_cache[fixture.id]
+        fixture_event_types = ev_info["types"]
 
-        # Incidents définitivement indisponibles (404 Bzzoiro) : impossible de
-        # vérifier le résultat → VOID plutôt que LOST ou blocage éternel.
-        if fixture_event_types and fixture_event_types <= {"incidents_unavailable"}:
+        # Couverture events complète = nb d'events "but" == score du match.
+        # Régler WON/LOST sur des events partiels marque LOST des paris
+        # gagnants (constaté le 09/07 : ~40% de couverture sur 151 fixtures).
+        events_complete = (
+            fixture.home_score is not None
+            and fixture.away_score is not None
+            and ev_info["goals"] == fixture.home_score + fixture.away_score
+        )
+
+        # Incidents définitivement indisponibles (404 Bzzoiro) et couverture
+        # incomplète : impossible de vérifier le résultat → VOID plutôt que
+        # LOST ou blocage éternel.
+        if not events_complete and "incidents_unavailable" in fixture_event_types:
             rec.result = "void"
             rec.pnl = 0.0
             rec.settled_utc = datetime.now(UTC)
@@ -215,7 +232,7 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
             )
             continue
 
-        has_events = bool(fixture_event_types)
+        has_events = events_complete
 
         if has_events:
             # MatchEvents available: check PMM for VOID first (if available)
