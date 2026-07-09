@@ -1466,6 +1466,50 @@ async def job_deactivate_stale_wc_odds() -> None:
 
 
 
+SNAPSHOT_RETENTION_DAYS = 45
+_PURGE_BATCH = 50_000
+
+
+async def job_purge_old_snapshots() -> None:
+    """Daily 04:30 UTC: purge les snapshots de cotes plus vieux que 45 jours.
+
+    Sans risque : les recs réglées portent leurs cotes en dur, le pricing et
+    market_xg ne lisent que le dernier snapshot, le moteur de recos a une
+    fenêtre de 24h. Suppression par lots pour éviter les locks longs.
+    """
+    try:
+        totals = {}
+        for table, ts_col in (
+            ("match_odds_snapshots", "created_at"),
+            ("player_odds_snapshots", "scraped_at"),
+        ):
+            deleted = 0
+            while True:
+                async with async_session() as session:
+                    res = await session.execute(
+                        text(
+                            f"DELETE FROM {table} WHERE id IN ("
+                            f" SELECT id FROM {table}"
+                            f" WHERE {ts_col} < now() - make_interval(days => :d)"
+                            f" LIMIT :batch)"
+                        ),
+                        {"d": SNAPSHOT_RETENTION_DAYS, "batch": _PURGE_BATCH},
+                    )
+                    await session.commit()
+                n = res.rowcount or 0
+                deleted += n
+                if n < _PURGE_BATCH:
+                    break
+            totals[table] = deleted
+        if any(totals.values()):
+            logger.info(
+                "job_purge_old_snapshots: %s supprimés (> %d jours)",
+                totals, SNAPSHOT_RETENTION_DAYS,
+            )
+    except Exception as exc:
+        logger.exception("job_purge_old_snapshots failed: %s", exc)
+
+
 async def job_daily_health_report() -> None:
     """Daily 08:00 UTC: résumé santé sur le canal ops — détecte les morts
     silencieuses qui ne lèvent aucune exception (scraper arrêté, données figées)."""
@@ -1717,6 +1761,15 @@ def create_scheduler() -> AsyncIOScheduler:
         CronTrigger(hour=5, minute=0),
         id="sync_wc_squads",
         name="Sync WC2026 official squads from Bzzoiro",
+        replace_existing=True,
+    )
+
+    # Rétention snapshots de cotes (04:30 UTC)
+    scheduler.add_job(
+        job_purge_old_snapshots,
+        CronTrigger(hour=4, minute=30),
+        id="purge_old_snapshots",
+        name="Purge des snapshots de cotes > 45 jours",
         replace_existing=True,
     )
 
