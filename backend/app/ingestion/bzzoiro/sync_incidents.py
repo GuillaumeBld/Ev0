@@ -170,15 +170,17 @@ async def sync_incidents(
             if exc.response.status_code == 404:
                 # 404 permanent (événement supprimé côté Bzzoiro) : sentinel
                 # pour sortir la fixture de la sélection — fin de la boucle.
+                # minute=0 obligatoire : avec NULL la contrainte unique ne
+                # s'applique pas (NULLs distincts) et le sentinel se duplique.
                 await _store_events(session, fixture.id, [{
                     "player_name": SENTINEL_UNAVAILABLE,
                     "event_type": SENTINEL_UNAVAILABLE_TYPE,
-                    "minute": None,
+                    "minute": 0,
                 }])
                 await session.commit()
                 logger.warning(
                     "sync_incidents: fixture %d (bzz_id=%d) → 404 permanent, "
-                    "sentinel 'incidents_unavailable' stocké — plus de retry",
+                    "sentinel 'events_unavailable' stocké — plus de retry",
                     fixture.id, bzz_api_id,
                 )
                 processed += 1
@@ -204,16 +206,30 @@ async def sync_incidents(
                 "sync_incidents: %s vs %s → %d events stored",
                 fixture.home_team, fixture.away_team, stored,
             )
-        else:
-            # 0-0 or no scoringPlay — store sentinel so we don't retry
+        elif (
+            fixture.home_score is not None
+            and fixture.away_score is not None
+            and fixture.home_score + fixture.away_score == 0
+        ):
+            # Vrai 0-0 : sentinel pour ne pas re-fetch. minute=0 obligatoire
+            # (NULL casse la contrainte unique → duplication infinie).
             await _store_events(session, fixture.id, [{
                 "player_name": _SENTINEL,
                 "event_type": _SENTINEL_TYPE,
-                "minute": None,
+                "minute": 0,
             }])
             logger.debug(
-                "sync_incidents: %s vs %s → 0 goals, sentinel stored",
+                "sync_incidents: %s vs %s → 0-0, sentinel stored",
                 fixture.home_team, fixture.away_team,
+            )
+        else:
+            # Incidents vides alors que le score n'est pas 0-0 (pas encore
+            # publiés côté Bzzoiro) : on NE marque PAS la fixture comme
+            # traitée — retry au prochain run, sentinel terminal après 48h.
+            logger.info(
+                "sync_incidents: %s vs %s → incidents vides mais score %s-%s, retry plus tard",
+                fixture.home_team, fixture.away_team,
+                fixture.home_score, fixture.away_score,
             )
 
         # Anti-boucle : si après re-fetch la couverture reste incomplète et que
@@ -238,7 +254,7 @@ async def sync_incidents(
                 await _store_events(session, fixture.id, [{
                     "player_name": SENTINEL_UNAVAILABLE,
                     "event_type": SENTINEL_UNAVAILABLE_TYPE,
-                    "minute": None,
+                    "minute": 0,
                 }])
                 logger.warning(
                     "sync_incidents: fixture %d (%s vs %s) reste incomplète après re-fetch "
