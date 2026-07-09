@@ -1494,8 +1494,12 @@ async def job_daily_health_report() -> None:
         def age(ts) -> str:
             if ts is None:
                 return "jamais"
-            h = (now - ts).total_seconds() / 3600
-            return f"il y a {h:.1f}h" if h < 48 else f"il y a {h / 24:.0f}j ⚠️"
+            mins = int((now - ts).total_seconds() // 60)
+            if mins < 60:
+                return f"il y a {mins} min"
+            if mins < 48 * 60:
+                return f"il y a {mins // 60}h{mins % 60:02d}"
+            return f"il y a {mins // 1440}j ⚠️"
 
         msg = (
             "🩺 <b>[Ev0] Santé quotidienne</b>\n\n"
