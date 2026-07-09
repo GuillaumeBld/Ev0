@@ -198,3 +198,50 @@ def test_remaining_fraction_alive_team_with_stale_e_games():
 def test_remaining_fraction_degenerate_e_games():
     from app.pricing.wc2026_tournament import _remaining_fraction
     assert _remaining_fraction(0.0, 0, alive=True) == 0.0
+
+
+# ── Règlement des marchés (classements réels, dead-heat) ─────────────────────
+
+def test_rank_with_dead_heat_unique_winner():
+    from app.pricing.wc2026_tournament import _rank_with_dead_heat
+    entries = [
+        {"player_name": "A", "goals": 9},
+        {"player_name": "B", "goals": 7},
+        {"player_name": "C", "goals": 7},
+        {"player_name": "D", "goals": 5},
+    ]
+    ranked = _rank_with_dead_heat(entries, "goals")
+    assert [(e["player_name"], e["rank"], e["is_winner"]) for e in ranked] == [
+        ("A", 1, True), ("B", 2, False), ("C", 2, False), ("D", 4, False),
+    ]
+    assert all(e["dead_heat"] == 1 for e in ranked)
+
+
+def test_rank_with_dead_heat_tied_winners():
+    from app.pricing.wc2026_tournament import _rank_with_dead_heat
+    entries = [
+        {"player_name": "A", "ga": 9},
+        {"player_name": "B", "ga": 9},
+        {"player_name": "C", "ga": 7},
+    ]
+    ranked = _rank_with_dead_heat(entries, "ga")
+    winners = [e for e in ranked if e["is_winner"]]
+    assert {w["player_name"] for w in winners} == {"A", "B"}
+    assert all(w["dead_heat"] == 2 for w in ranked)
+    assert ranked[2] == {"player_name": "C", "ga": 7, "value": 7, "rank": 3,
+                         "is_winner": False, "dead_heat": 2}
+
+
+def test_rank_with_dead_heat_keeps_ties_at_cutoff():
+    from app.pricing.wc2026_tournament import _rank_with_dead_heat
+    # 12 joueurs : 1 leader + 11 à égalité au rang 2 → tous gardés (rang <= 10)
+    entries = [{"player_name": "L", "g": 5}] + [
+        {"player_name": f"P{i}", "g": 3} for i in range(11)
+    ]
+    ranked = _rank_with_dead_heat(entries, "g", top_n=10)
+    assert len(ranked) == 12  # les égalités au rang 2 passent toutes
+
+
+def test_rank_with_dead_heat_empty():
+    from app.pricing.wc2026_tournament import _rank_with_dead_heat
+    assert _rank_with_dead_heat([], "goals") == []

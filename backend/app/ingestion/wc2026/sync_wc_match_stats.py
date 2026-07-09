@@ -74,6 +74,24 @@ async def _recompute_pricing(session: AsyncSession) -> None:
     await session.commit()
     logger.info("pricing recomputed (%d players)", len(rows))
 
+    # Résultats réels des marchés outright (classements + gagnants dead-heat)
+    try:
+        from app.models.wc2026_pricing import WC2026MarketResult
+        from app.pricing.wc2026_tournament import compute_market_results
+
+        result_rows = await compute_market_results(session)
+        await session.execute(text("TRUNCATE TABLE wc2026_market_results RESTART IDENTITY"))
+        for row in result_rows:
+            session.add(WC2026MarketResult(**row))
+        await session.commit()
+        logger.info(
+            "market results recomputed (%d lignes, finalized=%s)",
+            len(result_rows), bool(result_rows and result_rows[0]["finalized"]),
+        )
+    except Exception as exc:
+        logger.error("market results recompute failed: %s", exc)
+        await session.rollback()
+
 
 async def sync_wc_match_stats(session: AsyncSession) -> WCSyncResult:
     """Fetch player stats for finished WC2026 matches that have none yet."""

@@ -1007,6 +1007,26 @@ export async function computeWCPricing(): Promise<WCComputeResult> {
   return data
 }
 
+export interface WCMarketResultRow {
+  player_name: string
+  nation: string | null
+  value: number
+  rank: number
+  is_winner: boolean
+  dead_heat: number
+}
+
+export interface WCMarketResults {
+  finalized: boolean
+  computed_at: string | null
+  markets: Record<string, WCMarketResultRow[]>
+}
+
+export async function getWCMarketResults(): Promise<WCMarketResults> {
+  const { data } = await api.get('/api/v1/wc2026/pricing/market-results')
+  return data
+}
+
 export async function getWCPricingPlayers(params?: {
   nation?: string
   position?: string

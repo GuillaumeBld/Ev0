@@ -1,7 +1,7 @@
 """WC2026 per-player tournament pricing results."""
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, String, func
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -65,6 +65,29 @@ class WC2026PlayerPricing(Base):
     p_top3_assister: Mapped[float | None] = mapped_column(Float, nullable=True)
     fair_top3_assister: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class WC2026MarketResult(Base):
+    """Résultat réel d'un marché outright (classement + gagnants dead-heat).
+
+    Rafraîchi à chaque fin de match ; finalized=True quand le tournoi est
+    terminé (règlement définitif des marchés).
+    """
+
+    __tablename__ = "wc2026_market_results"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    market: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    player_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    nation: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    value: Mapped[int] = mapped_column(Integer, nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_winner: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    dead_heat: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    finalized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

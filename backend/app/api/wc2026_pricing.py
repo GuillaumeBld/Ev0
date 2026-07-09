@@ -201,6 +201,56 @@ async def get_pricing_players(
     return out
 
 
+# ── Résultats réels des marchés outright (règlement dead-heat) ───────────────
+
+class MarketResultRow(BaseModel):
+    player_name: str
+    nation: str | None
+    value: int
+    rank: int
+    is_winner: bool
+    dead_heat: int
+
+
+class MarketResultsOut(BaseModel):
+    finalized: bool
+    computed_at: datetime | None
+    markets: dict[str, list[MarketResultRow]]
+
+
+@router.get("/market-results", response_model=MarketResultsOut)
+async def get_market_results(session: AsyncSession = Depends(get_db)) -> MarketResultsOut:
+    """Classements réels des marchés outright (buteur/passeur/décisif).
+
+    finalized=True après la finale : les is_winner/dead_heat sont le règlement
+    officiel des marchés (égalités partagées).
+    """
+    from app.models.wc2026_pricing import WC2026MarketResult
+
+    rows = (await session.execute(
+        select(WC2026MarketResult).order_by(
+            WC2026MarketResult.market, WC2026MarketResult.rank
+        )
+    )).scalars().all()
+
+    markets: dict[str, list[MarketResultRow]] = {}
+    for r in rows:
+        markets.setdefault(r.market, []).append(MarketResultRow(
+            player_name=r.player_name,
+            nation=r.nation,
+            value=r.value,
+            rank=r.rank,
+            is_winner=r.is_winner,
+            dead_heat=r.dead_heat,
+        ))
+
+    return MarketResultsOut(
+        finalized=bool(rows and rows[0].finalized),
+        computed_at=rows[0].computed_at if rows else None,
+        markets=markets,
+    )
+
+
 # ── Nation outright odds ──────────────────────────────────────────────────────
 
 class BookmakerOddEntry(BaseModel):

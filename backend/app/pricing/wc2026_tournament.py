@@ -309,16 +309,13 @@ async def load_team_tournament_state(db: AsyncSession) -> dict[str, dict]:
     return state
 
 
-async def load_wc_match_stats(db: AsyncSession) -> dict[str, dict]:
-    """Aggregate actual WC tournament stats from bzz_player_match_stats.
-
-    Returns {norm_player_name: {goals, assists, minutes, xg_per_90, xa_per_90}}.
+async def _load_wc_identities(db: AsyncSession) -> dict[int, dict]:
+    """Stats WC agrégées par identité joueur réconciliée.
 
     La base contient chaque joueur en double (deux univers d'api_id liés par
     internal_id). On réconcilie par internal_id + similarité de noms, on
-    dédoublonne par (identité, match), puis on émet l'agrégat sous TOUTES les
-    variantes de nom de l'identité pour que le matching lineup par nom
-    fonctionne quelle que soit la variante utilisée.
+    dédoublonne par (identité, match). Retourne
+    {pid: {names, goals, assists, minutes, xg, xa, events}}.
     """
     rows = (await db.execute(text("""
         SELECT
@@ -359,13 +356,18 @@ async def load_wc_match_stats(db: AsyncSession) -> dict[str, dict]:
         deduped.setdefault((pid, int(r["event_api_id"])), r)
 
     agg: dict[int, dict] = {}
-    for (pid, _event), r in deduped.items():
-        d = agg.setdefault(pid, {"goals": 0, "assists": 0, "minutes": 0.0, "xg": 0.0, "xa": 0.0})
+    for (pid, event), r in deduped.items():
+        d = agg.setdefault(pid, {
+            "names": names_by_pid[pid],
+            "goals": 0, "assists": 0, "minutes": 0.0, "xg": 0.0, "xa": 0.0,
+            "events": set(),
+        })
         d["goals"] += int(r["goals"])
         d["assists"] += int(r["assists"])
         d["minutes"] += float(r["minutes_played"])
         d["xg"] += float(r["xg"])
         d["xa"] += float(r["xa"])
+        d["events"].add(event)
 
     # Validation : les buts attribués aux joueurs ne peuvent pas dépasser les
     # buts réellement marqués (l'écart normal = csc non attribués).
@@ -381,8 +383,20 @@ async def load_wc_match_stats(db: AsyncSession) -> dict[str, dict]:
             player_goals, int(real_goals),
         )
 
+    return agg
+
+
+async def load_wc_match_stats(db: AsyncSession) -> dict[str, dict]:
+    """Aggregate actual WC tournament stats from bzz_player_match_stats.
+
+    Returns {norm_player_name: {goals, assists, minutes, xg_per_90, xa_per_90}}.
+    L'agrégat est émis sous TOUTES les variantes de nom de l'identité pour que
+    le matching lineup par nom fonctionne quelle que soit la variante utilisée.
+    """
+    agg = await _load_wc_identities(db)
+
     result: dict[str, dict] = {}
-    for pid, d in agg.items():
+    for _pid, d in agg.items():
         minutes = d["minutes"]
         stats = {
             "goals":     d["goals"],
@@ -391,9 +405,103 @@ async def load_wc_match_stats(db: AsyncSession) -> dict[str, dict]:
             "xg_per_90": round(d["xg"] / minutes * 90, 4) if minutes >= 45 else 0.0,
             "xa_per_90": round(d["xa"] / minutes * 90, 4) if minutes >= 45 else 0.0,
         }
-        for name in names_by_pid[pid]:
+        for name in d["names"]:
             result[_norm_name(name)] = stats
     return result
+
+
+async def _load_player_nations(db: AsyncSession) -> dict[str, str]:
+    """{nom normalisé: nation} via bzz_players.national_team_api_id (affichage)."""
+    rows = (await db.execute(text("""
+        SELECT p.name, t.name AS nation
+        FROM bzz_players p
+        JOIN bzz_teams t ON t.api_id = p.national_team_api_id
+        WHERE p.national_team_api_id IS NOT NULL
+    """))).all()
+    return {_norm_name(name): nation for name, nation in rows}
+
+
+def _rank_with_dead_heat(entries: list[dict], value_key: str, top_n: int = 10) -> list[dict]:
+    """Classement avec rangs à égalité (1,1,3…) et gagnants dead-heat.
+
+    Garde les entrées de rang <= top_n (les égalités à cheval sur la coupure
+    sont incluses). is_winner = à égalité avec le max ; dead_heat = taille du
+    groupe de tête (1 = gagnant unique).
+    """
+    if not entries:
+        return []
+    values = [e[value_key] for e in entries]
+    winner_value = max(values)
+    dead_heat = sum(1 for v in values if v == winner_value)
+    out = []
+    for e in sorted(entries, key=lambda x: (-x[value_key], x.get("player_name", ""))):
+        v = e[value_key]
+        rank = 1 + sum(1 for x in values if x > v)
+        if rank > top_n:
+            break
+        out.append({
+            **e,
+            "value": v,
+            "rank": rank,
+            "is_winner": v == winner_value and v > 0,
+            "dead_heat": dead_heat,
+        })
+    return out
+
+
+async def compute_market_results(db: AsyncSession) -> list[dict]:
+    """Résultats réels des marchés outright (règlement) : classements buteur /
+    passeur / plus décisif depuis les stats dédupliquées, gagnants dead-heat.
+
+    finalized = plus aucun match WC à venir → résultats définitifs (les
+    égalités en tête se règlent en dead-heat, comme les cotes du modèle).
+    """
+    agg = await _load_wc_identities(db)
+    nations = await _load_player_nations(db)
+
+    counts = (await db.execute(text("""
+        SELECT
+            count(*) FILTER (WHERE status = 'notstarted') AS remaining,
+            count(*) FILTER (WHERE status = 'finished')   AS finished
+        FROM bzz_events WHERE league_api_id = :lid
+    """), {"lid": WC_LEAGUE_API_ID})).mappings().one()
+    finalized = int(counts["remaining"]) == 0 and int(counts["finished"]) > 0
+
+    players = []
+    for _pid, d in agg.items():
+        name = max(d["names"], key=len)
+        nation = next(
+            (nations[_norm_name(n)] for n in d["names"] if _norm_name(n) in nations),
+            None,
+        )
+        players.append({
+            "player_name": name,
+            "nation": nation,
+            "goals": d["goals"],
+            "assists": d["assists"],
+            "ga": d["goals"] + d["assists"],
+        })
+
+    now = datetime.now(timezone.utc)
+    rows: list[dict] = []
+    for market, key in (
+        ("top_scorer", "goals"),
+        ("top_assister", "assists"),
+        ("most_decisive", "ga"),
+    ):
+        for e in _rank_with_dead_heat([p for p in players if p[key] > 0], key):
+            rows.append({
+                "market":      market,
+                "player_name": e["player_name"],
+                "nation":      e["nation"],
+                "value":       e["value"],
+                "rank":        e["rank"],
+                "is_winner":   e["is_winner"],
+                "dead_heat":   e["dead_heat"],
+                "finalized":   finalized,
+                "computed_at": now,
+            })
+    return rows
 
 
 def _winner_share(sim: np.ndarray) -> np.ndarray:

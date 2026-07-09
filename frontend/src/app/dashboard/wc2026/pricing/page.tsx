@@ -7,11 +7,13 @@ import {
   type WCPlayerPricing,
   type WCNationStatus,
   type WCNationOdds,
+  type WCMarketResults,
   type SyncOddsResult,
   computeWCPricing,
   getWCPricingPlayers,
   getWCLineupNations,
   getWCNationsOdds,
+  getWCMarketResults,
   syncWCOdds,
 } from '@/lib/api'
 import { PricingTable } from '@/components/wc2026/PricingTable'
@@ -40,6 +42,7 @@ export default function WC2026PricingPage() {
   const [computing, setComputing] = useState(false)
   const [computeMsg, setComputeMsg] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('goals')
+  const [marketResults, setMarketResults] = useState<WCMarketResults | null>(null)
   const [nationFilter, setNationFilter] = useState('')
   const [posFilter, setPosFilter] = useState<PosFilter>('')
   const [minLambda, setMinLambda] = useState('')
@@ -78,6 +81,7 @@ export default function WC2026PricingPage() {
     getWCLineupNations().then(setNations)
     loadPlayers()
     loadNationOdds()
+    getWCMarketResults().then(setMarketResults).catch(() => setMarketResults(null))
   }, [loadPlayers])
 
   async function handleCompute() {
@@ -289,6 +293,51 @@ export default function WC2026PricingPage() {
           </button>
         ))}
       </div>
+
+      {/* Règlement des marchés — classements réels avec dead-heat */}
+      {tab === 'decisive' && marketResults && Object.keys(marketResults.markets).length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {([
+            ['top_scorer', '⚽ Top buteur'],
+            ['top_assister', '🎯 Top passeur'],
+            ['most_decisive', '⭐ Plus décisif (G+A)'],
+          ] as const).map(([key, label]) => {
+            const rows = marketResults.markets[key] ?? []
+            return (
+              <div key={key} className="bg-gray-800/40 border border-gray-700/60 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-gray-300">{label}</span>
+                  <span className={clsx(
+                    'text-[10px] px-1.5 py-0.5 rounded',
+                    marketResults.finalized
+                      ? 'bg-emerald-500/20 text-emerald-300'
+                      : 'bg-orange-500/15 text-orange-300/80',
+                  )}>
+                    {marketResults.finalized ? '🏆 Règlement final' : 'Provisoire'}
+                  </span>
+                </div>
+                {rows.slice(0, 4).map((r) => (
+                  <div key={r.player_name} className="flex items-center justify-between text-xs py-0.5">
+                    <span className={clsx(
+                      'truncate',
+                      r.is_winner ? 'text-white font-semibold' : 'text-gray-400',
+                    )}>
+                      {r.rank}. {r.player_name}
+                      {r.is_winner && r.dead_heat > 1 && (
+                        <span className="ml-1 text-amber-300/80 text-[10px]"
+                              title={`Dead-heat : gain partagé entre ${r.dead_heat} joueurs`}>
+                          DH×{r.dead_heat}
+                        </span>
+                      )}
+                    </span>
+                    <span className="font-mono text-gray-300 ml-2">{r.value}</span>
+                  </div>
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
