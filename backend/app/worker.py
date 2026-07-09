@@ -1466,6 +1466,61 @@ async def job_deactivate_stale_wc_odds() -> None:
 
 
 
+async def job_recos_expiry_digest() -> None:
+    """Every 15 min: digest WhatsApp (canal recos) des recos pending dont le
+    kickoff tombe dans ~2h.
+
+    78% des recos expiraient sans décision faute de rappel actionnable.
+    Fenêtre glissante [T+1h45, T+2h] alignée sur la période du job : chaque
+    reco n'est digérée qu'une fois, à son entrée dans la fenêtre.
+    """
+    try:
+        from app.alerts import send_alert
+        from app.models.fixtures import Fixture
+        from app.models.recommendations import Recommendation
+
+        now = datetime.now(UTC)
+        win_start = now + timedelta(hours=1, minutes=45)
+        win_end = now + timedelta(hours=2)
+
+        async with async_session() as session:
+            rows = (await session.execute(
+                select(Recommendation, Fixture)
+                .join(Fixture, Recommendation.fixture_id == Fixture.id)
+                .where(
+                    Recommendation.status == "pending",
+                    Fixture.kickoff_utc > win_start,
+                    Fixture.kickoff_utc <= win_end,
+                )
+                .order_by(Fixture.kickoff_utc)
+            )).all()
+
+        if not rows:
+            return
+
+        by_fixture: dict[str, list] = {}
+        for rec, fix in rows:
+            key = f"{fix.home_team} vs {fix.away_team} — {fix.kickoff_utc:%H:%M} UTC"
+            by_fixture.setdefault(key, []).append(rec)
+
+        lines = [f"⏳ <b>[Ev0] {len(rows)} reco(s) expirent dans ~2h</b>", ""]
+        for fixture_name, recs in by_fixture.items():
+            lines.append(f"<b>{fixture_name}</b>")
+            for rec in recs[:8]:
+                market = rec.market_type.value if hasattr(rec.market_type, "value") else str(rec.market_type)
+                lines.append(
+                    f"• {rec.player_name} ({market}) — cote {rec.best_odds} | edge {rec.edge:+.1%}"
+                )
+            if len(recs) > 8:
+                lines.append(f"  … +{len(recs) - 8} autres")
+        lines.append("")
+        lines.append("👉 Approuver/rejeter sur la page Recommendations")
+        await send_alert("\n".join(lines), channel="recos")
+        logger.info("job_recos_expiry_digest: digest envoyé (%d recos)", len(rows))
+    except Exception as exc:
+        logger.exception("job_recos_expiry_digest failed: %s", exc)
+
+
 SNAPSHOT_RETENTION_DAYS = 45
 _PURGE_BATCH = 50_000
 
@@ -1762,6 +1817,17 @@ def create_scheduler() -> AsyncIOScheduler:
         id="sync_wc_squads",
         name="Sync WC2026 official squads from Bzzoiro",
         replace_existing=True,
+    )
+
+    # Digest recos avant expiration (fenêtre glissante T+2h, canal recos)
+    scheduler.add_job(
+        job_recos_expiry_digest,
+        IntervalTrigger(minutes=15),
+        id="recos_expiry_digest",
+        name="Digest WhatsApp des recos pending expirant dans ~2h",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
 
     # Rétention snapshots de cotes (04:30 UTC)
