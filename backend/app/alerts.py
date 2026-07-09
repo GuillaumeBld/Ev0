@@ -59,9 +59,11 @@ async def _send_whatsapp(phone: str, apikey: str, text: str) -> bool:
                 timeout=15,
             )
             r.raise_for_status()
-            # CallMeBot renvoie HTTP 200 même en échec (erreur dans le corps)
-            body = r.text.lower()
-            if "error" in body or "invalid" in body:
+            # CallMeBot renvoie HTTP 200 même en échec. Le corps ÉCHOE le texte
+            # du message (donc interdit d'y chercher "error" : un message
+            # contenant "TimeoutError" déclencherait un faux négatif). Le seul
+            # marqueur fiable est la phrase de succès "Message queued".
+            if "queued" not in r.text.lower():
                 logger.warning("WhatsApp alert rejeté par CallMeBot: %.200s", r.text)
                 return False
             return True

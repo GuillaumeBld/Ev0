@@ -51,3 +51,41 @@ async def test_channels_fall_back_to_ops_config(monkeypatch):
     monkeypatch.setattr(alerts.settings, "whatsapp_recos_phone", "+336RECO")
     monkeypatch.setattr(alerts.settings, "whatsapp_recos_apikey", "kR")
     assert alerts._channel_conf("recos") == ("+336RECO", "kR")
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_success_detection_ignores_echoed_error_words(monkeypatch):
+    """CallMeBot échoe le texte du message : un message contenant 'error' ne
+    doit pas être compté en échec si la réponse dit 'Message queued'."""
+    class FakeResp:
+        status_code = 200
+        text = "Message to: +336… Text: job failed TimeoutError… Message queued. You will receive it in a few seconds."
+        def raise_for_status(self):
+            pass
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def get(self, *a, **k):
+            return FakeResp()
+    monkeypatch.setattr(alerts.httpx, "AsyncClient", FakeClient)
+    assert await alerts._send_whatsapp("+336", "k", "job failed TimeoutError") is True
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_rejects_when_not_queued(monkeypatch):
+    class FakeResp:
+        status_code = 200
+        text = "APIKey is invalid"
+        def raise_for_status(self):
+            pass
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def get(self, *a, **k):
+            return FakeResp()
+    monkeypatch.setattr(alerts.httpx, "AsyncClient", FakeClient)
+    assert await alerts._send_whatsapp("+336", "k", "test") is False
