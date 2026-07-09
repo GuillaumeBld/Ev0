@@ -555,6 +555,7 @@ async def job_autopilot_settle():
     try:
         from app.autopilot.trainer import fine_tune_from_db
         from app.ingestion.auto_settle import _names_match
+        from app.ingestion.bzzoiro.sync_incidents import SENTINEL_UNAVAILABLE_TYPE
         from app.models.autopilot import AutopilotDecision
         from app.models.fixtures import Fixture
         from app.models.match_events import MatchEvent
@@ -623,7 +624,7 @@ async def job_autopilot_settle():
                 if not _complete:
                     # Incidents définitivement indisponibles (404 Bzzoiro),
                     # jamais complétables → VOID. Sinon on attend le backfill.
-                    if "incidents_unavailable" in _ev_info["types"]:
+                    if SENTINEL_UNAVAILABLE_TYPE in _ev_info["types"]:
                         decision.result = "void"
                         decision.pnl = 0.0
                         decision.reward = 0.0

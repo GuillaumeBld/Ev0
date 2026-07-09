@@ -34,7 +34,7 @@ _SENTINEL_TYPE = "match_processed"
 # upstream) : la fixture sort de la sélection au lieu d'être re-fetchée en
 # boucle. auto_settle et le settle autopilot traitent ce type en VOID.
 SENTINEL_UNAVAILABLE = "__incidents_unavailable__"
-SENTINEL_UNAVAILABLE_TYPE = "incidents_unavailable"
+SENTINEL_UNAVAILABLE_TYPE = "events_unavailable"  # <= 20 chars (varchar(20))
 
 
 def _parse_incidents(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -126,7 +126,7 @@ async def sync_incidents(
               AND NOT EXISTS (
                   SELECT 1 FROM match_events e2
                   WHERE e2.fixture_id = f.id
-                    AND e2.event_type = 'incidents_unavailable'
+                    AND e2.event_type = :sentinel
               )
               AND (
                   NOT EXISTS (SELECT 1 FROM match_events e WHERE e.fixture_id = f.id)
@@ -141,7 +141,7 @@ async def sync_incidents(
             ORDER BY f.kickoff_utc DESC
             LIMIT :lim
         """),
-        {"lim": limit},
+        {"lim": limit, "sentinel": SENTINEL_UNAVAILABLE_TYPE},
     )
     fixture_ids = [r[0] for r in ids_res.all()]
 

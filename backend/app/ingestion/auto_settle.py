@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ingestion.bzzoiro.sync_incidents import SENTINEL_UNAVAILABLE_TYPE
 from app.models.fixtures import Fixture
 from app.models.match_events import MatchEvent
 from app.models.player_match_minutes import PlayerMatchMinutes
@@ -220,7 +221,7 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
         # Incidents définitivement indisponibles (404 Bzzoiro) et couverture
         # incomplète : impossible de vérifier le résultat → VOID plutôt que
         # LOST ou blocage éternel.
-        if not events_complete and "incidents_unavailable" in fixture_event_types:
+        if not events_complete and SENTINEL_UNAVAILABLE_TYPE in fixture_event_types:
             rec.result = "void"
             rec.pnl = 0.0
             rec.settled_utc = datetime.now(UTC)
