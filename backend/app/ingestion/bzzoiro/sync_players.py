@@ -28,14 +28,18 @@ async def sync_players(session: AsyncSession, client: BzzoiroClient) -> int:
     now = datetime.now(UTC)
     count = 0
     for row in rows:
-        api_id = row.get("api_id") or row.get("id")
+        # ID canonique = le 'id' stable de Bzzoiro. L'API renvoie parfois un
+        # 'api_id' supplémentaire (autre espace d'identifiants) : le prendre
+        # comme clé créait jusqu'à deux lignes par joueur (fusionnées le
+        # 10/07/2026 par app/scripts/merge_duplicate_players.py).
+        api_id = row.get("id") or row.get("api_id")
         if not api_id:
             continue
         team = row.get("current_team") or {}
         nat_team = row.get("national_team") or {}
         values = {
             "api_id": api_id,
-            "internal_id": row.get("id"),
+            "internal_id": api_id,
             "name": row.get("name", ""),
             "short_name": row.get("short_name"),
             "nationality": row.get("nationality"),
