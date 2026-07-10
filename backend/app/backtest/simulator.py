@@ -25,6 +25,7 @@ from app.pricing.team_xg import (
     POSITION_NPXG_PRIORS,
     POSITION_XA_PRIORS,
     SHRINKAGE_N,
+    TeamStats,
     estimate_team_match_xg,
 )
 from app.services.recommendation_service import (
@@ -85,9 +86,18 @@ async def simulate_historical(
     # 4. Build player stats index (latest stats before each fixture)
     player_stats_cache = await _load_player_stats_index(db)
 
-    # 5. Team stats — use fixed league averages (Bzzoiro-based pricing uses MarketXgService)
-    league_avg_xg = 1.2
-    league_avg_xga = 1.2
+    # 5. Team stats — forces attaque/défense depuis les scores des fixtures
+    # finies (le refactor 6119de4 avait supprimé compute_team_stats en
+    # laissant ses usages → NameError depuis le 29/04). Les buts servent de
+    # proxy xG : suffisant pour le pre-training, et insensible à la rétention
+    # des snapshots de cotes.
+    ev0_team_stats = await _compute_team_stats(db)
+    all_ts = list(ev0_team_stats.values())
+    league_avg_xg = (
+        sum(ts.attack_xg_per_match for ts in all_ts) / len(all_ts) if all_ts else 1.2
+    )
+    xga_vals = [ts.defense_xga_per_match for ts in all_ts if ts.defense_xga_per_match > 0]
+    league_avg_xga = sum(xga_vals) / len(xga_vals) if xga_vals else league_avg_xg
 
     # Pre-compute team npxg/xa totals from player_stats_cache
     from collections import defaultdict
@@ -239,6 +249,36 @@ async def simulate_historical(
 
 
 # ── Internal helpers ─────────────────────────────────────────────
+
+
+async def _compute_team_stats(db: AsyncSession) -> dict[str, "TeamStats"]:
+    """Forces attaque/défense par équipe depuis les scores des fixtures finies.
+
+    Remplace le compute_team_stats legacy supprimé par 6119de4. Buts pour/
+    contre par match ≈ proxy xG — suffisant pour le pre-training backtest.
+    """
+    from sqlalchemy import text as sa_text
+
+    rows = (await db.execute(sa_text("""
+        SELECT team, sum(gf)::float / count(*) AS att, sum(ga)::float / count(*) AS dfn
+        FROM (
+            SELECT home_team AS team, home_score AS gf, away_score AS ga
+            FROM fixtures WHERE status = 'finished' AND home_score IS NOT NULL
+            UNION ALL
+            SELECT away_team, away_score, home_score
+            FROM fixtures WHERE status = 'finished' AND home_score IS NOT NULL
+        ) x
+        GROUP BY team HAVING count(*) >= 3
+    """))).all()
+    return {
+        team: TeamStats(
+            team=team,
+            attack_xg_per_match=float(att),
+            defense_xga_per_match=float(dfn),
+            finishing=1.0,
+        )
+        for team, att, dfn in rows
+    }
 
 
 async def _load_eligible_fixtures(
