@@ -137,5 +137,65 @@ async def run(dry_run: bool = False) -> dict:
         return stats
 
 
+async def second_pass() -> dict:
+    """Fusionne les canoniques homonymes partageant des matchs.
+
+    Séquelle de la passe 1 : les lignes à internal_id menteur n'étaient pas
+    dans le référentiel canonique au moment du plan → leurs jumeaux se sont
+    auto-canonicalisés. Critère sûr : même nom EXACT + au moins un match avec
+    stats en double = même personne (deux homonymes réels ne jouent pas le
+    même match). Fusion vers le plus petit api_id. Itère jusqu'à stabilité.
+    """
+    total = {"merged": 0, "moved_match": 0, "deleted_match": 0,
+             "moved_season": 0, "deleted_season": 0}
+    async with async_session() as session:
+        for _iteration in range(4):
+            pairs = (await session.execute(text("""
+                SELECT DISTINCT least(a.player_api_id, b.player_api_id) AS canon,
+                                greatest(a.player_api_id, b.player_api_id) AS dup
+                FROM bzz_player_match_stats a
+                JOIN bzz_players pa ON pa.api_id = a.player_api_id
+                JOIN bzz_player_match_stats b
+                  ON b.event_api_id = a.event_api_id AND b.player_api_id > a.player_api_id
+                JOIN bzz_players pb ON pb.api_id = b.player_api_id
+                WHERE pa.name = pb.name
+            """))).all()
+            if not pairs:
+                break
+            logger.info("passe 2, itération %d: %d paires à fusionner", _iteration + 1, len(pairs))
+            seen: set[int] = set()
+            for canon, dup in pairs:
+                if dup in seen or canon in seen:
+                    continue  # laissé à l'itération suivante (chaînes A<B<C)
+                seen.add(dup)
+                m, d = await _merge_children(
+                    session, "bzz_player_match_stats", ["event_api_id"], dup, canon)
+                total["moved_match"] += m
+                total["deleted_match"] += d
+                m, d = await _merge_children(
+                    session, "bzz_player_season_stats", ["league_api_id", "season"], dup, canon)
+                total["moved_season"] += m
+                total["deleted_season"] += d
+                await session.execute(
+                    text("DELETE FROM bzz_players WHERE api_id = :b"), {"b": dup})
+                total["merged"] += 1
+            await session.commit()
+
+        residual = (await session.execute(text("""
+            SELECT count(*) FROM (
+              SELECT p.name, s.event_api_id
+              FROM bzz_player_match_stats s
+              JOIN bzz_players p ON p.api_id = s.player_api_id
+              GROUP BY p.name, s.event_api_id HAVING count(*) > 1
+            ) x
+        """))).scalar_one()
+        total["residual_dup_stats"] = int(residual)
+    logger.info("passe 2 terminée: %s", total)
+    return total
+
+
 if __name__ == "__main__":
-    asyncio.run(run(dry_run="--dry-run" in sys.argv))
+    if "--second-pass" in sys.argv:
+        asyncio.run(second_pass())
+    else:
+        asyncio.run(run(dry_run="--dry-run" in sys.argv))
