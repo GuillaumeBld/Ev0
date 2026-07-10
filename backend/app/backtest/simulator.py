@@ -17,7 +17,7 @@ from app.backtest.outcome_resolver import load_outcomes_for_fixtures, resolve_ou
 from app.ingestion.odds import normalize_selection_name
 from app.models.fixtures import Fixture
 from app.models.match_events import MatchEvent
-from app.models.odds import OddsSnapshot
+from app.models.player_odds_snapshot import PlayerOddsSnapshot as OddsSnapshot
 from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat
 from app.pricing.goalscorer import calculate_edge
 from app.pricing.team_xg import (

@@ -6,32 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import MatchEvent, OddsSnapshot, Recommendation
-
-
-async def store_odds_snapshot(
-    session: AsyncSession,
-    fixture_id: int,
-    player_name: str,
-    market_type: str,
-    bookmaker: str,
-    odds: float,
-    raw_data: dict | None = None,
-) -> OddsSnapshot:
-    snapshot = OddsSnapshot(
-        fixture_id=fixture_id,
-        player_name=player_name,
-        market_type=market_type,
-        bookmaker=bookmaker,
-        odds=odds,
-        implied_probability=1.0 / odds if odds > 0 else 0.0,
-        snapshot_utc=datetime.now(UTC),
-        raw_data=raw_data,
-    )
-    session.add(snapshot)
-    await session.flush()
-    await session.refresh(snapshot)
-    return snapshot
+from app.models import MatchEvent, Recommendation
 
 
 async def store_recommendation(

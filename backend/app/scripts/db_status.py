@@ -86,7 +86,7 @@ def report() -> None:
             END) AS has_both
         FROM fixtures f
         LEFT JOIN (SELECT DISTINCT fixture_id FROM match_events) me ON me.fixture_id = f.id
-        LEFT JOIN (SELECT DISTINCT fixture_id FROM odds_snapshots) os ON os.fixture_id = f.id
+        LEFT JOIN (SELECT DISTINCT fixture_id FROM player_odds_snapshots) os ON os.fixture_id = f.id
         WHERE f.status = 'finished'
         GROUP BY f.season, f.league
         ORDER BY f.season, f.league
@@ -105,7 +105,7 @@ def report() -> None:
         conn,
         """
         SELECT bookmaker, COUNT(*), COUNT(DISTINCT fixture_id)
-        FROM odds_snapshots
+        FROM player_odds_snapshots
         GROUP BY bookmaker
         ORDER BY COUNT(*) DESC
         """,
@@ -146,7 +146,7 @@ def report() -> None:
         conn,
         """
         SELECT COUNT(*)
-        FROM odds_snapshots os
+        FROM player_odds_snapshots os
         JOIN fixtures f ON f.id = os.fixture_id
         WHERE f.season = '2025-2026' AND os.bookmaker != 'synthetic'
         """,

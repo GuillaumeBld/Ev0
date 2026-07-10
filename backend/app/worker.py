@@ -38,7 +38,6 @@ from app.ingestion.bzzoiro.sync_wc_squads import sync_wc_squads
 from app.ingestion.bzzoiro.constants import INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST
 from app.ingestion.storage import (
     store_match_events,
-    store_odds_snapshot,
     store_recommendation,
 )
 from app.models.settings import UserSettings
