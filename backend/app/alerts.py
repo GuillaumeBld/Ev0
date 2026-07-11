@@ -86,15 +86,18 @@ async def send_alert(message: str, channel: str = "ops") -> bool:
         if wait > 0:
             await asyncio.sleep(wait)
 
-        phone, apikey = _channel_conf(channel)
+        # Telegram en primaire (illimité) ; WhatsApp en fallback seulement.
+        # CallMeBot gratuit a un quota qui s'épuise → on ne le tente qu'en
+        # dernier recours, sans polluer les logs à chaque alerte.
         sent = False
-        if phone and apikey:
-            sent = await _send_whatsapp(phone, apikey, message)
-        if not sent:
-            # Fallback Telegram (ou canal principal tant que WhatsApp n'est pas configuré)
+        if settings.telegram_bot_token:
             from app.notifications import send_telegram_alert
 
             sent = await send_telegram_alert(message)
+        if not sent:
+            phone, apikey = _channel_conf(channel)
+            if phone and apikey:
+                sent = await _send_whatsapp(phone, apikey, message)
         return sent
     except Exception as exc:  # ceinture + bretelles : une alerte ne casse rien
         logger.warning("send_alert failed: %s", exc)

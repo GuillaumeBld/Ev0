@@ -89,3 +89,27 @@ async def test_whatsapp_rejects_when_not_queued(monkeypatch):
             return FakeResp()
     monkeypatch.setattr(alerts.httpx, "AsyncClient", FakeClient)
     assert await alerts._send_whatsapp("+336", "k", "test") is False
+
+
+@pytest.mark.asyncio
+async def test_telegram_is_primary_when_token_set(monkeypatch):
+    """Token Telegram présent → Telegram utilisé, WhatsApp PAS appelé."""
+    wa_calls = []
+    async def fake_wa(phone, key, text):
+        wa_calls.append(text)
+        return True
+    tg_calls = []
+    async def fake_tg(msg):
+        tg_calls.append(msg)
+        return True
+    monkeypatch.setattr(alerts, "_send_whatsapp", fake_wa)
+    monkeypatch.setattr(alerts.settings, "telegram_bot_token", "tok", raising=False)
+    monkeypatch.setattr(alerts.settings, "whatsapp_ops_phone", "+336", raising=False)
+    monkeypatch.setattr(alerts.settings, "whatsapp_ops_apikey", "k", raising=False)
+    import app.notifications as notif
+    monkeypatch.setattr(notif, "send_telegram_alert", fake_tg)
+    alerts._last_sent.clear()
+    alerts._last_channel_send.clear()
+    assert await alerts.send_alert("via-telegram-primaire") is True
+    assert len(tg_calls) == 1
+    assert wa_calls == []  # WhatsApp jamais tenté
