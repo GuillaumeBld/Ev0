@@ -1378,6 +1378,43 @@ def _blend_tournament_stats(
 
 # ── Lineup pricing (optional redistribution) ─────────────────────
 
+def _match_tokens(name: str | None) -> list[str]:
+    """Tokens de nom, accents/ponctuation retirés (pour matching tolérant)."""
+    n = unicodedata.normalize("NFD", (name or "").strip().lower())
+    n = "".join(c for c in n if unicodedata.category(c) != "Mn")
+    for ch in "-'.,":
+        n = n.replace(ch, " ")
+    return [t for t in n.split() if t]
+
+
+def _lineup_name_compatible(a: list[str], b: list[str]) -> bool:
+    """True si deux listes de tokens désignent plausiblement le même joueur.
+
+    Gère le format abrégé de la source compo Bzzoiro (« T. Hernández ») que le
+    matching exact ratait → 1-2 titulaires exclus par équipe. Le prénom abrégé
+    doit correspondre à l'initiale du prénom complet, ce qui désambiguïse
+    « T. Hernández » (Theo) de « L. Hernández » (Lucas).
+    """
+    if not a or not b:
+        return False
+    # Nom mononyme (Vinícius) : match si le token apparaît dans l'autre nom
+    if len(a) == 1:
+        return a[0] in b
+    if len(b) == 1:
+        return b[0] in a
+    # Multi-tokens : même nom de famille + prénom compatible (égal ou initiale)
+    if a[-1] != b[-1]:
+        return False
+    fa, fb = a[0], b[0]
+    if fa == fb:
+        return True
+    if len(fa) == 1 and fb.startswith(fa):
+        return True
+    if len(fb) == 1 and fa.startswith(fb):
+        return True
+    return False
+
+
 def compute_lineup_allocation(
     players: list[dict[str, Any]],
     starter_names: list[str],
@@ -1393,8 +1430,16 @@ def compute_lineup_allocation(
     Returns [] if fewer than 5 starters matched in the DB (name mismatch /
     missing data safety fallback).
     """
-    norm = {_name_key(n) for n in starter_names}
-    starters = [p for p in players if _name_key(p["player_name"]) in norm]
+    exact = {_name_key(n) for n in starter_names}
+    starter_tokens = [_match_tokens(n) for n in starter_names]
+
+    def _is_starter(player_name: str) -> bool:
+        if _name_key(player_name) in exact:
+            return True
+        pt = _match_tokens(player_name)
+        return any(_lineup_name_compatible(st, pt) for st in starter_tokens)
+
+    starters = [p for p in players if _is_starter(p["player_name"])]
     if len(starters) < 5:
         return []
 
