@@ -152,10 +152,10 @@ function TeamTable({
               <th className="px-2 py-2 font-medium">Min</th>
               <th className="px-2 py-2 font-medium text-orange-400 border-l border-gray-700">P(sub)</th>
               <th className="px-2 py-2 font-medium text-orange-400">t̄sub</th>
-              <th className="px-3 py-2 font-medium text-blue-400 border-l border-gray-700">{showProba ? 'P(but+sub)' : 'C.But+Sub'}</th>
-              <th className="px-3 py-2 font-medium text-blue-400">{showProba ? 'P(ass+sub)' : 'C.Ass+Sub'}</th>
-              <th className="px-3 py-2 font-medium text-gray-500 border-l border-gray-700">{showProba ? 'P(but)' : 'C.But'}</th>
-              <th className="px-3 py-2 font-medium text-gray-500">{showProba ? 'P(ass)' : 'C.Ass'}</th>
+              <th className="px-3 py-2 font-medium text-blue-400 border-l border-gray-700">Buteur avec sub</th>
+              <th className="px-3 py-2 font-medium text-blue-400">Passeur avec sub</th>
+              <th className="px-3 py-2 font-medium text-gray-500 border-l border-gray-700">Buteur</th>
+              <th className="px-3 py-2 font-medium text-gray-500">Passeur</th>
             </tr>
           </thead>
           <tbody>

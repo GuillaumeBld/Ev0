@@ -282,8 +282,8 @@ export function LineupPricingWidget({
                     <tr className="bg-gray-800 text-gray-400 border-b border-gray-700">
                       <th className="text-left px-3 py-1.5 font-medium">Joueur</th>
                       <th className="px-2 py-1.5 font-medium">Pos</th>
-                      <th className="px-3 py-1.5 font-medium text-orange-300 border-l border-gray-700">{showProba ? 'P(but)' : 'Cote But'}</th>
-                      <th className="px-3 py-1.5 font-medium text-blue-300 border-l border-gray-700">{showProba ? 'P(passe)' : 'Cote Pass'}</th>
+                      <th className="px-3 py-1.5 font-medium text-orange-300 border-l border-gray-700">Buteur</th>
+                      <th className="px-3 py-1.5 font-medium text-blue-300 border-l border-gray-700">Passeur</th>
                     </tr>
                   </thead>
                   <tbody>
