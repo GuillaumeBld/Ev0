@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { Users, ChevronDown, Save, Play } from 'lucide-react'
 import { clsx } from 'clsx'
 import { type PlayerAllocationOut } from '@/lib/api'
+import { type ViewMode } from '@/app/dashboard/calculator/page'
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -17,6 +18,7 @@ interface LineupPricingWidgetProps {
   isHome: boolean
   autoApplied?: boolean  // true when lineup was auto-fetched from BZZ on load
   onCalculate: (starters: string[]) => void
+  viewMode: ViewMode
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -68,7 +70,9 @@ export function LineupPricingWidget({
   isHome,
   autoApplied = false,
   onCalculate,
+  viewMode,
 }: LineupPricingWidgetProps) {
+  const showProba = viewMode === 'proba'
   const [open, setOpen] = useState(false)
   const [mode, setMode] = useState<Mode | null>(null)
 
@@ -278,10 +282,8 @@ export function LineupPricingWidget({
                     <tr className="bg-gray-800 text-gray-400 border-b border-gray-700">
                       <th className="text-left px-3 py-1.5 font-medium">Joueur</th>
                       <th className="px-2 py-1.5 font-medium">Pos</th>
-                      <th className="px-3 py-1.5 font-medium text-orange-300 border-l border-gray-700">P(but)</th>
-                      <th className="px-3 py-1.5 font-medium text-orange-300">Cote But</th>
-                      <th className="px-3 py-1.5 font-medium text-blue-300 border-l border-gray-700">P(passe)</th>
-                      <th className="px-3 py-1.5 font-medium text-blue-300">Cote Pass</th>
+                      <th className="px-3 py-1.5 font-medium text-orange-300 border-l border-gray-700">{showProba ? 'P(but)' : 'Cote But'}</th>
+                      <th className="px-3 py-1.5 font-medium text-blue-300 border-l border-gray-700">{showProba ? 'P(passe)' : 'Cote Pass'}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -299,30 +301,32 @@ export function LineupPricingWidget({
                           </span>
                         </td>
                         <td className="px-3 py-1.5 text-center border-l border-gray-700/50">
-                          <span className={clsx(
-                            'font-medium',
-                            p.prob_goal >= 0.40 ? 'text-green-400' :
-                            p.prob_goal >= 0.20 ? 'text-orange-300' :
-                            'text-gray-300',
-                          )}>
-                            {fmtPct(p.prob_goal)}
-                          </span>
-                        </td>
-                        <td className="px-3 py-1.5 text-center font-bold text-white">
-                          {fmtOdds(p.fair_odds_goal)}
+                          {showProba ? (
+                            <span className={clsx(
+                              'font-medium',
+                              p.prob_goal >= 0.40 ? 'text-green-400' :
+                              p.prob_goal >= 0.20 ? 'text-orange-300' :
+                              'text-gray-300',
+                            )}>
+                              {fmtPct(p.prob_goal)}
+                            </span>
+                          ) : (
+                            <span className="font-bold text-white">{fmtOdds(p.fair_odds_goal)}</span>
+                          )}
                         </td>
                         <td className="px-3 py-1.5 text-center border-l border-gray-700/50">
-                          <span className={clsx(
-                            'font-medium',
-                            p.prob_assist >= 0.25 ? 'text-blue-300' :
-                            p.prob_assist >= 0.12 ? 'text-blue-400' :
-                            'text-gray-400',
-                          )}>
-                            {fmtPct(p.prob_assist)}
-                          </span>
-                        </td>
-                        <td className="px-3 py-1.5 text-center font-bold text-gray-200">
-                          {fmtOdds(p.fair_odds_assist)}
+                          {showProba ? (
+                            <span className={clsx(
+                              'font-medium',
+                              p.prob_assist >= 0.25 ? 'text-blue-300' :
+                              p.prob_assist >= 0.12 ? 'text-blue-400' :
+                              'text-gray-400',
+                            )}>
+                              {fmtPct(p.prob_assist)}
+                            </span>
+                          ) : (
+                            <span className="font-bold text-gray-200">{fmtOdds(p.fair_odds_assist)}</span>
+                          )}
                         </td>
                       </tr>
                     ))}

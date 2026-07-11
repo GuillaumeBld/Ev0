@@ -39,6 +39,31 @@ const POS_COLOR: Record<string, string> = {
   DF: 'text-gray-400',
 }
 
+// ── Mode d'affichage : probabilités ou cotes (persisté) ────────────
+export type ViewMode = 'proba' | 'cote'
+const VIEW_MODE_KEY = 'ev0.calculator.viewMode'
+
+function ViewModeSwitch({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode) => void }) {
+  return (
+    <div className="inline-flex rounded-lg border border-gray-600 overflow-hidden text-xs font-medium">
+      {(['proba', 'cote'] as ViewMode[]).map((m) => (
+        <button
+          key={m}
+          onClick={() => onChange(m)}
+          className={clsx(
+            'px-3 py-1.5 transition-colors',
+            mode === m
+              ? 'bg-orange-500 text-white'
+              : 'bg-gray-800 text-gray-400 hover:text-white',
+          )}
+        >
+          {m === 'proba' ? 'Probabilités' : 'Cotes'}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // ── Team table ─────────────────────────────────────────────────────
 
 interface TeamTableProps {
@@ -51,6 +76,7 @@ interface TeamTableProps {
   penTakerOverride: number | null
   onPenTakerClick: (playerId: number) => void
   isHome: boolean
+  viewMode: ViewMode
 }
 
 function TeamTable({
@@ -63,7 +89,9 @@ function TeamTable({
   penTakerOverride,
   onPenTakerClick,
   isHome,
+  viewMode,
 }: TeamTableProps) {
+  const showProba = viewMode === 'proba'
   const [logoFailed, setLogoFailed] = useState(false)
   const logoId = getTeamId(teamName)
 
@@ -124,14 +152,10 @@ function TeamTable({
               <th className="px-2 py-2 font-medium">Min</th>
               <th className="px-2 py-2 font-medium text-orange-400 border-l border-gray-700">P(sub)</th>
               <th className="px-2 py-2 font-medium text-orange-400">t̄sub</th>
-              <th className="px-3 py-2 font-medium text-blue-400 border-l border-gray-700">P(but+sub)</th>
-              <th className="px-3 py-2 font-medium text-blue-400">C.But+Sub</th>
-              <th className="px-3 py-2 font-medium text-blue-400">P(ass+sub)</th>
-              <th className="px-3 py-2 font-medium text-blue-400">C.Ass+Sub</th>
-              <th className="px-3 py-2 font-medium text-gray-500 border-l border-gray-700">P(but)</th>
-              <th className="px-3 py-2 font-medium text-gray-500">C.But</th>
-              <th className="px-3 py-2 font-medium text-gray-500">P(ass)</th>
-              <th className="px-3 py-2 font-medium text-gray-500">C.Ass</th>
+              <th className="px-3 py-2 font-medium text-blue-400 border-l border-gray-700">{showProba ? 'P(but+sub)' : 'C.But+Sub'}</th>
+              <th className="px-3 py-2 font-medium text-blue-400">{showProba ? 'P(ass+sub)' : 'C.Ass+Sub'}</th>
+              <th className="px-3 py-2 font-medium text-gray-500 border-l border-gray-700">{showProba ? 'P(but)' : 'C.But'}</th>
+              <th className="px-3 py-2 font-medium text-gray-500">{showProba ? 'P(ass)' : 'C.Ass'}</th>
             </tr>
           </thead>
           <tbody>
@@ -202,54 +226,38 @@ function TeamTable({
                     {(p.avg_sub_time ?? 65).toFixed(0)}&apos;
                   </td>
 
-                  {/* Supersub but — primaire, bleu */}
+                  {/* Supersub but+sub — primaire, bleu */}
                   <td className="px-3 py-2 text-center border-l border-gray-700/50">
                     <span className="font-semibold text-blue-300">
-                      {((p.p_goal_supersub ?? 0) * 100).toFixed(1)}%
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    <span className="font-semibold text-blue-300">
-                      {fmtOdds(p.fair_odds_goal_supersub ?? 99)}
+                      {showProba
+                        ? `${((p.p_goal_supersub ?? 0) * 100).toFixed(1)}%`
+                        : fmtOdds(p.fair_odds_goal_supersub ?? 99)}
                     </span>
                   </td>
 
-                  {/* Supersub assist — primaire, bleu */}
+                  {/* Supersub ass+sub — primaire, bleu */}
                   <td className="px-3 py-2 text-center">
                     <span className="font-semibold text-blue-300">
-                      {((p.p_assist_supersub ?? 0) * 100).toFixed(1)}%
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    <span className="font-semibold text-blue-300">
-                      {fmtOdds(p.fair_odds_assist_supersub ?? 99)}
+                      {showProba
+                        ? `${((p.p_assist_supersub ?? 0) * 100).toFixed(1)}%`
+                        : fmtOdds(p.fair_odds_assist_supersub ?? 99)}
                     </span>
                   </td>
 
                   {/* Standard but — secondaire, gris atténué */}
                   <td className="px-3 py-2 text-center border-l border-gray-700/50">
-                    <span className="text-gray-500 text-xs">
-                      {fmtPct(p.prob_goal)}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-center">
                     <span className={clsx(
                       'text-xs',
-                      isPenTaker ? 'text-amber-400' : 'text-gray-500',
+                      !showProba && isPenTaker ? 'text-amber-400' : 'text-gray-500',
                     )}>
-                      {fmtOdds(p.fair_odds_goal)}
+                      {showProba ? fmtPct(p.prob_goal) : fmtOdds(p.fair_odds_goal)}
                     </span>
                   </td>
 
                   {/* Standard assist — secondaire, gris atténué */}
                   <td className="px-3 py-2 text-center">
                     <span className="text-gray-500 text-xs">
-                      {fmtPct(p.prob_assist)}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    <span className="text-gray-500 text-xs">
-                      {fmtOdds(p.fair_odds_assist)}
+                      {showProba ? fmtPct(p.prob_assist) : fmtOdds(p.fair_odds_assist)}
                     </span>
                   </td>
                 </tr>
@@ -257,7 +265,7 @@ function TeamTable({
             })}
             {players.length === 0 && (
               <tr>
-                <td colSpan={13} className="px-4 py-6 text-center text-gray-500 italic">
+                <td colSpan={11} className="px-4 py-6 text-center text-gray-500 italic">
                   Aucun joueur trouvé pour cette équipe
                 </td>
               </tr>
@@ -283,6 +291,17 @@ function CalculatorInner() {
   const [loadingFixtures, setLoadingFixtures] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastScrapedAt, setLastScrapedAt] = useState<string | null>(null)
+
+  // Mode d'affichage proba / cote — persisté entre visites
+  const [viewMode, setViewMode] = useState<ViewMode>('cote')
+  useEffect(() => {
+    const saved = localStorage.getItem(VIEW_MODE_KEY)
+    if (saved === 'proba' || saved === 'cote') setViewMode(saved)
+  }, [])
+  const handleViewModeChange = useCallback((m: ViewMode) => {
+    setViewMode(m)
+    localStorage.setItem(VIEW_MODE_KEY, m)
+  }, [])
 
   // Overrides
   const [homeXgOverride, setHomeXgOverride] = useState('')
@@ -448,14 +467,20 @@ function CalculatorInner() {
   return (
     <div className="p-4 md:p-6 max-w-7xl">
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-          <Calculator className="w-6 h-6" />
-          Calculateur Ev0
-        </h1>
-        <p className="text-gray-400 mt-1 text-sm">
-          Modèle Top-Down — Team xG → allocation joueurs → Poisson
-        </p>
+      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+            <Calculator className="w-6 h-6" />
+            Calculateur Ev0
+          </h1>
+          <p className="text-gray-400 mt-1 text-sm">
+            Modèle Top-Down — Team xG → allocation joueurs → Poisson
+          </p>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <ViewModeSwitch mode={viewMode} onChange={handleViewModeChange} />
+          <span className="text-[10px] text-gray-500">Affichage {viewMode === 'proba' ? 'en probabilités' : 'en cotes'}</span>
+        </div>
       </div>
 
       {/* xG source reminder */}
@@ -584,6 +609,7 @@ function CalculatorInner() {
               penTakerOverride={homePenTaker}
               onPenTakerClick={handleHomePenClick}
               isHome={true}
+              viewMode={viewMode}
             />
             <LineupPricingWidget
               fixtureId={pricing.fixture_id}
@@ -593,6 +619,7 @@ function CalculatorInner() {
               isHome={true}
               autoApplied={lineupAutoApplied.home}
               onCalculate={(starters) => handleCalculateWithLineup('home', starters)}
+              viewMode={viewMode}
             />
           </div>
 
@@ -608,6 +635,7 @@ function CalculatorInner() {
               penTakerOverride={awayPenTaker}
               onPenTakerClick={handleAwayPenClick}
               isHome={false}
+              viewMode={viewMode}
             />
             <LineupPricingWidget
               fixtureId={pricing.fixture_id}
@@ -617,6 +645,7 @@ function CalculatorInner() {
               isHome={false}
               autoApplied={lineupAutoApplied.away}
               onCalculate={(starters) => handleCalculateWithLineup('away', starters)}
+              viewMode={viewMode}
             />
           </div>
         </div>
