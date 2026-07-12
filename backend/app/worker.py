@@ -305,23 +305,9 @@ async def job_generate_recommendations():
                         )
                         existing_keys.add((fixture_id, player_name, market_type))
                         stored += 1
-
-                        # Notify on new VALUE bets
-                        if rec.get("classification") == "VALUE":
-                            from app.alerts import send_alert
-                            player = rec.get("player_name", "?")
-                            fixture_name = rec.get("fixture_name", fixture_ext_id)
-                            odds = rec.get("market_odds", "?")
-                            edge = rec.get("edge", 0)
-                            book = rec.get("best_bookmaker", "?")
-                            msg = (
-                                f"🎯 <b>VALUE BET</b>\n"
-                                f"{player} — {rec.get('market_type', 'goalscorer')}\n"
-                                f"📋 {fixture_name}\n"
-                                f"📈 Odds: {odds} ({book}) | Edge: +{edge:.1%}\n"
-                                f"🤖 Ev0 Autopilot"
-                            )
-                            await send_alert(msg, channel="recos")
+                        # Note : pas de notification ici. Les alertes VALUE sont
+                        # émises par process_scraped_fixtures (canal unique) —
+                        # ce job n'est de toute façon pas planifié.
                     except Exception as exc:
                         logger.warning("Failed to store recommendation: %s", exc)
                         await session.rollback()

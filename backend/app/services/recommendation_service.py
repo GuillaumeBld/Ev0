@@ -644,10 +644,12 @@ async def process_scraped_fixtures(
                             "odds": market_odds,
                             "bookmaker": bookmaker,
                             "edge": edge,
-                            "resurrected": False,
                         })
 
                     elif existing_rec.status == "expired":
+                        # Réactive le pari (il réapparaît dans l'UI) mais SANS
+                        # notification : une résurrection = micro-variation de
+                        # cote autour du seuil, pas un signal actionnable.
                         existing_rec.status = "pending"
                         existing_rec.best_odds = market_odds
                         existing_rec.best_bookmaker = bookmaker
@@ -655,15 +657,6 @@ async def process_scraped_fixtures(
                         existing_rec.confidence = confidence
                         existing_rec.generated_utc = now
                         stats["resurrected"] += 1
-                        new_value_alerts.append({
-                            "player": player_name,
-                            "fixture": f"{fixture_orm.home_team} vs {fixture_orm.away_team}",
-                            "market": f"{bet_type}/{mkt_type.value}",
-                            "odds": market_odds,
-                            "bookmaker": bookmaker,
-                            "edge": edge,
-                            "resurrected": True,
-                        })
 
                     else:
                         # pending or approved — update if odds/edge changed
@@ -685,7 +678,10 @@ async def process_scraped_fixtures(
                 continue
             if rec.status not in ("pending", "approved"):
                 continue
-            rec_key = (rec.fixture_id, rec.player_name, rec.market_type)
+            # Clé à 4 éléments — DOIT correspondre à seen_value_keys (bug corrigé
+            # le 12/07 : la clé à 3 éléments ne matchait jamais → tout value bet
+            # stable était expiré puis ressuscité à chaque tick, ~23 notifs/cycle).
+            rec_key = (rec.fixture_id, rec.player_name, rec.market_type, getattr(rec, "bet_type", "goal"))
             if rec_key in seen_value_keys:
                 continue
             # Expire if player was seen in fresh odds (not value) or still present
@@ -770,9 +766,8 @@ async def process_scraped_fixtures(
     for alert in new_value_alerts:
         try:
             from app.alerts import send_alert
-            prefix = "♻️ <b>VALUE BET RESSUSCITÉ</b>" if alert["resurrected"] else "🎯 <b>VALUE BET</b>"
             msg = (
-                f"{prefix}\n"
+                f"🎯 <b>VALUE BET</b>\n"
                 f"{alert['player']} — {alert['market']}\n"
                 f"📋 {alert['fixture']}\n"
                 f"📈 Cote: {alert['odds']} ({alert['bookmaker']}) | Edge: +{alert['edge']:.1%}\n"
