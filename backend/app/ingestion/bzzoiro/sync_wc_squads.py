@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -91,6 +92,7 @@ async def sync_wc_squads(session: AsyncSession, client: BzzoiroClient) -> int:
         return 0
 
     total = 0
+    skipped_teams = 0
 
     for team_entry in squads_data:
         team = team_entry.get("team") or team_entry
@@ -102,9 +104,27 @@ async def sync_wc_squads(session: AsyncSession, client: BzzoiroClient) -> int:
         players: list[dict[str, Any]] = team_entry.get("players") or []
 
         if not players and team_id:
-            # Fetch detailed squad if not embedded
-            detail = await client.get_page(f"/api/v2/worldcup/squads/{team_id}/")
-            players = detail.get("players") or []
+            # Fetch detailed squad if not embedded. Un 404 (id référencé par la
+            # liste mais absent du détail — incohérence upstream Bzzoiro) ou
+            # toute erreur réseau ne doit PAS interrompre tout le job : on
+            # loggue et on passe à l'équipe suivante.
+            try:
+                detail = await client.get_page(f"/api/v2/worldcup/squads/{team_id}/")
+                players = detail.get("players") or []
+            except httpx.HTTPStatusError as exc:
+                skipped_teams += 1
+                logger.warning(
+                    "sync_wc_squads: détail effectif indisponible pour %s (id=%s): HTTP %s — équipe ignorée",
+                    team_name or "?", team_id, exc.response.status_code,
+                )
+                continue
+            except Exception as exc:
+                skipped_teams += 1
+                logger.warning(
+                    "sync_wc_squads: échec récupération effectif %s (id=%s): %s — équipe ignorée",
+                    team_name or "?", team_id, exc,
+                )
+                continue
 
         for player in players:
             player_name: str = player.get("name") or player.get("shortName") or ""
@@ -139,5 +159,8 @@ async def sync_wc_squads(session: AsyncSession, client: BzzoiroClient) -> int:
             logger.info("sync_wc_squads: %s → %d players", team_name, len(players))
 
     await session.commit()
-    logger.info("sync_wc_squads: %d total rows upserted across all nations", total)
+    logger.info(
+        "sync_wc_squads: %d total rows upserted across all nations (%d équipes ignorées)",
+        total, skipped_teams,
+    )
     return total
