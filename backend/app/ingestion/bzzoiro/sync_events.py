@@ -11,10 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ingestion.bzzoiro.client import BzzoiroClient
 from app.ingestion.bzzoiro.constants import (
     CURRENT_SEASON,
-    SEASON_START_DATE,
     TARGET_LEAGUE_INTERNAL_ID_LIST,
 )
 from app.models.bzzoiro import BzzEvent
+from app.services.season_service import current_season, season_start
 
 logger = logging.getLogger(__name__)
 
@@ -43,14 +43,15 @@ async def sync_events(
         league_internal_ids: Bzzoiro internal IDs to pass as ?league= filter.
                              Defaults to all 6 target leagues.
                              NOTE: these are internal_ids, NOT api_ids.
-        full_season: If True, fetches the entire current season from SEASON_START_DATE.
+        full_season: If True, fetches the entire current season from its start date
+                     (resolved via season_service).
     """
     if league_internal_ids is None:
         league_internal_ids = TARGET_LEAGUE_INTERNAL_ID_LIST
 
     now = datetime.now(UTC)
     if full_season:
-        date_from = SEASON_START_DATE
+        date_from = season_start(await current_season(session)).isoformat()
     else:
         date_from = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
     date_to = (now + timedelta(days=days_forward)).strftime("%Y-%m-%d")

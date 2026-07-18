@@ -56,4 +56,3 @@ INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST: list[int] = list(INTERNATIONAL_LEAGUE_INT
 
 # Season identifier used throughout the codebase
 CURRENT_SEASON = "2025-2026"
-SEASON_START_DATE = "2025-08-01"

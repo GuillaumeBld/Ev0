@@ -11,16 +11,15 @@ This runs after aggregate_all_leagues so match stats are fresh.
 from __future__ import annotations
 
 import logging
-from datetime import date
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.bzzoiro.constants import SEASON_START_DATE, TARGET_LEAGUE_INTERNAL_ID_LIST
+from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_INTERNAL_ID_LIST
+from app.services.season_service import current_season, season_start
 
 logger = logging.getLogger(__name__)
 
-_SEASON_START = SEASON_START_DATE  # "2025-08-01"
 _LEAGUE_IDS = TARGET_LEAGUE_INTERNAL_ID_LIST  # [1, 3, 4, 5, 6, 7]
 
 
@@ -64,9 +63,10 @@ async def sync_loan_teams(session: AsyncSession) -> int:
         FROM team_counts
         ORDER BY player_api_id, cnt DESC
     """)
+    season_start_date = season_start(await current_season(session))
     result = await session.execute(
         dominant_stmt,
-        {"season_start": date.fromisoformat(_SEASON_START), "league_ids": _LEAGUE_IDS},
+        {"season_start": season_start_date, "league_ids": _LEAGUE_IDS},
     )
     dominant_rows = result.fetchall()
 
