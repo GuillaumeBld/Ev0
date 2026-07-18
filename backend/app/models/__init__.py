@@ -8,6 +8,7 @@ from app.models.fixtures import Fixture
 from app.models.lineups import TeamLineup, TeamLineupPlayer  # noqa: F401
 from app.models.match_events import MatchEvent
 from app.models.match_odds import MatchOddsSnapshot
+from app.models.model_pricing import ModelPricingSnapshot
 from app.models.odds_scrape_state import OddsScrapeState
 from app.models.poll_state import OddsPortalPollState
 from app.models.player_match_minutes import PlayerMatchMinutes
@@ -29,6 +30,7 @@ __all__ = [
     "Fixture",
     "MatchEvent",
     "MatchOddsSnapshot",
+    "ModelPricingSnapshot",
     "OddsPortalPollState",
     "OddsScrapeState",
     "PlayerMatchMinutes",
