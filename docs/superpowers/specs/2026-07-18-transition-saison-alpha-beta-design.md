@@ -100,7 +100,26 @@ la réalité :
   xG concédé par poste adverse…) : uniquement sur amélioration mesurée en
   validation.
 
-### 3.4 Transition de saison — socle indépendant du duel
+### 3.4 Visibilité de Beta — recos et calculateur
+
+Beta est observable au quotidien, pas seulement dans les rapports du harnais :
+
+- **Recos Beta dans le feed ET sur Telegram**, avec une couleur distincte
+  dans l'UI et un tag explicite `[BETA]` dans les notifications. Les recos
+  Alpha restent les seules officielles ; celles de Beta sont là pour la
+  comparaison à l'œil nu. Contraintes :
+  - l'autopilot et le settlement des recos officielles **ignorent** les recos
+    Beta (le harnais les règle de son côté pour le duel) ;
+  - la déduplication anti-flood (fix du 12/07) doit intégrer la dimension
+    `model_name` pour ne pas supprimer une reco Beta au motif qu'Alpha a émis
+    la même — et inversement ne jamais notifier deux fois un même
+    (match, joueur, marché, modèle).
+- **Calculateur : sélecteur de modèle** `Alpha | Beta` à côté du switch
+  Probabilités/Cotes existant, choix persisté de la même façon. La table
+  garde sa structure actuelle ; la bascule recharge les colonnes avec les
+  prix du modèle sélectionné. Alpha reste le défaut.
+
+### 3.5 Transition de saison — socle indépendant du duel
 
 À livrer quoi qu'il arrive avant la reprise :
 
@@ -136,7 +155,7 @@ Tant que les deux conditions ne sont pas réunies, Alpha reste champion.
 | **1 — Fondations** | Rollover saison configurable + spike Bzzoiro + registre `model_name` + table snapshots pré-match | Court, en premier |
 | **2 — Le juge** | Harnais + settlement avec-sub + rejeu d'Alpha sur 2025-26 → **baseline chiffrée d'Alpha** (inconnue à ce jour) | Avant la reprise |
 | **3 — Le challenger** | Beta v1 + calibration (demi-vie, coefs inter-ligues, priors) sur 2025-26 + verdict backtest apparié | Peut mordre sur début août (Alpha reste aux commandes) |
-| **4 — Le duel 2026-27** | Double pricing pré-match systématique, dashboard (#13), application du critère de bascule | En continu dès la reprise |
+| **4 — Le duel 2026-27** | Double pricing pré-match systématique, recos Beta (couleur + tag `[BETA]` UI/Telegram), sélecteur Alpha/Beta du calculateur, dashboard (#13), application du critère de bascule | En continu dès la reprise |
 
 ## 6. Risques et parades
 
