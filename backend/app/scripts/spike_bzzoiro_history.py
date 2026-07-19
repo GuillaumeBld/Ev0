@@ -71,7 +71,8 @@ async def main() -> None:
         _dump("B. EVENTS 2024-25 (PL, août 2024)", events)
 
         # C. Stats par joueur — profondeur temporelle
-        stats = await client.get_page("/api/player-stats/", {"league": pl})
+        # Note: endpoint ne filtre que par player=<internal_id>, pas par league (découverte du spike)
+        stats = await client.get_page("/api/player-stats/", {"player": 1792})
         _dump("C. PLAYER-STATS (échantillon, regarder les dates)", stats)
 
         # D/E. Si un paramètre season/season_id est apparu en A, on relance
