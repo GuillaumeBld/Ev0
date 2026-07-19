@@ -38,15 +38,36 @@ SENTINEL_UNAVAILABLE_TYPE = "events_unavailable"  # <= 20 chars (varchar(20))
 
 
 def _parse_incidents(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Extract goal/assist rows from Bzzoiro incident list.
+    """Extract goal/assist/substitution rows from Bzzoiro incident list.
 
     Returns list of dicts compatible with MatchEvent fields:
-        player_name, event_type, minute
+        player_name, event_type, minute, related_player_name
+    (related_player_name is the substituted-out player; None for goals/assists.)
     """
     rows: list[dict[str, Any]] = []
 
     for inc in raw:
         inc_type = inc.get("incidentType", "")
+
+        if inc_type in ("substitution", "sub", "substitutionIn"):
+            p_in = inc.get("playerIn") or inc.get("player") or {}
+            p_out = inc.get("playerOut") or inc.get("relatedPlayer") or {}
+            in_name = p_in.get("name") or p_in.get("shortName") or ""
+            out_name = p_out.get("name") or p_out.get("shortName") or ""
+            sub_minute = inc.get("time") if inc.get("time") is not None else inc.get("minute")
+            if in_name and out_name:
+                rows.append({
+                    "player_name": in_name,
+                    "event_type": "substitution",
+                    "minute": sub_minute,
+                    "related_player_name": out_name,
+                })
+            else:
+                logger.warning(
+                    "Substitution incomplète ignorée (in=%r out=%r)", in_name, out_name
+                )
+            continue
+
         if inc_type not in ("goal", "addedGoal"):
             continue
 
@@ -62,6 +83,7 @@ def _parse_incidents(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "player_name": scorer_name,
             "event_type": "own_goal" if is_own_goal else "goal",
             "minute": minute,
+            "related_player_name": None,
         })
 
         if not is_own_goal:
@@ -72,6 +94,7 @@ def _parse_incidents(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "player_name": assist_name,
                     "event_type": "assist",
                     "minute": minute,
+                    "related_player_name": None,
                 })
 
     return rows
@@ -92,6 +115,7 @@ async def _store_events(
                 player_name=ev["player_name"],
                 event_type=ev["event_type"],
                 minute=ev.get("minute"),
+                related_player_name=ev.get("related_player_name"),
             )
             .on_conflict_do_nothing(constraint="uq_match_event")
         )
