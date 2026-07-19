@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.services.season_service import (
-    SEASON_CONFIG_KEY,
     compute_season,
     current_season,
     season_start,
@@ -44,6 +43,10 @@ class TestSeasonStart:
     def test_saison_precedente(self):
         assert season_start("2025-2026") == date(2025, 8, 1)
 
+    def test_annees_non_continues_leve_valueerror(self):
+        with pytest.raises(ValueError):
+            season_start("2026-2099")
+
 
 class TestCurrentSeason:
     @pytest.mark.asyncio
@@ -59,6 +62,14 @@ class TestCurrentSeason:
     @pytest.mark.asyncio
     async def test_override_invalide_fallback_avec_warning(self, caplog):
         session = _mock_session("n_importe_quoi")
+        with caplog.at_level("WARNING"):
+            season = await current_season(session, today=date(2026, 7, 1))
+        assert season == "2025-2026"
+        assert "current_season" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_override_annees_non_continues_fallback_avec_warning(self, caplog):
+        session = _mock_session("2026-2099")
         with caplog.at_level("WARNING"):
             season = await current_season(session, today=date(2026, 7, 1))
         assert season == "2025-2026"

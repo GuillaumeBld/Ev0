@@ -93,11 +93,14 @@ async def main() -> None:
             )
             _dump("D. EVENTS avec season=2024-2025 (PL, août 2024)", events_season)
 
+            # Note: endpoint ne filtre que par player=<internal_id> (+ season=<id
+            # numérique>), pas par league/season texte — cf. preuve bloc C
+            # (player=1792, season=336).
             stats_season = await client.get_page(
                 "/api/player-stats/",
-                {"league": pl, "season": "2024-2025"},
+                {"player": 1792, "season": 336},
             )
-            _dump("E. PLAYER-STATS avec season=2024-2025", stats_season)
+            _dump("E. PLAYER-STATS avec player=1792, season=336", stats_season)
         else:
             print(
                 "=== D/E. Aucun indice 'season'/'season_id' trouvé en A "

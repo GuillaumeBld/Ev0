@@ -9,10 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.bzzoiro.client import BzzoiroClient
-from app.ingestion.bzzoiro.constants import (
-    CURRENT_SEASON,
-    TARGET_LEAGUE_INTERNAL_ID_LIST,
-)
+from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_INTERNAL_ID_LIST
 from app.models.bzzoiro import BzzEvent
 from app.services.season_service import current_season, season_start
 

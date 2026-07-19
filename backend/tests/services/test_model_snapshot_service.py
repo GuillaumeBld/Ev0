@@ -1,6 +1,6 @@
 """Registre Alpha/Beta + snapshots pré-match : upsert jusqu'au gel, figé ensuite."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -43,11 +43,11 @@ def _session_returning(row):
     return session
 
 
-_KWARGS = dict(
-    model_name="alpha", fixture_id=1, player_api_id=42, player_name="Mbappé",
-    market="goal_with_sub", probability=0.31, fair_odds=3.23,
-    as_of_utc=datetime(2026, 8, 15, 16, 0, tzinfo=timezone.utc),
-)
+_KWARGS = {
+    "model_name": "alpha", "fixture_id": 1, "player_api_id": 42, "player_name": "Mbappé",
+    "market": "goal_with_sub", "probability": 0.31, "fair_odds": 3.23,
+    "as_of_utc": datetime(2026, 8, 15, 16, 0, tzinfo=UTC),
+}
 
 
 class TestUpsertSnapshot:

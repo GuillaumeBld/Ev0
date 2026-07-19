@@ -29,11 +29,25 @@ def compute_season(today: date) -> str:
     return f"{today.year - 1}-{today.year}"
 
 
+def _match_continuous_season(season: str) -> re.Match[str] | None:
+    """Valide le format "NNNN-NNNN" ET la continuité (deuxième année = première + 1).
+
+    Retourne le match si la saison est valide, sinon None.
+    """
+    match = _SEASON_RE.match(season)
+    if match and int(match.group(2)) == int(match.group(1)) + 1:
+        return match
+    return None
+
+
 def season_start(season: str) -> date:
     """Date de début (1er août de la première année) d'une saison "NNNN-NNNN"."""
-    match = _SEASON_RE.match(season)
+    match = _match_continuous_season(season)
     if not match:
-        raise ValueError(f"Format de saison invalide: {season!r} (attendu NNNN-NNNN)")
+        raise ValueError(
+            f"Format de saison invalide: {season!r} "
+            "(attendu NNNN-NNNN avec continuité — deuxième année = première + 1)"
+        )
     return date(int(match.group(1)), SEASON_ROLLOVER_MONTH, 1)
 
 
@@ -47,10 +61,11 @@ async def current_season(session: AsyncSession, today: date | None = None) -> st
     row = result.scalar_one_or_none()
     if row is not None:
         value = row.value.strip()
-        if _SEASON_RE.match(value):
+        if _match_continuous_season(value):
             return value
         logger.warning(
-            "app_config[%s]=%r invalide (attendu NNNN-NNNN) — fallback calcul par date",
+            "app_config[%s]=%r invalide (attendu NNNN-NNNN avec continuité — "
+            "deuxième année = première + 1) — fallback calcul par date",
             SEASON_CONFIG_KEY, value,
         )
     return compute_season(today or date.today())
