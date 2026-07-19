@@ -1,8 +1,14 @@
 """Settlement avec-sub : chaîne de remplacement transitive + règlement des 4 marchés."""
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
-from app.evaluation.settlement import FixtureEvents, replacement_chain, settle
+from app.evaluation.settlement import (
+    FixtureEvents,
+    _fixture_events_query,
+    replacement_chain,
+    settle,
+)
 
 
 def _events(goals=(), assists=(), subs=()):
@@ -24,6 +30,29 @@ class TestReplacementChain:
     def test_deux_subs_independantes_non_melangees(self):
         subs = [("ramos", "dembele"), ("zaire-emery", "vitinha")]
         assert replacement_chain(subs, "dembele") == {"ramos"}
+
+    def test_ordre_de_la_liste_est_l_ordre_chronologique(self):
+        # CONTRAT : replacement_chain parcourt subs dans l'ordre de la liste,
+        # qui DOIT être l'ordre chronologique (garanti par load_fixture_events,
+        # NULLS FIRST + tri secondaire par id). Dans l'ordre inversé, la chaîne
+        # transitive est incomplète — c'est le comportement attendu, pas un bug.
+        chrono = [("ramos", "dembele"), ("barcola", "ramos")]
+        assert replacement_chain(chrono, "dembele") == {"ramos", "barcola"}
+        inverse = list(reversed(chrono))
+        assert replacement_chain(inverse, "dembele") == {"ramos"}
+
+
+class TestFixtureEventsQuery:
+    def test_order_by_nulls_first_puis_id(self):
+        # Une substitution peut être stockée minute=NULL (sync_incidents sans
+        # time ni minute). Postgres trie NULLS LAST par défaut → une sub NULL
+        # précoce passerait après les subs datées et casserait la chaîne
+        # transitive. La requête doit imposer NULLS FIRST + tri par id.
+        sql = str(_fixture_events_query(1).compile(dialect=postgresql.dialect()))
+        order_clause = sql.split("ORDER BY")[1]
+        assert "NULLS FIRST" in order_clause
+        assert "match_events.minute ASC NULLS FIRST" in order_clause
+        assert "match_events.id ASC" in order_clause
 
 
 class TestSettle:

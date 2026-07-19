@@ -28,12 +28,25 @@ class FixtureEvents:
     subs: list[tuple[str, str]]  # (entrant, sortant), ordonnées par minute
 
 
-async def load_fixture_events(session: AsyncSession, fixture_id: int) -> FixtureEvents:
-    result = await session.execute(
+def _fixture_events_query(fixture_id: int):
+    """Requête des events d'un match, ordre chronologique.
+
+    NULLS FIRST : sync_incidents peut stocker une substitution avec
+    minute=NULL (ni time ni minute fournis par l'API). Postgres trie
+    NULLS LAST par défaut → une sub NULL précoce passerait APRÈS les subs
+    datées, et replacement_chain (qui dépend de l'ordre de la liste)
+    raterait la chaîne transitive. Tri secondaire par id pour un ordre
+    déterministe à minute égale.
+    """
+    return (
         select(MatchEvent)
         .where(MatchEvent.fixture_id == fixture_id)
-        .order_by(MatchEvent.minute)
+        .order_by(MatchEvent.minute.asc().nulls_first(), MatchEvent.id.asc())
     )
+
+
+async def load_fixture_events(session: AsyncSession, fixture_id: int) -> FixtureEvents:
+    result = await session.execute(_fixture_events_query(fixture_id))
     goals: list[str] = []
     assists: list[str] = []
     subs: list[tuple[str, str]] = []
