@@ -538,12 +538,16 @@ async def list_player_leagues(
 async def list_player_teams(
     session: AsyncSession = Depends(get_db),
     league_api_id: int | None = Query(None, description="Filter by league api_id; -1 = Autres"),
+    season: str | None = Query(None),
 ) -> list[dict[str, Any]]:
     """Return teams deduplicated by name, filtered by dominant league.
 
     league_api_id=None → all teams; league_api_id=-1 → non-Big5/UCL teams; 1-7 → specific league.
     """
-    dominant = await _get_team_dominant_leagues(session)
+    if season is None:
+        season = await current_season(session)
+
+    dominant = await _get_team_dominant_leagues(session, season)
 
     if league_api_id is not None:
         valid_names: set[str] | None = {n for n, lg in dominant.items() if lg == league_api_id}
@@ -558,7 +562,7 @@ async def list_player_teams(
                 COUNT(*) AS cnt
             FROM bzz_players bp
             JOIN bzz_player_season_stats bpss ON bpss.player_api_id = bp.api_id
-            WHERE bpss.season = '2025-2026'
+            WHERE bpss.season = :season
               AND COALESCE(bp.loan_team_api_id, bp.current_team_api_id) IS NOT NULL
               AND COALESCE(bp.loan_team_name, bp.current_team_name) IS NOT NULL
             GROUP BY eff_team_api_id, eff_team_name
@@ -571,7 +575,7 @@ async def list_player_teams(
         SELECT eff_team_api_id, eff_team_name FROM ranked WHERE rn = 1
         ORDER BY eff_team_name
     """)
-    result = await session.execute(stmt)
+    result = await session.execute(stmt, {"season": season})
     rows = result.all()
 
     output = []

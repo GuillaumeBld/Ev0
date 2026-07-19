@@ -429,20 +429,31 @@ async def test_list_player_leagues():
 async def test_list_player_teams_no_filter(monkeypatch):
     from app.api import players as players_mod
 
-    async def fake_dominant(session, season="2025-2026"):
+    seen_seasons: list = []
+
+    async def fake_dominant(session, season=None):
+        seen_seasons.append(season)
         return {"Arsenal": 25, "Chelsea": -1}
 
+    async def fake_current_season(session):
+        return "2025-2026"
+
     monkeypatch.setattr(players_mod, "_get_team_dominant_leagues", fake_dominant)
+    monkeypatch.setattr(players_mod, "current_season", fake_current_season)
 
     result = MagicMock()
     result.all.return_value = [(100, "Arsenal"), (200, "Chelsea")]
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(return_value=result)
 
-    response = await players_mod.list_player_teams(session=mock_db, league_api_id=None)
+    response = await players_mod.list_player_teams(session=mock_db, league_api_id=None, season=None)
     assert len(response) == 2
     assert response[0] == {"api_id": 100, "name": "Arsenal"}
     assert response[1] == {"api_id": 200, "name": "Chelsea"}
+    # La saison résolue (pas None, pas un objet Query) est propagée au helper
+    assert seen_seasons == ["2025-2026"]
+    # ... et bindée en paramètre de la CTE (plus de littéral en dur)
+    assert mock_db.execute.call_args.args[1] == {"season": "2025-2026"}
 
 
 # ---------------------------------------------------------------------------
@@ -453,7 +464,7 @@ async def test_list_player_teams_no_filter(monkeypatch):
 async def test_list_player_teams_with_league(monkeypatch):
     from app.api import players as players_mod
 
-    async def fake_dominant(session, season="2025-2026"):
+    async def fake_dominant(session, season=None):
         return {"Arsenal": 25, "Chelsea": -1}
 
     monkeypatch.setattr(players_mod, "_get_team_dominant_leagues", fake_dominant)
@@ -463,7 +474,9 @@ async def test_list_player_teams_with_league(monkeypatch):
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(return_value=result)
 
-    response = await players_mod.list_player_teams(session=mock_db, league_api_id=25)
+    response = await players_mod.list_player_teams(
+        session=mock_db, league_api_id=25, season="2025-2026"
+    )
     assert response == [{"api_id": 100, "name": "Arsenal"}]
     mock_db.execute.assert_called_once()
 
