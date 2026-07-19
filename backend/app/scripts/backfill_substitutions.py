@@ -2,7 +2,8 @@
 
 Pour chaque match terminé de la saison qui a des buts en base mais aucune ligne
 substitution, re-fetch les incidents Bzzoiro et stocke les substitutions.
-Idempotent : un match déjà pourvu de substitutions est ignoré.
+Idempotent : un match déjà pourvu de substitutions est ignoré, de même qu'un
+match marqué par la sentinelle subs_unavailable (incidents sans subs ou 404).
 Échelonné : --limit matchs par run (défaut 300), --sleep secondes entre appels
 (défaut 2.0), --league pour cibler une ligue (ordre conseillé = celui de
 TARGET_LEAGUE_API_IDS ; hypothèse de priorisation non validée — cf. rapport spike).
@@ -18,6 +19,7 @@ import argparse
 import asyncio
 import logging
 
+import httpx
 from sqlalchemy import and_, exists, select
 
 from app.config import settings
@@ -30,6 +32,18 @@ from app.models.match_events import MatchEvent
 
 logger = logging.getLogger(__name__)
 
+# Sentinelle stockée quand les incidents d'un match ne contiennent aucune
+# substitution (réponse valide sans subs) ou renvoient un 404 permanent : la
+# fixture sort de la sélection au lieu d'être re-fetchée à chaque run
+# (gaspillage de quota + famine du backlog avec le tri kickoff ASC + LIMIT).
+# Même pattern de nommage que les sentinelles de sync_incidents
+# (__processed__/match_processed, __incidents_unavailable__/events_unavailable).
+# minute=0 obligatoire (comme dans sync_incidents) : avec NULL la contrainte
+# unique uq_match_event ne s'applique pas (NULLs distincts) et la sentinelle
+# se dupliquerait à chaque run.
+SENTINEL_NO_SUBS = "__subs_unavailable__"
+SENTINEL_NO_SUBS_TYPE = "subs_unavailable"  # <= 20 chars (varchar(20))
+
 
 def _fixtures_sans_subs_query(league_key: str | None, limit: int):
     """Fixtures terminées 2025-26 ayant des buts mais aucune substitution.
@@ -38,12 +52,18 @@ def _fixtures_sans_subs_query(league_key: str | None, limit: int):
     ce champ n'existe pas). Le filtre ligue se fait sur Fixture.league (la clé
     string type "premier_league", cf. sync_fixtures_from_bzz.py), pas sur un
     league_api_id numérique.
+
+    Exclut les fixtures ayant déjà une substitution OU la sentinelle
+    subs_unavailable (incidents sans subs / 404 : inutile de re-fetch).
     """
     has_goal = exists().where(
         and_(MatchEvent.fixture_id == Fixture.id, MatchEvent.event_type == "goal")
     )
-    has_sub = exists().where(
-        and_(MatchEvent.fixture_id == Fixture.id, MatchEvent.event_type == "substitution")
+    has_sub_or_sentinel = exists().where(
+        and_(
+            MatchEvent.fixture_id == Fixture.id,
+            MatchEvent.event_type.in_(("substitution", SENTINEL_NO_SUBS_TYPE)),
+        )
     )
     query = (
         select(Fixture.id, Fixture.external_id)
@@ -52,7 +72,7 @@ def _fixtures_sans_subs_query(league_key: str | None, limit: int):
             Fixture.status == "finished",
             Fixture.external_id.like("bzz\\_%"),
             has_goal,
-            ~has_sub,
+            ~has_sub_or_sentinel,
         )
         .order_by(Fixture.kickoff_utc)
         .limit(limit)
@@ -70,8 +90,18 @@ def _parse_bzz_api_id(external_id: str | None) -> int | None:
         return None
 
 
+async def _store_no_subs_sentinel(fixture_id: int) -> None:
+    """Marque la fixture comme définitivement sans substitutions disponibles."""
+    async with async_session() as session:
+        await _store_events(session, fixture_id, [{
+            "player_name": SENTINEL_NO_SUBS,
+            "event_type": SENTINEL_NO_SUBS_TYPE,
+            "minute": 0,
+        }])
+        await session.commit()
+
+
 async def run(league_key: str | None, limit: int, sleep_s: float, dry_run: bool) -> None:
-    assert settings.bzzoiro_api_key, "BZZOIRO_API_KEY manquante"
     async with async_session() as session:
         rows = (await session.execute(_fixtures_sans_subs_query(league_key, limit))).all()
     logger.info("%d matchs sans substitutions à backfiller (league=%s)", len(rows), league_key)
@@ -79,6 +109,7 @@ async def run(league_key: str | None, limit: int, sleep_s: float, dry_run: bool)
         print(f"[dry-run] {len(rows)} matchs seraient traités")
         return
 
+    assert settings.bzzoiro_api_key, "BZZOIRO_API_KEY manquante"
     done = errors = 0
     async with BzzoiroClient(settings.bzzoiro_api_key) as client:
         for fixture_id, external_id in rows:
@@ -89,6 +120,37 @@ async def run(league_key: str | None, limit: int, sleep_s: float, dry_run: bool)
                 continue
             try:
                 payload = await client.get_page(f"/api/v2/events/{bzz_api_id}/incidents/")
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    # 404 permanent (événement supprimé côté Bzzoiro) : sentinelle
+                    # pour sortir la fixture de la sélection — pas de retry.
+                    try:
+                        await _store_no_subs_sentinel(fixture_id)
+                        logger.warning(
+                            "Fixture %d (bzz %d): 404 permanent, sentinelle "
+                            "subs_unavailable stockée — plus de retry",
+                            fixture_id, bzz_api_id,
+                        )
+                        done += 1
+                    except Exception as store_exc:
+                        errors += 1
+                        logger.error(
+                            "Fixture %d (bzz %d): échec stockage sentinelle 404: %s",
+                            fixture_id, bzz_api_id, store_exc,
+                        )
+                else:
+                    errors += 1
+                    logger.error("Fixture %d (bzz %d): HTTP %d: %s",
+                                 fixture_id, bzz_api_id, exc.response.status_code, exc)
+                await asyncio.sleep(sleep_s)
+                continue
+            except Exception as exc:
+                errors += 1
+                logger.error("Fixture %d (bzz %d): %s", fixture_id, bzz_api_id, exc)
+                await asyncio.sleep(sleep_s)
+                continue
+
+            try:
                 # sync_incidents lit "incidents" (ou le payload brut si c'est
                 # déjà une liste) — pas de clé "results" pour cet endpoint.
                 raw_incidents = payload if isinstance(payload, list) else payload.get("incidents", [])
@@ -97,6 +159,15 @@ async def run(league_key: str | None, limit: int, sleep_s: float, dry_run: bool)
                     async with async_session() as session:
                         await _store_events(session, fixture_id, subs)
                         await session.commit()
+                else:
+                    # Réponse valide mais aucune substitution dans les incidents :
+                    # sentinelle pour ne pas re-fetch ce match à chaque run.
+                    await _store_no_subs_sentinel(fixture_id)
+                    logger.info(
+                        "Fixture %d (bzz %d): incidents sans substitution, "
+                        "sentinelle subs_unavailable stockée",
+                        fixture_id, bzz_api_id,
+                    )
                 done += 1
             except Exception as exc:
                 errors += 1
