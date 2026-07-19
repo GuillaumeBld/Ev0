@@ -47,3 +47,14 @@ def test_les_buts_portent_related_player_name_none():
     raw = [{"incidentType": "goal", "player": {"name": "Mbappé"}, "time": 12}]
     rows = _parse_incidents(raw)
     assert rows[0]["related_player_name"] is None
+
+
+def test_but_minute_0_conserve_minute_zero():
+    """Un but à la minute 0 (rarissime) ne doit pas devenir minute=None.
+
+    `inc.get("time") or inc.get("minute")` transformerait 0 (falsy) en None ;
+    le parsing doit utiliser un test `is not None` comme pour les substitutions.
+    """
+    raw = [{"incidentType": "goal", "player": {"name": "Mbappé"}, "time": 0}]
+    rows = _parse_incidents(raw)
+    assert rows[0]["minute"] == 0

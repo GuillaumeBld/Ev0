@@ -4,9 +4,15 @@ Pour chaque match terminé de la saison qui a des buts en base mais aucune ligne
 substitution, re-fetch les incidents Bzzoiro et stocke les substitutions.
 Idempotent : un match déjà pourvu de substitutions est ignoré, de même qu'un
 match marqué par la sentinelle subs_unavailable (incidents sans subs ou 404).
+Garde 48h : un match n'entre dans la sélection que si son coup d'envoi remonte
+à plus de 48h (Fixture.kickoff_utc), pour laisser le temps à Bzzoiro de publier
+des subs en retard avant de les considérer comme éligibles au backfill — même
+principe que la garde 48h de sync_incidents avant sentinelle terminale.
 Échelonné : --limit matchs par run (défaut 300), --sleep secondes entre appels
-(défaut 2.0), --league pour cibler une ligue (ordre conseillé = celui de
-TARGET_LEAGUE_API_IDS ; hypothèse de priorisation non validée — cf. rapport spike).
+(défaut 2.0), --league pour cibler une ligue (ordre conseillé = l'ordre
+alphabétique des clés, celui effectivement utilisé par --league via
+sorted(TARGET_LEAGUE_API_IDS) ; hypothèse de priorisation non validée — cf.
+rapport spike).
 
 Usage : cd backend && python -m app.scripts.backfill_substitutions --league premier_league --limit 300
 
@@ -18,6 +24,7 @@ script reprend donc le même mécanisme de jointure que sync_incidents.sync_inci
 import argparse
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from sqlalchemy import and_, exists, select
@@ -55,6 +62,13 @@ def _fixtures_sans_subs_query(league_key: str | None, limit: int):
 
     Exclut les fixtures ayant déjà une substitution OU la sentinelle
     subs_unavailable (incidents sans subs / 404 : inutile de re-fetch).
+
+    Garde anti-sentinelle-précoce : n'inclut que les matchs dont le coup
+    d'envoi remonte à plus de 48h. Bzzoiro publie parfois les substitutions
+    en retard ; sans cette garde, un run lancé juste après un matchday
+    pourrait re-fetcher des incidents encore incomplets et, en l'absence de
+    subs à cet instant, marquer à tort la fixture subs_unavailable de façon
+    définitive.
     """
     has_goal = exists().where(
         and_(MatchEvent.fixture_id == Fixture.id, MatchEvent.event_type == "goal")
@@ -73,6 +87,7 @@ def _fixtures_sans_subs_query(league_key: str | None, limit: int):
             Fixture.external_id.like("bzz\\_%"),
             has_goal,
             ~has_sub_or_sentinel,
+            Fixture.kickoff_utc < datetime.now(UTC) - timedelta(hours=48),
         )
         .order_by(Fixture.kickoff_utc)
         .limit(limit)

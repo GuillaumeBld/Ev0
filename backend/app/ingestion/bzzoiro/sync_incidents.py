@@ -76,7 +76,7 @@ def _parse_incidents(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not scorer_name:
             continue
 
-        minute: int | None = inc.get("time") or inc.get("minute")
+        minute: int | None = inc.get("time") if inc.get("time") is not None else inc.get("minute")
         is_own_goal: bool = inc.get("isOwnGoal", False)
 
         rows.append({
