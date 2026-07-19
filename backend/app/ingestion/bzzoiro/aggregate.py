@@ -11,7 +11,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.bzzoiro import BzzEvent, BzzPlayerMatchStat, BzzPlayerSeasonStat
-from app.services.season_service import current_season, season_start as season_start_of
+from app.services.season_service import current_season
+from app.services.season_service import season_start as season_start_of
 
 logger = logging.getLogger(__name__)
 
