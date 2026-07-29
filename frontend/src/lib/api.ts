@@ -746,6 +746,40 @@ export interface PlayerDetail {
   recent_matches: RecentMatch[]
 }
 
+// ── Player career (Transfermarkt) ───────────────────────────────
+
+export interface CareerCompetitionOut {
+  competition: string | null
+  competition_code: string | null
+  appearances: number
+  goals: number
+  assists: number
+  minutes: number
+}
+
+export interface CareerSeasonOut {
+  season: string
+  season_start_year: number | null
+  appearances: number
+  goals: number
+  assists: number
+  minutes: number
+  competitions: CareerCompetitionOut[]
+}
+
+export interface BlendedRhythmOut {
+  goal_rate_per_90: number
+  assist_rate_per_90: number
+  seasons_used: number
+  has_career: boolean
+}
+
+export interface PlayerCareerOut {
+  player: { player_api_id: number; name: string }
+  career: CareerSeasonOut[]
+  blended_rhythm: BlendedRhythmOut | null
+}
+
 export async function getLastOptimization(): Promise<OptimizationResult | null> {
   try {
     const { data } = await api.get('/api/v1/autopilot/optimization')
