@@ -317,7 +317,9 @@ async def test_aggregate_all_leagues():
     )
     session.commit = AsyncMock()
 
-    total = await aggregate_all_leagues(session)
+    # season passed explicitly: the default (None -> current_season(session) via
+    # season_service) is covered by tests/ingestion/test_aggregate_season_rollover.py.
+    total = await aggregate_all_leagues(session, season="2025-2026")
 
     assert total == 2  # 1 player per league
     assert session.commit.call_count == 2  # once per league

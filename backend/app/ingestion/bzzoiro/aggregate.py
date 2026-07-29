@@ -10,8 +10,9 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.bzzoiro.constants import SEASON_START_DATE
 from app.models.bzzoiro import BzzEvent, BzzPlayerMatchStat, BzzPlayerSeasonStat
+from app.services.season_service import current_season
+from app.services.season_service import season_start as season_start_of
 
 logger = logging.getLogger(__name__)
 
@@ -38,13 +39,14 @@ async def aggregate_season_stats(
     stored under league_api_id (the canonical ID).
 
     season_start: ISO date string (e.g. "2025-08-01"). Only events on or after this
-    date are included. Defaults to SEASON_START_DATE from constants so historical
-    match data from prior seasons never inflates current-season aggregates.
+    date are included. Defaults to the start date of `season` (via season_service)
+    so historical match data from prior seasons never inflates current-season
+    aggregates.
 
     Aggregates all finished matches for the league in the season window. Returns count of rows upserted.
     """
     all_league_ids = [league_api_id] + (league_api_id_aliases or [])
-    cutoff_date = date.fromisoformat(season_start or SEASON_START_DATE)
+    cutoff_date = date.fromisoformat(season_start) if season_start else season_start_of(season)
 
     # Step 1: Query aggregated stats grouped by player
     agg_stmt = (
@@ -274,16 +276,24 @@ async def aggregate_season_stats(
     return count
 
 
-async def aggregate_all_leagues(session: AsyncSession, season: str = "2025-2026") -> int:
+async def aggregate_all_leagues(session: AsyncSession, season: str | None = None) -> int:
     """Aggregate season stats for all 6 target leagues with finished matches.
 
     Only canonical Bzzoiro internal IDs [1,3,4,5,6,7] are used. The old SofaScore
     api_ids (8,17,23,34,35) now belong to completely different competitions in Bzzoiro
     (Saudi Pro League, Europa League, etc.) and must not be merged with target leagues.
 
+    season: defaults to None, which resolves to the current season via
+    season_service.current_season(session). Callers (e.g. the worker) never need
+    to pass a season explicitly — the season rollover is handled automatically.
+
     Returns total count of rows upserted across all leagues.
     """
     from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_INTERNAL_ID_LIST
+
+    if season is None:
+        season = await current_season(session)
+        logger.info("Saison courante résolue: %s", season)
 
     result = await session.execute(
         select(BzzEvent.league_api_id.distinct()).where(

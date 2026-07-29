@@ -22,7 +22,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.bzzoiro.constants import (
-    CURRENT_SEASON,
     INTERNATIONAL_LEAGUE_API_IDS,
     INTERNATIONAL_LEAGUE_INTERNAL_IDS,
     TARGET_LEAGUE_API_IDS,
@@ -32,6 +31,7 @@ from app.ingestion.fixture_matcher import normalize_team_name
 from app.models.bzzoiro import BzzEvent, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
+from app.services.season_service import current_season
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,7 @@ async def sync_fixtures_from_bzz(
     now = datetime.now(UTC)
     horizon = now + timedelta(days=days_forward)
     lookback = now - timedelta(days=days_back)
+    season = await current_season(session)
 
     # 1. Load BzzEvents for target leagues (past + future window)
     events_result = await session.execute(
@@ -230,7 +231,7 @@ async def sync_fixtures_from_bzz(
             new_fixture = Fixture(
                 external_id=ext_id,
                 league=league_key,
-                season=CURRENT_SEASON,
+                season=season,
                 home_team=home_name,
                 away_team=away_name,
                 kickoff_utc=ev.event_date,

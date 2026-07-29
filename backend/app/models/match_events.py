@@ -23,8 +23,11 @@ class MatchEvent(Base, TimestampMixin):
     # Event details
     event_type: Mapped[str] = mapped_column(
         String(20), index=True
-    )  # goal, assist, own_goal, penalty_goal
+    )  # goal, assist, own_goal, penalty_goal, substitution (+ sentinelles)
     minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Substitutions : player_name = entrant, related_player_name = sortant
+    related_player_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     # Relationships
     fixture = relationship("Fixture")
