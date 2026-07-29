@@ -22,6 +22,7 @@ from app.models.bzzoiro import (
     BzzPlayerSeasonStat,
     BzzTeam,
 )
+from app.services.season_service import current_season
 
 router = APIRouter(prefix="/players", tags=["players"])
 
@@ -456,7 +457,7 @@ def _python_sort(results: list[dict[str, Any]], sort_by: str, sort_order: str) -
 
 async def _get_team_dominant_leagues(
     session: AsyncSession,
-    season: str = "2025-2026",
+    season: str | None = None,
 ) -> dict[str, int]:
     """Return {team_name: effective_league_api_id}.
 
@@ -464,6 +465,8 @@ async def _get_team_dominant_leagues(
     stats rows, else -1 (Autres). This prevents 1-2-row data contamination from miscategorizing
     non-Big5/UCL teams into target leagues.
     """
+    if season is None:
+        season = await current_season(session)
     stmt = text("""
         WITH per_name_league AS (
             SELECT COALESCE(bp.loan_team_name, bp.current_team_name) AS eff_team_name,
@@ -535,12 +538,16 @@ async def list_player_leagues(
 async def list_player_teams(
     session: AsyncSession = Depends(get_db),
     league_api_id: int | None = Query(None, description="Filter by league api_id; -1 = Autres"),
+    season: str | None = Query(None),
 ) -> list[dict[str, Any]]:
     """Return teams deduplicated by name, filtered by dominant league.
 
     league_api_id=None → all teams; league_api_id=-1 → non-Big5/UCL teams; 1-7 → specific league.
     """
-    dominant = await _get_team_dominant_leagues(session)
+    if season is None:
+        season = await current_season(session)
+
+    dominant = await _get_team_dominant_leagues(session, season)
 
     if league_api_id is not None:
         valid_names: set[str] | None = {n for n, lg in dominant.items() if lg == league_api_id}
@@ -555,7 +562,7 @@ async def list_player_teams(
                 COUNT(*) AS cnt
             FROM bzz_players bp
             JOIN bzz_player_season_stats bpss ON bpss.player_api_id = bp.api_id
-            WHERE bpss.season = '2025-2026'
+            WHERE bpss.season = :season
               AND COALESCE(bp.loan_team_api_id, bp.current_team_api_id) IS NOT NULL
               AND COALESCE(bp.loan_team_name, bp.current_team_name) IS NOT NULL
             GROUP BY eff_team_api_id, eff_team_name
@@ -568,7 +575,7 @@ async def list_player_teams(
         SELECT eff_team_api_id, eff_team_name FROM ranked WHERE rn = 1
         ORDER BY eff_team_name
     """)
-    result = await session.execute(stmt)
+    result = await session.execute(stmt, {"season": season})
     rows = result.all()
 
     output = []
@@ -591,9 +598,11 @@ async def export_players_csv(
         None,
         description="League API ID to export, or omit for all",
     ),
-    season: str = Query("2025-2026"),
+    season: str | None = Query(None),
 ) -> StreamingResponse:
     """Stream aggregated player stats as a UTF-8 CSV — one row per player."""
+    if season is None:
+        season = await current_season(session)
     # Fetch players with their season stats (all leagues), then aggregate per player
     player_id_subq = select(BzzPlayer.api_id).where(BzzPlayer.internal_id.is_not(None))
     if league_api_id:
@@ -677,13 +686,15 @@ async def list_players(
     team_api_id: int | None = Query(None, description="Filter by team API id"),
     position: str | None = Query(None, description="Filter by position: G/D/M/F"),
     min_minutes: int = Query(0, description="Minimum minutes played"),
-    season: str = Query("2025-2026"),
+    season: str | None = Query(None),
     sort_by: str = Query("xg_per_90"),
     sort_order: str = Query("desc"),
     limit: int = Query(50, le=500),
     offset: int = Query(0),
 ) -> list[dict[str, Any]]:
     """List players — one row per player, stats aggregated across all competitions."""
+    if season is None:
+        season = await current_season(session)
 
     # Step 1: build player API-ID subquery with all identity filters.
     # Using a subquery (not a Python list) avoids asyncpg's 32 767 parameter limit
@@ -819,9 +830,11 @@ async def list_players(
 async def get_player(
     player_api_id: int,
     session: AsyncSession = Depends(get_db),
-    season: str = Query("2025-2026"),
+    season: str | None = Query(None),
 ) -> dict[str, Any]:
     """Get a single player with season stats and recent matches."""
+    if season is None:
+        season = await current_season(session)
 
     # 1. Fetch player
     player_result = await session.execute(

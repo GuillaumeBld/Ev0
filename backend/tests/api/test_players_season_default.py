@@ -1,0 +1,44 @@
+"""Les endpoints joueurs ne hardcodent plus la saison — défaut None résolu via season_service."""
+
+import inspect
+
+from app.api import players
+
+
+def _season_default(func) -> object:
+    param = inspect.signature(func).parameters["season"]
+    default = param.default
+    # FastAPI Query(...) : la valeur est dans .default de l'objet Query
+    return getattr(default, "default", default)
+
+
+def test_aucun_endpoint_joueur_ne_hardcode_la_saison():
+    """Tout paramètre `season` d'un endpoint du module doit avoir None pour défaut."""
+    offenders = []
+    for name, func in inspect.getmembers(players, inspect.iscoroutinefunction):
+        sig = inspect.signature(func)
+        if "season" in sig.parameters and _season_default(func) == "2025-2026":
+            offenders.append(name)
+    assert offenders == [], f"Endpoints avec saison hardcodée: {offenders}"
+
+
+def test_sync_fixtures_ne_stampe_plus_la_constante():
+    import app.ingestion.bzzoiro.sync_fixtures_from_bzz as sf
+    src = inspect.getsource(sf)
+    assert "season=CURRENT_SEASON" not in src
+
+
+def test_aucun_litteral_saison_dans_players_hors_commentaires():
+    """Plus aucun littéral '2025-2026' dans le code de app/api/players.py.
+
+    Attrape notamment les saisons en dur dans les requêtes SQL brutes (text()),
+    invisibles aux tests qui monkeypatchent les helpers. Les commentaires (#)
+    sont tolérés.
+    """
+    src = inspect.getsource(players)
+    offenders = [
+        num
+        for num, line in enumerate(src.splitlines(), start=1)
+        if "2025-2026" in line.split("#", 1)[0]
+    ]
+    assert offenders == [], f"Littéral '2025-2026' hors commentaire aux lignes: {offenders}"
