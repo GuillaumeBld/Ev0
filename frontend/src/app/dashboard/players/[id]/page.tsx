@@ -200,8 +200,11 @@ function MatchHistoryTable({ matches }: { matches: RecentMatch[] }) {
 
 function CareerSeasonRow({ s }: { s: CareerSeasonOut }) {
   const [open, setOpen] = useState(false)
+  // competition_code is "" (never null, see backend app/scripts/import_career.py)
+  // for matches with no Transfermarkt competitionId (friendlies) — treat it
+  // the same as "no distinct competition to drill into" as null used to mean.
   const hasDetail = s.competitions.length > 1
-    || (s.competitions.length === 1 && s.competitions[0].competition_code !== null)
+    || (s.competitions.length === 1 && !!s.competitions[0].competition_code)
 
   return (
     <>
@@ -317,7 +320,10 @@ export default function PlayerDetailPage() {
         return res.json()
       })
       .then((data: PlayerCareerOut) => setCareer(data))
-      .catch(() => setCareer(null))
+      .catch((err: Error) => {
+        console.error('Failed to fetch player career:', err)
+        setCareer(null)
+      })
   }, [id])
 
   const age = (dob: string | null) => {

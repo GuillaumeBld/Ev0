@@ -13,10 +13,16 @@ normalise identique sont, en pratique, la meme personne). Aucune devinette :
   de naissance, refus de deviner).
 - plusieurs lignes bzz_players avec meme dob ET meme nom normalise ->
   ambigu, skip + log plutot que de choisir au hasard.
+- `tm_id` non numerique -> skip + log (compteur dedie), le reste du run
+  continue.
 
 Chaque saison/competition est upsertee (ON CONFLICT sur
 uq_player_career_season = (player_api_id, season, competition_code)) ->
-idempotent, un re-run met simplement a jour les compteurs.
+idempotent, un re-run met simplement a jour les compteurs. `competition_code`
+est TOUJOURS coalesce a "" avant ecriture (jamais None) : en SQL, NULL != NULL
+dans une contrainte unique, donc des lignes competition_code=NULL (matchs
+amicaux sans competitionId Transfermarkt) ne declencheraient jamais
+ON CONFLICT et dupliqueraient a chaque re-import.
 
 Usage:
     .venv/bin/python -m app.scripts.import_career --input psg_careers.json
@@ -34,7 +40,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,6 +61,7 @@ class ImportStats:
     players_matched: int = 0
     players_skipped_not_matched: int = 0
     players_skipped_unresolved: int = 0
+    players_skipped_invalid_tm_id: int = 0
     seasons_upserted: int = 0
     unresolved_players: list[str] = field(default_factory=list)
 
@@ -107,7 +114,13 @@ def _season_values(player_api_id: int, tm_id: int | None, season: dict[str, Any]
         "tm_id": tm_id,
         "season": season.get("season"),
         "season_start_year": season.get("season_start_year"),
-        "competition_code": season.get("competition_code"),
+        # Coalesce a la chaine vide : jamais None. En SQL, NULL != NULL, donc
+        # deux lignes avec competition_code=NULL sur le meme (player, season)
+        # ne se percutent JAMAIS dans la contrainte unique -> ON CONFLICT ne
+        # se declenche pas -> doublons a chaque re-import (matchs amicaux
+        # sans competitionId Transfermarkt). "" est une valeur comme une
+        # autre pour la contrainte, donc idempotent.
+        "competition_code": season.get("competition_code") or "",
         "competition": season.get("competition"),
         "appearances": season.get("appearances") or 0,
         "goals": season.get("goals") or 0,
@@ -117,9 +130,14 @@ def _season_values(player_api_id: int, tm_id: int | None, season: dict[str, Any]
 
 
 async def _upsert_season(session: AsyncSession, values: dict[str, Any]) -> None:
+    set_ = {k: v for k, v in values.items() if k not in ("player_api_id", "season", "competition_code")}
+    # updated_at doit etre rafraichi explicitement : l'onupdate declaratif de
+    # TimestampMixin est un mecanisme ORM (Session.flush sur une instance
+    # trackee) qui n'est jamais declenche par un upsert Core comme celui-ci.
+    set_["updated_at"] = func.now()
     stmt = pg_insert(PlayerCareerSeason).values(**values).on_conflict_do_update(
         index_elements=["player_api_id", "season", "competition_code"],
-        set_={k: v for k, v in values.items() if k not in ("player_api_id", "season", "competition_code")},
+        set_=set_,
     )
     await session.execute(stmt)
 
@@ -160,7 +178,15 @@ async def import_career_data(session: AsyncSession, players: list[dict[str, Any]
             continue
 
         tm_id_raw = player.get("tm_id")
-        tm_id = int(tm_id_raw) if tm_id_raw is not None else None
+        tm_id: int | None = None
+        if tm_id_raw is not None:
+            try:
+                tm_id = int(tm_id_raw)
+            except (TypeError, ValueError):
+                logger.warning("SKIP '%s': tm_id non numerique (%r)", input_name, tm_id_raw)
+                stats.players_skipped_invalid_tm_id += 1
+                stats.unresolved_players.append(input_name)
+                continue
 
         seasons = player.get("seasons") or []
         for season in seasons:
@@ -173,9 +199,11 @@ async def import_career_data(session: AsyncSession, players: list[dict[str, Any]
         logger.info("OK '%s' -> player_api_id=%d, %d saison(s) upsertee(s)", input_name, player_api_id, len(seasons))
 
     logger.info(
-        "Import termine: %d/%d joueurs mappes, %d saisons upsertees, %d non-matches TM, %d non-resolus DB",
+        "Import termine: %d/%d joueurs mappes, %d saisons upsertees, %d non-matches TM, "
+        "%d non-resolus DB, %d tm_id invalide",
         stats.players_matched, stats.players_total, stats.seasons_upserted,
         stats.players_skipped_not_matched, stats.players_skipped_unresolved,
+        stats.players_skipped_invalid_tm_id,
     )
     return stats
 
@@ -197,7 +225,11 @@ def main() -> int:
 
     stats = asyncio.run(_run(args.input))
 
-    if stats.players_skipped_not_matched or stats.players_skipped_unresolved:
+    if (
+        stats.players_skipped_not_matched
+        or stats.players_skipped_unresolved
+        or stats.players_skipped_invalid_tm_id
+    ):
         logger.warning("Joueurs non importes: %s", stats.unresolved_players)
         return 1
     return 0

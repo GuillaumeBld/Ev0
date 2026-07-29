@@ -1032,11 +1032,18 @@ async def get_player(
 # ---------------------------------------------------------------------------
 
 
+_UNKNOWN_COMPETITION_LABEL = "Autre"
+
+
 def _build_career_seasons(rows: list[PlayerCareerSeason]) -> list[CareerSeasonOut]:
     """Group career rows by season (summed across competitions), keep per-competition detail.
 
     Sorted by season_start_year descending; seasons with no season_start_year
     (malformed/unparsable source data) sort last, never first.
+
+    `competition_code` is always "" (never NULL, see app.scripts.import_career)
+    for matches without a Transfermarkt competitionId (friendlies) — such rows
+    get a readable fallback label instead of a raw empty string.
     """
     grouped: dict[str, dict[str, Any]] = {}
     order: list[str] = []
@@ -1062,9 +1069,13 @@ def _build_career_seasons(rows: list[PlayerCareerSeason]) -> list[CareerSeasonOu
         bucket["goals"] += row.goals
         bucket["assists"] += row.assists
         bucket["minutes"] += row.minutes
+        competition_label = row.competition
+        if row.competition_code == "" and not competition_label:
+            competition_label = _UNKNOWN_COMPETITION_LABEL
+
         bucket["competitions"].append(
             CareerCompetitionOut(
-                competition=row.competition,
+                competition=competition_label,
                 competition_code=row.competition_code,
                 appearances=row.appearances,
                 goals=row.goals,
