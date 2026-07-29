@@ -13,7 +13,10 @@ from sqlalchemy import desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_API_ID_LIST, TARGET_LEAGUE_INTERNAL_ID_LIST
+from app.ingestion.bzzoiro.constants import (
+    TARGET_LEAGUE_API_ID_LIST,
+    TARGET_LEAGUE_INTERNAL_ID_LIST,
+)
 from app.models.bzzoiro import (
     BzzEvent,
     BzzLeague,
@@ -22,6 +25,8 @@ from app.models.bzzoiro import (
     BzzPlayerSeasonStat,
     BzzTeam,
 )
+from app.models.player_career import PlayerCareerSeason
+from app.pricing.career_blend import blended_rhythm
 from app.services.season_service import current_season
 
 router = APIRouter(prefix="/players", tags=["players"])
@@ -220,6 +225,53 @@ class SeasonStatsOut(BaseModel):
     tackle_success_rate: float | None
     avg_minutes_per_match: float | None
     starts_pct: float | None
+
+
+class CareerCompetitionOut(BaseModel):
+    """One (season, competition) row from player_career_seasons."""
+
+    competition: str | None
+    competition_code: str | None
+    appearances: int
+    goals: int
+    assists: int
+    minutes: int
+
+
+class CareerSeasonOut(BaseModel):
+    """One season of career, aggregated across competitions, with per-competition detail."""
+
+    season: str
+    season_start_year: int | None
+    appearances: int
+    goals: int
+    assists: int
+    minutes: int
+    competitions: list[CareerCompetitionOut]
+
+
+class BlendedRhythmOut(BaseModel):
+    """Beta blended reference rhythm (Bzzoiro xG/xA + career goals/assists)."""
+
+    goal_rate_per_90: float
+    assist_rate_per_90: float
+    seasons_used: int
+    has_career: bool
+
+
+class PlayerCareerIdentityOut(BaseModel):
+    """Minimal player identity for the career endpoint."""
+
+    player_api_id: int
+    name: str
+
+
+class PlayerCareerOut(BaseModel):
+    """Response of GET /players/{player_api_id}/career."""
+
+    player: PlayerCareerIdentityOut
+    career: list[CareerSeasonOut]
+    blended_rhythm: BlendedRhythmOut | None
 
 
 class PlayerDetail(BaseModel):
@@ -972,4 +1024,100 @@ async def get_player(
         "team_name": player.current_team_name,
         "season_stats": season_stats_out,
         "recent_matches": recent_matches,
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /players/{player_api_id}/career  — full career history + Beta blended rhythm
+# ---------------------------------------------------------------------------
+
+
+def _build_career_seasons(rows: list[PlayerCareerSeason]) -> list[CareerSeasonOut]:
+    """Group career rows by season (summed across competitions), keep per-competition detail.
+
+    Sorted by season_start_year descending; seasons with no season_start_year
+    (malformed/unparsable source data) sort last, never first.
+    """
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+
+    for row in rows:
+        bucket = grouped.get(row.season)
+        if bucket is None:
+            bucket = {
+                "season": row.season,
+                "season_start_year": row.season_start_year,
+                "appearances": 0,
+                "goals": 0,
+                "assists": 0,
+                "minutes": 0,
+                "competitions": [],
+            }
+            grouped[row.season] = bucket
+            order.append(row.season)
+        elif bucket["season_start_year"] is None and row.season_start_year is not None:
+            bucket["season_start_year"] = row.season_start_year
+
+        bucket["appearances"] += row.appearances
+        bucket["goals"] += row.goals
+        bucket["assists"] += row.assists
+        bucket["minutes"] += row.minutes
+        bucket["competitions"].append(
+            CareerCompetitionOut(
+                competition=row.competition,
+                competition_code=row.competition_code,
+                appearances=row.appearances,
+                goals=row.goals,
+                assists=row.assists,
+                minutes=row.minutes,
+            )
+        )
+
+    seasons = [CareerSeasonOut(**grouped[season]) for season in order]
+    seasons.sort(key=lambda s: (s.season_start_year is None, -(s.season_start_year or 0)))
+    return seasons
+
+
+@router.get("/{player_api_id}/career", response_model=PlayerCareerOut)
+async def get_player_career(
+    player_api_id: int,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Full career history (detail per season, toutes compétitions) + Beta blended rhythm.
+
+    404 only when the player itself is unknown — consistent with GET
+    /players/{player_api_id}. A player that exists but has no career rows
+    (not yet backfilled, or entirely covered by Bzzoiro) is a normal state:
+    career=[] and blended_rhythm=None, not a 404 — blended_rhythm() already
+    returns None gracefully when there is no usable data.
+    """
+    player_result = await session.execute(
+        select(BzzPlayer.api_id, BzzPlayer.name).where(BzzPlayer.api_id == player_api_id)
+    )
+    player_row = player_result.first()
+    if player_row is None:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    career_rows = (await session.execute(
+        select(PlayerCareerSeason).where(PlayerCareerSeason.player_api_id == player_api_id)
+    )).scalars().all()
+
+    career = _build_career_seasons(career_rows)
+
+    rhythm = await blended_rhythm(session, player_api_id)
+    blended_rhythm_out = (
+        BlendedRhythmOut(
+            goal_rate_per_90=rhythm.goal_rate_per_90,
+            assist_rate_per_90=rhythm.assist_rate_per_90,
+            seasons_used=rhythm.seasons_used,
+            has_career=rhythm.has_career,
+        )
+        if rhythm is not None
+        else None
+    )
+
+    return {
+        "player": {"player_api_id": player_row.api_id, "name": player_row.name},
+        "career": career,
+        "blended_rhythm": blended_rhythm_out,
     }
