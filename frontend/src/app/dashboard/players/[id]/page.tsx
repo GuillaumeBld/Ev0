@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { RefreshCw, ArrowLeft, AlertCircle } from 'lucide-react'
+import { RefreshCw, ArrowLeft, AlertCircle, ChevronDown, ChevronRight } from 'lucide-react'
 import { clsx } from 'clsx'
-import { PlayerDetail, SeasonStatsOut, RecentMatch } from '@/lib/api'
+import { PlayerDetail, SeasonStatsOut, RecentMatch, PlayerCareerOut, CareerSeasonOut } from '@/lib/api'
 import { PlayerMatchChart } from '@/components/PlayerMatchChart'
 
 function fmt(v: number | null | undefined, decimals = 2): string {
@@ -198,6 +198,94 @@ function MatchHistoryTable({ matches }: { matches: RecentMatch[] }) {
   )
 }
 
+function CareerSeasonRow({ s }: { s: CareerSeasonOut }) {
+  const [open, setOpen] = useState(false)
+  // competition_code is "" (never null, see backend app/scripts/import_career.py)
+  // for matches with no Transfermarkt competitionId (friendlies) — treat it
+  // the same as "no distinct competition to drill into" as null used to mean.
+  const hasDetail = s.competitions.length > 1
+    || (s.competitions.length === 1 && !!s.competitions[0].competition_code)
+
+  return (
+    <>
+      <tr
+        className={clsx(
+          'border-b border-gray-700/30 transition-colors',
+          hasDetail && 'cursor-pointer hover:bg-gray-700/20'
+        )}
+        onClick={() => hasDetail && setOpen((o) => !o)}
+      >
+        <td className="py-2 px-2 text-gray-200 font-medium">
+          <span className="inline-flex items-center gap-1.5">
+            {hasDetail ? (
+              open ? <ChevronDown className="w-3.5 h-3.5 text-gray-500" /> : <ChevronRight className="w-3.5 h-3.5 text-gray-500" />
+            ) : (
+              <span className="w-3.5 h-3.5 inline-block" />
+            )}
+            {s.season}
+          </span>
+        </td>
+        <td className="py-2 px-2 text-right font-mono text-gray-300">{s.appearances}</td>
+        <td className="py-2 px-2 text-right font-mono font-semibold text-green-400">{s.goals}</td>
+        <td className="py-2 px-2 text-right font-mono text-blue-400">{s.assists}</td>
+        <td className="py-2 px-2 text-right font-mono text-gray-400">{s.minutes}</td>
+      </tr>
+      {open && s.competitions.map((c, i) => (
+        <tr key={`${s.season}-${c.competition_code ?? i}`} className="border-b border-gray-700/20 bg-gray-900/40">
+          <td className="py-1.5 px-2 pl-8 text-gray-500 text-xs">{c.competition ?? 'Compétition inconnue'}</td>
+          <td className="py-1.5 px-2 text-right font-mono text-gray-400 text-xs">{c.appearances}</td>
+          <td className="py-1.5 px-2 text-right font-mono text-green-400/80 text-xs">{c.goals}</td>
+          <td className="py-1.5 px-2 text-right font-mono text-blue-400/80 text-xs">{c.assists}</td>
+          <td className="py-1.5 px-2 text-right font-mono text-gray-500 text-xs">{c.minutes}</td>
+        </tr>
+      ))}
+    </>
+  )
+}
+
+function CareerSection({ data }: { data: PlayerCareerOut }) {
+  const { career, blended_rhythm } = data
+
+  return (
+    <div className="bg-gray-800 rounded-xl p-4 mb-6">
+      <SectionTitle>🏆 Carrière</SectionTitle>
+
+      {blended_rhythm && (
+        <div className="bg-gray-900 rounded-lg px-3 py-2.5 mb-4 flex flex-wrap items-center gap-x-6 gap-y-1">
+          <p className="text-xs text-gray-500">
+            Rythme de référence mélangé (buts/passes par 90 min, {blended_rhythm.seasons_used} saison{blended_rhythm.seasons_used > 1 ? 's' : ''} pris{blended_rhythm.seasons_used > 1 ? 'es' : 'e'} en compte) — rythme retenu pour le nouveau calcul de prix
+          </p>
+          <span className="text-sm font-mono font-semibold text-green-400">{fmt(blended_rhythm.goal_rate_per_90)} but/90</span>
+          <span className="text-sm font-mono font-semibold text-blue-400">{fmt(blended_rhythm.assist_rate_per_90)} passe D./90</span>
+        </div>
+      )}
+
+      {career.length === 0 ? (
+        <p className="text-sm text-gray-500 text-center py-4">Historique de carrière pas encore disponible.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-gray-700">
+                <th className="py-2 px-2 text-left text-gray-500 font-medium">Saison</th>
+                <th className="py-2 px-2 text-right text-gray-500 font-medium">Matchs</th>
+                <th className="py-2 px-2 text-right text-gray-500 font-medium">Buts</th>
+                <th className="py-2 px-2 text-right text-gray-500 font-medium">Passes D.</th>
+                <th className="py-2 px-2 text-right text-gray-500 font-medium">Minutes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {career.map((s) => (
+                <CareerSeasonRow key={s.season} s={s} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function PlayerDetailPage() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
@@ -205,6 +293,8 @@ export default function PlayerDetailPage() {
   const [player, setPlayer] = useState<PlayerDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  const [career, setCareer] = useState<PlayerCareerOut | null>(null)
 
   useEffect(() => {
     if (!id) return
@@ -218,6 +308,22 @@ export default function PlayerDetailPage() {
       .then((data: PlayerDetail) => setPlayer(data))
       .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false))
+  }, [id])
+
+  useEffect(() => {
+    if (!id) return
+    // Même id que /players/{id} ci-dessus : le paramètre de route [id]
+    // correspond à player_api_id (cf. lien depuis la liste des joueurs).
+    fetch(`/api/v1/players/${id}/career`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return res.json()
+      })
+      .then((data: PlayerCareerOut) => setCareer(data))
+      .catch((err: Error) => {
+        console.error('Failed to fetch player career:', err)
+        setCareer(null)
+      })
   }, [id])
 
   const age = (dob: string | null) => {
@@ -315,10 +421,13 @@ export default function PlayerDetailPage() {
 
       {/* Historique */}
       {player.recent_matches.length > 0 && (
-        <div className="bg-gray-800 rounded-xl p-4">
+        <div className="bg-gray-800 rounded-xl p-4 mb-6">
           <MatchHistoryTable matches={player.recent_matches} />
         </div>
       )}
+
+      {/* Carrière */}
+      {career && <CareerSection data={career} />}
     </div>
   )
 }
