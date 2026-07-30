@@ -53,8 +53,12 @@ function reevalClass(oldP: number | null | undefined, newP: number | null | unde
   return 'st'
 }
 
-function reevalArrow(c: ReevalClass): string {
-  return c === 'up' ? '↓' : c === 'dn' ? '↑' : ''
+function reevalArrow(c: ReevalClass, showProba: boolean): string {
+  if (c === 'st') return ''
+  // La flèche suit la valeur AFFICHÉE : en cote, "plus probable" = cote qui baisse (↓) ;
+  // en probabilité, "plus probable" = proba qui monte (↑).
+  if (showProba) return c === 'up' ? '↑' : '↓'
+  return c === 'up' ? '↓' : '↑'
 }
 
 function reevalColorClass(c: ReevalClass): string {
@@ -268,8 +272,8 @@ function TeamTable({
                 : p.is_pen_taker
               const goalCls = reevalClass(p.p_goal_supersub, p.beta_p_goal_supersub)
               const assistCls = reevalClass(p.p_assist_supersub, p.beta_p_assist_supersub)
-              const goalArrow = reevalArrow(goalCls)
-              const assistArrow = reevalArrow(assistCls)
+              const goalArrow = reevalArrow(goalCls, showProba)
+              const assistArrow = reevalArrow(assistCls, showProba)
               const hasSub = (p.p_sub ?? 0) > 0.01
               return (
                 <tr
