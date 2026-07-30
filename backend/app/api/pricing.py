@@ -1,11 +1,15 @@
 """Pricing API endpoints."""
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from sqlalchemy import select
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -40,7 +44,7 @@ class PlayerAllocationOut(BaseModel):
     lambda_assist: float
     prob_assist: float
     fair_odds_assist: float
-    # Supersub
+    # Supersub (Alpha — mono-season rhythm)
     p_goal_supersub: float = 0.0
     fair_odds_goal_supersub: float = 99.0
     p_assist_supersub: float = 0.0
@@ -49,6 +53,13 @@ class PlayerAllocationOut(BaseModel):
     avg_sub_time: float = 65.0
     sub_premium_goal: float = 0.0
     sub_premium_assist: float = 0.0
+    # Beta (career-blended rhythm) — same match context as Alpha, only the
+    # goal/assist rate per 90 differs. Equals the Alpha fields above when the
+    # player has no imported career (no blended rhythm available).
+    beta_p_goal_supersub: float = 0.0
+    beta_fair_odds_goal_supersub: float = 99.0
+    beta_p_assist_supersub: float = 0.0
+    beta_fair_odds_assist_supersub: float = 99.0
 
 
 class MatchPriceResponse(BaseModel):
@@ -79,6 +90,7 @@ async def price_match(
     """
     from app.models.fixtures import Fixture
     from app.models.match_odds import MatchOddsSnapshot
+    from app.pricing.beta_pricing import compute_beta_allocations
     from app.pricing.team_xg import load_match_pricing
 
     result = await db.execute(select(Fixture).where(Fixture.id == request.fixture_id))
@@ -113,36 +125,69 @@ async def price_match(
             },
         )
 
-    def _to_out(allocs: list) -> list[PlayerAllocationOut]:
-        return [
-            PlayerAllocationOut(
-                player_id=a.player_id,
-                player_name=a.player_name,
-                team=a.team,
-                position=a.position,
-                expected_minutes=a.expected_minutes,
-                is_pen_taker=a.is_pen_taker,
-                npxg_share=a.npxg_share,
-                xa_share=a.xa_share,
-                lambda_open_play=a.lambda_open_play,
-                lambda_penalty=a.lambda_penalty,
-                lambda_total=a.lambda_total,
-                prob_goal=a.prob_goal,
-                fair_odds_goal=a.fair_odds_goal,
-                lambda_assist=a.lambda_assist,
-                prob_assist=a.prob_assist,
-                fair_odds_assist=a.fair_odds_assist,
-                p_goal_supersub=getattr(a, "p_goal_supersub", 0.0),
-                fair_odds_goal_supersub=getattr(a, "fair_odds_goal_supersub", 99.0),
-                p_assist_supersub=getattr(a, "p_assist_supersub", 0.0),
-                fair_odds_assist_supersub=getattr(a, "fair_odds_assist_supersub", 99.0),
-                p_sub=getattr(a, "p_sub", 0.35),
-                avg_sub_time=getattr(a, "avg_sub_time", 65.0),
-                sub_premium_goal=getattr(a, "sub_premium_goal", 0.0),
-                sub_premium_assist=getattr(a, "sub_premium_assist", 0.0),
+    # Beta (career-blended rhythm) — additive, best-effort. A failure here
+    # must never break the (already fully computed) Alpha response: log and
+    # fall back to empty maps, which makes every player's beta_* fields
+    # mirror their Alpha fields below (same fallback as "no career data").
+    try:
+        home_beta, away_beta = await compute_beta_allocations(
+            db,
+            fixture,
+            pricing.home_players,
+            pricing.away_players,
+            pricing.home_match_xg,
+            pricing.away_match_xg,
+            home_pen_taker_override=request.home_pen_taker_override,
+            away_pen_taker_override=request.away_pen_taker_override,
+        )
+    except Exception:
+        logger.exception(
+            "compute_beta_allocations failed for fixture %s — falling back to Alpha for beta_* fields",
+            request.fixture_id,
+        )
+        home_beta, away_beta = {}, {}
+
+    def _to_out(allocs: list, beta_by_id: dict) -> list[PlayerAllocationOut]:
+        out = []
+        for a in allocs:
+            beta = beta_by_id.get(a.player_id)
+            out.append(
+                PlayerAllocationOut(
+                    player_id=a.player_id,
+                    player_name=a.player_name,
+                    team=a.team,
+                    position=a.position,
+                    expected_minutes=a.expected_minutes,
+                    is_pen_taker=a.is_pen_taker,
+                    npxg_share=a.npxg_share,
+                    xa_share=a.xa_share,
+                    lambda_open_play=a.lambda_open_play,
+                    lambda_penalty=a.lambda_penalty,
+                    lambda_total=a.lambda_total,
+                    prob_goal=a.prob_goal,
+                    fair_odds_goal=a.fair_odds_goal,
+                    lambda_assist=a.lambda_assist,
+                    prob_assist=a.prob_assist,
+                    fair_odds_assist=a.fair_odds_assist,
+                    p_goal_supersub=getattr(a, "p_goal_supersub", 0.0),
+                    fair_odds_goal_supersub=getattr(a, "fair_odds_goal_supersub", 99.0),
+                    p_assist_supersub=getattr(a, "p_assist_supersub", 0.0),
+                    fair_odds_assist_supersub=getattr(a, "fair_odds_assist_supersub", 99.0),
+                    p_sub=getattr(a, "p_sub", 0.35),
+                    avg_sub_time=getattr(a, "avg_sub_time", 65.0),
+                    sub_premium_goal=getattr(a, "sub_premium_goal", 0.0),
+                    sub_premium_assist=getattr(a, "sub_premium_assist", 0.0),
+                    beta_p_goal_supersub=getattr(beta, "p_goal_supersub", a.p_goal_supersub),
+                    beta_fair_odds_goal_supersub=getattr(
+                        beta, "fair_odds_goal_supersub", a.fair_odds_goal_supersub
+                    ),
+                    beta_p_assist_supersub=getattr(beta, "p_assist_supersub", a.p_assist_supersub),
+                    beta_fair_odds_assist_supersub=getattr(
+                        beta, "fair_odds_assist_supersub", a.fair_odds_assist_supersub
+                    ),
+                )
             )
-            for a in allocs
-        ]
+        return out
 
     return MatchPriceResponse(
         fixture_id=pricing.fixture_id,
@@ -151,10 +196,14 @@ async def price_match(
         home_match_xg=pricing.home_match_xg,
         away_match_xg=pricing.away_match_xg,
         xg_source=pricing.xg_source,
-        home_players=_to_out(pricing.home_players),
-        away_players=_to_out(pricing.away_players),
-        home_lineup_players=_to_out(pricing.home_lineup_players) if pricing.home_lineup_players else None,
-        away_lineup_players=_to_out(pricing.away_lineup_players) if pricing.away_lineup_players else None,
+        home_players=_to_out(pricing.home_players, home_beta),
+        away_players=_to_out(pricing.away_players, away_beta),
+        home_lineup_players=(
+            _to_out(pricing.home_lineup_players, home_beta) if pricing.home_lineup_players else None
+        ),
+        away_lineup_players=(
+            _to_out(pricing.away_lineup_players, away_beta) if pricing.away_lineup_players else None
+        ),
         last_scraped_at=pricing.last_scraped_at.isoformat() if pricing.last_scraped_at else None,
         p00=pricing.p00,
     )
