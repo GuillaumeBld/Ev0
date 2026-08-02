@@ -14,7 +14,9 @@ import asyncio
 import logging
 import re
 import unicodedata
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
+from difflib import SequenceMatcher
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -259,12 +261,9 @@ _TEAM_ALIASES: dict[str, str] = {
     "ssc napoli":               "napoli",
     # DB "Lazio" — Kambi EN
     "ss lazio":                 "lazio",
-    # DB "Fiorentina" — Kambi EN
-    "acf fiorentina":           "fiorentina",
     # DB "Inter" — Kambi EN
     "internazionale":           "inter",
-    # DB "Milan" — Kambi EN
-    "ac milan":                 "milan",
+    # (acf fiorentina / ac milan already covered above)
 
     # ── Équipes nationales — PMU/Kambi (anglais) → DB (français, Bzzoiro) ─────
     # PMU uses English team names; DB fixtures use French names from Bzzoiro API.
@@ -365,6 +364,12 @@ _TEAM_ALIASES: dict[str, str] = {
     "uzbekistan":               "ouzbekistan",
     "cabo verde":               "cap vert",
     "bosnia & herzegovina":     "bosnie herzegovine",
+
+    # ── Champions League / Europa clubs — FR translations, not spelling
+    # variants, so fuzzy matching (SequenceMatcher) cannot bridge them.
+    # DB name is API-Football/Bzzoiro's official name; best-effort mapping,
+    # confirm against prod "no fixture match" logs if it doesn't fire.
+    "etoile rouge":             "fk crvena zvezda",  # Red Star Belgrade (Betclic/PMU FR)
 }
 
 
@@ -376,6 +381,99 @@ def _normalize_team(name: str) -> str:
     n = re.sub(r"['.,-]", " ", n)
     n = re.sub(r"\s+", " ", n).strip()
     return _TEAM_ALIASES.get(n, n)
+
+
+# ---------------------------------------------------------------------------
+# Fallback team-name reconciliation (CORRECTION 1)
+#
+# Strict equality (direct + reversed key) is tried first in `tick`. When it
+# fails — bookmaker spells a team differently than the fixture in DB — two
+# further tiers are attempted, in order, each SCOPED to fixtures already
+# known to be `due` (never search across all fixtures in the DB):
+#
+#   1. Canonical-alias match: resolve both bookmaker names to a
+#      canonical_teams.id (via name_fr / name_en / aliases) and look up a due
+#      fixture whose home/away_canonical_team_id pair matches. This is an
+#      identity match, not a guess — safe whenever it fires.
+#   2. Fuzzy match: token-similarity (difflib) between the bookmaker names and
+#      the due fixtures' team names. A match is accepted ONLY if BOTH home and
+#      away cross a high threshold for EXACTLY ONE candidate fixture — a
+#      single-team match, or several plausible fixtures, is never enough and
+#      is logged + skipped rather than guessed (a wrong guess would attach
+#      odds to the wrong match).
+# ---------------------------------------------------------------------------
+
+_FUZZY_MATCH_THRESHOLD = 0.65
+
+
+def _build_canonical_alias_map(canonical_teams: Iterable) -> dict[str, int]:
+    """Map every normalized name/alias of a CanonicalTeam to its id.
+
+    Accepts any objects exposing `.id`, `.name_fr`, `.name_en`, `.aliases`
+    (CanonicalTeam rows, or lightweight stand-ins in tests).
+    """
+    alias_map: dict[str, int] = {}
+    for ct in canonical_teams:
+        for name in (ct.name_fr, ct.name_en, *(ct.aliases or [])):
+            if not name:
+                continue
+            key = _normalize_team(name)
+            # First writer wins: never let one team's alias silently steal a
+            # key another team already claimed.
+            alias_map.setdefault(key, ct.id)
+    return alias_map
+
+
+def _match_via_canonical_alias(
+    home_name: str,
+    away_name: str,
+    alias_map: dict[str, int],
+    fixture_by_canonical_ids: dict[tuple[int, int], int],
+) -> int | None:
+    """Resolve (home_name, away_name) to a due fixture via CanonicalTeam ids."""
+    home_id = alias_map.get(_normalize_team(home_name))
+    away_id = alias_map.get(_normalize_team(away_name))
+    if home_id is None or away_id is None:
+        return None
+    fixture_id = fixture_by_canonical_ids.get((home_id, away_id))
+    if fixture_id is not None:
+        return fixture_id
+    return fixture_by_canonical_ids.get((away_id, home_id))
+
+
+def _team_similarity(a: str, b: str) -> float:
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _match_via_fuzzy(
+    home_name: str,
+    away_name: str,
+    candidates: Sequence[tuple[int, str, str]],
+    threshold: float = _FUZZY_MATCH_THRESHOLD,
+) -> tuple[int | None, list[tuple[int, float]]]:
+    """Fuzzy-match (home_name, away_name) against due-fixture candidates.
+
+    `candidates` is a list of (fixture_id, normalized_home, normalized_away)
+    for fixtures already known to be due — never the whole fixtures table.
+
+    Returns (fixture_id_or_None, scored) where `scored` lists every candidate
+    that crossed the threshold with its score, for logging/traceability.
+    A fixture_id is only returned when exactly one candidate crosses the
+    threshold on BOTH teams; 0 or >1 crossing candidates → None (caller must
+    log and skip rather than guess).
+    """
+    norm_home = _normalize_team(home_name)
+    norm_away = _normalize_team(away_name)
+    scored: list[tuple[int, float]] = []
+    for fixture_id, cand_home, cand_away in candidates:
+        score = min(_team_similarity(norm_home, cand_home), _team_similarity(norm_away, cand_away))
+        score_rev = min(_team_similarity(norm_home, cand_away), _team_similarity(norm_away, cand_home))
+        best = max(score, score_rev)
+        if best >= threshold:
+            scored.append((fixture_id, best))
+    if len(scored) == 1:
+        return scored[0][0], scored
+    return None, scored
 
 
 def _league_key(league_name: str | None) -> str | None:
@@ -410,6 +508,7 @@ class OddsScheduler:
         from app.ingestion.odds_storage import store_match_scrape_result
         from app.ingestion.pmu_scraper import scrape_all_pmu
         from app.ingestion.unibet_lvs_scraper import scrape_all_unibet
+        from app.models.canonical_teams import CanonicalTeam
         from app.models.fixtures import Fixture
         from app.models.odds_scrape_state import OddsScrapeState
 
@@ -459,15 +558,29 @@ class OddsScheduler:
         # Collect leagues needed
         leagues_needed: set[str] = set()
         fixture_by_teams: dict[tuple[str, str], int] = {}
+        # Fallback indices for fixtures whose bookmaker name doesn't match
+        # DB spelling exactly — see CORRECTION 1 helpers above `_league_key`.
+        fixture_by_canonical_ids: dict[tuple[int, int], int] = {}
+        fuzzy_candidates: list[tuple[int, str, str]] = []
         for f in due:
             league = _league_key(f.league)
             if league:
                 leagues_needed.add(league)
             fixture_by_teams[(_normalize_team(f.home_team), _normalize_team(f.away_team))] = f.id
+            if f.home_canonical_team_id is not None and f.away_canonical_team_id is not None:
+                fixture_by_canonical_ids[(f.home_canonical_team_id, f.away_canonical_team_id)] = f.id
+            fuzzy_candidates.append(
+                (f.id, _normalize_team(f.home_team), _normalize_team(f.away_team))
+            )
 
         if not leagues_needed:
             logger.warning("OddsScheduler.tick: no recognized leagues in due fixtures")
             return 0, []
+
+        # Alias map for the canonical-team fallback (tier 1). Small table —
+        # loading it in full is cheap and avoids missing entries.
+        canonical_result = await session.execute(select(CanonicalTeam))
+        canonical_alias_map = _build_canonical_alias_map(canonical_result.scalars().all())
 
         # Scrape les 3 books en parallèle
         betclic_results, unibet_results, pmu_results = await asyncio.gather(
@@ -506,6 +619,36 @@ class OddsScheduler:
             if not fixture_id:
                 key_rev = (_normalize_team(r.away_team), _normalize_team(r.home_team))
                 fixture_id = fixture_by_teams.get(key_rev)
+
+            # Tier 1 — canonical-team alias resolution (identity match, safe).
+            if not fixture_id:
+                fixture_id = _match_via_canonical_alias(
+                    r.home_team, r.away_team, canonical_alias_map, fixture_by_canonical_ids
+                )
+                if fixture_id:
+                    logger.info(
+                        "OddsScheduler: canonical-alias match for '%s' vs '%s' -> fixture %s",
+                        r.home_team, r.away_team, fixture_id,
+                    )
+
+            # Tier 2 — fuzzy match among due fixtures only, both-teams-must-cross guard.
+            if not fixture_id:
+                fixture_id, fuzzy_scored = _match_via_fuzzy(
+                    r.home_team, r.away_team, fuzzy_candidates
+                )
+                if fixture_id:
+                    score = next(s for fid, s in fuzzy_scored if fid == fixture_id)
+                    logger.info(
+                        "OddsScheduler: fuzzy match for '%s' vs '%s' -> fixture %s (score=%.2f)",
+                        r.home_team, r.away_team, fixture_id, score,
+                    )
+                elif fuzzy_scored:
+                    logger.warning(
+                        "OddsScheduler: ambiguous fuzzy match for '%s' vs '%s' skipped "
+                        "(ne devine pas) - candidates: %s",
+                        r.home_team, r.away_team, fuzzy_scored,
+                    )
+
             if not fixture_id:
                 logger.warning(
                     "OddsScheduler: no fixture match for '%s' vs '%s' (normalized: '%s' vs '%s')",
