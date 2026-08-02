@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef, Suspense } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { Calculator, RefreshCw, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
@@ -37,6 +37,107 @@ const POS_COLOR: Record<string, string> = {
   FW: 'text-orange-400',
   MF: 'text-blue-400',
   DF: 'text-gray-400',
+}
+
+// ── Ancien vs Nouveau modèle — réévaluation ─────────────────────────
+// "up"  = nouveau modèle juge le joueur PLUS probable (proba ↑, cote ↓) → vert
+// "dn"  = nouveau modèle juge le joueur MOINS probable (proba ↓, cote ↑) → ambre
+// "st"  = quasi inchangé
+type ReevalClass = 'up' | 'dn' | 'st'
+
+function reevalClass(oldP: number | null | undefined, newP: number | null | undefined): ReevalClass {
+  if (oldP == null || newP == null || oldP <= 0 || newP <= 0) return 'st'
+  const r = newP / oldP
+  if (r >= 1.11) return 'up'
+  if (r <= 0.90) return 'dn'
+  return 'st'
+}
+
+function reevalArrow(c: ReevalClass, showProba: boolean): string {
+  if (c === 'st') return ''
+  // La flèche suit la valeur AFFICHÉE : en cote, "plus probable" = cote qui baisse (↓) ;
+  // en probabilité, "plus probable" = proba qui monte (↑).
+  if (showProba) return c === 'up' ? '↑' : '↓'
+  return c === 'up' ? '↓' : '↑'
+}
+
+function reevalColorClass(c: ReevalClass): string {
+  return c === 'up' ? 'text-green-400' : c === 'dn' ? 'text-amber-400' : 'text-gray-200'
+}
+
+// ── Signaux — réévaluations les plus fortes entre ancien et nouveau ─
+interface SignalItem {
+  playerId: number
+  playerName: string
+  position: string | null
+  team: string
+  market: 'Buteur' | 'Passeur'
+  oldP: number
+  newP: number
+  oldOdds: number
+  newOdds: number
+  cls: ReevalClass
+  magnitude: number
+}
+
+function buildSignals(
+  homePlayers: PlayerAllocationOut[],
+  awayPlayers: PlayerAllocationOut[],
+  homeTeam: string,
+  awayTeam: string,
+): SignalItem[] {
+  const all = [
+    ...homePlayers.map((p) => ({ p, team: homeTeam })),
+    ...awayPlayers.map((p) => ({ p, team: awayTeam })),
+  ]
+  const items: SignalItem[] = []
+  for (const { p, team } of all) {
+    const candidates: {
+      market: 'Buteur' | 'Passeur'
+      oldP?: number
+      newP?: number
+      oldOdds?: number
+      newOdds?: number
+    }[] = [
+      {
+        market: 'Buteur',
+        oldP: p.p_goal_supersub,
+        newP: p.beta_p_goal_supersub,
+        oldOdds: p.fair_odds_goal_supersub,
+        newOdds: p.beta_fair_odds_goal_supersub,
+      },
+      {
+        market: 'Passeur',
+        oldP: p.p_assist_supersub,
+        newP: p.beta_p_assist_supersub,
+        oldOdds: p.fair_odds_assist_supersub,
+        newOdds: p.beta_fair_odds_assist_supersub,
+      },
+    ]
+    let best: SignalItem | null = null
+    for (const c of candidates) {
+      if (c.oldP == null || c.newP == null || c.oldP <= 0 || c.newP <= 0) continue
+      const magnitude = Math.abs(Math.log(c.newP / c.oldP))
+      if (magnitude < 0.12) continue
+      if (!best || magnitude > best.magnitude) {
+        best = {
+          playerId: p.player_id,
+          playerName: p.player_name,
+          position: p.position,
+          team,
+          market: c.market,
+          oldP: c.oldP,
+          newP: c.newP,
+          oldOdds: c.oldOdds ?? 99,
+          newOdds: c.newOdds ?? 99,
+          cls: reevalClass(c.oldP, c.newP),
+          magnitude,
+        }
+      }
+    }
+    if (best) items.push(best)
+  }
+  return items.sort((a, b) => b.magnitude - a.magnitude).slice(0, 15)
 }
 
 // ── Mode d'affichage : probabilités ou cotes (persisté) ────────────
@@ -146,16 +247,22 @@ function TeamTable({
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
+            <tr className="text-gray-400">
+              <th rowSpan={2} className="text-left px-3 py-2 font-medium align-bottom">Joueur</th>
+              <th rowSpan={2} className="px-2 py-2 font-medium align-bottom">Pos</th>
+              <th rowSpan={2} className="px-2 py-2 font-medium align-bottom">Min</th>
+              <th colSpan={2} className="px-3 pt-2 pb-1 font-semibold text-gray-500 border-l border-gray-700 text-center uppercase tracking-wide text-[10px]">
+                Ancien calcul
+              </th>
+              <th colSpan={2} className="px-3 pt-2 pb-1 font-semibold text-orange-400 border-l border-gray-700 text-center uppercase tracking-wide text-[10px]">
+                Nouveau calcul
+              </th>
+            </tr>
             <tr className="border-b border-gray-700 text-gray-400">
-              <th className="text-left px-3 py-2 font-medium">Joueur</th>
-              <th className="px-2 py-2 font-medium">Pos</th>
-              <th className="px-2 py-2 font-medium">Min</th>
-              <th className="px-2 py-2 font-medium text-orange-400 border-l border-gray-700">P(sub)</th>
-              <th className="px-2 py-2 font-medium text-orange-400">t̄sub</th>
-              <th className="px-3 py-2 font-medium text-blue-400 border-l border-gray-700">Buteur avec sub</th>
-              <th className="px-3 py-2 font-medium text-blue-400">Passeur avec sub</th>
-              <th className="px-3 py-2 font-medium text-gray-500 border-l border-gray-700">Buteur</th>
-              <th className="px-3 py-2 font-medium text-gray-500">Passeur</th>
+              <th className="px-3 pb-2 font-medium text-gray-500 border-l border-gray-700">Buteur</th>
+              <th className="px-3 pb-2 font-medium text-gray-500">Passeur</th>
+              <th className="px-3 pb-2 font-medium text-orange-400 border-l border-gray-700">Buteur</th>
+              <th className="px-3 pb-2 font-medium text-orange-400">Passeur</th>
             </tr>
           </thead>
           <tbody>
@@ -163,6 +270,11 @@ function TeamTable({
               const isPenTaker = penTakerOverride
                 ? p.player_id === penTakerOverride
                 : p.is_pen_taker
+              const goalCls = reevalClass(p.p_goal_supersub, p.beta_p_goal_supersub)
+              const assistCls = reevalClass(p.p_assist_supersub, p.beta_p_assist_supersub)
+              const goalArrow = reevalArrow(goalCls, showProba)
+              const assistArrow = reevalArrow(assistCls, showProba)
+              const hasSub = (p.p_sub ?? 0) > 0.01
               return (
                 <tr
                   key={p.player_id}
@@ -205,67 +317,68 @@ function TeamTable({
                     </span>
                   </td>
 
-                  {/* Minutes */}
-                  <td className="px-2 py-2 text-center text-gray-400">
-                    {fmtMins(p.expected_minutes)}
+                  {/* Minutes + P(sub)/t̄sub (hover + petit sous-texte) */}
+                  <td
+                    className="px-2 py-2 text-center text-gray-400"
+                    title={`P(sub) ${((p.p_sub ?? 0) * 100).toFixed(0)}% · t̄sub ${(p.avg_sub_time ?? 65).toFixed(0)}'`}
+                  >
+                    <div>{fmtMins(p.expected_minutes)}</div>
+                    {hasSub && (
+                      <div className="text-[9px] text-gray-600 mt-0.5 whitespace-nowrap">
+                        {((p.p_sub ?? 0) * 100).toFixed(0)}% · {(p.avg_sub_time ?? 65).toFixed(0)}&apos;
+                      </div>
+                    )}
                   </td>
 
-                  {/* P(sub) */}
-                  <td className="px-2 py-2 text-center border-l border-gray-700/50">
-                    <span className={clsx(
-                      'text-xs font-medium',
-                      (p.p_sub ?? 0) > 0.5 ? 'text-orange-400' :
-                      (p.p_sub ?? 0) > 0.25 ? 'text-yellow-400' : 'text-gray-500',
-                    )}>
-                      {((p.p_sub ?? 0) * 100).toFixed(0)}%
-                    </span>
+                  {/* Ancien — Buteur (gris, discret) */}
+                  <td className="px-3 py-2 text-center border-l border-gray-700/50 text-gray-500 font-mono">
+                    {showProba
+                      ? fmtPct(p.p_goal_supersub ?? 0)
+                      : fmtOdds(p.fair_odds_goal_supersub ?? 99)}
                   </td>
 
-                  {/* t̄sub */}
-                  <td className="px-2 py-2 text-center text-gray-400 text-xs">
-                    {(p.avg_sub_time ?? 65).toFixed(0)}&apos;
+                  {/* Ancien — Passeur (gris, discret) */}
+                  <td className="px-3 py-2 text-center text-gray-500 font-mono">
+                    {showProba
+                      ? fmtPct(p.p_assist_supersub ?? 0)
+                      : fmtOdds(p.fair_odds_assist_supersub ?? 99)}
                   </td>
 
-                  {/* Supersub but+sub — primaire, bleu */}
-                  <td className="px-3 py-2 text-center border-l border-gray-700/50">
-                    <span className="font-semibold text-blue-300">
-                      {showProba
-                        ? `${((p.p_goal_supersub ?? 0) * 100).toFixed(1)}%`
-                        : fmtOdds(p.fair_odds_goal_supersub ?? 99)}
-                    </span>
+                  {/* Nouveau — Buteur (coloré selon l'écart) */}
+                  <td className={clsx(
+                    'px-3 py-2 text-center border-l border-gray-700/50 font-mono font-semibold',
+                    reevalColorClass(goalCls),
+                  )}>
+                    {p.beta_p_goal_supersub == null ? (
+                      <span className="text-gray-600">—</span>
+                    ) : (
+                      <>
+                        {showProba ? fmtPct(p.beta_p_goal_supersub) : fmtOdds(p.beta_fair_odds_goal_supersub ?? 99)}
+                        {goalArrow && <span className="text-[10px] ml-0.5">{goalArrow}</span>}
+                      </>
+                    )}
                   </td>
 
-                  {/* Supersub ass+sub — primaire, bleu */}
-                  <td className="px-3 py-2 text-center">
-                    <span className="font-semibold text-blue-300">
-                      {showProba
-                        ? `${((p.p_assist_supersub ?? 0) * 100).toFixed(1)}%`
-                        : fmtOdds(p.fair_odds_assist_supersub ?? 99)}
-                    </span>
-                  </td>
-
-                  {/* Standard but — secondaire, gris atténué */}
-                  <td className="px-3 py-2 text-center border-l border-gray-700/50">
-                    <span className={clsx(
-                      'text-xs',
-                      !showProba && isPenTaker ? 'text-amber-400' : 'text-gray-500',
-                    )}>
-                      {showProba ? fmtPct(p.prob_goal) : fmtOdds(p.fair_odds_goal)}
-                    </span>
-                  </td>
-
-                  {/* Standard assist — secondaire, gris atténué */}
-                  <td className="px-3 py-2 text-center">
-                    <span className="text-gray-500 text-xs">
-                      {showProba ? fmtPct(p.prob_assist) : fmtOdds(p.fair_odds_assist)}
-                    </span>
+                  {/* Nouveau — Passeur (coloré selon l'écart) */}
+                  <td className={clsx(
+                    'px-3 py-2 text-center font-mono font-semibold',
+                    reevalColorClass(assistCls),
+                  )}>
+                    {p.beta_p_assist_supersub == null ? (
+                      <span className="text-gray-600">—</span>
+                    ) : (
+                      <>
+                        {showProba ? fmtPct(p.beta_p_assist_supersub) : fmtOdds(p.beta_fair_odds_assist_supersub ?? 99)}
+                        {assistArrow && <span className="text-[10px] ml-0.5">{assistArrow}</span>}
+                      </>
+                    )}
                   </td>
                 </tr>
               )
             })}
             {players.length === 0 && (
               <tr>
-                <td colSpan={11} className="px-4 py-6 text-center text-gray-500 italic">
+                <td colSpan={7} className="px-4 py-6 text-center text-gray-500 italic">
                   Aucun joueur trouvé pour cette équipe
                 </td>
               </tr>
@@ -273,6 +386,83 @@ function TeamTable({
           </tbody>
         </table>
       </div>
+    </div>
+  )
+}
+
+// ── Signals section — réévaluations les plus fortes ─────────────────
+
+interface SignalsSectionProps {
+  items: SignalItem[]
+  viewMode: ViewMode
+}
+
+function SignalsSection({ items, viewMode }: SignalsSectionProps) {
+  const showProba = viewMode === 'proba'
+
+  return (
+    <div className="mt-8">
+      <h2 className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-1">
+        Signaux — réévaluations les plus fortes
+      </h2>
+      <p className="text-xs text-gray-500 mb-3">
+        Joueurs triés par ampleur d&apos;écart entre l&apos;ancien et le nouveau calcul. C&apos;est là que le nouveau
+        modèle voit les choses différemment — donc là qu&apos;il peut y avoir un coup.
+      </p>
+      {items.length === 0 ? (
+        <div className="text-xs text-gray-600 italic px-1">Aucune réévaluation significative sur ce match.</div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((item) => {
+            const pct = Math.min(46, Math.abs(item.newP / item.oldP - 1) * 100)
+            return (
+              <div
+                key={`${item.playerId}-${item.market}`}
+                className="grid grid-cols-[minmax(140px,180px)_1fr_auto] items-center gap-4 px-4 py-3 bg-gray-800 border border-gray-700 rounded-xl"
+              >
+                {/* Who */}
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-white truncate">{item.playerName}</div>
+                  <div className="text-[11px] text-gray-500 truncate">
+                    {item.team}
+                    {item.position ? ` · ${item.position}` : ''}
+                  </div>
+                </div>
+
+                {/* Bar: sens + force de l'écart */}
+                <div className="relative h-6">
+                  <div className="absolute left-1/2 top-0 bottom-0 w-px bg-gray-700" />
+                  <div
+                    className={clsx(
+                      'absolute top-1.5 h-3.5 rounded',
+                      item.cls === 'up' ? 'bg-green-500/70' : 'bg-amber-500/70',
+                    )}
+                    style={
+                      item.cls === 'up'
+                        ? { right: '50%', width: `${pct}%` }
+                        : { left: '50%', width: `${pct}%` }
+                    }
+                  />
+                </div>
+
+                {/* Nums */}
+                <div className="font-mono text-xs whitespace-nowrap text-right">
+                  <span className="text-[10px] text-gray-500 uppercase tracking-wide mr-2 font-sans">
+                    {item.market}
+                  </span>
+                  <span className="text-gray-500">
+                    {showProba ? fmtPct(item.oldP) : fmtOdds(item.oldOdds)}
+                  </span>
+                  <span className="text-gray-600 mx-1.5">→</span>
+                  <span className={clsx('font-bold', reevalColorClass(item.cls))}>
+                    {showProba ? fmtPct(item.newP) : fmtOdds(item.newOdds)}
+                  </span>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -464,6 +654,11 @@ function CalculatorInner() {
 
   const selectedFixture = fixtures.find(f => f.id === selectedFixtureId)
 
+  const signals = useMemo(() => {
+    if (!pricing) return []
+    return buildSignals(pricing.home_players, pricing.away_players, pricing.home_team, pricing.away_team)
+  }, [pricing])
+
   return (
     <div className="p-4 md:p-6 max-w-7xl">
       {/* Header */}
@@ -583,6 +778,17 @@ function CalculatorInner() {
             <span className="text-blue-400">MF</span> ·
             <span className="text-gray-400">DF</span>
           </span>
+          <span className="w-px h-3 bg-gray-700" />
+          <span className="flex items-center gap-3">
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-sm bg-green-500/70" />
+              nouveau plus probable (cote ↓)
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-sm bg-amber-500/70" />
+              nouveau moins probable (cote ↑)
+            </span>
+          </span>
           {pricing.xg_source === 'bzzoiro' && lastScrapedAt && (
             <>
               <span className="w-px h-3 bg-gray-700" />
@@ -649,6 +855,11 @@ function CalculatorInner() {
             />
           </div>
         </div>
+      )}
+
+      {/* Signaux — réévaluations les plus fortes entre ancien et nouveau calcul */}
+      {pricing && !loading && (
+        <SignalsSection items={signals} viewMode={viewMode} />
       )}
 
       {/* Empty state */}

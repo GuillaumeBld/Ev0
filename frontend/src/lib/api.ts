@@ -98,6 +98,11 @@ export interface PlayerAllocationOut {
   avg_sub_time?: number
   sub_premium_goal?: number
   sub_premium_assist?: number
+  // Beta model (nouveau calcul) — supersub fields, may be absent
+  beta_p_goal_supersub?: number
+  beta_fair_odds_goal_supersub?: number
+  beta_p_assist_supersub?: number
+  beta_fair_odds_assist_supersub?: number
 }
 
 export interface MatchPriceResponse {
