@@ -384,23 +384,34 @@ def _normalize_team(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Fallback team-name reconciliation (CORRECTION 1)
+# Fallback team-name reconciliation (CORRECTION 1 + mixed-case follow-up)
 #
-# Strict equality (direct + reversed key) is tried first in `tick`. When it
-# fails — bookmaker spells a team differently than the fixture in DB — two
-# further tiers are attempted, in order, each SCOPED to fixtures already
-# known to be `due` (never search across all fixtures in the DB):
+# When a bookmaker spells a team differently than the DB fixture, we match
+# PER TEAM (not per homogeneous pair), SCOPED to fixtures already known to be
+# `due` (never the whole fixtures table). For each team side, a bookmaker name
+# is considered to match a fixture side if ANY of these succeed:
 #
-#   1. Canonical-alias match: resolve both bookmaker names to a
-#      canonical_teams.id (via name_fr / name_en / aliases) and look up a due
-#      fixture whose home/away_canonical_team_id pair matches. This is an
-#      identity match, not a guess — safe whenever it fires.
-#   2. Fuzzy match: token-similarity (difflib) between the bookmaker names and
-#      the due fixtures' team names. A match is accepted ONLY if BOTH home and
-#      away cross a high threshold for EXACTLY ONE candidate fixture — a
-#      single-team match, or several plausible fixtures, is never enough and
-#      is logged + skipped rather than guessed (a wrong guess would attach
-#      odds to the wrong match).
+#   (a) strict normalized equality;
+#   (b) canonical identity — the bookmaker name and the fixture side resolve
+#       (via canonical_teams id, or via a shared name_fr / name_en / alias)
+#       to the SAME canonical team;
+#   (c) fuzzy similarity (difflib) >= threshold.
+#
+# A fixture is a candidate when HOME matches AND AWAY matches (each by any of
+# the three means), in one orientation OR the reversed one. This is what
+# unlocks the mixed case — e.g. bookmaker "Sparta Prague" vs "Lyon" against a
+# DB fixture "AC Sparta Praha" (home canonical NULL) vs "Olympique Lyonnais"
+# (away canonical = Lyon): the away side matches by canonical identity while
+# the home side matches only by fuzzy — different means per side.
+#
+# ANTI-FALSE-POSITIVE GUARDS (unchanged intent):
+#   - both sides must match — a single matching team is never enough;
+#   - among due fixtures we resolve ONLY when exactly one fixture matches;
+#     ties are logged and skipped rather than guessed (a wrong guess would
+#     attach odds to the wrong match);
+#   - exact matches (all sides via strict/canonical identity) are preferred
+#     over fuzzy-involved ones, so a genuine identity match is never lost to a
+#     coincidental fuzzy match on another due fixture.
 # ---------------------------------------------------------------------------
 
 _FUZZY_MATCH_THRESHOLD = 0.65
@@ -424,56 +435,129 @@ def _build_canonical_alias_map(canonical_teams: Iterable) -> dict[str, int]:
     return alias_map
 
 
-def _match_via_canonical_alias(
-    home_name: str,
-    away_name: str,
-    alias_map: dict[str, int],
-    fixture_by_canonical_ids: dict[tuple[int, int], int],
-) -> int | None:
-    """Resolve (home_name, away_name) to a due fixture via CanonicalTeam ids."""
-    home_id = alias_map.get(_normalize_team(home_name))
-    away_id = alias_map.get(_normalize_team(away_name))
-    if home_id is None or away_id is None:
-        return None
-    fixture_id = fixture_by_canonical_ids.get((home_id, away_id))
-    if fixture_id is not None:
-        return fixture_id
-    return fixture_by_canonical_ids.get((away_id, home_id))
+def _build_canonical_names_by_id(canonical_teams: Iterable) -> dict[int, set[str]]:
+    """Map each CanonicalTeam id → the set of its normalized names/aliases."""
+    names_by_id: dict[int, set[str]] = {}
+    for ct in canonical_teams:
+        bucket = names_by_id.setdefault(ct.id, set())
+        for name in (ct.name_fr, ct.name_en, *(ct.aliases or [])):
+            if name:
+                bucket.add(_normalize_team(name))
+    return names_by_id
 
 
 def _team_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
-def _match_via_fuzzy(
-    home_name: str,
-    away_name: str,
-    candidates: Sequence[tuple[int, str, str]],
-    threshold: float = _FUZZY_MATCH_THRESHOLD,
-) -> tuple[int | None, list[tuple[int, float]]]:
-    """Fuzzy-match (home_name, away_name) against due-fixture candidates.
+def _resolve_side(
+    norm_name: str,
+    explicit_cid: int | None,
+    alias_map: dict[str, int],
+    canonical_names_by_id: dict[int, set[str]],
+) -> tuple[int | None, set[str]]:
+    """Resolve a team side to (canonical_id_or_None, set_of_normalized_names).
 
-    `candidates` is a list of (fixture_id, normalized_home, normalized_away)
+    The canonical id comes from the fixture's own column when present, else
+    from resolving the (normalized) name through the alias map. The name set
+    always contains the side's own normalized name plus every known
+    name/alias of its canonical team, so two sides can be compared by name
+    even when only one of them carries an explicit canonical id.
+    """
+    cid = explicit_cid if explicit_cid is not None else alias_map.get(norm_name)
+    names = {norm_name}
+    if cid is not None:
+        names |= canonical_names_by_id.get(cid, set())
+    return cid, names
+
+
+def _sides_match(
+    a: tuple[str, int | None, set[str]],
+    b: tuple[str, int | None, set[str]],
+    threshold: float,
+) -> tuple[bool, bool]:
+    """Does bookmaker side `a` match fixture side `b`?
+
+    Each side is (normalized_name, canonical_id_or_None, names_set).
+    Returns (matched, is_identity) where is_identity is True for strict /
+    canonical matches and False for fuzzy-only matches.
+    """
+    a_norm, a_cid, a_names = a
+    b_norm, b_cid, b_names = b
+    # (b) canonical identity via shared id
+    if a_cid is not None and b_cid is not None and a_cid == b_cid:
+        return True, True
+    # (a)+(b) strict equality OR shared canonical name/alias
+    if a_names & b_names:
+        return True, True
+    # (c) fuzzy
+    if _team_similarity(a_norm, b_norm) >= threshold:
+        return True, False
+    return False, False
+
+
+def _match_result_to_fixture(
+    book_home: str,
+    book_away: str,
+    candidates: Sequence[tuple[int, str, int | None, str, int | None]],
+    alias_map: dict[str, int],
+    canonical_names_by_id: dict[int, set[str]],
+    threshold: float = _FUZZY_MATCH_THRESHOLD,
+) -> tuple[int | None, str, list[int], list[int]]:
+    """Match a scraped (book_home, book_away) pair to exactly one due fixture.
+
+    `candidates` is a list of
+    (fixture_id, home_norm, home_canonical_id, away_norm, away_canonical_id)
     for fixtures already known to be due — never the whole fixtures table.
 
-    Returns (fixture_id_or_None, scored) where `scored` lists every candidate
-    that crossed the threshold with its score, for logging/traceability.
-    A fixture_id is only returned when exactly one candidate crosses the
-    threshold on BOTH teams; 0 or >1 crossing candidates → None (caller must
-    log and skip rather than guess).
+    Matching is PER TEAM: each side may match by strict equality, canonical
+    identity, or fuzzy (see module comment). A fixture qualifies when BOTH
+    sides match in one orientation or the reversed one.
+
+    Returns (fixture_id_or_None, reason, exact_fids, loose_fids). A fixture is
+    returned only when it is the UNIQUE match at the strongest available tier
+    (identity preferred over fuzzy); ties → None with reason "ambiguous_*".
     """
-    norm_home = _normalize_team(home_name)
-    norm_away = _normalize_team(away_name)
-    scored: list[tuple[int, float]] = []
-    for fixture_id, cand_home, cand_away in candidates:
-        score = min(_team_similarity(norm_home, cand_home), _team_similarity(norm_away, cand_away))
-        score_rev = min(_team_similarity(norm_home, cand_away), _team_similarity(norm_away, cand_home))
-        best = max(score, score_rev)
-        if best >= threshold:
-            scored.append((fixture_id, best))
-    if len(scored) == 1:
-        return scored[0][0], scored
-    return None, scored
+    bh = _resolve_side(_normalize_team(book_home), None, alias_map, canonical_names_by_id)
+    ba = _resolve_side(_normalize_team(book_away), None, alias_map, canonical_names_by_id)
+    bh_side = (_normalize_team(book_home), bh[0], bh[1])
+    ba_side = (_normalize_team(book_away), ba[0], ba[1])
+
+    exact_fids: list[int] = []
+    loose_fids: list[int] = []
+    for fid, fh_norm, fh_cid, fa_norm, fa_cid in candidates:
+        fh = _resolve_side(fh_norm, fh_cid, alias_map, canonical_names_by_id)
+        fa = _resolve_side(fa_norm, fa_cid, alias_map, canonical_names_by_id)
+        fh_side = (fh_norm, fh[0], fh[1])
+        fa_side = (fa_norm, fa[0], fa[1])
+
+        best_kind: str | None = None  # None | "fuzzy" | "identity"
+        for h_book, a_book, h_fix, a_fix in (
+            (bh_side, ba_side, fh_side, fa_side),   # same orientation
+            (bh_side, ba_side, fa_side, fh_side),   # reversed orientation
+        ):
+            h_ok, h_id = _sides_match(h_book, h_fix, threshold)
+            a_ok, a_id = _sides_match(a_book, a_fix, threshold)
+            if h_ok and a_ok:
+                kind = "identity" if (h_id and a_id) else "fuzzy"
+                if kind == "identity":
+                    best_kind = "identity"
+                    break
+                best_kind = best_kind or "fuzzy"
+        if best_kind == "identity":
+            exact_fids.append(fid)
+        elif best_kind == "fuzzy":
+            loose_fids.append(fid)
+
+    if len(exact_fids) == 1:
+        return exact_fids[0], "exact", exact_fids, loose_fids
+    if len(exact_fids) > 1:
+        return None, "ambiguous_exact", exact_fids, loose_fids
+    if len(loose_fids) == 1:
+        return loose_fids[0], "fuzzy", exact_fids, loose_fids
+    if len(loose_fids) > 1:
+        return None, "ambiguous_fuzzy", exact_fids, loose_fids
+    return None, "none", exact_fids, loose_fids
 
 
 def _league_key(league_name: str | None) -> str | None:
@@ -555,32 +639,35 @@ class OddsScheduler:
 
         logger.info("OddsScheduler.tick: %d fixtures due for scraping", len(due))
 
-        # Collect leagues needed
+        # Collect leagues needed + per-team match candidates for due fixtures.
+        # A single candidate list drives the unified per-team matcher below —
+        # each tuple carries both the normalized names AND the canonical ids so
+        # a side can match by strict / canonical / fuzzy independently.
         leagues_needed: set[str] = set()
-        fixture_by_teams: dict[tuple[str, str], int] = {}
-        # Fallback indices for fixtures whose bookmaker name doesn't match
-        # DB spelling exactly — see CORRECTION 1 helpers above `_league_key`.
-        fixture_by_canonical_ids: dict[tuple[int, int], int] = {}
-        fuzzy_candidates: list[tuple[int, str, str]] = []
+        match_candidates: list[tuple[int, str, int | None, str, int | None]] = []
         for f in due:
             league = _league_key(f.league)
             if league:
                 leagues_needed.add(league)
-            fixture_by_teams[(_normalize_team(f.home_team), _normalize_team(f.away_team))] = f.id
-            if f.home_canonical_team_id is not None and f.away_canonical_team_id is not None:
-                fixture_by_canonical_ids[(f.home_canonical_team_id, f.away_canonical_team_id)] = f.id
-            fuzzy_candidates.append(
-                (f.id, _normalize_team(f.home_team), _normalize_team(f.away_team))
+            match_candidates.append(
+                (
+                    f.id,
+                    _normalize_team(f.home_team),
+                    f.home_canonical_team_id,
+                    _normalize_team(f.away_team),
+                    f.away_canonical_team_id,
+                )
             )
 
         if not leagues_needed:
             logger.warning("OddsScheduler.tick: no recognized leagues in due fixtures")
             return 0, []
 
-        # Alias map for the canonical-team fallback (tier 1). Small table —
+        # Canonical-team indexes for the per-team matcher. Small table —
         # loading it in full is cheap and avoids missing entries.
-        canonical_result = await session.execute(select(CanonicalTeam))
-        canonical_alias_map = _build_canonical_alias_map(canonical_result.scalars().all())
+        canonical_teams = (await session.execute(select(CanonicalTeam))).scalars().all()
+        canonical_alias_map = _build_canonical_alias_map(canonical_teams)
+        canonical_names_by_id = _build_canonical_names_by_id(canonical_teams)
 
         # Scrape les 3 books en parallèle
         betclic_results, unibet_results, pmu_results = await asyncio.gather(
@@ -614,42 +701,25 @@ class OddsScheduler:
         scraped = 0
         stored_fixture_ids: set[int] = set()
         for r in all_results:
-            key = (_normalize_team(r.home_team), _normalize_team(r.away_team))
-            fixture_id = fixture_by_teams.get(key)
-            if not fixture_id:
-                key_rev = (_normalize_team(r.away_team), _normalize_team(r.home_team))
-                fixture_id = fixture_by_teams.get(key_rev)
-
-            # Tier 1 — canonical-team alias resolution (identity match, safe).
-            if not fixture_id:
-                fixture_id = _match_via_canonical_alias(
-                    r.home_team, r.away_team, canonical_alias_map, fixture_by_canonical_ids
+            # Unified per-team matcher: strict / canonical / fuzzy, each side
+            # independent, both sides required, unique-candidate guard.
+            fixture_id, reason, exact_fids, loose_fids = _match_result_to_fixture(
+                r.home_team, r.away_team, match_candidates,
+                canonical_alias_map, canonical_names_by_id,
+            )
+            if fixture_id:
+                logger.info(
+                    "OddsScheduler: %s match for '%s' vs '%s' -> fixture %s",
+                    reason, r.home_team, r.away_team, fixture_id,
                 )
-                if fixture_id:
-                    logger.info(
-                        "OddsScheduler: canonical-alias match for '%s' vs '%s' -> fixture %s",
-                        r.home_team, r.away_team, fixture_id,
-                    )
-
-            # Tier 2 — fuzzy match among due fixtures only, both-teams-must-cross guard.
-            if not fixture_id:
-                fixture_id, fuzzy_scored = _match_via_fuzzy(
-                    r.home_team, r.away_team, fuzzy_candidates
+            elif reason in ("ambiguous_exact", "ambiguous_fuzzy"):
+                logger.warning(
+                    "OddsScheduler: ambiguous match for '%s' vs '%s' skipped "
+                    "(ne devine pas) - exact=%s fuzzy=%s",
+                    r.home_team, r.away_team, exact_fids, loose_fids,
                 )
-                if fixture_id:
-                    score = next(s for fid, s in fuzzy_scored if fid == fixture_id)
-                    logger.info(
-                        "OddsScheduler: fuzzy match for '%s' vs '%s' -> fixture %s (score=%.2f)",
-                        r.home_team, r.away_team, fixture_id, score,
-                    )
-                elif fuzzy_scored:
-                    logger.warning(
-                        "OddsScheduler: ambiguous fuzzy match for '%s' vs '%s' skipped "
-                        "(ne devine pas) - candidates: %s",
-                        r.home_team, r.away_team, fuzzy_scored,
-                    )
-
-            if not fixture_id:
+                continue
+            else:
                 logger.warning(
                     "OddsScheduler: no fixture match for '%s' vs '%s' (normalized: '%s' vs '%s')",
                     r.home_team, r.away_team,
