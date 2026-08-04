@@ -384,37 +384,68 @@ def _normalize_team(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Fallback team-name reconciliation (CORRECTION 1 + mixed-case follow-up)
+# Fallback team-name reconciliation (CORRECTION 1 + mixed-case + anchoring)
 #
 # When a bookmaker spells a team differently than the DB fixture, we match
 # PER TEAM (not per homogeneous pair), SCOPED to fixtures already known to be
 # `due` (never the whole fixtures table). For each team side, a bookmaker name
-# is considered to match a fixture side if ANY of these succeed:
+# matches a fixture side at one of these STRENGTHS (strongest first):
 #
-#   (a) strict normalized equality;
-#   (b) canonical identity — the bookmaker name and the fixture side resolve
-#       (via canonical_teams id, or via a shared name_fr / name_en / alias)
-#       to the SAME canonical team;
-#   (c) fuzzy similarity (difflib) >= threshold.
+#   IDENTITY  — strict normalized equality, OR canonical identity (same
+#               canonical_teams id, or a shared name_fr / name_en / alias).
+#   TOKEN     — token-containment: the normalized token set of the shorter
+#               name is fully contained in that of the longer name (both with
+#               ≥1 token). Bridges official-vs-abbreviated names that fuzzy
+#               scoring misses, e.g. {agf} ⊂ {agf, aarhus} ("AGF" vs
+#               "AGF Aarhus"). Treated as a STRONG (near-identity) match.
+#   FUZZY     — difflib similarity >= _FUZZY_MATCH_THRESHOLD.
 #
-# A fixture is a candidate when HOME matches AND AWAY matches (each by any of
-# the three means), in one orientation OR the reversed one. This is what
-# unlocks the mixed case — e.g. bookmaker "Sparta Prague" vs "Lyon" against a
-# DB fixture "AC Sparta Praha" (home canonical NULL) vs "Olympique Lyonnais"
-# (away canonical = Lyon): the away side matches by canonical identity while
-# the home side matches only by fuzzy — different means per side.
+# A fixture is a normal candidate when HOME matches AND AWAY matches (each by
+# any strength), in one orientation OR the reversed one; its tier is the
+# WEAKER of its two sides. Resolution walks tiers strongest-first:
 #
-# ANTI-FALSE-POSITIVE GUARDS (unchanged intent):
-#   - both sides must match — a single matching team is never enough;
-#   - among due fixtures we resolve ONLY when exactly one fixture matches;
-#     ties are logged and skipped rather than guessed (a wrong guess would
-#     attach odds to the wrong match);
-#   - exact matches (all sides via strict/canonical identity) are preferred
-#     over fuzzy-involved ones, so a genuine identity match is never lost to a
-#     coincidental fuzzy match on another due fixture.
+#   1. IDENTITY (both sides identity)
+#   2. TOKEN    (both sides ≥ token-containment)
+#   3. ANCHOR   (calendar anchoring — see _anchor_match)
+#   4. FUZZY    (both sides fuzzy)
+#
+# ANCHOR sits ABOVE fuzzy: when no fixture matches on BOTH sides by a
+# certain means (identity/token), but one bookmaker side matches EXACTLY ONE
+# due fixture with certainty on a consistent role, we may attach to it if the
+# other bookmaker side is at least faintly plausible against that fixture's
+# other team and not a better fit for some OTHER due fixture. This rescues
+# cases like "Aarhus GF" vs "Sabah FK" → fixture "AGF" vs "Sabah FK" (Sabah
+# anchors exactly; "Aarhus GF"/"AGF" ~0.5 clears the low floor).
+#
+# ANTI-FALSE-POSITIVE GUARDS:
+#   - both sides must match — a single matching team is never enough
+#     (except anchoring, which still validates the non-anchor side);
+#   - at every tier we resolve ONLY when exactly one fixture qualifies; ties
+#     are logged and skipped rather than guessed;
+#   - STRICT priority identity > token > anchor > fuzzy, so a genuine
+#     identity/token match is never stolen by an anchor or a coincidental
+#     fuzzy match on another due fixture;
+#   - the anchor's certain side must designate a SINGLE due fixture, else the
+#     anchor is ambiguous and skipped.
 # ---------------------------------------------------------------------------
 
 _FUZZY_MATCH_THRESHOLD = 0.65
+
+# Anchoring floor: the non-anchor bookmaker side must reach at least this
+# similarity against the anchored fixture's other team. Calibrated at 0.30 —
+# comfortably above absurd pairings ("real madrid"/"agf" ≈ 0.14) yet below
+# legitimate abbreviation gaps ("aarhus gf"/"agf" ≈ 0.50). It only gates the
+# SECOND side; the anchor side itself is already a certain (identity/token)
+# match, so a low but non-zero floor here is safe.
+_ANCHOR_FLOOR = 0.30
+
+# Per-side match strengths (higher = more reliable).
+_STRENGTH_NONE = 0
+_STRENGTH_FUZZY = 1
+_STRENGTH_TOKEN = 2
+_STRENGTH_IDENTITY = 3
+# "Certain" = matched by a non-fuzzy means (used to qualify an anchor side).
+_STRENGTH_CERTAIN = _STRENGTH_TOKEN
 
 
 def _build_canonical_alias_map(canonical_teams: Iterable) -> dict[str, int]:
@@ -471,29 +502,129 @@ def _resolve_side(
     return cid, names
 
 
-def _sides_match(
+# Tokens that mark a DISTINCT team (reserve / youth side), not a fuller
+# spelling of the same club. When the only extra token in the longer name is
+# one of these, token-containment must NOT fire — "Sparta Prague" and
+# "Sparta Prague B" are different teams.
+_TEAM_VARIANT_MARKERS = frozenset(
+    {"b", "ii", "iii", "iv", "u18", "u19", "u20", "u21", "u23", "reserve", "reserves"}
+)
+
+
+def _tokens(norm_name: str) -> set[str]:
+    """Significant (non-empty) normalized tokens of a team name."""
+    return {t for t in norm_name.split() if t}
+
+
+def _token_contained(a_norm: str, b_norm: str) -> bool:
+    """True if the shorter name's tokens are fully contained in the longer's.
+
+    Both names must carry ≥1 token. e.g. {agf} ⊆ {agf, aarhus}. Exact string
+    equality is handled upstream (identity) — this fires for genuine
+    abbreviation/superset relationships, incl. reordered same-token names.
+
+    Guard: if the ONLY extra tokens in the longer name are reserve/youth
+    markers (b, ii, u21, …), the longer name is a DIFFERENT team, so
+    containment is rejected — e.g. "Sparta Prague" ⊄ "Sparta Prague B". Numeric
+    or descriptive extras ("Mainz" → "Mainz 05") are NOT markers and still match.
+    """
+    ta, tb = _tokens(a_norm), _tokens(b_norm)
+    if not ta or not tb:
+        return False
+    shorter, longer = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    if not shorter.issubset(longer):
+        return False
+    # Reject when the ONLY extra tokens are reserve/youth markers (distinct team).
+    extra = longer - shorter
+    return not (extra and extra.issubset(_TEAM_VARIANT_MARKERS))
+
+
+def _side_strength(
     a: tuple[str, int | None, set[str]],
     b: tuple[str, int | None, set[str]],
     threshold: float,
-) -> tuple[bool, bool]:
-    """Does bookmaker side `a` match fixture side `b`?
+) -> int:
+    """Strength at which bookmaker side `a` matches fixture side `b`.
 
     Each side is (normalized_name, canonical_id_or_None, names_set).
-    Returns (matched, is_identity) where is_identity is True for strict /
-    canonical matches and False for fuzzy-only matches.
+    Returns one of _STRENGTH_{IDENTITY,TOKEN,FUZZY,NONE}.
     """
     a_norm, a_cid, a_names = a
     b_norm, b_cid, b_names = b
-    # (b) canonical identity via shared id
+    # IDENTITY — shared canonical id, or strict equality / shared name-alias
     if a_cid is not None and b_cid is not None and a_cid == b_cid:
-        return True, True
-    # (a)+(b) strict equality OR shared canonical name/alias
+        return _STRENGTH_IDENTITY
     if a_names & b_names:
-        return True, True
-    # (c) fuzzy
+        return _STRENGTH_IDENTITY
+    # TOKEN — one name's token set contained in the other's
+    if _token_contained(a_norm, b_norm):
+        return _STRENGTH_TOKEN
+    # FUZZY
     if _team_similarity(a_norm, b_norm) >= threshold:
-        return True, False
-    return False, False
+        return _STRENGTH_FUZZY
+    return _STRENGTH_NONE
+
+
+_ResolvedSide = tuple[str, int | None, set[str]]
+
+
+def _anchor_match(
+    bh_side: _ResolvedSide,
+    ba_side: _ResolvedSide,
+    resolved: Sequence[tuple[int, _ResolvedSide, _ResolvedSide]],
+    threshold: float,
+    floor: float,
+) -> tuple[int | None, str, str | None]:
+    """Calendar-anchoring tier — see module comment.
+
+    Only meaningful once identity/token both-sides matching found nothing. One
+    bookmaker side must match with CERTAINTY (identity/token, never fuzzy)
+    exactly ONE due fixture on a role-consistent orientation; the fixture is
+    then accepted iff the OTHER bookmaker side clears `floor` against that
+    fixture's other team and is not a strictly better fit for any other due
+    fixture's team.
+
+    Returns (fixture_id_or_None, reason, anchor_name) with reason ∈
+    {"anchor", "ambiguous_anchor", "no_anchor"}; anchor_name is the certain
+    side's normalized name (for logging) when reason == "anchor".
+    """
+    # Collect certain anchors: (fid, anchor_book_side, other_book_side, other_fix_side)
+    anchors: list[tuple[int, _ResolvedSide, _ResolvedSide, _ResolvedSide]] = []
+    for fid, fh_side, fa_side in resolved:
+        for h_fix, a_fix in ((fh_side, fa_side), (fa_side, fh_side)):  # both orientations
+            if _side_strength(bh_side, h_fix, threshold) >= _STRENGTH_CERTAIN:
+                anchors.append((fid, bh_side, ba_side, a_fix))  # home certain; away is other
+            if _side_strength(ba_side, a_fix, threshold) >= _STRENGTH_CERTAIN:
+                anchors.append((fid, ba_side, bh_side, h_fix))  # away certain; home is other
+
+    if not anchors:
+        return None, "no_anchor", None
+
+    distinct_fids = {a[0] for a in anchors}
+    if len(distinct_fids) > 1:
+        # The certain side plausibly belongs to several due fixtures — never guess.
+        return None, "ambiguous_anchor", None
+
+    fid = next(iter(distinct_fids))
+    other_fixtures = [r for r in resolved if r[0] != fid]
+
+    for _fid, anchor_book, other_book, other_fix in anchors:
+        base = _team_similarity(other_book[0], other_fix[0])
+        if base < floor:
+            continue  # non-anchor side too weak → absurd pairing, reject this anchor
+        # The non-anchor side must not resemble ANOTHER due fixture's team more.
+        better_elsewhere = any(
+            _team_similarity(other_book[0], side[0]) > base
+            for _gfid, gh, ga in other_fixtures
+            for side in (gh, ga)
+        )
+        if better_elsewhere:
+            return None, "ambiguous_anchor", None
+        return fid, "anchor", anchor_book[0]
+
+    # An anchor's certain side pointed at this fixture, but its other side was
+    # below the floor everywhere → nothing to anchor on. Fall through to fuzzy.
+    return None, "no_anchor", None
 
 
 def _match_result_to_fixture(
@@ -503,61 +634,84 @@ def _match_result_to_fixture(
     alias_map: dict[str, int],
     canonical_names_by_id: dict[int, set[str]],
     threshold: float = _FUZZY_MATCH_THRESHOLD,
-) -> tuple[int | None, str, list[int], list[int]]:
+    anchor_floor: float = _ANCHOR_FLOOR,
+) -> tuple[int | None, str, list[int], str | None]:
     """Match a scraped (book_home, book_away) pair to exactly one due fixture.
 
     `candidates` is a list of
     (fixture_id, home_norm, home_canonical_id, away_norm, away_canonical_id)
     for fixtures already known to be due — never the whole fixtures table.
 
-    Matching is PER TEAM: each side may match by strict equality, canonical
-    identity, or fuzzy (see module comment). A fixture qualifies when BOTH
-    sides match in one orientation or the reversed one.
+    Matching is PER TEAM at graded strengths, resolved strongest-tier-first:
+    identity > token-containment > calendar-anchoring > fuzzy (see module
+    comment). Both sides are required except for the anchoring tier, which
+    still validates the non-anchor side.
 
-    Returns (fixture_id_or_None, reason, exact_fids, loose_fids). A fixture is
-    returned only when it is the UNIQUE match at the strongest available tier
-    (identity preferred over fuzzy); ties → None with reason "ambiguous_*".
+    Returns (fixture_id_or_None, reason, competing_fids, detail) where reason ∈
+    {"identity","token","anchor","fuzzy",
+     "ambiguous_identity","ambiguous_token","ambiguous_anchor",
+     "ambiguous_fuzzy","none"}, competing_fids lists the fixtures in play at
+    the deciding tier, and detail carries the anchor team name for reason
+    "anchor" (else None) — both for logging/traceability.
     """
-    bh = _resolve_side(_normalize_team(book_home), None, alias_map, canonical_names_by_id)
-    ba = _resolve_side(_normalize_team(book_away), None, alias_map, canonical_names_by_id)
-    bh_side = (_normalize_team(book_home), bh[0], bh[1])
-    ba_side = (_normalize_team(book_away), ba[0], ba[1])
+    bh_r = _resolve_side(_normalize_team(book_home), None, alias_map, canonical_names_by_id)
+    ba_r = _resolve_side(_normalize_team(book_away), None, alias_map, canonical_names_by_id)
+    bh_side: _ResolvedSide = (_normalize_team(book_home), bh_r[0], bh_r[1])
+    ba_side: _ResolvedSide = (_normalize_team(book_away), ba_r[0], ba_r[1])
 
-    exact_fids: list[int] = []
-    loose_fids: list[int] = []
+    resolved: list[tuple[int, _ResolvedSide, _ResolvedSide]] = []
+    identity_fids: list[int] = []
+    token_fids: list[int] = []
+    fuzzy_fids: list[int] = []
     for fid, fh_norm, fh_cid, fa_norm, fa_cid in candidates:
-        fh = _resolve_side(fh_norm, fh_cid, alias_map, canonical_names_by_id)
-        fa = _resolve_side(fa_norm, fa_cid, alias_map, canonical_names_by_id)
-        fh_side = (fh_norm, fh[0], fh[1])
-        fa_side = (fa_norm, fa[0], fa[1])
+        fh_r = _resolve_side(fh_norm, fh_cid, alias_map, canonical_names_by_id)
+        fa_r = _resolve_side(fa_norm, fa_cid, alias_map, canonical_names_by_id)
+        fh_side: _ResolvedSide = (fh_norm, fh_r[0], fh_r[1])
+        fa_side: _ResolvedSide = (fa_norm, fa_r[0], fa_r[1])
+        resolved.append((fid, fh_side, fa_side))
 
-        best_kind: str | None = None  # None | "fuzzy" | "identity"
-        for h_book, a_book, h_fix, a_fix in (
-            (bh_side, ba_side, fh_side, fa_side),   # same orientation
-            (bh_side, ba_side, fa_side, fh_side),   # reversed orientation
-        ):
-            h_ok, h_id = _sides_match(h_book, h_fix, threshold)
-            a_ok, a_id = _sides_match(a_book, a_fix, threshold)
-            if h_ok and a_ok:
-                kind = "identity" if (h_id and a_id) else "fuzzy"
-                if kind == "identity":
-                    best_kind = "identity"
-                    break
-                best_kind = best_kind or "fuzzy"
-        if best_kind == "identity":
-            exact_fids.append(fid)
-        elif best_kind == "fuzzy":
-            loose_fids.append(fid)
+        # Best (over both orientations) tier at which BOTH sides match.
+        best = _STRENGTH_NONE
+        for h_fix, a_fix in ((fh_side, fa_side), (fa_side, fh_side)):
+            hs = _side_strength(bh_side, h_fix, threshold)
+            as_ = _side_strength(ba_side, a_fix, threshold)
+            if hs and as_:
+                best = max(best, min(hs, as_))
+        if best == _STRENGTH_IDENTITY:
+            identity_fids.append(fid)
+        elif best == _STRENGTH_TOKEN:
+            token_fids.append(fid)
+        elif best == _STRENGTH_FUZZY:
+            fuzzy_fids.append(fid)
 
-    if len(exact_fids) == 1:
-        return exact_fids[0], "exact", exact_fids, loose_fids
-    if len(exact_fids) > 1:
-        return None, "ambiguous_exact", exact_fids, loose_fids
-    if len(loose_fids) == 1:
-        return loose_fids[0], "fuzzy", exact_fids, loose_fids
-    if len(loose_fids) > 1:
-        return None, "ambiguous_fuzzy", exact_fids, loose_fids
-    return None, "none", exact_fids, loose_fids
+    # Tier 1 — both sides identity.
+    if identity_fids:
+        if len(identity_fids) == 1:
+            return identity_fids[0], "identity", identity_fids, None
+        return None, "ambiguous_identity", identity_fids, None
+
+    # Tier 2 — both sides ≥ token-containment.
+    if token_fids:
+        if len(token_fids) == 1:
+            return token_fids[0], "token", token_fids, None
+        return None, "ambiguous_token", token_fids, None
+
+    # Tier 3 — calendar anchoring (only when no certain both-sides match).
+    anchor_fid, anchor_reason, anchor_name = _anchor_match(
+        bh_side, ba_side, resolved, threshold, anchor_floor
+    )
+    if anchor_reason == "anchor":
+        return anchor_fid, "anchor", [anchor_fid] if anchor_fid is not None else [], anchor_name
+    if anchor_reason == "ambiguous_anchor":
+        return None, "ambiguous_anchor", [], None
+
+    # Tier 4 — both sides fuzzy.
+    if fuzzy_fids:
+        if len(fuzzy_fids) == 1:
+            return fuzzy_fids[0], "fuzzy", fuzzy_fids, None
+        return None, "ambiguous_fuzzy", fuzzy_fids, None
+
+    return None, "none", [], None
 
 
 def _league_key(league_name: str | None) -> str | None:
@@ -701,22 +855,28 @@ class OddsScheduler:
         scraped = 0
         stored_fixture_ids: set[int] = set()
         for r in all_results:
-            # Unified per-team matcher: strict / canonical / fuzzy, each side
-            # independent, both sides required, unique-candidate guard.
-            fixture_id, reason, exact_fids, loose_fids = _match_result_to_fixture(
+            # Unified per-team matcher: identity / token-containment / anchor /
+            # fuzzy, each side graded, both sides required (except anchoring),
+            # strict tier priority + unique-candidate guard.
+            fixture_id, reason, competing_fids, detail = _match_result_to_fixture(
                 r.home_team, r.away_team, match_candidates,
                 canonical_alias_map, canonical_names_by_id,
             )
-            if fixture_id:
+            if fixture_id and reason == "anchor":
+                logger.info(
+                    "OddsScheduler: anchor match for '%s' vs '%s' -> fixture %s (ancre=%s)",
+                    r.home_team, r.away_team, fixture_id, detail,
+                )
+            elif fixture_id:
                 logger.info(
                     "OddsScheduler: %s match for '%s' vs '%s' -> fixture %s",
                     reason, r.home_team, r.away_team, fixture_id,
                 )
-            elif reason in ("ambiguous_exact", "ambiguous_fuzzy"):
+            elif reason.startswith("ambiguous"):
                 logger.warning(
-                    "OddsScheduler: ambiguous match for '%s' vs '%s' skipped "
-                    "(ne devine pas) - exact=%s fuzzy=%s",
-                    r.home_team, r.away_team, exact_fids, loose_fids,
+                    "OddsScheduler: %s for '%s' vs '%s' skipped "
+                    "(ne devine pas) - candidates=%s",
+                    reason, r.home_team, r.away_team, competing_fids,
                 )
                 continue
             else:
