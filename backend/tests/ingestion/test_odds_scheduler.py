@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 from app.ingestion.odds_scheduler import (
     _build_canonical_alias_map,
-    _match_via_canonical_alias,
-    _match_via_fuzzy,
+    _build_canonical_names_by_id,
+    _match_result_to_fixture,
     _normalize_team,
     scrape_interval_seconds,
     should_scrape,
@@ -68,121 +68,192 @@ def _ct(id: int, name_fr: str, name_en: str | None = None, aliases: list[str] | 
     return SimpleNamespace(id=id, name_fr=name_fr, name_en=name_en, aliases=aliases or [])
 
 
-class TestCanonicalAliasMatch:
-    """Tier 1 fallback: resolve a bookmaker name via CanonicalTeam (name_fr/name_en/aliases)."""
+def _indexes(canonical_teams):
+    """Build (alias_map, names_by_id) the way OddsScheduler.tick does."""
+    return (
+        _build_canonical_alias_map(canonical_teams),
+        _build_canonical_names_by_id(canonical_teams),
+    )
+
+
+def _cand(fid: int, home: str, away: str, home_cid: int | None = None, away_cid: int | None = None):
+    """A due-fixture candidate: (id, home_norm, home_cid, away_norm, away_cid)."""
+    return (fid, _normalize_team(home), home_cid, _normalize_team(away), away_cid)
+
+
+def _match(book_home, book_away, candidates, canonical_teams=()):
+    alias_map, names_by_id = _indexes(canonical_teams)
+    return _match_result_to_fixture(
+        book_home, book_away, candidates, alias_map, names_by_id
+    )
+
+
+class TestCanonicalIdentityMatch:
+    """Canonical-identity leg of the per-team matcher (name_fr/name_en/aliases)."""
 
     def test_lyon_matches_olympique_lyonnais_via_canonical_team(self):
-        """The exact bug report case: Betclic 'Lyon' vs DB fixture 'Olympique Lyonnais'.
+        """The original bug case: Betclic 'Lyon' vs DB fixture 'Olympique Lyonnais'.
 
         canonical_teams has name_fr='Lyon', name_en='Olympique Lyonnais' for this club
         (see alembic/versions/029). The fixture's home_canonical_team_id points at that
         same canonical row (populated by sync_fixtures_from_bzz via bzz_team_id).
         """
-        canonical_teams = [
-            _ct(1, "Lyon", name_en="Olympique Lyonnais"),
-            _ct(2, "Paris Saint-Germain"),
-        ]
-        alias_map = _build_canonical_alias_map(canonical_teams)
+        cts = [_ct(1, "Lyon", name_en="Olympique Lyonnais"), _ct(2, "Paris Saint-Germain")]
+        candidates = [_cand(42, "Olympique Lyonnais", "Paris Saint-Germain", 1, 2)]
 
-        # Fixture 42: home canonical id 1 (Lyon/Olympique Lyonnais), away canonical id 2 (PSG)
-        fixture_by_canonical_ids = {(1, 2): 42}
-
-        fixture_id = _match_via_canonical_alias(
-            "Lyon", "Paris Saint-Germain", alias_map, fixture_by_canonical_ids
-        )
+        fixture_id, reason, *_ = _match("Lyon", "Paris Saint-Germain", candidates, cts)
         assert fixture_id == 42
+        assert reason == "exact"
 
     def test_matches_reversed_home_away_orientation(self):
-        canonical_teams = [_ct(1, "Lyon", name_en="Olympique Lyonnais"), _ct(2, "Marseille")]
-        alias_map = _build_canonical_alias_map(canonical_teams)
-        fixture_by_canonical_ids = {(1, 2): 7}  # DB fixture: Lyon (home) vs Marseille (away)
+        cts = [_ct(1, "Lyon", name_en="Olympique Lyonnais"), _ct(2, "Marseille")]
+        # DB fixture: Lyon (home) vs Marseille (away); bookmaker reports it reversed
+        candidates = [_cand(7, "Olympique Lyonnais", "Marseille", 1, 2)]
 
-        # Bookmaker reports it the other way round
-        fixture_id = _match_via_canonical_alias(
-            "Marseille", "Lyon", alias_map, fixture_by_canonical_ids
-        )
+        fixture_id, reason, *_ = _match("Marseille", "Lyon", candidates, cts)
         assert fixture_id == 7
+        assert reason == "exact"
 
     def test_no_match_when_team_not_resolvable(self):
-        """One of the two names can't be resolved to any canonical team → no match."""
-        canonical_teams = [_ct(1, "Lyon", name_en="Olympique Lyonnais")]
-        alias_map = _build_canonical_alias_map(canonical_teams)
-        fixture_by_canonical_ids = {(1, 2): 42}
+        """One side can't be resolved and doesn't fuzzy-match → no match."""
+        cts = [_ct(1, "Lyon", name_en="Olympique Lyonnais"), _ct(2, "Paris Saint-Germain")]
+        candidates = [_cand(42, "Olympique Lyonnais", "Paris Saint-Germain", 1, 2)]
 
-        fixture_id = _match_via_canonical_alias(
-            "Lyon", "Some Unknown Club FC", alias_map, fixture_by_canonical_ids
-        )
+        fixture_id, reason, *_ = _match("Lyon", "Some Unknown Club FC", candidates, cts)
         assert fixture_id is None
+        assert reason == "none"
 
-    def test_no_match_when_canonical_pair_not_due(self):
-        """Both teams resolve, but that (home, away) pair isn't among due fixtures."""
-        canonical_teams = [_ct(1, "Lyon", name_en="Olympique Lyonnais"), _ct(2, "Marseille")]
-        alias_map = _build_canonical_alias_map(canonical_teams)
-        fixture_by_canonical_ids = {}  # nothing due right now
+    def test_no_match_when_pair_not_due(self):
+        """Both teams resolve, but no due fixture pairs them together."""
+        cts = [_ct(1, "Lyon", name_en="Olympique Lyonnais"), _ct(2, "Marseille")]
+        candidates: list = []  # nothing due right now
 
-        fixture_id = _match_via_canonical_alias(
-            "Lyon", "Marseille", alias_map, fixture_by_canonical_ids
-        )
+        fixture_id, reason, *_ = _match("Lyon", "Marseille", candidates, cts)
         assert fixture_id is None
+        assert reason == "none"
+
+    def test_matches_via_canonical_name_when_fixture_cid_missing(self):
+        """Fixture side has no canonical_id, but its name equals a canonical alias
+        the bookmaker name also resolves to → still an identity match."""
+        cts = [_ct(1, "Lyon", name_en="Olympique Lyonnais"), _ct(2, "Marseille")]
+        # home_cid deliberately NULL; name still 'Olympique Lyonnais'
+        candidates = [_cand(50, "Olympique Lyonnais", "Marseille", None, 2)]
+
+        fixture_id, reason, *_ = _match("Lyon", "Marseille", candidates, cts)
+        assert fixture_id == 50
+        assert reason == "exact"
 
 
 class TestFuzzyMatch:
-    """Tier 2 fallback: fuzzy name similarity restricted to already-due fixtures.
+    """Fuzzy leg — restricted to already-due fixtures, both sides required.
 
-    Anti-false-positive guard: a match is only accepted when BOTH home and away
-    similarity cross the threshold for exactly one candidate fixture. A single
-    matching team, or several plausible fixtures, must never produce a guess.
+    Anti-false-positive: a match is accepted only when BOTH home and away match
+    for exactly one candidate fixture. A single matching team, or several
+    plausible fixtures, never produces a guess.
     """
 
     def test_sparta_prague_matches_ac_sparta_praha(self):
         """Spelling variant (bookmaker short name vs DB official name)."""
-        candidates = [
-            (101, _normalize_team("AC Sparta Praha"), _normalize_team("Slavia Praha")),
-        ]
-        fixture_id, scored = _match_via_fuzzy("Sparta Prague", "Slavia Prague", candidates)
+        candidates = [_cand(101, "AC Sparta Praha", "Slavia Praha")]
+        fixture_id, reason, *_ = _match("Sparta Prague", "Slavia Prague", candidates)
         assert fixture_id == 101
-        assert len(scored) == 1
+        assert reason == "fuzzy"
 
     def test_single_team_match_is_not_enough(self):
-        """Anti-false-positive: home matches well, away is unrelated → no match at all."""
-        candidates = [
-            (101, _normalize_team("AC Sparta Praha"), _normalize_team("Slavia Praha")),
-        ]
-        fixture_id, scored = _match_via_fuzzy("Sparta Prague", "Manchester City", candidates)
+        """Anti-false-positive: home matches well, away is unrelated → no match."""
+        candidates = [_cand(101, "AC Sparta Praha", "Slavia Praha")]
+        fixture_id, reason, *_ = _match("Sparta Prague", "Manchester City", candidates)
         assert fixture_id is None
-        assert scored == []
+        assert reason == "none"
 
     def test_ambiguous_multiple_candidates_is_skipped(self):
-        """Two due fixtures both cross the threshold → refuse to guess, skip."""
+        """Two due fixtures both match → refuse to guess, skip."""
         candidates = [
-            (101, _normalize_team("AC Sparta Praha"), _normalize_team("Slavia Praha")),
-            (102, _normalize_team("Sparta Prague B"), _normalize_team("Slavia Prague B")),
+            _cand(101, "AC Sparta Praha", "Slavia Praha"),
+            _cand(102, "Sparta Prague B", "Slavia Prague B"),
         ]
-        fixture_id, scored = _match_via_fuzzy("Sparta Prague", "Slavia Prague", candidates)
+        fixture_id, reason, exact_fids, loose_fids = _match(
+            "Sparta Prague", "Slavia Prague", candidates
+        )
         assert fixture_id is None
-        assert len(scored) >= 2
+        assert reason == "ambiguous_fuzzy"
+        assert len(loose_fids) >= 2
 
     def test_saint_gilloise_matches_royale_union(self):
-        candidates = [
-            (55, _normalize_team("Royale Union Saint-Gilloise"), _normalize_team("Club Brugge")),
-        ]
-        fixture_id, scored = _match_via_fuzzy("Saint-Gilloise", "Club Bruges", candidates)
+        candidates = [_cand(55, "Royale Union Saint-Gilloise", "Club Brugge")]
+        fixture_id, _reason, *_ = _match("Saint-Gilloise", "Club Bruges", candidates)
         assert fixture_id == 55
 
     def test_nec_nimegue_matches_nec_nijmegen(self):
-        candidates = [
-            (9, _normalize_team("NEC Nijmegen"), _normalize_team("Ajax")),
-        ]
-        fixture_id, scored = _match_via_fuzzy("NEC Nimègue", "Ajax", candidates)
+        candidates = [_cand(9, "NEC Nijmegen", "Ajax")]
+        fixture_id, _reason, *_ = _match("NEC Nimègue", "Ajax", candidates)
         assert fixture_id == 9
 
     def test_completely_unrelated_names_no_match(self):
-        candidates = [
-            (1, _normalize_team("Real Madrid"), _normalize_team("Barcelona")),
-        ]
-        fixture_id, scored = _match_via_fuzzy("Liverpool", "Chelsea", candidates)
+        candidates = [_cand(1, "Real Madrid", "Barcelona")]
+        fixture_id, reason, *_ = _match("Liverpool", "Chelsea", candidates)
         assert fixture_id is None
-        assert scored == []
+        assert reason == "none"
+
+
+class TestMixedMatch:
+    """The gap this change closes: one side canonical-resolvable, the other only
+    fuzzy — different means per side, which pair-homogeneous matching missed."""
+
+    def test_sparta_prague_lyon_mixed_case(self):
+        """Real prod case (fixture 1110493): Betclic 'Sparta Prague' vs 'Lyon' →
+        DB 'AC Sparta Praha' (home_cid NULL) vs 'Olympique Lyonnais' (away_cid=Lyon).
+
+        - away 'Lyon' matches 'Olympique Lyonnais' by CANONICAL identity (alias);
+        - home 'Sparta Prague' matches 'AC Sparta Praha' only by FUZZY (~0.71).
+        Both sides OK via different means → fixture resolves.
+        """
+        cts = [_ct(23, "Lyon", name_en="Olympique Lyonnais", aliases=["Lyon", "OL"])]
+        candidates = [
+            _cand(1110493, "AC Sparta Praha", "Olympique Lyonnais", None, 23),
+        ]
+        fixture_id, reason, *_ = _match("Sparta Prague", "Lyon", candidates, cts)
+        assert fixture_id == 1110493
+        assert reason == "fuzzy"  # mixed → strongest tier is fuzzy (one side non-identity)
+
+    def test_mixed_case_reversed_orientation(self):
+        """Same, but the bookmaker lists the teams in the opposite order."""
+        cts = [_ct(23, "Lyon", name_en="Olympique Lyonnais", aliases=["Lyon"])]
+        candidates = [
+            _cand(1110493, "Olympique Lyonnais", "AC Sparta Praha", 23, None),
+        ]
+        fixture_id, reason, *_ = _match("Sparta Prague", "Lyon", candidates, cts)
+        assert fixture_id == 1110493
+        assert reason == "fuzzy"
+
+    def test_mixed_case_still_requires_both_sides(self):
+        """Canonical side matches but the other side neither resolves nor fuzzes
+        → still no match (both-sides guard holds for mixed matching too)."""
+        cts = [_ct(23, "Lyon", name_en="Olympique Lyonnais", aliases=["Lyon"])]
+        candidates = [_cand(1110493, "Manchester City", "Olympique Lyonnais", None, 23)]
+        fixture_id, reason, *_ = _match("Sparta Prague", "Lyon", candidates, cts)
+        assert fixture_id is None
+        assert reason == "none"
+
+    def test_exact_preferred_over_coincidental_fuzzy_on_other_fixture(self):
+        """An identity (canonical) match must win over a coincidental fuzzy match
+        on a different due fixture — no false ambiguity."""
+        cts = [
+            _ct(23, "Lyon", name_en="Olympique Lyonnais", aliases=["Lyon"]),
+            _ct(30, "Marseille", name_en="Olympique de Marseille"),
+        ]
+        candidates = [
+            # Identity match for both sides (via canonical alias 'Lyon' + name)
+            _cand(1, "Olympique Lyonnais", "Olympique de Marseille", 23, 30),
+            # Coincidental fuzzy lookalike that DOES cross threshold on both
+            # sides ('lyon'~'lyonnais'=0.67, 'marseille'~'marseille b'=0.90),
+            # but is not an identity match.
+            _cand(2, "Lyonnais", "Marseille B"),
+        ]
+        fixture_id, reason, exact_fids, loose_fids = _match("Lyon", "Marseille", candidates, cts)
+        assert fixture_id == 1
+        assert reason == "exact"
+        assert loose_fids == [2]  # the fuzzy lookalike was seen but not chosen
 
 
 def test_etoile_rouge_alias_resolves_to_db_name():
