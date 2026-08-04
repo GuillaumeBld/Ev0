@@ -31,7 +31,7 @@ from app.ingestion.fixture_matcher import normalize_team_name
 from app.models.bzzoiro import BzzEvent, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
-from app.services.season_service import current_season
+from app.services.season_service import compute_season
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,9 @@ async def sync_fixtures_from_bzz(
     now = datetime.now(UTC)
     horizon = now + timedelta(days=days_forward)
     lookback = now - timedelta(days=days_back)
-    season = await current_season(session)
+    # NOTE: season is stamped per-event below from the MATCH date (compute_season),
+    # never from "today" — a sync running in July for an August fixture must not
+    # freeze that fixture into last season (see CORRECTION 2).
 
     # 1. Load BzzEvents for target leagues (past + future window)
     events_result = await session.execute(
@@ -178,6 +180,17 @@ async def sync_fixtures_from_bzz(
         if fixture is not None:
             changed = False
 
+            # Re-stamp season from the match date — self-heals fixtures that
+            # were created (or last synced) before an Aug-1 season rollover.
+            correct_season = compute_season(ev.event_date.date())
+            if fixture.season != correct_season:
+                logger.info(
+                    "sync_fixtures_from_bzz: fix season %r → %r (fixture %s)",
+                    fixture.season, correct_season, fixture.id,
+                )
+                fixture.season = correct_season
+                changed = True
+
             # Update placeholder team names → real names
             if _is_placeholder(fixture.home_team or "") and not _is_placeholder(home_name):
                 logger.info(
@@ -231,7 +244,7 @@ async def sync_fixtures_from_bzz(
             new_fixture = Fixture(
                 external_id=ext_id,
                 league=league_key,
-                season=season,
+                season=compute_season(ev.event_date.date()),
                 home_team=home_name,
                 away_team=away_name,
                 kickoff_utc=ev.event_date,
