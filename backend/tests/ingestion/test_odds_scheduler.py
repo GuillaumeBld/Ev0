@@ -7,6 +7,8 @@ from app.ingestion.odds_scheduler import (
     _build_canonical_names_by_id,
     _match_result_to_fixture,
     _normalize_team,
+    _side_strength,
+    _token_contained,
     scrape_interval_seconds,
     should_scrape,
 )
@@ -103,7 +105,7 @@ class TestCanonicalIdentityMatch:
 
         fixture_id, reason, *_ = _match("Lyon", "Paris Saint-Germain", candidates, cts)
         assert fixture_id == 42
-        assert reason == "exact"
+        assert reason == "identity"
 
     def test_matches_reversed_home_away_orientation(self):
         cts = [_ct(1, "Lyon", name_en="Olympique Lyonnais"), _ct(2, "Marseille")]
@@ -112,7 +114,7 @@ class TestCanonicalIdentityMatch:
 
         fixture_id, reason, *_ = _match("Marseille", "Lyon", candidates, cts)
         assert fixture_id == 7
-        assert reason == "exact"
+        assert reason == "identity"
 
     def test_no_match_when_team_not_resolvable(self):
         """One side can't be resolved and doesn't fuzzy-match → no match."""
@@ -141,7 +143,7 @@ class TestCanonicalIdentityMatch:
 
         fixture_id, reason, *_ = _match("Lyon", "Marseille", candidates, cts)
         assert fixture_id == 50
-        assert reason == "exact"
+        assert reason == "identity"
 
 
 class TestFuzzyMatch:
@@ -167,17 +169,22 @@ class TestFuzzyMatch:
         assert reason == "none"
 
     def test_ambiguous_multiple_candidates_is_skipped(self):
-        """Two due fixtures both match → refuse to guess, skip."""
+        """Two due fixtures both fuzzy-match → refuse to guess, skip.
+
+        The 'B' reserve markers are guarded against token-containment (see
+        TestTokenContainment), so both fixtures land in the fuzzy tier and
+        compete there.
+        """
         candidates = [
             _cand(101, "AC Sparta Praha", "Slavia Praha"),
-            _cand(102, "Sparta Prague B", "Slavia Prague B"),
+            _cand(102, "Sparta Praga", "Slavia Praga"),
         ]
-        fixture_id, reason, exact_fids, loose_fids = _match(
+        fixture_id, reason, competing_fids, _detail = _match(
             "Sparta Prague", "Slavia Prague", candidates
         )
         assert fixture_id is None
         assert reason == "ambiguous_fuzzy"
-        assert len(loose_fids) >= 2
+        assert len(competing_fids) >= 2
 
     def test_saint_gilloise_matches_royale_union(self):
         candidates = [_cand(55, "Royale Union Saint-Gilloise", "Club Brugge")]
@@ -214,7 +221,10 @@ class TestMixedMatch:
         ]
         fixture_id, reason, *_ = _match("Sparta Prague", "Lyon", candidates, cts)
         assert fixture_id == 1110493
-        assert reason == "fuzzy"  # mixed → strongest tier is fuzzy (one side non-identity)
+        # away 'Lyon' is a certain (canonical) anchor; home 'Sparta Prague' only
+        # fuzzes (~0.71) but clears the anchor floor → resolves at the anchor
+        # tier, which strictly outranks two-sided fuzzy.
+        assert reason == "anchor"
 
     def test_mixed_case_reversed_orientation(self):
         """Same, but the bookmaker lists the teams in the opposite order."""
@@ -224,7 +234,7 @@ class TestMixedMatch:
         ]
         fixture_id, reason, *_ = _match("Sparta Prague", "Lyon", candidates, cts)
         assert fixture_id == 1110493
-        assert reason == "fuzzy"
+        assert reason == "anchor"
 
     def test_mixed_case_still_requires_both_sides(self):
         """Canonical side matches but the other side neither resolves nor fuzzes
@@ -235,7 +245,7 @@ class TestMixedMatch:
         assert fixture_id is None
         assert reason == "none"
 
-    def test_exact_preferred_over_coincidental_fuzzy_on_other_fixture(self):
+    def test_identity_preferred_over_coincidental_fuzzy_on_other_fixture(self):
         """An identity (canonical) match must win over a coincidental fuzzy match
         on a different due fixture — no false ambiguity."""
         cts = [
@@ -245,15 +255,115 @@ class TestMixedMatch:
         candidates = [
             # Identity match for both sides (via canonical alias 'Lyon' + name)
             _cand(1, "Olympique Lyonnais", "Olympique de Marseille", 23, 30),
-            # Coincidental fuzzy lookalike that DOES cross threshold on both
-            # sides ('lyon'~'lyonnais'=0.67, 'marseille'~'marseille b'=0.90),
-            # but is not an identity match.
-            _cand(2, "Lyonnais", "Marseille B"),
+            # Coincidental fuzzy lookalike ('lyon'~'lyonnais'=0.67), not identity.
+            _cand(2, "Lyonnais", "Marseille Olympique"),
         ]
-        fixture_id, reason, exact_fids, loose_fids = _match("Lyon", "Marseille", candidates, cts)
+        fixture_id, reason, competing_fids, _detail = _match(
+            "Lyon", "Marseille", candidates, cts
+        )
         assert fixture_id == 1
-        assert reason == "exact"
-        assert loose_fids == [2]  # the fuzzy lookalike was seen but not chosen
+        assert reason == "identity"
+        assert competing_fids == [1]  # identity tier decides; the lookalike not chosen
+
+
+class TestTokenContainment:
+    """Token-containment: the shorter name's tokens fully inside the longer's.
+
+    Bridges abbreviated↔official names that fuzzy scoring misses
+    (e.g. 'AGF' vs 'AGF Aarhus'), classed as a STRONG (near-identity) match.
+    """
+
+    def test_agf_contained_in_agf_aarhus(self):
+        assert _token_contained("agf", "agf aarhus") is True
+        assert _token_contained("agf aarhus", "agf") is True  # symmetric
+
+    def test_numeric_extra_is_not_a_variant_marker(self):
+        """'Mainz' → 'Mainz 05' is the same club, still contained."""
+        assert _token_contained("mainz", "mainz 05") is True
+
+    def test_reserve_marker_blocks_containment(self):
+        """'Sparta Prague' ⊄ 'Sparta Prague B' — reserve side is a different team."""
+        assert _token_contained("sparta prague", "sparta prague b") is False
+        assert _token_contained("bayern", "bayern ii") is False
+
+    def test_unrelated_names_not_contained(self):
+        assert _token_contained("real madrid", "real betis") is False
+
+    def test_side_strength_ranks_identity_token_fuzzy_none(self):
+        """identity > token-containment > fuzzy > none (isolated, no canonical ids)."""
+        def side(name):
+            return (_normalize_team(name), None, {_normalize_team(name)})
+
+        book = side("AGF Aarhus")
+        s_identity = _side_strength(book, side("AGF Aarhus"), 0.65)  # exact
+        s_token = _side_strength(book, side("AGF"), 0.65)            # {agf} ⊂ {agf,aarhus}
+        s_none = _side_strength(book, side("Aarhus GF"), 0.65)       # ~0.63 < 0.65, no token
+        s_fuzzy = _side_strength(
+            side("Sparta Prague"), side("AC Sparta Praha"), 0.65      # ~0.71 fuzzy
+        )
+        assert s_identity > s_token > s_fuzzy > s_none == 0
+
+
+class TestAgfMatch:
+    """The AGF prod gap: home abbreviated 'AGF', away exact — solved by
+    token-containment (AGF Aarhus) or anchoring (Aarhus GF)."""
+
+    def test_agf_aarhus_matches_via_token_containment(self):
+        """'AGF Aarhus' vs 'Sabah FK' → fixture 'AGF' vs 'Sabah FK'.
+        home matches by token-containment, away exact → both-sides token tier."""
+        candidates = [_cand(1111243, "AGF", "Sabah FK")]
+        fixture_id, reason, *_ = _match("AGF Aarhus", "Sabah FK", candidates)
+        assert fixture_id == 1111243
+        assert reason == "token"
+
+    def test_aarhus_gf_matches_via_anchor(self):
+        """'Aarhus GF' vs 'Sabah FK' → fixture 'AGF' vs 'Sabah FK'.
+        'Aarhus GF' is NOT token-contained in 'AGF' and only fuzzes ~0.5, so the
+        away side 'Sabah FK' anchors the fixture and the home side clears the
+        low floor (0.5 >= 0.30)."""
+        candidates = [_cand(1111243, "AGF", "Sabah FK")]
+        fixture_id, reason, competing_fids, detail = _match(
+            "Aarhus GF", "Sabah FK", candidates
+        )
+        assert fixture_id == 1111243
+        assert reason == "anchor"
+        assert competing_fids == [1111243]
+        assert detail == _normalize_team("Sabah FK")  # the certain (anchor) side
+
+
+class TestCalendarAnchoring:
+    """Anchoring tier guards — floor, unique anchor, and priority below identity."""
+
+    def test_anchor_rejects_absurd_second_side(self):
+        """'Real Madrid' vs 'Sabah FK' must NOT anchor onto AGF-Sabah: 'Sabah FK'
+        anchors, but 'Real Madrid'~'AGF'≈0.14 is below the 0.30 floor → skip."""
+        candidates = [_cand(1111243, "AGF", "Sabah FK")]
+        fixture_id, reason, *_ = _match("Real Madrid", "Sabah FK", candidates)
+        assert fixture_id is None
+        assert reason == "none"
+
+    def test_anchor_ambiguous_when_anchor_team_plays_two_due_fixtures(self):
+        """If the certain (anchor) side matches TWO due fixtures, never guess."""
+        candidates = [
+            _cand(1, "AGF", "Sabah FK"),
+            _cand(2, "Sabah FK", "Qarabag"),  # 'Sabah FK' also here (as home)
+        ]
+        fixture_id, reason, *_ = _match("Aarhus GF", "Sabah FK", candidates)
+        assert fixture_id is None
+        assert reason == "ambiguous_anchor"
+
+    def test_identity_not_stolen_by_concurrent_anchor(self):
+        """A genuine both-sides match must win; anchoring is never even reached
+        while a higher tier (identity/token) has a candidate."""
+        candidates = [
+            # Real match — both sides exact → identity tier.
+            _cand(1, "AGF Aarhus", "Sabah FK"),
+            # Would be an anchor candidate ('Sabah FK' certain) if we got there.
+            _cand(2, "Aarhus GF", "Sabah FK"),
+        ]
+        fixture_id, reason, *_ = _match("AGF Aarhus", "Sabah FK", candidates)
+        assert fixture_id == 1
+        assert reason in ("identity", "token")
 
 
 def test_etoile_rouge_alias_resolves_to_db_name():
