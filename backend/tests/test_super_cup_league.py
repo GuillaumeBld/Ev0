@@ -31,3 +31,13 @@ def test_pmu_league_from_event_path():
     # Kambi event path for PSG vs Aston Villa: ['Football', 'UEFA Super Cup']
     event = {"path": [{"englishName": "Football"}, {"englishName": "UEFA Super Cup"}]}
     assert _league_from_event(event) == "uefa_super_cup"
+
+
+def test_betclic_super_cup_competition_id():
+    from app.ingestion.betclic_grpc_scraper import BETCLIC_COMPETITION_IDS
+    assert BETCLIC_COMPETITION_IDS["uefa_super_cup"] == 228
+
+
+def test_unibet_super_cup_node_id():
+    from app.ingestion.unibet_lvs_scraper import LVS_NODE_IDS
+    assert LVS_NODE_IDS["uefa_super_cup"] == 58545066
