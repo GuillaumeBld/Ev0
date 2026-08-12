@@ -49,6 +49,7 @@ BETCLIC_COMPETITION_IDS: dict[str, int] = {
     "coupe_de_france":       36,
     "friendly_international": 79,
     "world_cup_2026":        1,
+    "uefa_super_cup":        228,  # Supercoupe de l'UEFA — buteur + cotes équipe (passeur pur non exposé dans le flux gRPC)
 }
 
 _GRPC_HEADERS = {

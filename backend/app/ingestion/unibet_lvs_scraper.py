@@ -44,6 +44,7 @@ LVS_NODE_IDS: dict[str, int] = {
     "champions_league":      58532497,
     "friendly_international": 58541367,
     "world_cup_2026":        59096156,
+    "uefa_super_cup":        58545066,  # Supercoupe d'Europe (Coupes d'Europe) — buteur + passes décisives
 }
 
 # markettypeId → market_type Ev0
