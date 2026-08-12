@@ -105,18 +105,31 @@ def _encode_varint(value: int) -> bytes:
     return result
 
 
-def encode_grpc_web_request(match_id: int, language: str = "fr") -> bytes:
+# Market-template code (field 3) requested by the site's "Stats équipes et
+# joueurs" tab. Without it, GetMatchWithNotification returns only the main
+# markets (no pure "Joueur passeur décisif"); with it, the response carries the
+# player-props markets, including the pure passeur market.
+BETCLIC_PROPS_TEMPLATE = "ca_ftb_prp"
+
+
+def encode_grpc_web_request(
+    match_id: int, language: str = "fr", template: str | None = None
+) -> bytes:
     """Build a gRPC-web request body for GetMatchWithNotification.
 
     Protobuf message:
         field 1 (int64):  match_id
         field 2 (string): language
+        field 3 (string): market-template code (optional; e.g. player props)
     """
     lang_bytes = language.encode("utf-8")
     proto = (
         b"\x08" + _encode_varint(match_id)
         + b"\x12" + _encode_varint(len(lang_bytes)) + lang_bytes
     )
+    if template:
+        tmpl_bytes = template.encode("utf-8")
+        proto += b"\x1a" + _encode_varint(len(tmpl_bytes)) + tmpl_bytes
     # gRPC-web frame: 1-byte flags (0x00) + 4-byte big-endian length
     return b"\x00" + struct.pack(">I", len(proto)) + proto
 
@@ -195,7 +208,11 @@ def _classify_market(name: str) -> str | None:
     lower = name.lower()
     if any(x in lower for x in _GOALSCORER_LABELS):
         return "goalscorer"
-    if "rempla" not in lower and "buteur ou" not in lower and any(x in lower for x in _ASSIST_LABELS):
+    # Pure passeur only: "Joueur passeur décisif (tps rég.)". Exclude combined /
+    # boosted variants — "buteur" (buteur ou/et passeur), "chance" (double/triple
+    # chance), "extra" (extra-gains), "rempla" (+ son remplaçant).
+    if (not any(x in lower for x in ("rempla", "buteur", "chance", "extra"))
+            and any(x in lower for x in _ASSIST_LABELS)):
         return "assist"
     if any(x in lower for x in _H2H_LABELS):
         return "h2h"
@@ -342,11 +359,20 @@ def _parse_match_proto(
         root  = _proto_fields(proto_bytes)
         f1    = _proto_fields(root[1][0])
         f1f1  = _proto_fields(f1[1][0])
-        f11   = _proto_fields(f1f1[11][0])
-        markets = f11.get(3, [])
     except (KeyError, IndexError, ValueError):
         logger.warning("BetclicGrpcScraper: unexpected protobuf structure")
         return out
+
+    # f1f1.field11 is a list of market-group containers. The default response
+    # keeps every market in the first container; the player-props response
+    # (template ca_ftb_prp) spreads them across several containers — iterate all.
+    markets: list = []
+    for container_bytes in f1f1.get(11, []):
+        try:
+            container = _proto_fields(container_bytes)
+        except Exception:
+            continue
+        markets.extend(container.get(3, []))
 
     for market_bytes in markets:
         try:
@@ -680,6 +706,28 @@ class BetclicGrpcScraper:
             return None
 
         parsed = _parse_match_proto(raw, home_team, away_team)
+
+        # Second call with the player-props template to fetch the pure passeur
+        # market ("Joueur passeur décisif"), absent from the default response.
+        # Non-fatal: keep the default markets if this call fails.
+        if not parsed["assist"]:
+            try:
+                props_body = encode_grpc_web_request(
+                    match_id, language, template=BETCLIC_PROPS_TEMPLATE
+                )
+                raw_props = await _stream_first_grpc_frame(
+                    self._client, GRPC_ENDPOINT, props_body, timeout
+                )
+                if raw_props:
+                    props = _parse_match_proto(raw_props, home_team, away_team)
+                    if props["assist"]:
+                        parsed["assist"] = props["assist"]
+            except Exception as exc:
+                logger.warning(
+                    "BetclicGrpcScraper: props call failed for match %d (%s v %s): %s",
+                    match_id, home_team, away_team, exc,
+                )
+
         result = MatchScrapeResult(
             fixture_id=fixture_id,
             home_team=home_team,
