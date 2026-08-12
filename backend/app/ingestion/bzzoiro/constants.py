@@ -39,6 +39,7 @@ INTERNATIONAL_LEAGUE_INTERNAL_IDS: dict[str, int] = {
     "friendly_international": 31,
     "nations_league_uefa": 64,
     "nations_league_concacaf": 65,
+    "uefa_super_cup": 90,       # confirmed 2026-08-12 via /api/leagues/ (id=90)
 }
 
 INTERNATIONAL_LEAGUE_API_IDS: dict[str, int] = {
@@ -46,6 +47,7 @@ INTERNATIONAL_LEAGUE_API_IDS: dict[str, int] = {
     "friendly_international": 31,
     "nations_league_uefa": 64,
     "nations_league_concacaf": 65,
+    "uefa_super_cup": 90,       # api_id null in bzz response → falls back to internal id 90
 }
 
 # Convenience lists
