@@ -57,6 +57,7 @@ _KAMBI_LEAGUE_MAP: dict[str, str] = {
     "UEFA Champions League":         "champions_league",
     "International Friendly Matches": "friendly_international",
     "World Cup 2026":                "world_cup_2026",
+    "UEFA Super Cup":                "uefa_super_cup",
 }
 
 _HEADERS = {

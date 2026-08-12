@@ -733,6 +733,8 @@ def _league_key(league_name: str | None) -> str | None:
         "nations league uefa": "nations_league_uefa",
         "nations_league_concacaf": "nations_league_concacaf",
         "nations league concacaf": "nations_league_concacaf",
+        "uefa_super_cup": "uefa_super_cup",
+        "uefa super cup": "uefa_super_cup",
     }
     return mapping.get(league_name.lower())
 
