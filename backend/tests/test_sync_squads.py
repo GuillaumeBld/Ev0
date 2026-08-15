@@ -38,7 +38,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.ingestion.transfermarkt.squad_scraper import SquadResult, TMPlayer
 from app.ingestion.transfermarkt.sync_squads import sync_squads
-from app.models.bzzoiro import BzzPlayer
+from app.models.bzzoiro import BzzPlayer, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
 from app.models.squad_sync import SquadSyncRun
 
@@ -70,6 +70,7 @@ async def session_factory():
         dbapi_connection.create_function("unaccent", 1, _sqlite_unaccent)
 
     async with engine.begin() as conn:
+        await conn.run_sync(lambda sync_conn: BzzTeam.__table__.create(sync_conn))
         await conn.run_sync(lambda sync_conn: BzzPlayer.__table__.create(sync_conn))
         await conn.run_sync(lambda sync_conn: SquadSyncRun.__table__.create(sync_conn))
 
@@ -111,8 +112,10 @@ def _patch_fetch(monkeypatch, by_tm_club_id: dict[int, SquadResult]) -> None:
     )
 
 
-async def _seed(session_factory, players: list[BzzPlayer]) -> None:
+async def _seed(session_factory, players: list[BzzPlayer], teams: list[BzzTeam] | None = None) -> None:
     async with session_factory() as session:
+        for team in teams or []:
+            session.add(team)
         for player in players:
             session.add(player)
         await session.commit()
@@ -133,7 +136,11 @@ async def _get_player(session_factory, api_id: int) -> BzzPlayer:
 @pytest.mark.asyncio
 async def test_new_recruit_gets_current_team_set(session_factory, monkeypatch):
     club_x = _team(team_id=1, bzz_team_id=10, tm_club_id=100)
-    await _seed(session_factory, [BzzPlayer(api_id=1, name="Nouvelle Recrue")])
+    await _seed(
+        session_factory,
+        [BzzPlayer(api_id=1, name="Nouvelle Recrue")],
+        teams=[BzzTeam(api_id=10, name="Club X FC")],
+    )
     _patch_fetch(monkeypatch, {100: _ok(100, [_tm("Nouvelle Recrue", tm_player_id=1)])})
 
     async with session_factory() as session:
@@ -141,6 +148,7 @@ async def test_new_recruit_gets_current_team_set(session_factory, monkeypatch):
 
     player = await _get_player(session_factory, 1)
     assert player.current_team_api_id == 10
+    assert player.current_team_name == "Club X FC"  # nom pose depuis bzz_teams
     assert player.loan_team_api_id is None
     assert player.tm_absent_streak == 0
     assert run.status == "ok"
@@ -247,7 +255,15 @@ async def test_transfer_between_two_ok_clubs_reassigns_without_detaching(session
     club_y = _team(team_id=2, bzz_team_id=20, tm_club_id=200, name="Club Y")
     await _seed(
         session_factory,
-        [BzzPlayer(api_id=5, name="Joueur Transfere", current_team_api_id=10)],
+        [
+            BzzPlayer(
+                api_id=5,
+                name="Joueur Transfere",
+                current_team_api_id=10,
+                current_team_name="Club X",
+            )
+        ],
+        teams=[BzzTeam(api_id=10, name="Club X"), BzzTeam(api_id=20, name="Club Y")],
     )
     _patch_fetch(
         monkeypatch,
@@ -264,6 +280,7 @@ async def test_transfer_between_two_ok_clubs_reassigns_without_detaching(session
 
     player = await _get_player(session_factory, 5)
     assert player.current_team_api_id == 20
+    assert player.current_team_name == "Club Y"  # reassignation : nom mis a jour vers Y
     assert player.tm_absent_streak == 0
     assert run.players_detached == 0
     assert run.players_updated == 1

@@ -47,7 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.transfermarkt.player_match import MatchReport, match_players
 from app.ingestion.transfermarkt.squad_scraper import TMPlayer, fetch_club_squad
-from app.models.bzzoiro import BzzPlayer
+from app.models.bzzoiro import BzzPlayer, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
 from app.models.squad_sync import SquadSyncRun
 from app.scripts.transfermarkt_career import TransfermarktClient
@@ -78,6 +78,17 @@ async def _load_players_by_api_id(session: AsyncSession, api_ids: set[int]) -> l
         return []
     stmt = select(BzzPlayer).where(BzzPlayer.api_id.in_(api_ids))
     return list((await session.execute(stmt)).scalars().all())
+
+
+async def _load_team_names(session: AsyncSession, bzz_team_ids: set[int]) -> dict[int, str]:
+    """`bzz_team_id -> name` pour les clubs cibles du rattachement (une seule
+    requete, jamais par joueur). Sert a poser `current_team_name` de facon
+    coherente avec `current_team_api_id` (l'API joueurs affiche/filtre via
+    `COALESCE(loan_team_name, current_team_name)`)."""
+    if not bzz_team_ids:
+        return {}
+    stmt = select(BzzTeam.api_id, BzzTeam.name).where(BzzTeam.api_id.in_(bzz_team_ids))
+    return {row.api_id: row.name for row in (await session.execute(stmt)).all()}
 
 
 async def sync_squads(
@@ -188,6 +199,13 @@ async def sync_squads(
     for _club, report in ok_results:
         run_matched.update(report.matched.values())
 
+    # Nom des clubs cibles du rattachement, charge une seule fois (map
+    # bzz_team_id -> name) pour poser `current_team_name` sans requeter par
+    # joueur et rester coherent avec `current_team_api_id`.
+    team_names = await _load_team_names(
+        session, {club.bzz_team_id for club, _report in ok_results}
+    )
+
     # Pass "matched" : rattachement (recrue, retour de pret, transfert).
     players_updated = 0
     for club, report in ok_results:
@@ -203,8 +221,14 @@ async def sync_squads(
                 "Club canonical id=%s : %d bzz_api_id matches introuvables en base (%s), ignores.",
                 club.id, len(missing), sorted(missing),
             )
+        club_name = team_names.get(club.bzz_team_id)
         for player in players:
             player.current_team_api_id = club.bzz_team_id
+            # Cas improbable (aucun bzz_teams pour ce bzz_team_id) : on laisse
+            # current_team_name inchange plutot que de le nuller (mieux vaut
+            # un ancien nom qu'un trou d'affichage).
+            if club_name is not None:
+                player.current_team_name = club_name
             player.loan_team_api_id = None
             player.loan_team_name = None
             player.tm_absent_streak = 0
