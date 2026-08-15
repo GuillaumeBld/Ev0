@@ -12,7 +12,7 @@
 
 - **Aucune écriture sur donnée d'effectif si le club (ou le run) est invalidé** par le garde-fou. Dernière donnée valide conservée.
 - **Aucun échec silencieux** : tout run FAILED/partial ⇒ log ERROR + ligne `squad_sync_runs` + issue GitHub + PR auto.
-- Matching joueur uniquement si **nom normalisé concordant ET date de naissance concordante**. Jamais de rattachement sur le nom seul.
+- Matching joueur uniquement si **nom normalisé concordant ET âge concordant (±1 an)**. La page kader de Transfermarkt n'expose que l'âge (pas la DOB) ; l'âge est le discriminant anti-homonyme. Jamais de rattachement sur le nom seul ; cas ambigu (nom+âge non univoque) → non matché et surfacé.
 - Portée : clubs des ligues couvertes (PL, Ligue 1, Bundesliga, La Liga, Serie A, UCL + compét's pricées).
 - Rate-limit TM ≥ 2 s/requête, UA navigateur, retry/backoff (réutiliser `TransfermarktClient`).
 - Départ prudent : détacher un joueur du club X seulement si TM le place ailleurs, OU absent de X sur **2 runs consécutifs**.
@@ -83,20 +83,20 @@
 
 ---
 
-### Task 4 : Matching joueur TM ↔ bzz_players (nom + DOB)
+### Task 4 : Matching joueur TM ↔ bzz_players (nom + âge)
 
 **Files :**
 - Create : `backend/app/ingestion/transfermarkt/player_match.py`
 - Test : `backend/tests/test_tm_player_match.py`
 
 **Interfaces :**
-- `def fold_accents(s: str) -> str` (NFD + suppression diacritiques + lower ; miroir Python du helper front).
-- `async def match_players(session, club_bzz_id, tm_players: list[TMPlayer]) -> MatchReport` où `MatchReport(matched: dict[tm_player_id, bzz_api_id], unmatched: list[TMPlayer])`.
+- Réutilise `fold_accents` de `transfermarkt/text_utils.py` (déjà livré Tâche 2).
+- `async def match_players(session, tm_players: list[TMPlayer], today: date) -> MatchReport` où `MatchReport(matched: dict[tm_player_id, bzz_api_id], unmatched: list[TMPlayer])`.
 
-**Règle :** candidat = `bzz_players` dont `fold_accents(name)` ∈ variantes du nom TM ; **retenu seulement si `date_of_birth` == DOB TM**. Homonyme sans DOB concordante ⇒ non matché (surfacé). Joueur TM sans DOB ⇒ match nom-exact-unique seulement, sinon unmatched.
+**Règle :** candidat = `bzz_players` dont `fold_accents(name)` == `fold_accents(nom TM)` ; **retenu seulement si l'âge concorde** — âge calculé depuis `bzz_players.date_of_birth` vs `TMPlayer.age`, tolérance **±1 an** (décalage anniversaire). Si plusieurs candidats nom+âge (homonyme même âge) ⇒ **non matché** (surfacé). `TMPlayer.age is None` ⇒ match uniquement si le nom est **unique** dans `bzz_players`, sinon unmatched. Jamais de rattachement sur le nom seul en cas d'ambiguïté.
 
 **Étapes :**
-- [ ] Tests : concordant (nom+DOB) → matché ; homonyme DOB ≠ → rejeté ; accent (« Dembélé » vs « Dembele ») → matché ; TM sans DOB + nom unique → matché.
+- [ ] Tests : concordant (nom + âge ±1) → matché ; accent (« Dembélé » vs « Dembele ») → matché ; homonyme même nom, âges différents → matché le bon ; homonyme même nom+âge → non matché (surfacé) ; `bzz_players.date_of_birth` NULL → traité proprement (unmatched si âge indispensable).
 - [ ] Implémenter. Vert. Commit.
 
 ---
