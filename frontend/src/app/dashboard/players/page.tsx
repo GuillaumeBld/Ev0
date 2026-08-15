@@ -14,10 +14,20 @@ type SortField =
   | 'avg_rating' | 'shots_on_target_per_90' | 'form_xg_5' | 'minutes_played'
 type PositionFilter = '' | 'G' | 'D' | 'M' | 'F'
 
-// Recherche insensible aux accents : « e » doit matcher « é è ê ë », etc.
-// Décompose (NFD) puis retire les diacritiques combinants, et minusculise.
+// Recherche insensible aux accents : une lettre simple englobe TOUTES ses
+// variantes. NFD + suppression des diacritiques combinants couvre é/à/ô/ü/ñ/ç/š…
+// Les lettres « atomiques » (non décomposables par NFD) sont mappées à la main :
+// ø (Ødegaard, Bodø), ł, đ, ð, þ, ß, æ, œ, ı (i sans point turc), etc.
+const NON_DECOMPOSABLE: Record<string, string> = {
+  ø: 'o', œ: 'oe', æ: 'ae', ł: 'l', đ: 'd', ð: 'd', þ: 'th',
+  ß: 'ss', ı: 'i', ħ: 'h', ĸ: 'k', ŋ: 'n',
+}
 const foldAccents = (s: string): string =>
-  s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
+  s
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .replace(/[øœæłđðþßıħĸŋ]/g, (c) => NON_DECOMPOSABLE[c] ?? c)
 
 // Championnats cibles — IDs internes Bzzoiro (post-migration API)
 // api_id: null = Tous, api_id: -1 = Autres (ligue dominante hors Big5/UCL)
