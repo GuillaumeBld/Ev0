@@ -67,6 +67,24 @@ def test_parse_squad_psg_real_fixture_status_ok_and_plausible_count():
     assert all(isinstance(p, TMPlayer) for p in result.players)
 
 
+def test_parse_squad_psg_age_extracted_for_every_player_and_plausible():
+    result = parse_squad(PSG_HTML, club_id=583)
+
+    # 100% des ages extraits, tous dans une borne pro plausible.
+    assert all(p.age is not None for p in result.players)
+    assert all(15 <= p.age <= 45 for p in result.players)
+    # Le gardien Safonov a 27 ans sur ce fixture reel.
+    safonov = next(p for p in result.players if p.name == "Matvey Safonov")
+    assert safonov.age == 27
+
+
+def test_parse_squad_villa_age_extracted_for_every_player_and_plausible():
+    result = parse_squad(VILLA_HTML, club_id=405)
+
+    assert all(p.age is not None for p in result.players)
+    assert all(15 <= p.age <= 45 for p in result.players)
+
+
 def test_parse_squad_psg_captain_name_position_correct_dob_honestly_none():
     # Marquinhos (capitaine) : le lien de son nom contient un <span> imbrique
     # (icone capitaine) -> verifie que le nom est bien nettoye des balises
@@ -79,8 +97,10 @@ def test_parse_squad_psg_captain_name_position_correct_dob_honestly_none():
     assert marquinhos.tm_player_id == 181767
     assert marquinhos.position == "Centre-Back"
     # Vue Compact : pas de date de naissance complete sur la page -> None,
-    # jamais une valeur inventee a partir de l'age seul.
+    # jamais une valeur inventee a partir de l'age seul. L'age (discriminant
+    # du matching aval) est en revanche bien present.
     assert marquinhos.dob is None
+    assert isinstance(marquinhos.age, int)
 
 
 def test_parse_squad_psg_regular_player_name_position_correct():
@@ -168,6 +188,29 @@ def test_parse_squad_dob_none_when_only_age_present():
     row = _ROW_TEMPLATE.format(dob_cell="31")
     result = parse_squad(row, club_id=1)
     assert result.players[0].dob is None
+
+
+def test_parse_squad_age_extracted_from_age_cell():
+    row = _ROW_TEMPLATE.format(dob_cell="24")
+    result = parse_squad(row, club_id=1)
+    assert result.players[0].age == 24
+
+
+def test_parse_squad_age_none_when_out_of_plausible_range():
+    # Valeur numerique mais hors [15, 45] (ex: donnee aberrante) -> pas
+    # devinee, age=None, pas de crash.
+    row = _ROW_TEMPLATE.format(dob_cell="99")
+    result = parse_squad(row, club_id=1)
+    assert result.players[0].age is None
+
+
+def test_parse_squad_age_none_when_cell_not_numeric():
+    row = _ROW_TEMPLATE.format(dob_cell="Jun 25, 1994 (31)")
+    result = parse_squad(row, club_id=1)
+    # La cellule d'age contient une date, pas un entier autonome -> age None
+    # (mais dob, elle, est bien parsee depuis cette meme cellule).
+    assert result.players[0].age is None
+    assert result.players[0].dob == date(1994, 6, 25)
 
 
 # --------------------------------------------------------------------------

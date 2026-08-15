@@ -30,7 +30,11 @@ contient :
     Le parsing reste ecrit pour capturer une date complete des qu'elle est
     presente sur la page (formats observes sur Transfermarkt : "Jun 25,
     1994" ou "25.06.1994", eventuellement suivis de "(age)"), sans jamais
-    rien inventer/approximer a partir du seul age.
+    rien inventer/approximer a partir du seul age ;
+  - l'AGE (entier), toujours present sur la vue effectif, dans la 1re
+    cellule `td.zentriert` autonome qui suit le bloc joueur. C'est le
+    discriminant utilise en aval (Tache 4) pour le matching nom + age
+    (puisque `dob` est indisponible). Valide dans [15, 45] sinon `None`.
 """
 from __future__ import annotations
 
@@ -70,6 +74,18 @@ _DOB_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("%d.%m.%Y", re.compile(r"(\d{1,2}\.\d{1,2}\.\d{4})")),
 )
 
+# L'age est la 1re cellule `<td class="zentriert">{entier}</td>` AUTONOME qui
+# suit le bloc joueur (mini-tableau photo/nom/poste). Structure reelle :
+# `...</table></td><td class="zentriert">27</td><td class="zentriert"><img
+#  ... title="Russia" .../></td>...` -> on cherche donc le 1er td zentriert
+# dont le contenu est purement numerique (les cellules suivantes contiennent
+# des <img>/du texte non numerique, jamais captees par ce motif).
+_AGE_RE = re.compile(r'<td class="zentriert">\s*(\d{1,3})\s*</td>')
+# Age plausible pour un joueur pro (garde-fou : hors de cette borne -> None,
+# on ne devine jamais).
+_AGE_MIN = 15
+_AGE_MAX = 45
+
 
 @dataclass
 class TMPlayer:
@@ -77,6 +93,7 @@ class TMPlayer:
 
     name: str
     dob: date | None
+    age: int | None
     position: str | None
     tm_player_id: int
 
@@ -118,6 +135,18 @@ def _parse_dob(row_html: str) -> date | None:
     return None
 
 
+def _parse_age(row_html: str, start: int) -> int | None:
+    """Extrait l'age (entier plausible) depuis la 1re cellule `td.zentriert`
+    purement numerique qui suit le bloc joueur (a partir de `start`, c.-a-d.
+    apres le lien du nom). Renvoie `None` si absente ou hors [15, 45] plutot
+    que de deviner."""
+    match = _AGE_RE.search(row_html, start)
+    if not match:
+        return None
+    age = int(match.group(1))
+    return age if _AGE_MIN <= age <= _AGE_MAX else None
+
+
 def _split_rows(html_text: str) -> list[str]:
     """Decoupe le document en fragments `<tr class="odd|even">...` (un par
     ligne du tableau effectif), chacun allant jusqu'au debut de la ligne
@@ -150,9 +179,15 @@ def _parse_row(row_html: str) -> TMPlayer | None:
         bucket_match = _POSITION_BUCKET_RE.search(row_html)
         position = _clean_text(bucket_match.group(1)) if bucket_match else ""
 
+    # L'age est cherche APRES le bloc joueur (les cellules zentriert du joueur
+    # — numero, poste — sont dans le mini-tableau imbrique et ne matchent pas
+    # le motif "td.zentriert autonome"), donc a partir de la fin du lien nom.
+    age = _parse_age(row_html, hauptlink.end())
+
     return TMPlayer(
         name=name,
         dob=_parse_dob(row_html),
+        age=age,
         position=position or None,
         tm_player_id=tm_player_id,
     )
