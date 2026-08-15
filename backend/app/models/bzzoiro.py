@@ -76,6 +76,7 @@ class BzzPlayer(Base, TimestampMixin):
         index=True,
     )
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tm_absent_streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class BzzEvent(Base, TimestampMixin):
