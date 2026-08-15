@@ -144,7 +144,7 @@ async def test_new_recruit_gets_current_team_set(session_factory, monkeypatch):
     _patch_fetch(monkeypatch, {100: _ok(100, [_tm("Nouvelle Recrue", tm_player_id=1)])})
 
     async with session_factory() as session:
-        run = await sync_squads(session, FAKE_CLIENT, [club_x], mode="daily", today=TODAY)
+        run, samples = await sync_squads(session, FAKE_CLIENT, [club_x], mode="daily", today=TODAY)
 
     player = await _get_player(session_factory, 1)
     assert player.current_team_api_id == 10
@@ -203,7 +203,7 @@ async def test_first_absence_increments_streak_without_detaching(session_factory
     _patch_fetch(monkeypatch, {100: _ok(100, [_tm("Autre Joueur", tm_player_id=99)])})
 
     async with session_factory() as session:
-        run = await sync_squads(session, FAKE_CLIENT, [club_x], mode="daily", today=TODAY)
+        run, samples = await sync_squads(session, FAKE_CLIENT, [club_x], mode="daily", today=TODAY)
 
     player = await _get_player(session_factory, 3)
     assert player.tm_absent_streak == 1
@@ -234,7 +234,7 @@ async def test_second_consecutive_absence_detaches_player(session_factory, monke
     _patch_fetch(monkeypatch, {100: _ok(100, [_tm("Autre Joueur", tm_player_id=99)])})
 
     async with session_factory() as session:
-        run = await sync_squads(session, FAKE_CLIENT, [club_x], mode="daily", today=TODAY)
+        run, samples = await sync_squads(session, FAKE_CLIENT, [club_x], mode="daily", today=TODAY)
 
     player = await _get_player(session_factory, 4)
     assert player.tm_absent_streak == 2
@@ -276,7 +276,7 @@ async def test_transfer_between_two_ok_clubs_reassigns_without_detaching(session
     )
 
     async with session_factory() as session:
-        run = await sync_squads(session, FAKE_CLIENT, [club_x, club_y], mode="daily", today=TODAY)
+        run, samples = await sync_squads(session, FAKE_CLIENT, [club_x, club_y], mode="daily", today=TODAY)
 
     player = await _get_player(session_factory, 5)
     assert player.current_team_api_id == 20
@@ -308,7 +308,7 @@ async def test_failed_club_writes_nothing_for_its_players(session_factory, monke
     _patch_fetch(monkeypatch, {100: _ko(100)})
 
     async with session_factory() as session:
-        run = await sync_squads(session, FAKE_CLIENT, [club_x], mode="daily", today=TODAY)
+        run, samples = await sync_squads(session, FAKE_CLIENT, [club_x], mode="daily", today=TODAY)
 
     player = await _get_player(session_factory, 6)
     # Rien n'a bouge : ni le streak, ni le rattachement.
@@ -352,7 +352,7 @@ async def test_sentinel_over_30pct_failed_clubs_blocks_all_writes(session_factor
     )
 
     async with session_factory() as session:
-        run = await sync_squads(
+        run, samples = await sync_squads(
             session, FAKE_CLIENT, [club_x, club_y, club_z], mode="daily", today=TODAY
         )
 

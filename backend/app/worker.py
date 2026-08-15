@@ -11,12 +11,12 @@ Runs periodic jobs via APScheduler:
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from app.cache import close_redis
 from app.config import settings
@@ -40,7 +40,13 @@ from app.ingestion.storage import (
     store_match_events,
     store_recommendation,
 )
+from app.ingestion.transfermarkt.failure_surface import surface_failure
+from app.ingestion.transfermarkt.schedule import should_run_today
+from app.ingestion.transfermarkt.sync_squads import sync_squads
+from app.models.canonical_teams import CanonicalTeam
 from app.models.settings import UserSettings
+from app.models.squad_sync import SquadSyncRun
+from app.scripts.transfermarkt_career import TransfermarktClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1437,6 +1443,109 @@ async def job_sync_wc_squads() -> None:
         logger.exception("job_sync_wc_squads failed: %s", exc)
 
 
+# ── Transfermarkt Squad Sync Job ─────────────────────────────────
+
+
+def _run_sync_squads_blocking(
+    clubs: list[CanonicalTeam], mode: str
+) -> tuple[SquadSyncRun, dict[int, str]]:
+    """Runs `sync_squads` to completion on its own event loop, inside the
+    worker thread this function is dispatched to via `asyncio.to_thread`.
+
+    `TransfermarktClient` is a SYNCHRONOUS client (`httpx.Client`, and its
+    rate-limiting/retry backoff uses `time.sleep`, not `asyncio.sleep`) —
+    `fetch_club_squad` is declared `async def` but never actually yields
+    control while it waits on the network/rate-limit, so calling
+    `sync_squads` directly on the worker's shared event loop would stall
+    EVERY other scheduled job (odds ticks every 60s, the 30-min settlement
+    pipeline, ...) for the full duration of the scrape — dozens of clubs at
+    >= 2s/request plus retries, easily several minutes.
+
+    `asyncio.to_thread` moves that blocking work to a separate OS thread:
+    CPython releases the GIL during `time.sleep` and socket I/O, so the
+    worker's main event loop keeps servicing every other job normally while
+    this thread runs.
+
+    We deliberately do NOT reuse the caller's `AsyncSession` (or its event
+    loop) for the actual scrape+write: asyncpg connections are bound to the
+    event loop that created them, so handing one across threads/loops would
+    corrupt it. Instead this function opens its OWN session (and its own
+    asyncio event loop, via `asyncio.run`) entirely within the worker
+    thread. `clubs` is only ever read here (`.id` / `.transfermarkt_club_id`
+    / `.bzz_team_id`, already loaded in memory by the caller) and never
+    re-attached to a session — the same read-only contract `sync_squads`
+    already relies on in `test_sync_squads.py` — so passing already-loaded
+    ORM instances across the thread boundary is safe.
+    """
+
+    async def _run() -> tuple[SquadSyncRun, dict[int, str]]:
+        client = TransfermarktClient()
+        try:
+            async with async_session() as session:
+                return await sync_squads(session, client, clubs, mode=mode)
+        finally:
+            client.close()
+
+    return asyncio.run(_run())
+
+
+async def job_sync_squads() -> None:
+    """Daily at 04:30 UTC: reconcile Transfermarkt squads into `bzz_players`.
+
+    Cadence decided by `should_run_today` (Tache 7): daily during the two
+    mercato windows (summer/winter), weekly otherwise (see
+    `app.ingestion.transfermarkt.schedule`). `None` means "nothing to do
+    today" (already ran this week, off mercato) — a no-op, not an error.
+    """
+    logger.info("job_sync_squads: start")
+    try:
+        async with async_session() as session:
+            last_weekly_result = await session.execute(
+                select(func.max(SquadSyncRun.started_at)).where(
+                    SquadSyncRun.mode == "weekly",
+                    SquadSyncRun.status.in_(["ok", "partial"]),
+                )
+            )
+            last_weekly_started_at = last_weekly_result.scalar_one_or_none()
+            last_weekly = last_weekly_started_at.date() if last_weekly_started_at else None
+
+            mode = should_run_today(date.today(), last_weekly)
+            if mode is None:
+                logger.info("job_sync_squads: no-op (hors fenêtre / hebdo déjà fait)")
+                return
+
+            clubs_result = await session.execute(
+                select(CanonicalTeam).where(
+                    CanonicalTeam.transfermarkt_club_id.isnot(None),
+                    CanonicalTeam.bzz_team_id.isnot(None),
+                )
+            )
+            clubs = list(clubs_result.scalars().all())
+
+        if not clubs:
+            logger.warning(
+                "job_sync_squads: aucun canonical_team avec transfermarkt_club_id + "
+                "bzz_team_id renseignes, no-op (mode=%s)",
+                mode,
+            )
+            return
+
+        run, samples = await asyncio.to_thread(_run_sync_squads_blocking, clubs, mode)
+
+        logger.info(
+            "job_sync_squads: mode=%s status=%s clubs_ok=%s/%s players_updated=%s "
+            "players_detached=%s",
+            mode, run.status, run.clubs_ok, run.clubs_total,
+            run.players_updated, run.players_detached,
+        )
+
+        if run.status in ("failed", "partial"):
+            await surface_failure(run, samples, settings=settings)
+
+    except Exception as exc:
+        logger.error("job_sync_squads failed: %s", exc, exc_info=True)
+
+
 async def job_deactivate_stale_wc_odds() -> None:
     """Hourly: deactivate WC outright odds not re-seen recently (dead markets)."""
     try:
@@ -1714,6 +1823,18 @@ def create_scheduler() -> AsyncIOScheduler:
         id="sync_loan_teams",
         name="Detect on-loan players from match stats and update loan_team_*",
         replace_existing=True,
+    )
+
+    # Transfermarkt squad sync: daily at 04:30 UTC (mercato: daily, season: weekly —
+    # cadence itself decided at runtime by should_run_today, see job docstring)
+    scheduler.add_job(
+        job_sync_squads,
+        CronTrigger(hour=4, minute=30),
+        id="sync_squads",
+        name="Sync effectifs Transfermarkt (mercato: quotidien, saison: hebdo)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
 
     # Bzzoiro events: every 6 hours

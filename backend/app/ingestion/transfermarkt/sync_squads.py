@@ -98,12 +98,20 @@ async def sync_squads(
     *,
     mode: str,
     today: date | None = None,
-) -> SquadSyncRun:
+) -> tuple[SquadSyncRun, dict[int, str]]:
     """Reconcilie les effectifs Transfermarkt de `clubs` avec `bzz_players`.
 
     `clubs` : les `canonical_teams` a traiter (deja filtres en amont par
     l'appelant sur `transfermarkt_club_id` et `bzz_team_id` NON NULL, voir
     `resolve_clubs.py`).
+
+    Renvoie `(run, samples)` : `run` est la ligne `SquadSyncRun` persistee,
+    `samples` = `{transfermarkt_club_id: raw_html}` des clubs KO
+    (`status != "ok"`) dont la page a ete recuperee (chaine vide exclue,
+    ex: club dont le fetch reseau a echoue avant meme d'obtenir une reponse).
+    Destine a `failure_surface.surface_failure` (fixture de non-regression
+    sur echec) -> collecte en memoire UNIQUEMENT, jamais persiste en base
+    (le HTML brut n'a pas sa place dans `squad_sync_runs`).
 
     Etape 1 - scrape + matching (lecture seule) :
         pour chaque club, `fetch_club_squad` puis, si `status == "ok"`,
@@ -139,6 +147,9 @@ async def sync_squads(
     clubs_total = len(clubs)
     ok_results: list[tuple[CanonicalTeam, MatchReport]] = []
     failed_clubs: list[dict[str, object]] = []
+    # {transfermarkt_club_id: raw_html} des clubs KO dont la page a ete
+    # recuperee (jamais persiste en base, voir docstring de `sync_squads`).
+    samples: dict[int, str] = {}
 
     # -- Etape 1 : scrape + matching, lecture seule cote bzz_players. -------
     for club in clubs:
@@ -155,6 +166,8 @@ async def sync_squads(
                     "status": squad_result.status,
                 }
             )
+            if squad_result.raw_html:
+                samples[club.transfermarkt_club_id] = squad_result.raw_html
             continue
 
         report = await match_players(session, squad_result.players, today)
@@ -185,7 +198,7 @@ async def sync_squads(
         )
         session.add(run)
         await session.commit()
-        return run
+        return run, samples
 
     # -- Etape 3 : ecritures (sentinelle franchie). --------------------------
 
@@ -270,7 +283,7 @@ async def sync_squads(
     )
     session.add(run)
     await session.commit()
-    return run
+    return run, samples
 
 
 def _unmatched_entry(tm_player: TMPlayer) -> dict[str, object]:
