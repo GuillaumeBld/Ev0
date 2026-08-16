@@ -16,6 +16,7 @@ from app.models.player_odds_snapshot import PlayerOddsSnapshot
 from app.models.poll_state import OddsPortalPollState
 from app.models.recommendations import Recommendation
 from app.models.settings import UserSettings
+from app.models.squad_sync import SquadSyncRun
 from app.models.team_xg import TeamXgEstimate
 from app.models.wc2026 import WC2026SquadPlayer
 from app.models.wc2026_advancement import WC2026TeamAdvancement  # noqa: F401
@@ -38,6 +39,7 @@ __all__ = [
     "PlayerMatchMinutes",
     "PlayerOddsSnapshot",
     "Recommendation",
+    "SquadSyncRun",
     "TeamLineup",
     "TeamLineupPlayer",
     "TeamXgEstimate",

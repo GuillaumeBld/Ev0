@@ -15,4 +15,5 @@ class CanonicalTeam(Base):
     api_football_id = Column(Integer, nullable=True, unique=True)
     bzz_team_id = Column(Integer, nullable=True, unique=True)
     sofascore_team_id = Column(Integer, nullable=True, unique=True)
+    transfermarkt_club_id = Column(Integer, nullable=True, unique=True)
     aliases = Column(ARRAY(Text), nullable=False, server_default="{}")

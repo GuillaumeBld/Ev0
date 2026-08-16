@@ -1,5 +1,6 @@
 """Tests for Bzzoiro sync jobs registered in the background worker."""
 
+import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -378,3 +379,98 @@ async def test_sync_fixture_status_no_match_leaves_unchanged():
     session.add.assert_not_called()
     # commit should not be called when nothing changed
     session.commit.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# job_sync_squads (I1) : exception non tracee = mort silencieuse
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_job_sync_squads_exception_persists_failed_run_and_triggers_guard():
+    """I1: si `job_sync_squads` plante (ex: `_run_sync_squads_blocking` leve)
+    AVANT que `sync_squads` ait pu persister sa propre ligne `SquadSyncRun`,
+    le bloc `except` doit lui-meme persister un run `status="failed"` ET
+    declencher le garde-fou (`surface_failure`) dessus -- sinon l'echec ne
+    laisse NI ligne de run NI garde-fou : une mort silencieuse.
+    """
+    from app.models.squad_sync import SquadSyncRun
+
+    added_runs = []
+
+    async def fake_execute(stmt, *_args, **_kwargs):
+        result = MagicMock()
+        # 1er appel (last_weekly) : jamais couru -> None. 2e appel (clubs) :
+        # un club eligible -> les deux resultats sont compatibles avec la
+        # meme forme de mock (scalar_one_or_none / scalars().all()).
+        result.scalar_one_or_none.return_value = None
+        result.scalars.return_value.all.return_value = [
+            MagicMock(id=1, bzz_team_id=10, transfermarkt_club_id=100)
+        ]
+        return result
+
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=fake_execute)
+    session.add = MagicMock(side_effect=added_runs.append)
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+
+    session_ctx = AsyncMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=session)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    boom = RuntimeError("thread crashed before sync_squads persisted a run")
+
+    with patch("app.worker.async_session", return_value=session_ctx), patch(
+        "app.worker.should_run_today", return_value="daily"
+    ), patch(
+        "app.worker._run_sync_squads_blocking", side_effect=boom
+    ), patch(
+        "app.worker.surface_failure", new_callable=AsyncMock
+    ) as mock_surface:
+        from app.worker import job_sync_squads
+
+        await job_sync_squads()  # must not raise
+
+    assert len(added_runs) == 1
+    failed_run = added_runs[0]
+    assert isinstance(failed_run, SquadSyncRun)
+    assert failed_run.status == "failed"
+    assert failed_run.mode == "daily"
+    assert "thread crashed" in failed_run.detail["exception"]
+    session.commit.assert_called()
+    session.refresh.assert_called_once_with(failed_run)
+
+    mock_surface.assert_called_once()
+    call = mock_surface.call_args
+    assert call.args[0] is failed_run
+    assert call.args[1] == {}
+
+
+@pytest.mark.asyncio
+async def test_job_sync_squads_never_raises_even_if_failure_tracking_itself_fails(caplog):
+    """I1 robustesse : si la persistance du run `failed` OU le garde-fou
+    plantent a leur tour, `job_sync_squads` doit quand meme tout avaler
+    (jamais faire planter le scheduler) et retomber sur un `logger.critical`
+    en dernier recours."""
+    session = MagicMock()
+    # La toute premiere requete (last_weekly) plante deja -> declenche le
+    # except principal avant meme que `mode`/`clubs` soient connus.
+    session.execute = AsyncMock(side_effect=RuntimeError("db down"))
+    # `session.commit` n'est PAS un AsyncMock ici : l'`await` dans le bloc de
+    # tracage de l'echec (except) leve donc a son tour -> exerce le
+    # try/except imbrique et son fallback `logger.critical`.
+
+    session_ctx = AsyncMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=session)
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("app.worker.async_session", return_value=session_ctx):
+        from app.worker import job_sync_squads
+
+        with caplog.at_level(logging.CRITICAL):
+            await job_sync_squads()  # ne doit JAMAIS lever
+
+    critical_records = [r for r in caplog.records if r.levelname == "CRITICAL"]
+    assert len(critical_records) == 1
+    assert "AUCUNE trace persistee" in critical_records[0].getMessage()

@@ -20,6 +20,12 @@ class Settings(BaseSettings):  # type: ignore[misc]
     telegram_bot_token: str = ""
     telegram_chat_id: str = "8589235488"  # surchargable par env (plus de hardcode)
 
+    # GitHub API — garde-fou anti-mort-silencieuse squad-sync (issue + PR
+    # correctif d'attente sur echec). Vide -> degradation propre (log CRITICAL,
+    # jamais d'appel API), voir app.ingestion.transfermarkt.failure_surface.
+    github_token: str = ""
+    github_repo: str = "GuillaumeBld/Ev0"
+
     # Alertes WhatsApp via CallMeBot — canal ops (incidents/santé) et recos (value bets)
     whatsapp_ops_phone: str = ""
     whatsapp_ops_apikey: str = ""
