@@ -15,6 +15,7 @@ retourne en non-resolu, jamais ecrase).
 """
 from __future__ import annotations
 
+import difflib
 import html
 import logging
 import re
@@ -28,6 +29,14 @@ from app.models.canonical_teams import CanonicalTeam
 from app.scripts.transfermarkt_career import BASE_URL, TransfermarktClient
 
 logger = logging.getLogger(__name__)
+
+# Seuil de similarite (difflib.SequenceMatcher.ratio, sur chaines repliees
+# via fold_accents) au-dela duquel deux noms sont consideres comme un match
+# fuzzy candidat. Choisi pour capturer "Olympique Lyon" / "Olympique
+# Lyonnais" (~0.875) sans devenir trop permissif (cf. `_match_candidates`).
+FUZZY_MATCH_THRESHOLD = 0.85
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 # Codes de competition Transfermarkt (`/wettbewerb/<CODE>`) pour les ligues
 # couvertes par la plateforme.
@@ -111,6 +120,130 @@ def _build_folded_index(teams: list[CanonicalTeam]) -> dict[str, set[int]]:
     return index
 
 
+def _tokenize(name: str) -> frozenset[str]:
+    """Decoupe `name` en un ensemble de tokens alphanumeriques repliés
+    (accents/casse) pour un matching insensible a l'ordre et a la
+    ponctuation.
+
+    Le token "1" est systematiquement ignore : c'est le prefixe ordinal
+    allemand ("1.FC Koln", "1. FSV Mainz 05", "1.FC Union Berlin") qui ne
+    porte aucune information d'identite de club et ne doit jamais empecher
+    un match avec un nom canonique qui ne le porte pas (ex: "FC Koln").
+    """
+    tokens = _TOKEN_RE.findall(fold_accents(name))
+    return frozenset(tok for tok in tokens if tok != "1")
+
+
+def _build_token_set_index(teams: list[CanonicalTeam]) -> dict[frozenset[str], set[int]]:
+    """tokens(nom) (ensemble, ordre-independant) -> ensemble des ids
+    canonical_teams qui portent un nom/alias avec exactement cet ensemble
+    de tokens. Capture par ex. "FC Toulouse" == "Toulouse FC"."""
+    index: dict[frozenset[str], set[int]] = {}
+    for team in teams:
+        for variant in _canonical_name_variants(team):
+            if not variant:
+                continue
+            tokens = _tokenize(variant)
+            if not tokens:
+                continue
+            index.setdefault(tokens, set()).add(team.id)
+    return index
+
+
+def _token_subset_candidates(tm_tokens: frozenset[str], teams: list[CanonicalTeam]) -> set[int]:
+    """Clubs canoniques dont AU MOINS UN variant a un ensemble de tokens
+    entierement contenu dans `tm_tokens` (containment, pas egalite -
+    l'egalite est deja traitee par `_build_token_set_index` en amont).
+
+    Capture par ex. tokens("RC Strasbourg") = {rc, strasbourg} contenu dans
+    tokens("RC Strasbourg Alsace") = {rc, strasbourg, alsace}.
+    """
+    candidates: set[int] = set()
+    if not tm_tokens:
+        return candidates
+    for team in teams:
+        for variant in _canonical_name_variants(team):
+            if not variant:
+                continue
+            variant_tokens = _tokenize(variant)
+            # Sous-ensemble STRICT : l'egalite (variant_tokens == tm_tokens)
+            # est deja couverte par `_build_token_set_index` au niveau
+            # "token_set" precedent, atteint avant celui-ci.
+            if variant_tokens and variant_tokens < tm_tokens:
+                candidates.add(team.id)
+                break
+    return candidates
+
+
+def _fuzzy_candidates(tm_folded: str, teams: list[CanonicalTeam]) -> set[int]:
+    """Clubs canoniques dont le meilleur variant (par ratio difflib sur
+    chaines repliees) atteint `FUZZY_MATCH_THRESHOLD`. Dernier recours,
+    utilise seulement si aucun candidat n'a ete trouve aux niveaux plus
+    stricts. Capture par ex. "Olympique Lyon" / "Olympique Lyonnais"
+    (ratio ~0.875)."""
+    candidates: set[int] = set()
+    for team in teams:
+        best_ratio = 0.0
+        for variant in _canonical_name_variants(team):
+            if not variant:
+                continue
+            ratio = difflib.SequenceMatcher(None, tm_folded, fold_accents(variant)).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+        if best_ratio >= FUZZY_MATCH_THRESHOLD:
+            candidates.add(team.id)
+    return candidates
+
+
+def _match_candidates(
+    tm_name: str,
+    teams: list[CanonicalTeam],
+    folded_index: dict[str, set[int]],
+    token_set_index: dict[frozenset[str], set[int]],
+) -> tuple[set[int], str]:
+    """Retourne (candidats, niveau_atteint) pour `tm_name`, en essayant
+    chaque niveau de matching dans l'ordre, du plus strict au plus
+    permissif, et en s'arretant au PREMIER niveau qui produit au moins un
+    candidat (0, 1 ou plusieurs) :
+
+      1. "exact"         egalite normalisee exacte (fold_accents), nom
+                          complet contre nom complet.
+      2. "token_set"      egalite de l'ensemble de tokens, ordre-independant
+                          (ex: "FC Toulouse" == "Toulouse FC").
+      3. "token_subset"   containment de tokens : tokens(canonique) contenu
+                          dans tokens(TM) (ex: "RC Strasbourg" contenu dans
+                          "RC Strasbourg Alsace" ; gere aussi le prefixe
+                          ordinal allemand "1." via `_tokenize`).
+      4. "fuzzy"          similarite difflib >= FUZZY_MATCH_THRESHOLD,
+                          dernier recours.
+
+    Important : si un niveau produit PLUSIEURS candidats (ambigu), on
+    s'arrete la et on renvoie cet ensemble ambigu tel quel -> on ne
+    redescend JAMAIS vers un niveau plus permissif pour tenter de
+    "departager", ce qui reviendrait a deviner. L'appelant traite tout
+    ensemble de taille != 1 comme non resolu.
+    """
+    folded = fold_accents(tm_name)
+    candidates = folded_index.get(folded, set())
+    if candidates:
+        return candidates, "exact"
+
+    tm_tokens = _tokenize(tm_name)
+    candidates = token_set_index.get(tm_tokens, set())
+    if candidates:
+        return candidates, "token_set"
+
+    candidates = _token_subset_candidates(tm_tokens, teams)
+    if candidates:
+        return candidates, "token_subset"
+
+    candidates = _fuzzy_candidates(folded, teams)
+    if candidates:
+        return candidates, "fuzzy"
+
+    return set(), "none"
+
+
 async def resolve_and_store_club_ids(
     session: AsyncSession,
     *,
@@ -120,11 +253,20 @@ async def resolve_and_store_club_ids(
     """Resout les `transfermarkt_club_id` des `canonical_teams` pour toutes
     les competitions de `competitions` (par defaut `TM_COMPETITION_CODES`).
 
-    Pour chaque club TM trouve sur les pages competition :
-      - matching par `fold_accents` sur name_en / name_fr / aliases[] ;
-      - match UNIVOQUE (exactement 1 canonical_team candidat) -> ecrit
-        `transfermarkt_club_id` (si absent) ou confirme (si deja identique,
-        idempotent, aucune ecriture) ;
+    Pour chaque club TM trouve sur les pages competition, le matching est
+    tente sur name_en / name_fr / aliases[] a travers 4 niveaux, du plus
+    strict au plus permissif (voir `_match_candidates`) :
+      1. egalite normalisee exacte (fold_accents) ;
+      2. egalite d'ensemble de tokens, ordre-independant ;
+      3. containment de tokens (nom canonique contenu dans le nom TM) ;
+      4. similarite fuzzy (difflib) >= `FUZZY_MATCH_THRESHOLD`, dernier
+         recours.
+    Le premier niveau qui produit un resultat non vide est retenu (jamais
+    de fallback vers un niveau plus permissif si le niveau strict a deja
+    trouve un candidat, meme ambigu) :
+      - match UNIVOQUE a ce niveau (exactement 1 canonical_team candidat)
+        -> ecrit `transfermarkt_club_id` (si absent) ou confirme (si deja
+        identique, idempotent, aucune ecriture) ;
       - 0 candidat, >1 candidat (ambigu), ou candidat deja associe a un
         `transfermarkt_club_id` DIFFERENT -> jamais ecrit, le club TM est
         ajoute a `unresolved_tm`.
@@ -153,6 +295,7 @@ async def resolve_and_store_club_ids(
     teams = list((await session.execute(select(CanonicalTeam))).scalars().all())
     teams_by_id = {team.id: team for team in teams}
     folded_index = _build_folded_index(teams)
+    token_set_index = _build_token_set_index(teams)
 
     report = ResolveReport()
     matched_team_ids: set[int] = {
@@ -160,11 +303,10 @@ async def resolve_and_store_club_ids(
     }
 
     for tm_id, tm_name in tm_clubs.items():
-        folded = fold_accents(tm_name)
-        candidates = folded_index.get(folded, set())
+        candidates, level = _match_candidates(tm_name, teams, folded_index, token_set_index)
 
         if len(candidates) != 1:
-            reason = "aucune correspondance" if not candidates else "ambigu (plusieurs clubs canoniques)"
+            reason = "aucune correspondance" if not candidates else f"ambigu (plusieurs clubs canoniques, niveau={level})"
             logger.warning("Club TM '%s' (id=%d) non resolu : %s.", tm_name, tm_id, reason)
             report.unresolved_tm.append(tm_name)
             continue
