@@ -60,7 +60,7 @@ def test_outside_window_weekly_when_never_run():
 
 @pytest.mark.parametrize(
     "today",
-    [dt.date(2026, 6, 10), dt.date(2026, 9, 2), dt.date(2026, 1, 1), dt.date(2026, 1, 31)],
+    [dt.date(2026, 6, 10), dt.date(2026, 9, 2), dt.date(2026, 1, 1), dt.date(2026, 2, 3)],
 )
 def test_window_boundaries_are_inclusive(today):
     assert should_run_today(today, None) == "daily"
@@ -71,6 +71,6 @@ def test_day_just_outside_summer_window_is_not_daily(today):
     assert should_run_today(today, today) != "daily"
 
 
-@pytest.mark.parametrize("today", [dt.date(2026, 12, 31), dt.date(2026, 2, 1)])
+@pytest.mark.parametrize("today", [dt.date(2026, 12, 31), dt.date(2026, 2, 4)])
 def test_day_just_outside_winter_window_is_not_daily(today):
     assert should_run_today(today, today) != "daily"

@@ -158,7 +158,25 @@ async def test_failed_run_with_token_creates_issue_and_waiting_pr(caplog):
 
 
 @pytest.mark.asyncio
+async def test_partial_run_opens_issue_but_never_a_pr():
+    """`partial` n'est pas un echec total : issue GitHub oui, PR non (I2)."""
+    run = _run(status="partial")
+    client = FakeGithubClient()
+
+    await surface_failure(run, SAMPLES, settings=_settings(), client=client)
+
+    post_urls = [c[1] for c in client.calls if c[0] == "POST"]
+    assert post_urls.count(f"https://api.github.com/repos/{REPO}/issues") == 1
+    assert not any(u.endswith("/pulls") for u in post_urls)
+    assert not any(u.endswith("/git/blobs") for u in post_urls)
+    assert not any(u.endswith("/git/refs") for u in post_urls)
+
+
+@pytest.mark.asyncio
 async def test_idempotent_issue_skipped_when_already_open():
+    """Dedup sur "une seule issue [squad-sync] ouverte a la fois" — pas de
+    filtre par date dans la recherche GitHub (I2) : un `partial` du jour
+    avec une issue deja ouverte (peu importe sa date) ne recree rien."""
     run = _run(status="partial")
     client = FakeGithubClient(existing_issue=True)
 
@@ -166,8 +184,13 @@ async def test_idempotent_issue_skipped_when_already_open():
 
     post_urls = [c[1] for c in client.calls if c[0] == "POST"]
     assert not any(u.endswith("/issues") for u in post_urls)
-    # La PR, elle, doit toujours etre tentee (idempotence separee).
-    assert any(u.endswith("/pulls") for u in post_urls)
+    # `partial` -> jamais de PR, meme quand l'issue est deja ouverte.
+    assert not any(u.endswith("/pulls") for u in post_urls)
+
+    search_call = next(c for c in client.calls if c[0] == "GET" and c[1].endswith("/search/issues"))
+    query = search_call[2]["params"]["q"]
+    assert RUN_DATE not in query
+    assert "[squad-sync]" in query
 
 
 @pytest.mark.asyncio

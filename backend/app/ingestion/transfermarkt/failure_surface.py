@@ -7,13 +7,21 @@ Sur un run `SquadSyncRun` en echec (`status in {"failed", "partial"}`),
   a. `logger.error` systematique avec le resume du run (clubs KO/total,
      statut, echantillon de clubs KO) — toujours emis, meme sans canal
      GitHub disponible.
-  b. Si `settings.github_token` est renseigne, ouvre (de facon idempotente,
-     un seul run par jour calendaire) une issue GitHub decrivant l'echec,
-     puis tente en best-effort une PR "correctif d'attente" : un fixture
-     HTML capture (un des clubs en echec) + un test de non-regression qui
-     `assert`e que `parse_squad` retombe sur ses pattes sur ce fixture
-     (donc ROUGE tant que le parseur n'est pas corrige, VERT une fois le
-     correctif applique).
+  b. Si `settings.github_token` est renseigne, ouvre une issue GitHub
+     decrivant l'echec (`failed` ET `partial`), idempotente sur "une seule
+     issue `[squad-sync]` ouverte a la fois" (la recherche GitHub ne filtre
+     PAS sur la date : tant que l'issue precedente n'est pas fermee, aucune
+     nouvelle n'est creee — sinon un club durablement KO en mercato
+     spammerait une issue PAR JOUR). Le titre reste informatif (date
+     incluse) pour distinguer les runs une fois l'issue ouverte.
+     Uniquement pour un run `failed` (sentinelle/exception, jamais pour un
+     `partial`), tente en best-effort une PR "correctif d'attente" : un
+     fixture HTML capture (un des clubs en echec) + un test de
+     non-regression qui `assert`e que `parse_squad` retombe sur ses pattes
+     sur ce fixture (donc ROUGE tant que le parseur n'est pas corrige, VERT
+     une fois le correctif applique). Un `partial` n'ouvre jamais de PR :
+     ce n'est pas un echec total, pas la peine de proposer un correctif
+     automatique dessus.
   c. Si `settings.github_token` est vide, `logger.critical` explicite :
      l'echec squad-sync n'est track nulle part ailleurs.
   d. Toute exception reseau/API GitHub est capturee (`logger.critical`,
@@ -127,9 +135,17 @@ def _github_headers(token: str) -> dict[str, str]:
 
 
 async def _find_existing_issue_number(
-    client: httpx.AsyncClient, headers: dict[str, str], repo: str, run_date: str
+    client: httpx.AsyncClient, headers: dict[str, str], repo: str
 ) -> int | None:
-    query = f'repo:{repo} is:issue is:open in:title "[squad-sync]" "{run_date}"'
+    """Cherche une issue `[squad-sync]` deja ouverte, TOUTE date confondue.
+
+    Deliberement PAS de filtre sur la date dans la recherche : c'est ce qui
+    garantit "une seule issue ouverte a la fois" pour dedupliquer un club
+    durablement KO en mercato (sinon la cle d'idempotence par jour calendaire
+    ouvrirait une nouvelle issue chaque jour tant que l'ancienne n'est pas
+    fermee). Le titre de l'issue, lui, garde la date pour rester informatif.
+    """
+    query = f'repo:{repo} is:issue is:open in:title "[squad-sync]"'
     resp = await client.get(f"{API_BASE}/search/issues", headers=headers, params={"q": query})
     resp.raise_for_status()
     payload = resp.json()
@@ -156,11 +172,11 @@ async def _ensure_issue(
     samples: dict[int, str],
     run_date: str,
 ) -> None:
-    existing = await _find_existing_issue_number(client, headers, repo, run_date)
+    existing = await _find_existing_issue_number(client, headers, repo)
     if existing is not None:
         logger.info(
-            "squad-sync: issue GitHub deja ouverte pour le %s (#%s), pas de doublon.",
-            run_date, existing,
+            "squad-sync: issue GitHub [squad-sync] deja ouverte (#%s), pas de doublon pour le %s.",
+            existing, run_date,
         )
         return
     await _create_issue(
@@ -408,6 +424,14 @@ async def _surface_via_github(
             exc_info=True,
         )
 
+    if run.status != "failed":
+        logger.info(
+            "squad-sync: run id=%s status=%s (pas 'failed') — pas de PR correctif d'attente "
+            "(reservee aux echecs totaux).",
+            run.id, run.status,
+        )
+        return
+
     try:
         await _ensure_pull_request(client, headers, repo, run, samples, run_date)
     except Exception:
@@ -426,10 +450,13 @@ async def surface_failure(
     client: httpx.AsyncClient | None = None,
 ) -> None:
     """Garde-fou anti-mort-silencieuse : sur un run `failed`/`partial`,
-    trace TOUJOURS un `logger.error`, puis ouvre une issue + PR GitHub si
-    `settings.github_token` est configure (`logger.critical` sinon). Ne
-    leve JAMAIS d'exception — un incident sur ce garde-fou ne doit jamais
-    faire planter le worker squad-sync qui l'appelle.
+    trace TOUJOURS un `logger.error`, puis ouvre une issue GitHub (`failed`
+    ET `partial`, dedupliquee sur "une seule issue `[squad-sync]` ouverte a
+    la fois", sans filtre de date) et, uniquement pour `failed`, tente une
+    PR "correctif d'attente" — si `settings.github_token` est configure
+    (`logger.critical` sinon). Ne leve JAMAIS d'exception — un incident sur
+    ce garde-fou ne doit jamais faire planter le worker squad-sync qui
+    l'appelle.
 
     `samples` : `{club_id: raw_html}` des clubs KO (structure_error/empty)
     dont la page a ete capturee, utilise pour l'extrait dans l'issue et le

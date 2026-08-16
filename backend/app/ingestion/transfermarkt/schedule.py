@@ -38,10 +38,11 @@ class MercatoWindow(NamedTuple):
 
 
 # Mercato ete : 10 juin -> 2 septembre (bornes incluses).
-# Mercato hiver : 1er janvier -> 31 janvier (bornes incluses).
+# Mercato hiver : 1er janvier -> 3 fevrier (bornes incluses) — le mercato
+# hivernal ferme officiellement debut fevrier, pas le 31 janvier.
 MERCATO_WINDOWS: tuple[MercatoWindow, ...] = (
     MercatoWindow(6, 10, 9, 2),
-    MercatoWindow(1, 1, 1, 31),
+    MercatoWindow(1, 1, 2, 3),
 )
 
 # Cadence hebdomadaire hors mercato, en jours.

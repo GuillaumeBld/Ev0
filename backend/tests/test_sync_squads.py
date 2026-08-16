@@ -26,15 +26,16 @@ sont lus par `sync_squads`) : pas besoin de creer la table `canonical_teams`
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import unicodedata
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from app.ingestion.transfermarkt.squad_scraper import SquadResult, TMPlayer
 from app.ingestion.transfermarkt.sync_squads import sync_squads
@@ -374,3 +375,111 @@ async def test_sentinel_over_30pct_failed_clubs_blocks_all_writes(session_factor
         ).scalar_one()
         assert stored.status == "failed"
         assert len(stored.detail["failed_clubs"]) == 2
+
+
+# --------------------------------------------------------------------------
+# C1 (regression) : `_run_sync_squads_blocking` (app.worker) doit creer et
+# disposer son PROPRE engine (NullPool), jamais reutiliser le sessionmaker
+# global d'`app.db` — sinon connexions asyncpg liees a la boucle qui les a
+# creees + pool partage avec les autres jobs -> `Future attached to a
+# different loop` en prod.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_sync_squads_blocking_uses_dedicated_nullpool_engine(monkeypatch, tmp_path):
+    """Exercice le mecanisme REEL de bout en bout : un vrai hop de thread
+    (`asyncio.to_thread`, exactement comme `job_sync_squads` l'appelle)
+    depuis la boucle asyncio de ce test, un vrai `asyncio.run()` qui cree une
+    SECONDE boucle independante dans ce thread, et un vrai moteur/session
+    SQLite crees et utilises entierement a l'interieur de cette seconde
+    boucle. Prouve :
+
+      1. `_run_sync_squads_blocking` construit son PROPRE `AsyncEngine` a
+         partir de `DATABASE_URL` (pas `app.db.engine`), avec
+         `poolclass=NullPool`.
+      2. La session transmise a `sync_squads` est une `AsyncSession`
+         reellement connectee sur ce moteur dedie (un `SELECT 1` y est
+         execute pour de vrai, et son `.bind.url` est verifie).
+      3. Ce moteur dedie est bien `dispose()` avant le retour de la fonction.
+      4. L'aller-retour cross-thread/cross-loop reussit integralement (pas
+         de `Future attached to a different loop`) et renvoie exactement ce
+         que `sync_squads` a renvoye.
+
+    `sync_squads` est mocke ici : son orchestration propre est deja couverte
+    de bout en bout contre une vraie base SQLite par le reste de ce module.
+    Ce test cible uniquement le cycle de vie du moteur / la securite de
+    boucle de `_run_sync_squads_blocking`, orthogonale a cette orchestration.
+    """
+    from app import worker as worker_module
+
+    db_path = tmp_path / "c1_regression.sqlite3"
+    fake_database_url = f"sqlite+aiosqlite:///{db_path}"
+    monkeypatch.setattr(worker_module, "DATABASE_URL", fake_database_url)
+
+    real_create_async_engine = worker_module.create_async_engine
+    created_engines: list[tuple[str, dict]] = []
+    target_engine: dict[str, object] = {}
+    disposed = {"count": 0}
+
+    def _spy_create_async_engine(url, **kwargs):
+        eng = real_create_async_engine(url, **kwargs)
+        created_engines.append((url, kwargs))
+        target_engine["eng"] = eng
+        return eng
+
+    monkeypatch.setattr(worker_module, "create_async_engine", _spy_create_async_engine)
+
+    # `AsyncEngine.dispose` can't be reassigned per-instance (proxy object
+    # with read-only attributes) -> patch it at the class level instead,
+    # counting only calls on the ONE engine this test's `create_async_engine`
+    # spy created.
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
+    original_dispose = AsyncEngine.dispose
+
+    async def _tracking_dispose(self, *a, **kw):
+        if self is target_engine.get("eng"):
+            disposed["count"] += 1
+        return await original_dispose(self, *a, **kw)
+
+    monkeypatch.setattr(AsyncEngine, "dispose", _tracking_dispose)
+
+    stub_run = SquadSyncRun(
+        id=1, mode="daily", status="ok",
+        clubs_total=1, clubs_ok=1, clubs_failed=0,
+        players_updated=0, players_detached=0,
+    )
+    stub_samples: dict[int, str] = {}
+    session_seen: dict[str, object] = {}
+
+    async def fake_sync_squads(session, client, clubs, *, mode, today=None):  # noqa: ARG001
+        result = await session.execute(text("SELECT 1"))
+        session_seen["value"] = result.scalar_one()
+        session_seen["bind_url"] = str(session.bind.url)
+        return stub_run, stub_samples
+
+    monkeypatch.setattr(worker_module, "sync_squads", fake_sync_squads)
+
+    club_x = _team(team_id=1, bzz_team_id=10, tm_club_id=100)
+
+    # Exactement comme `job_sync_squads` : dispatch vers un thread worker
+    # depuis une boucle VIVANTE (celle de ce test), pour forcer le vrai
+    # chemin cross-thread/cross-loop plutot que de le simuler.
+    run, samples = await asyncio.to_thread(
+        worker_module._run_sync_squads_blocking, [club_x], "daily"
+    )
+
+    assert run is stub_run
+    assert samples is stub_samples
+    assert session_seen["value"] == 1
+    assert session_seen["bind_url"] == fake_database_url
+
+    assert len(created_engines) == 1
+    used_url, used_kwargs = created_engines[0]
+    assert used_url == fake_database_url
+    assert used_kwargs.get("poolclass") is NullPool
+    # Jamais le moteur partage d'app.db, meme si l'URL avait ete identique.
+    assert used_url != str(worker_module.engine.url)
+
+    assert disposed["count"] == 1

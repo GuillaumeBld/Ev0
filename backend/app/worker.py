@@ -17,10 +17,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from app.cache import close_redis
 from app.config import settings
-from app.db import async_session, engine
+from app.db import DATABASE_URL, async_session, engine
 from app.ingestion.auto_settle import settle_approved_recommendations
 from app.ingestion.bzzoiro.aggregate import aggregate_all_leagues
 from app.ingestion.bzzoiro.sync_loan_teams import sync_loan_teams
@@ -1469,9 +1471,21 @@ def _run_sync_squads_blocking(
     We deliberately do NOT reuse the caller's `AsyncSession` (or its event
     loop) for the actual scrape+write: asyncpg connections are bound to the
     event loop that created them, so handing one across threads/loops would
-    corrupt it. Instead this function opens its OWN session (and its own
-    asyncio event loop, via `asyncio.run`) entirely within the worker
-    thread. `clubs` is only ever read here (`.id` / `.transfermarkt_club_id`
+    corrupt it. Crucially, this also rules out the module-level `async_session`
+    / `engine` from `app.db` — even though we open a *fresh* session from it,
+    that sessionmaker is bound to the ONE shared `engine`/connection pool used
+    by the worker's main event loop for every other job (odds, settlement,
+    ...). `asyncio.run(_run())` below spins up a brand-new event loop inside
+    this thread; if `_run()` checked out a connection from the shared pool,
+    that connection would be a `Future` created on the main loop being awaited
+    from this thread's loop -> `RuntimeError: Future attached to a different
+    loop`, AND it would corrupt the shared pool out from under the other jobs
+    still running on the main loop.
+
+    Instead this function creates its OWN dedicated `AsyncEngine` (own
+    connection(s), own sessionmaker), using `NullPool` so no connection is
+    ever pooled/reused across `asyncio.run()` calls, and disposes it before
+    returning. `clubs` is only ever read here (`.id` / `.transfermarkt_club_id`
     / `.bzz_team_id`, already loaded in memory by the caller) and never
     re-attached to a session — the same read-only contract `sync_squads`
     already relies on in `test_sync_squads.py` — so passing already-loaded
@@ -1480,11 +1494,14 @@ def _run_sync_squads_blocking(
 
     async def _run() -> tuple[SquadSyncRun, dict[int, str]]:
         client = TransfermarktClient()
+        eng = create_async_engine(DATABASE_URL, poolclass=NullPool)
+        sm = async_sessionmaker(eng, expire_on_commit=False)
         try:
-            async with async_session() as session:
+            async with sm() as session:
                 return await sync_squads(session, client, clubs, mode=mode)
         finally:
             client.close()
+            await eng.dispose()
 
     return asyncio.run(_run())
 
@@ -1498,6 +1515,8 @@ async def job_sync_squads() -> None:
     today" (already ran this week, off mercato) — a no-op, not an error.
     """
     logger.info("job_sync_squads: start")
+    job_started_at = datetime.now(UTC)
+    mode: str | None = None
     try:
         async with async_session() as session:
             last_weekly_result = await session.execute(
@@ -1544,6 +1563,40 @@ async def job_sync_squads() -> None:
 
     except Exception as exc:
         logger.error("job_sync_squads failed: %s", exc, exc_info=True)
+        # `sync_squads` may never have run (or never reached the point where it
+        # persists its own `SquadSyncRun` row) — without this, an exception here
+        # would leave NEITHER a run row NOR the failure garde-fou triggered:
+        # a silent death. Persist a minimal "failed" run on the MAIN loop's
+        # shared `async_session` (safe here — unlike `_run_sync_squads_blocking`,
+        # this coroutine runs on the worker's main event loop, the one that
+        # owns `app.db.engine`) and surface it exactly like a normal failed run.
+        # This block must never itself crash the scheduler: it is wrapped in
+        # its own try/except, falling back to `logger.critical` as last resort.
+        try:
+            failed_run = SquadSyncRun(
+                started_at=job_started_at,
+                finished_at=datetime.now(UTC),
+                mode=mode,
+                status="failed",
+                detail={"exception": repr(exc)},
+            )
+            async with async_session() as session:
+                session.add(failed_run)
+                await session.commit()
+                await session.refresh(failed_run)
+            await surface_failure(failed_run, {}, settings=settings)
+            logger.critical(
+                "job_sync_squads: run en exception, trace en run failed (id=%s) + garde-fou "
+                "declenche.",
+                failed_run.id,
+            )
+        except Exception:
+            logger.critical(
+                "job_sync_squads: echec du tracage du run failed / garde-fou suite a "
+                "l'exception initiale (%s) — AUCUNE trace persistee pour cet echec.",
+                exc,
+                exc_info=True,
+            )
 
 
 async def job_deactivate_stale_wc_odds() -> None:
