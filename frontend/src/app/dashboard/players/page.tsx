@@ -14,6 +14,11 @@ type SortField =
   | 'avg_rating' | 'shots_on_target_per_90' | 'form_xg_5' | 'minutes_played'
 type PositionFilter = '' | 'G' | 'D' | 'M' | 'F'
 
+// Recherche insensible aux accents : « e » doit matcher « é è ê ë », etc.
+// Décompose (NFD) puis retire les diacritiques combinants, et minusculise.
+const foldAccents = (s: string): string =>
+  s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
+
 // Championnats cibles — IDs internes Bzzoiro (post-migration API)
 // api_id: null = Tous, api_id: -1 = Autres (ligue dominante hors Big5/UCL)
 const LEAGUES: { api_id: number | null; label: string; flag: string; finished?: boolean }[] = [
@@ -207,12 +212,12 @@ export default function PlayersPage() {
     let result = [...players]
 
     if (search.trim()) {
-      const q = search.toLowerCase()
+      const q = foldAccents(search)
       result = result.filter(
         (p) =>
-          p.name.toLowerCase().includes(q) ||
-          (p.short_name?.toLowerCase().includes(q) ?? false) ||
-          (p.team_name?.toLowerCase().includes(q) ?? false)
+          foldAccents(p.name).includes(q) ||
+          (p.short_name ? foldAccents(p.short_name).includes(q) : false) ||
+          (p.team_name ? foldAccents(p.team_name).includes(q) : false)
       )
     }
 
