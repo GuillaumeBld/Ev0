@@ -895,7 +895,8 @@ async def job_auto_settle():
                 f"{settled} pari(s) réglé(s) :\n"
                 f"• Gagnés : {stats['won']}\n"
                 f"• Perdus : {stats['lost']}\n"
-                f"• Voids : {stats['void']}"
+                f"• Voids : {stats['void']}",
+                channel="autopilot",
             )
 
         # Alert if recs are stuck for fixtures finished >48h ago
@@ -919,7 +920,8 @@ async def job_auto_settle():
                     f"🚨 <b>[Ev0] Settlement bloqué</b>\n\n"
                     f"{len(old_stuck)} match(s) terminé(s) depuis >48h impossible(s) à settler :\n"
                     f"{names}\n\n"
-                    f"Cause probable : PlayerMatchMinutes ou MatchEvents manquants."
+                    f"Cause probable : PlayerMatchMinutes ou MatchEvents manquants.",
+                    channel="incidents",
                 )
 
     except Exception:
@@ -975,7 +977,8 @@ async def job_auto_finish_fixtures():
             f"⏱️ <b>[Ev0] Auto-finish fixtures</b>\n\n"
             f"{len(fixtures)} match(s) passés en <b>finished</b> (kickoff +2h dépassé) :\n"
             f"{names}"
-            + (" ..." if len(fixtures) > 10 else "")
+            + (" ..." if len(fixtures) > 10 else ""),
+            channel="autopilot",
         )
 
 
@@ -1661,7 +1664,7 @@ async def job_recos_expiry_digest() -> None:
                 lines.append(f"  … +{len(recs) - 8} autres")
         lines.append("")
         lines.append("👉 Approuver/rejeter sur la page Recommendations")
-        await send_alert("\n".join(lines), channel="recos")
+        await send_alert("\n".join(lines), channel="value")
         logger.info("job_recos_expiry_digest: digest envoyé (%d recos)", len(rows))
     except Exception as exc:
         logger.exception("job_recos_expiry_digest failed: %s", exc)
@@ -1755,7 +1758,7 @@ async def job_daily_health_report() -> None:
             f"Recos 24h : {row['recs_24h']} (pending: {row['recs_pending']})\n"
             f"Backlog settle : {row['backlog_settle']} décision(s)"
         )
-        await send_alert(msg, channel="ops")
+        await send_alert(msg, channel="incidents")
     except Exception as exc:
         logger.exception("job_daily_health_report failed: %s", exc)
 
@@ -2069,7 +2072,7 @@ async def main():
         alert_bg(
             f"🔴 [Ev0 worker] Job '{event.job_id}' a levé une exception:\n"
             f"{event.exception}",
-            channel="ops",
+            channel="incidents",
         )
 
     scheduler.add_listener(_on_job_error, EVENT_JOB_ERROR)

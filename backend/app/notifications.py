@@ -7,8 +7,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Chat ID configurable par env TELEGRAM_CHAT_ID (défaut = ID perso historique)
-TELEGRAM_CHAT_ID = settings.telegram_chat_id
+CHANNELS = ("value", "incidents", "autopilot")
 
 _ACTION_LABELS = {
     0: "SKIP",
@@ -25,24 +24,59 @@ _THRESH_FINE_TUNE = 3
 _THRESH_QUOTA = 50
 
 
-async def send_telegram_alert(message: str) -> bool:
-    """Send a message to the Ev0 Telegram group. Returns True on success."""
-    token = getattr(settings, "telegram_bot_token", None)
-    if not token:
-        logger.debug("TELEGRAM_BOT_TOKEN not set — skipping notification")
-        return False
+def _chat_id_for(channel: str) -> str:
+    return {
+        "value": settings.telegram_chat_id_value,
+        "incidents": settings.telegram_chat_id_incidents,
+        "autopilot": settings.telegram_chat_id_autopilot,
+    }[channel]
+
+
+async def _post(token: str, chat_id: str, text: str) -> bool:
+    """Un envoi Telegram. Ne lève jamais ; retourne True si accepté."""
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"},
+                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
                 timeout=10,
             )
             r.raise_for_status()
             return True
     except Exception as exc:
-        logger.warning("Telegram notification failed: %s", exc)
+        logger.warning("Telegram sendMessage échoué (chat_id=%s): %s", chat_id, exc)
         return False
+
+
+async def send_telegram_alert(message: str, channel: str) -> bool:
+    """Envoie sur le groupe du canal. Repli sur le chat historique, jamais en silence."""
+    if channel not in CHANNELS:
+        raise ValueError(f"canal Telegram inconnu: {channel!r}")
+
+    token = getattr(settings, "telegram_bot_token", None)
+    if not token:
+        logger.debug("TELEGRAM_BOT_TOKEN absent — notification ignorée")
+        return False
+
+    chat_id = _chat_id_for(channel)
+    if chat_id:
+        if await _post(token, chat_id, message):
+            return True
+        logger.warning(
+            "Canal '%s' injoignable (chat_id=%s) — repli sur le chat historique",
+            channel, chat_id,
+        )
+    else:
+        logger.warning(
+            "Canal '%s' non configuré (TELEGRAM_CHAT_ID_%s vide) — repli sur le chat historique",
+            channel, channel.upper(),
+        )
+
+    fallback = settings.telegram_chat_id
+    if not fallback:
+        logger.error("Aucun chat de repli configuré — alerte '%s' PERDUE", channel)
+        return False
+    return await _post(token, fallback, f"[{channel}] {message}")
 
 
 def _scorecard(
@@ -118,7 +152,7 @@ async def notify_autopilot_position(
     )
     from app.alerts import send_alert
 
-    await send_alert(msg, channel="recos")
+    await send_alert(msg, channel="autopilot")
 
 
 async def notify_autopilot_fine_tune(
@@ -142,7 +176,7 @@ async def notify_autopilot_fine_tune(
     )
     from app.alerts import send_alert
 
-    await send_alert(msg, channel="ops")
+    await send_alert(msg, channel="autopilot")
 
 
 async def notify_autopilot_settle(
@@ -167,4 +201,4 @@ async def notify_autopilot_settle(
     )
     from app.alerts import send_alert
 
-    await send_alert(msg, channel="ops")
+    await send_alert(msg, channel="autopilot")

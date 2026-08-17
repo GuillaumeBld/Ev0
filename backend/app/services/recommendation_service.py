@@ -773,7 +773,7 @@ async def process_scraped_fixtures(
                 f"📈 Cote: {alert['odds']} ({alert['bookmaker']}) | Edge: +{alert['edge']:.1%}\n"
                 f"🤖 Ev0 Autopilot"
             )
-            await send_alert(msg, channel="recos")
+            await send_alert(msg, channel="value")
         except Exception as exc:
             logger.warning("Failed to send Telegram alert: %s", exc)
 

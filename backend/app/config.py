@@ -18,7 +18,13 @@ class Settings(BaseSettings):  # type: ignore[misc]
     # API Keys (optional)
     odds_api_key: str | None = None
     telegram_bot_token: str = ""
-    telegram_chat_id: str = "8589235488"  # surchargable par env (plus de hardcode)
+    telegram_chat_id: str = "8589235488"  # chat historique — sert de filet de secours
+
+    # Un groupe Telegram par canal. Vide -> repli sur telegram_chat_id, message
+    # prefixe [canal] + log WARNING : rien n'est jamais perdu en silence.
+    telegram_chat_id_value: str = ""
+    telegram_chat_id_incidents: str = ""
+    telegram_chat_id_autopilot: str = ""
 
     # GitHub API — garde-fou anti-mort-silencieuse squad-sync (issue + PR
     # correctif d'attente sur echec). Vide -> degradation propre (log CRITICAL,
