@@ -65,7 +65,31 @@ Un conteneur nommé `<hash>_ev0-compose-…` = résidu d'un déploiement en cour
 
 ## Alerting
 
-Les crashs de jobs et le bilan santé quotidien (08:00 UTC) arrivent sur
-WhatsApp (CallMeBot, canal ops). Les value bets arrivent sur le canal recos.
-Config : `WHATSAPP_OPS_PHONE/APIKEY`, `WHATSAPP_RECOS_PHONE/APIKEY`
-(fallback Telegram via `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`).
+Telegram est le transport primaire, WhatsApp (CallMeBot) le secours.
+Trois canaux, **un groupe Telegram chacun** :
+
+| Canal | Groupe | Sonore | Contenu |
+|---|---|---|---|
+| `value` | 🎯 Ev0 Value | oui | nouvelle value, ou nouveau plus haut de cote (+5 % au-dessus du dernier niveau notifié) |
+| `incidents` | 🚨 Ev0 Incidents | oui | job en exception, log ERROR, settlement bloqué >48h, santé au rouge |
+| `autopilot` | 🤖 Ev0 Autopilot | **à mettre en sourdine** | positions prises, paris réglés, P&L, fine-tune, auto-finish, santé quand tout va bien |
+
+Aucune notification quand une value se dégrade ou disparaît : la fenêtre de
+disponibilité appartient aux bookmakers, il n'y a rien à décider.
+
+**Configuration.** `TELEGRAM_BOT_TOKEN` plus un `chat_id` par canal :
+`TELEGRAM_CHAT_ID_VALUE`, `TELEGRAM_CHAT_ID_INCIDENTS`,
+`TELEGRAM_CHAT_ID_AUTOPILOT`. `TELEGRAM_CHAT_ID` reste le **filet de secours** :
+si un canal n'est pas configuré ou que son groupe est injoignable, le message y
+part préfixé `[canal]` avec un log `WARNING` — jamais d'échec silencieux. Voir
+un préfixe `[canal]` arriver dans le chat historique signale un `chat_id` mal
+posé.
+
+Secours WhatsApp (`WHATSAPP_OPS_PHONE/APIKEY`, `WHATSAPP_RECOS_PHONE/APIKEY`)
+uniquement pour `value` et `incidents`. Le canal `autopilot` n'en a
+volontairement aucun : une panne Telegram ne doit pas déverser son flot sur
+WhatsApp.
+
+**Garde-fous.** Même message ignoré 15 min, 20 s minimum entre deux envois d'un
+même canal, et au-delà de 3 alertes d'erreur par heure les suivantes sont
+absorbées dans un message de synthèse (anti-crashloop).

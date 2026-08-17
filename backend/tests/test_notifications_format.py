@@ -76,7 +76,13 @@ _BETS = [
      "best_odds": 3.40, "edge": 0.142, "stake": 25.0, "action_idx": 2},
 ]
 
-_SCORE = dict(settled=120, won=35, total_pnl=42.0, staked_total=400.0, fine_tune_runs=2)
+_SCORE = {
+    "settled": 120,
+    "won": 35,
+    "total_pnl": 42.0,
+    "staked_total": 400.0,
+    "fine_tune_runs": 2,
+}
 
 
 async def test_autopilot_run_sends_one_message_with_one_scorecard(monkeypatch):
