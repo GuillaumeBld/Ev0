@@ -77,6 +77,14 @@ Trois canaux, **un groupe Telegram chacun** :
 Aucune notification quand une value se dégrade ou disparaît : la fenêtre de
 disponibilité appartient aux bookmakers, il n'y a rien à décider.
 
+> **Trois endroits, pas deux.** Une variable d'environnement n'atteint les
+> conteneurs que si elle est déclarée dans le bloc `environment:` de
+> `docker-compose.yml` (services `backend` **et** `worker`). La poser dans le
+> `.env` et dans la base Dokploy ne suffit pas : compose n'injecte que ce qui
+> est listé. Symptôme : les logs du worker répètent
+> `Canal 'x' non configuré — repli sur le chat historique` alors que la
+> variable est bien présente dans le `.env`.
+
 **Configuration.** `TELEGRAM_BOT_TOKEN` plus un `chat_id` par canal :
 `TELEGRAM_CHAT_ID_VALUE`, `TELEGRAM_CHAT_ID_INCIDENTS`,
 `TELEGRAM_CHAT_ID_AUTOPILOT`. `TELEGRAM_CHAT_ID` reste le **filet de secours** :
