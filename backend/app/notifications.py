@@ -79,6 +79,44 @@ async def send_telegram_alert(message: str, channel: str) -> bool:
     return await _post(token, fallback, f"[{channel}] {message}")
 
 
+_BET_LABELS = {"goal": "Buteur", "assist": "Passeur"}
+
+
+def _format_movement(m: dict) -> str:
+    label = _BET_LABELS.get(m["bet_type"], m["bet_type"])
+    head = "▲ NOUVELLE VALUE\n" if m["kind"] == "new" else "▲ "
+    name_line = f"<b>{m['player']}</b> — {label}"
+    fixture_line = f"{m['fixture']} ({m['kickoff']})"
+
+    if m["kind"] == "new":
+        odds_line = f"{m['odds']:.2f} {m['bookmaker']} | edge {m['edge']:+.1%}"
+    else:
+        odds_line = (
+            f"{m['previous_odds']:.2f} → {m['odds']:.2f} {m['bookmaker']} | "
+            f"edge {m['previous_edge']:+.1%} → {m['edge']:+.1%}"
+        )
+
+    return f"{head}{name_line}\n{fixture_line}\n{odds_line}"
+
+
+async def notify_value_movements(movements: list[dict]) -> None:
+    """Un seul message par cycle de scraping. Rien si le cycle est vide.
+
+    Le scraping reevalue toutes les recos toutes les 60 s : notifier mouvement
+    par mouvement recreerait le flood qu'on cherche a supprimer.
+    """
+    if not movements:
+        return
+
+    n = len(movements)
+    header = f"🎯 <b>{n} mouvement{'s' if n > 1 else ''}</b>"
+    body = "\n\n".join(_format_movement(m) for m in movements)
+
+    from app.alerts import send_alert
+
+    await send_alert(f"{header}\n\n{body}", channel="value")
+
+
 def _scorecard(
     settled: int,
     won: int,
