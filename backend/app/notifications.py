@@ -157,15 +157,9 @@ def _scorecard(
     return "\n".join(lines)
 
 
-async def notify_autopilot_position(
+async def notify_autopilot_run(
     *,
-    player_name: str,
-    fixture_name: str,
-    market_type: str,
-    best_odds: float,
-    edge: float,
-    stake: float,
-    action_idx: int,
+    bets: list[dict],
     mode: str,
     settled: int,
     won: int,
@@ -174,20 +168,36 @@ async def notify_autopilot_position(
     fine_tune_runs: int,
     odds_api_remaining: int | None = None,
 ) -> None:
-    """Notify when autopilot takes a position (action_idx > 0)."""
-    market_label = "Buteur" if market_type == "goalscorer" else market_type.capitalize()
-    action_label = _ACTION_LABELS.get(action_idx, str(action_idx))
-    mode_tag = "PAPER" if mode == "paper" else "LIVE"
+    """Un message par run d'autopilot, scorecard affiche une seule fois.
 
-    msg = (
-        f"<b>[Autopilot {mode_tag}] Position prise 📌</b>\n"
-        f"\n"
-        f"<b>{player_name}</b> — {market_label}\n"
-        f"Match : {fixture_name}\n"
-        f"Cote : {best_odds:.2f}  |  Edge : {edge:+.1%}\n"
-        f"Action : {action_label}  |  Mise : <b>€{stake:.2f}</b>"
-        + _scorecard(settled, won, total_pnl, staked_total, fine_tune_runs, odds_api_remaining)
+    Un run a 12 paris produisait 12 notifications repetant le meme scorecard.
+    """
+    if not bets:
+        return
+
+    mode_tag = "PAPER" if mode == "paper" else "LIVE"
+    n = len(bets)
+    plural = "s" if n > 1 else ""
+    lines = [
+        f"<b>[Autopilot {mode_tag}] {n} position{plural} prise{plural} 📌</b>",
+        "",
+    ]
+    for bet in bets:
+        market_label = (
+            "Buteur" if bet["market_type"] == "goalscorer" else bet["market_type"].capitalize()
+        )
+        action_label = _ACTION_LABELS.get(bet["action_idx"], str(bet["action_idx"]))
+        lines.append(f"• <b>{bet['player_name']}</b> — {market_label}")
+        lines.append(f"  {bet['fixture_name']}")
+        lines.append(
+            f"  {bet['best_odds']:.2f} | edge {bet['edge']:+.1%} | "
+            f"{action_label} → <b>€{bet['stake']:.2f}</b>"
+        )
+
+    msg = "\n".join(lines) + _scorecard(
+        settled, won, total_pnl, staked_total, fine_tune_runs, odds_api_remaining
     )
+
     from app.alerts import send_alert
 
     await send_alert(msg, channel="autopilot")

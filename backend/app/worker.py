@@ -405,7 +405,7 @@ async def job_autopilot_run():
             latest_entry = bal_result.scalar_one_or_none()
             bankroll = latest_entry.balance_after if latest_entry else 1000.0
 
-            from app.notifications import notify_autopilot_position
+            from app.notifications import notify_autopilot_run
 
             # Load stats for scorecard
             from app.models.autopilot import AutopilotDecision as _AD
@@ -514,17 +514,16 @@ async def job_autopilot_run():
                 len(recs), decisions_made, mode,
             )
 
-            # Send one Telegram notification per bet taken
-            for bet in bets_this_run:
-                await notify_autopilot_position(
-                    **bet,
-                    mode=mode,
-                    settled=_sc_settled,
-                    won=_sc_won,
-                    total_pnl=_sc_total_pnl,
-                    staked_total=_sc_staked,
-                    fine_tune_runs=_sc_ft_runs,
-                )
+            # Un seul message pour tout le run (scorecard non répété)
+            await notify_autopilot_run(
+                bets=bets_this_run,
+                mode=mode,
+                settled=_sc_settled,
+                won=_sc_won,
+                total_pnl=_sc_total_pnl,
+                staked_total=_sc_staked,
+                fine_tune_runs=_sc_ft_runs,
+            )
 
     except Exception as exc:
         logger.error("Error in autopilot run: %s", exc, exc_info=True)
