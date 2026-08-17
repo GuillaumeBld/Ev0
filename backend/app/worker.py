@@ -1657,9 +1657,40 @@ async def job_purge_old_snapshots() -> None:
         logger.exception("job_purge_old_snapshots failed: %s", exc)
 
 
+_HEALTH_STALE_H = 24
+_HEALTH_BACKLOG_MAX = 20
+
+
+def _health_red_flags(row: dict, now: datetime) -> list[str]:
+    """Indicateurs de santé au rouge. Liste vide = rien à signaler."""
+    from datetime import timedelta
+
+    stale = timedelta(hours=_HEALTH_STALE_H)
+    flags: list[str] = []
+
+    for key, label in (
+        ("last_player_odds", "cotes joueurs"),
+        ("last_match_odds", "cotes matchs"),
+    ):
+        ts = row[key]
+        if ts is None or (now - ts) > stale:
+            flags.append(label)
+
+    if row["backlog_settle"] > _HEALTH_BACKLOG_MAX:
+        flags.append("backlog settlement")
+    if row["recs_24h"] == 0:
+        flags.append("aucune reco en 24h")
+
+    return flags
+
+
 async def job_daily_health_report() -> None:
-    """Daily 08:00 UTC: résumé santé sur le canal ops — détecte les morts
-    silencieuses qui ne lèvent aucune exception (scraper arrêté, données figées)."""
+    """Daily 08:00 UTC : détecte les morts silencieuses qui ne lèvent aucune
+    exception (scraper arrêté, données figées).
+
+    Ne sonne (`incidents`) que si un indicateur est au rouge ; sinon le rapport
+    tombe sur `autopilot`, consultable. Un rapport quotidien identique qu'il
+    aille bien ou mal finit par ne plus être lu — donc à ne plus alerter."""
     try:
         from app.alerts import send_alert
 
@@ -1692,8 +1723,14 @@ async def job_daily_health_report() -> None:
                 return f"il y a {mins // 60}h{mins % 60:02d}"
             return f"il y a {mins // 1440}j ⚠️"
 
+        red = _health_red_flags(row, now)
+        title = (
+            f"🚨 <b>[Ev0] Santé — {', '.join(red)}</b>"
+            if red
+            else "🩺 <b>[Ev0] Santé quotidienne</b>"
+        )
         msg = (
-            "🩺 <b>[Ev0] Santé quotidienne</b>\n\n"
+            f"{title}\n\n"
             f"Cotes joueurs : {age(row['last_player_odds'])}\n"
             f"Cotes matchs : {age(row['last_match_odds'])}\n"
             f"Outrights WC actifs : {row['wc_odds_actives']}\n"
@@ -1701,7 +1738,7 @@ async def job_daily_health_report() -> None:
             f"Recos 24h : {row['recs_24h']} (pending: {row['recs_pending']})\n"
             f"Backlog settle : {row['backlog_settle']} décision(s)"
         )
-        await send_alert(msg, channel="incidents")
+        await send_alert(msg, channel="incidents" if red else "autopilot")
     except Exception as exc:
         logger.exception("job_daily_health_report failed: %s", exc)
 
