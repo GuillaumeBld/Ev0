@@ -34,6 +34,19 @@ logger = logging.getLogger(__name__)
 # ligne bougée, scraper arrêté) — elle n'entre plus dans le calcul d'edge.
 _ODDS_MAX_AGE_HOURS = 24
 
+# Une value déjà signalée ne resonne que si le marché dépasse de 5 % la cote
+# sur laquelle l'utilisateur a été alerté. Évite le flood : le scraping
+# réévalue toutes les recos toutes les 60 secondes.
+ALERT_RISE_RATIO = 1.05
+
+
+def should_alert(alerted_odds: float | None, market_odds: float) -> bool:
+    """True si `market_odds` constitue un nouveau plus haut notifiable."""
+    if alerted_odds is None:
+        return True
+    return market_odds >= alerted_odds * ALERT_RISE_RATIO
+
+
 # Position-based xG/xA defaults for players with stats in DB but missing per-90 values
 POSITION_DEFAULTS: dict[str, dict[str, float]] = {
     "FW": {"xg_per_90": 0.35, "xa_per_90": 0.15},
@@ -466,7 +479,24 @@ async def process_scraped_fixtures(
 
     now = datetime.now(UTC)
     stats: dict[str, int] = {"created": 0, "updated": 0, "expired": 0, "resurrected": 0}
-    new_value_alerts: list[dict] = []
+    movements: list[dict] = []
+
+    def _record_movement(kind: str, rec, fixture_orm, bet_type: str,
+                         market_odds: float, bookmaker: str, edge: float,
+                         previous_odds: float | None, previous_edge: float | None) -> None:
+        movements.append({
+            "kind": kind,
+            "player": rec.player_name,
+            "fixture": f"{fixture_orm.home_team} vs {fixture_orm.away_team}",
+            "kickoff": fixture_orm.kickoff_utc.strftime("%H:%M"),
+            "bet_type": bet_type,
+            "odds": market_odds,
+            "previous_odds": previous_odds,
+            "bookmaker": bookmaker,
+            "edge": edge,
+            "previous_edge": previous_edge,
+        })
+        rec.alerted_odds = market_odds
 
     # Load fixture ORM objects
     fx_result = await session.execute(
@@ -637,19 +667,20 @@ async def process_scraped_fixtures(
                         session.add(new_rec)
                         rec_by_key[rec_key] = new_rec
                         stats["created"] += 1
-                        new_value_alerts.append({
-                            "player": player_name,
-                            "fixture": f"{fixture_orm.home_team} vs {fixture_orm.away_team}",
-                            "market": f"{bet_type}/{mkt_type.value}",
-                            "odds": market_odds,
-                            "bookmaker": bookmaker,
-                            "edge": edge,
-                        })
+                        _record_movement(
+                            "new", new_rec, fixture_orm, bet_type,
+                            market_odds, bookmaker, edge,
+                            previous_odds=None, previous_edge=None,
+                        )
 
                     elif existing_rec.status == "expired":
-                        # Réactive le pari (il réapparaît dans l'UI) mais SANS
-                        # notification : une résurrection = micro-variation de
-                        # cote autour du seuil, pas un signal actionnable.
+                        # Réactive le pari (il réapparaît dans l'UI). Ne notifie
+                        # que si la cote constitue un nouveau plus haut : une
+                        # micro-variation autour du seuil n'est pas actionnable.
+                        _prev_odds = existing_rec.alerted_odds or existing_rec.best_odds
+                        _prev_edge = existing_rec.edge
+                        _fires = should_alert(existing_rec.alerted_odds, market_odds)
+
                         existing_rec.status = "pending"
                         existing_rec.best_odds = market_odds
                         existing_rec.best_bookmaker = bookmaker
@@ -658,17 +689,35 @@ async def process_scraped_fixtures(
                         existing_rec.generated_utc = now
                         stats["resurrected"] += 1
 
+                        if _fires:
+                            _record_movement(
+                                "rise", existing_rec, fixture_orm, bet_type,
+                                market_odds, bookmaker, edge,
+                                previous_odds=_prev_odds, previous_edge=_prev_edge,
+                            )
+
                     else:
                         # pending or approved — update if odds/edge changed
                         if (
                             abs(market_odds - existing_rec.best_odds) > 0.001
                             or abs(edge - existing_rec.edge) > 0.001
                         ):
+                            _prev_odds = existing_rec.alerted_odds or existing_rec.best_odds
+                            _prev_edge = existing_rec.edge
+                            _fires = should_alert(existing_rec.alerted_odds, market_odds)
+
                             existing_rec.best_odds = market_odds
                             existing_rec.best_bookmaker = bookmaker
                             existing_rec.edge = edge
                             existing_rec.confidence = confidence
                             stats["updated"] += 1
+
+                            if _fires:
+                                _record_movement(
+                                    "rise", existing_rec, fixture_orm, bet_type,
+                                    market_odds, bookmaker, edge,
+                                    previous_odds=_prev_odds, previous_edge=_prev_edge,
+                                )
 
         # Expire pending/approved recs for players that appeared in fresh odds but are no longer EV+
         # Build set of (player_name, bet_type) pairs present in fresh odds
@@ -763,18 +812,11 @@ async def process_scraped_fixtures(
 
     await session.commit()
 
-    for alert in new_value_alerts:
-        try:
-            from app.alerts import send_alert
-            msg = (
-                f"🎯 <b>VALUE BET</b>\n"
-                f"{alert['player']} — {alert['market']}\n"
-                f"📋 {alert['fixture']}\n"
-                f"📈 Cote: {alert['odds']} ({alert['bookmaker']}) | Edge: +{alert['edge']:.1%}\n"
-                f"🤖 Ev0 Autopilot"
-            )
-            await send_alert(msg, channel="recos")
-        except Exception as exc:
-            logger.warning("Failed to send Telegram alert: %s", exc)
+    try:
+        from app.notifications import notify_value_movements
+
+        await notify_value_movements(movements)
+    except Exception as exc:
+        logger.warning("Envoi des mouvements value échoué: %s", exc)
 
     return stats

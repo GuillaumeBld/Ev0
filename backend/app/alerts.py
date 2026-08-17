@@ -1,8 +1,9 @@
-"""Canal d'alertes multi-provider — WhatsApp (CallMeBot) avec fallback Telegram.
+"""Canal d'alertes multi-provider — Telegram en primaire, WhatsApp en secours.
 
-Deux canaux logiques :
-- "ops"   : incidents (crash de jobs, erreurs), résumé santé quotidien
-- "recos" : recommandations / value bets en direct
+Trois canaux logiques, un groupe Telegram chacun :
+- "value"     : mouvements de marché exploitables (nouvelle value, nouveau plus haut)
+- "incidents" : pannes nécessitant une intervention (jobs, erreurs, settlement bloqué)
+- "autopilot" : activité autonome et plomberie — consultable, à mettre en sourdine
 
 Garde-fous (leçon de l'incident Telegram passé) :
 - jamais d'exception propagée à l'appelant
@@ -34,12 +35,19 @@ _lock = asyncio.Lock()
 
 
 def _channel_conf(channel: str) -> tuple[str, str]:
-    if channel == "recos":
+    """Coordonnées WhatsApp de secours du canal.
+
+    `autopilot` n'en a volontairement aucune : une panne Telegram ne doit pas
+    déverser le flot autopilot sur WhatsApp — c'est précisément le bruit qu'on
+    cherche à éliminer.
+    """
+    if channel == "autopilot":
+        return "", ""
+    if channel == "value":
         phone = settings.whatsapp_recos_phone or settings.whatsapp_ops_phone
         key = settings.whatsapp_recos_apikey or settings.whatsapp_ops_apikey
-    else:
-        phone, key = settings.whatsapp_ops_phone, settings.whatsapp_ops_apikey
-    return phone or "", key or ""
+        return phone or "", key or ""
+    return settings.whatsapp_ops_phone or "", settings.whatsapp_ops_apikey or ""
 
 
 def _html_to_whatsapp(text: str) -> str:
@@ -72,7 +80,7 @@ async def _send_whatsapp(phone: str, apikey: str, text: str) -> bool:
         return False
 
 
-async def send_alert(message: str, channel: str = "ops") -> bool:
+async def send_alert(message: str, channel: str) -> bool:
     """Envoie une alerte sur le canal donné. Ne lève jamais d'exception."""
     try:
         h = hashlib.sha1(f"{channel}:{message}".encode()).hexdigest()
@@ -93,7 +101,7 @@ async def send_alert(message: str, channel: str = "ops") -> bool:
         if settings.telegram_bot_token:
             from app.notifications import send_telegram_alert
 
-            sent = await send_telegram_alert(message)
+            sent = await send_telegram_alert(message, channel)
         if not sent:
             phone, apikey = _channel_conf(channel)
             if phone and apikey:
@@ -104,7 +112,7 @@ async def send_alert(message: str, channel: str = "ops") -> bool:
         return False
 
 
-def alert_bg(message: str, channel: str = "ops") -> None:
+def alert_bg(message: str, channel: str) -> None:
     """Fire-and-forget : planifie l'envoi sans bloquer ni jamais lever."""
     try:
         asyncio.get_running_loop().create_task(send_alert(message, channel))
@@ -113,20 +121,52 @@ def alert_bg(message: str, channel: str = "ops") -> None:
 
 
 class ErrorAlertHandler(logging.Handler):
-    """Handler de logs : tout record >= ERROR du worker part en alerte ops.
+    """Handler de logs : tout record >= ERROR du worker part sur `incidents`.
 
     Indispensable car les jobs attrapent leurs exceptions (logger.exception)
-    — un listener APScheduler seul ne verrait rien. La dédup de send_alert
-    protège contre le spam des crashloops.
+    — un listener APScheduler seul ne verrait rien.
+
+    Plafond anti-crashloop : au-delà de `_CAP` alertes dans une fenêtre
+    glissante de `_WINDOW_S`, les erreurs sont absorbées et remplacées par un
+    unique message de synthèse (au plus un par fenêtre). La dédup de
+    `send_alert` ne suffit pas : elle ne couvre que 15 min et un bug dont le
+    message varie (id de fixture, exception différente) y échappe entièrement.
     """
 
     _IGNORED = ("app.alerts", "app.notifications")
+    _CAP = 3
+    _WINDOW_S = 3600
+
+    def __init__(self, level: int = logging.ERROR) -> None:
+        super().__init__(level)
+        self._sent_at: list[float] = []
+        self._suppressed = 0
+        self._summary_at = float("-inf")
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             if record.name.startswith(self._IGNORED):
                 return
-            msg = record.getMessage()
-            alert_bg(f"🔴 [Ev0 worker] {record.name}\n{msg[:500]}", channel="ops")
+
+            now = time.monotonic()
+            self._sent_at = [t for t in self._sent_at if now - t < self._WINDOW_S]
+
+            if len(self._sent_at) < self._CAP:
+                self._sent_at.append(now)
+                alert_bg(
+                    f"🔴 [Ev0 worker] {record.name}\n{record.getMessage()[:500]}",
+                    channel="incidents",
+                )
+                return
+
+            self._suppressed += 1
+            if now - self._summary_at >= self._WINDOW_S:
+                self._summary_at = now
+                count, self._suppressed = self._suppressed, 0
+                alert_bg(
+                    f"⚠️ [Ev0 worker] {count} erreur(s) supprimée(s) — "
+                    f"cadence trop élevée, voir les logs du worker",
+                    channel="incidents",
+                )
         except Exception:  # jamais de récursion / crash depuis le handler
             pass

@@ -405,7 +405,7 @@ async def job_autopilot_run():
             latest_entry = bal_result.scalar_one_or_none()
             bankroll = latest_entry.balance_after if latest_entry else 1000.0
 
-            from app.notifications import notify_autopilot_position
+            from app.notifications import notify_autopilot_run
 
             # Load stats for scorecard
             from app.models.autopilot import AutopilotDecision as _AD
@@ -514,17 +514,16 @@ async def job_autopilot_run():
                 len(recs), decisions_made, mode,
             )
 
-            # Send one Telegram notification per bet taken
-            for bet in bets_this_run:
-                await notify_autopilot_position(
-                    **bet,
-                    mode=mode,
-                    settled=_sc_settled,
-                    won=_sc_won,
-                    total_pnl=_sc_total_pnl,
-                    staked_total=_sc_staked,
-                    fine_tune_runs=_sc_ft_runs,
-                )
+            # Un seul message pour tout le run (scorecard non répété)
+            await notify_autopilot_run(
+                bets=bets_this_run,
+                mode=mode,
+                settled=_sc_settled,
+                won=_sc_won,
+                total_pnl=_sc_total_pnl,
+                staked_total=_sc_staked,
+                fine_tune_runs=_sc_ft_runs,
+            )
 
     except Exception as exc:
         logger.error("Error in autopilot run: %s", exc, exc_info=True)
@@ -895,7 +894,8 @@ async def job_auto_settle():
                 f"{settled} pari(s) réglé(s) :\n"
                 f"• Gagnés : {stats['won']}\n"
                 f"• Perdus : {stats['lost']}\n"
-                f"• Voids : {stats['void']}"
+                f"• Voids : {stats['void']}",
+                channel="autopilot",
             )
 
         # Alert if recs are stuck for fixtures finished >48h ago
@@ -919,7 +919,8 @@ async def job_auto_settle():
                     f"🚨 <b>[Ev0] Settlement bloqué</b>\n\n"
                     f"{len(old_stuck)} match(s) terminé(s) depuis >48h impossible(s) à settler :\n"
                     f"{names}\n\n"
-                    f"Cause probable : PlayerMatchMinutes ou MatchEvents manquants."
+                    f"Cause probable : PlayerMatchMinutes ou MatchEvents manquants.",
+                    channel="incidents",
                 )
 
     except Exception:
@@ -975,7 +976,8 @@ async def job_auto_finish_fixtures():
             f"⏱️ <b>[Ev0] Auto-finish fixtures</b>\n\n"
             f"{len(fixtures)} match(s) passés en <b>finished</b> (kickoff +2h dépassé) :\n"
             f"{names}"
-            + (" ..." if len(fixtures) > 10 else "")
+            + (" ..." if len(fixtures) > 10 else ""),
+            channel="autopilot",
         )
 
 
@@ -1611,62 +1613,6 @@ async def job_deactivate_stale_wc_odds() -> None:
         logger.exception("job_deactivate_stale_wc_odds failed: %s", exc)
 
 
-
-async def job_recos_expiry_digest() -> None:
-    """Every 15 min: digest WhatsApp (canal recos) des recos pending dont le
-    kickoff tombe dans ~2h.
-
-    78% des recos expiraient sans décision faute de rappel actionnable.
-    Fenêtre glissante [T+1h45, T+2h] alignée sur la période du job : chaque
-    reco n'est digérée qu'une fois, à son entrée dans la fenêtre.
-    """
-    try:
-        from app.alerts import send_alert
-        from app.models.fixtures import Fixture
-        from app.models.recommendations import Recommendation
-
-        now = datetime.now(UTC)
-        win_start = now + timedelta(hours=1, minutes=45)
-        win_end = now + timedelta(hours=2)
-
-        async with async_session() as session:
-            rows = (await session.execute(
-                select(Recommendation, Fixture)
-                .join(Fixture, Recommendation.fixture_id == Fixture.id)
-                .where(
-                    Recommendation.status == "pending",
-                    Fixture.kickoff_utc > win_start,
-                    Fixture.kickoff_utc <= win_end,
-                )
-                .order_by(Fixture.kickoff_utc)
-            )).all()
-
-        if not rows:
-            return
-
-        by_fixture: dict[str, list] = {}
-        for rec, fix in rows:
-            key = f"{fix.home_team} vs {fix.away_team} — {fix.kickoff_utc:%H:%M} UTC"
-            by_fixture.setdefault(key, []).append(rec)
-
-        lines = [f"⏳ <b>[Ev0] {len(rows)} reco(s) expirent dans ~2h</b>", ""]
-        for fixture_name, recs in by_fixture.items():
-            lines.append(f"<b>{fixture_name}</b>")
-            for rec in recs[:8]:
-                market = rec.market_type.value if hasattr(rec.market_type, "value") else str(rec.market_type)
-                lines.append(
-                    f"• {rec.player_name} ({market}) — cote {rec.best_odds} | edge {rec.edge:+.1%}"
-                )
-            if len(recs) > 8:
-                lines.append(f"  … +{len(recs) - 8} autres")
-        lines.append("")
-        lines.append("👉 Approuver/rejeter sur la page Recommendations")
-        await send_alert("\n".join(lines), channel="recos")
-        logger.info("job_recos_expiry_digest: digest envoyé (%d recos)", len(rows))
-    except Exception as exc:
-        logger.exception("job_recos_expiry_digest failed: %s", exc)
-
-
 SNAPSHOT_RETENTION_DAYS = 45
 _PURGE_BATCH = 50_000
 
@@ -1711,9 +1657,40 @@ async def job_purge_old_snapshots() -> None:
         logger.exception("job_purge_old_snapshots failed: %s", exc)
 
 
+_HEALTH_STALE_H = 24
+_HEALTH_BACKLOG_MAX = 20
+
+
+def _health_red_flags(row: dict, now: datetime) -> list[str]:
+    """Indicateurs de santé au rouge. Liste vide = rien à signaler."""
+    from datetime import timedelta
+
+    stale = timedelta(hours=_HEALTH_STALE_H)
+    flags: list[str] = []
+
+    for key, label in (
+        ("last_player_odds", "cotes joueurs"),
+        ("last_match_odds", "cotes matchs"),
+    ):
+        ts = row[key]
+        if ts is None or (now - ts) > stale:
+            flags.append(label)
+
+    if row["backlog_settle"] > _HEALTH_BACKLOG_MAX:
+        flags.append("backlog settlement")
+    if row["recs_24h"] == 0:
+        flags.append("aucune reco en 24h")
+
+    return flags
+
+
 async def job_daily_health_report() -> None:
-    """Daily 08:00 UTC: résumé santé sur le canal ops — détecte les morts
-    silencieuses qui ne lèvent aucune exception (scraper arrêté, données figées)."""
+    """Daily 08:00 UTC : détecte les morts silencieuses qui ne lèvent aucune
+    exception (scraper arrêté, données figées).
+
+    Ne sonne (`incidents`) que si un indicateur est au rouge ; sinon le rapport
+    tombe sur `autopilot`, consultable. Un rapport quotidien identique qu'il
+    aille bien ou mal finit par ne plus être lu — donc à ne plus alerter."""
     try:
         from app.alerts import send_alert
 
@@ -1746,8 +1723,14 @@ async def job_daily_health_report() -> None:
                 return f"il y a {mins // 60}h{mins % 60:02d}"
             return f"il y a {mins // 1440}j ⚠️"
 
+        red = _health_red_flags(row, now)
+        title = (
+            f"🚨 <b>[Ev0] Santé — {', '.join(red)}</b>"
+            if red
+            else "🩺 <b>[Ev0] Santé quotidienne</b>"
+        )
         msg = (
-            "🩺 <b>[Ev0] Santé quotidienne</b>\n\n"
+            f"{title}\n\n"
             f"Cotes joueurs : {age(row['last_player_odds'])}\n"
             f"Cotes matchs : {age(row['last_match_odds'])}\n"
             f"Outrights WC actifs : {row['wc_odds_actives']}\n"
@@ -1755,7 +1738,7 @@ async def job_daily_health_report() -> None:
             f"Recos 24h : {row['recs_24h']} (pending: {row['recs_pending']})\n"
             f"Backlog settle : {row['backlog_settle']} décision(s)"
         )
-        await send_alert(msg, channel="ops")
+        await send_alert(msg, channel="incidents" if red else "autopilot")
     except Exception as exc:
         logger.exception("job_daily_health_report failed: %s", exc)
 
@@ -1977,17 +1960,6 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Digest recos avant expiration (fenêtre glissante T+2h, canal recos)
-    scheduler.add_job(
-        job_recos_expiry_digest,
-        IntervalTrigger(minutes=15),
-        id="recos_expiry_digest",
-        name="Digest WhatsApp des recos pending expirant dans ~2h",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
-
     # Rétention snapshots de cotes (04:30 UTC)
     scheduler.add_job(
         job_purge_old_snapshots,
@@ -1997,7 +1969,7 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Santé quotidienne sur le canal ops (08:00 UTC)
+    # Santé quotidienne (08:00 UTC) — canal selon l'état des indicateurs
     scheduler.add_job(
         job_daily_health_report,
         CronTrigger(hour=8, minute=0),
@@ -2069,7 +2041,7 @@ async def main():
         alert_bg(
             f"🔴 [Ev0 worker] Job '{event.job_id}' a levé une exception:\n"
             f"{event.exception}",
-            channel="ops",
+            channel="incidents",
         )
 
     scheduler.add_listener(_on_job_error, EVENT_JOB_ERROR)

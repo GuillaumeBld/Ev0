@@ -7,8 +7,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Chat ID configurable par env TELEGRAM_CHAT_ID (défaut = ID perso historique)
-TELEGRAM_CHAT_ID = settings.telegram_chat_id
+CHANNELS = ("value", "incidents", "autopilot")
 
 _ACTION_LABELS = {
     0: "SKIP",
@@ -25,24 +24,97 @@ _THRESH_FINE_TUNE = 3
 _THRESH_QUOTA = 50
 
 
-async def send_telegram_alert(message: str) -> bool:
-    """Send a message to the Ev0 Telegram group. Returns True on success."""
-    token = getattr(settings, "telegram_bot_token", None)
-    if not token:
-        logger.debug("TELEGRAM_BOT_TOKEN not set — skipping notification")
-        return False
+def _chat_id_for(channel: str) -> str:
+    return {
+        "value": settings.telegram_chat_id_value,
+        "incidents": settings.telegram_chat_id_incidents,
+        "autopilot": settings.telegram_chat_id_autopilot,
+    }[channel]
+
+
+async def _post(token: str, chat_id: str, text: str) -> bool:
+    """Un envoi Telegram. Ne lève jamais ; retourne True si accepté."""
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"},
+                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
                 timeout=10,
             )
             r.raise_for_status()
             return True
     except Exception as exc:
-        logger.warning("Telegram notification failed: %s", exc)
+        logger.warning("Telegram sendMessage échoué (chat_id=%s): %s", chat_id, exc)
         return False
+
+
+async def send_telegram_alert(message: str, channel: str) -> bool:
+    """Envoie sur le groupe du canal. Repli sur le chat historique, jamais en silence."""
+    if channel not in CHANNELS:
+        raise ValueError(f"canal Telegram inconnu: {channel!r}")
+
+    token = getattr(settings, "telegram_bot_token", None)
+    if not token:
+        logger.debug("TELEGRAM_BOT_TOKEN absent — notification ignorée")
+        return False
+
+    chat_id = _chat_id_for(channel)
+    if chat_id:
+        if await _post(token, chat_id, message):
+            return True
+        logger.warning(
+            "Canal '%s' injoignable (chat_id=%s) — repli sur le chat historique",
+            channel, chat_id,
+        )
+    else:
+        logger.warning(
+            "Canal '%s' non configuré (TELEGRAM_CHAT_ID_%s vide) — repli sur le chat historique",
+            channel, channel.upper(),
+        )
+
+    fallback = settings.telegram_chat_id
+    if not fallback:
+        logger.error("Aucun chat de repli configuré — alerte '%s' PERDUE", channel)
+        return False
+    return await _post(token, fallback, f"[{channel}] {message}")
+
+
+_BET_LABELS = {"goal": "Buteur", "assist": "Passeur"}
+
+
+def _format_movement(m: dict) -> str:
+    label = _BET_LABELS.get(m["bet_type"], m["bet_type"])
+    head = "▲ NOUVELLE VALUE\n" if m["kind"] == "new" else "▲ "
+    name_line = f"<b>{m['player']}</b> — {label}"
+    fixture_line = f"{m['fixture']} ({m['kickoff']})"
+
+    if m["kind"] == "new":
+        odds_line = f"{m['odds']:.2f} {m['bookmaker']} | edge {m['edge']:+.1%}"
+    else:
+        odds_line = (
+            f"{m['previous_odds']:.2f} → {m['odds']:.2f} {m['bookmaker']} | "
+            f"edge {m['previous_edge']:+.1%} → {m['edge']:+.1%}"
+        )
+
+    return f"{head}{name_line}\n{fixture_line}\n{odds_line}"
+
+
+async def notify_value_movements(movements: list[dict]) -> None:
+    """Un seul message par cycle de scraping. Rien si le cycle est vide.
+
+    Le scraping reevalue toutes les recos toutes les 60 s : notifier mouvement
+    par mouvement recreerait le flood qu'on cherche a supprimer.
+    """
+    if not movements:
+        return
+
+    n = len(movements)
+    header = f"🎯 <b>{n} mouvement{'s' if n > 1 else ''}</b>"
+    body = "\n\n".join(_format_movement(m) for m in movements)
+
+    from app.alerts import send_alert
+
+    await send_alert(f"{header}\n\n{body}", channel="value")
 
 
 def _scorecard(
@@ -85,15 +157,9 @@ def _scorecard(
     return "\n".join(lines)
 
 
-async def notify_autopilot_position(
+async def notify_autopilot_run(
     *,
-    player_name: str,
-    fixture_name: str,
-    market_type: str,
-    best_odds: float,
-    edge: float,
-    stake: float,
-    action_idx: int,
+    bets: list[dict],
     mode: str,
     settled: int,
     won: int,
@@ -102,23 +168,39 @@ async def notify_autopilot_position(
     fine_tune_runs: int,
     odds_api_remaining: int | None = None,
 ) -> None:
-    """Notify when autopilot takes a position (action_idx > 0)."""
-    market_label = "Buteur" if market_type == "goalscorer" else market_type.capitalize()
-    action_label = _ACTION_LABELS.get(action_idx, str(action_idx))
-    mode_tag = "PAPER" if mode == "paper" else "LIVE"
+    """Un message par run d'autopilot, scorecard affiche une seule fois.
 
-    msg = (
-        f"<b>[Autopilot {mode_tag}] Position prise 📌</b>\n"
-        f"\n"
-        f"<b>{player_name}</b> — {market_label}\n"
-        f"Match : {fixture_name}\n"
-        f"Cote : {best_odds:.2f}  |  Edge : {edge:+.1%}\n"
-        f"Action : {action_label}  |  Mise : <b>€{stake:.2f}</b>"
-        + _scorecard(settled, won, total_pnl, staked_total, fine_tune_runs, odds_api_remaining)
+    Un run a 12 paris produisait 12 notifications repetant le meme scorecard.
+    """
+    if not bets:
+        return
+
+    mode_tag = "PAPER" if mode == "paper" else "LIVE"
+    n = len(bets)
+    plural = "s" if n > 1 else ""
+    lines = [
+        f"<b>[Autopilot {mode_tag}] {n} position{plural} prise{plural} 📌</b>",
+        "",
+    ]
+    for bet in bets:
+        market_label = (
+            "Buteur" if bet["market_type"] == "goalscorer" else bet["market_type"].capitalize()
+        )
+        action_label = _ACTION_LABELS.get(bet["action_idx"], str(bet["action_idx"]))
+        lines.append(f"• <b>{bet['player_name']}</b> — {market_label}")
+        lines.append(f"  {bet['fixture_name']}")
+        lines.append(
+            f"  {bet['best_odds']:.2f} | edge {bet['edge']:+.1%} | "
+            f"{action_label} → <b>€{bet['stake']:.2f}</b>"
+        )
+
+    msg = "\n".join(lines) + _scorecard(
+        settled, won, total_pnl, staked_total, fine_tune_runs, odds_api_remaining
     )
+
     from app.alerts import send_alert
 
-    await send_alert(msg, channel="recos")
+    await send_alert(msg, channel="autopilot")
 
 
 async def notify_autopilot_fine_tune(
@@ -142,7 +224,7 @@ async def notify_autopilot_fine_tune(
     )
     from app.alerts import send_alert
 
-    await send_alert(msg, channel="ops")
+    await send_alert(msg, channel="autopilot")
 
 
 async def notify_autopilot_settle(
@@ -167,4 +249,4 @@ async def notify_autopilot_settle(
     )
     from app.alerts import send_alert
 
-    await send_alert(msg, channel="ops")
+    await send_alert(msg, channel="autopilot")

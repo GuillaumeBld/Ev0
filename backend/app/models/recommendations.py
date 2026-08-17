@@ -49,6 +49,10 @@ class Recommendation(Base, TimestampMixin):
     best_bookmaker: Mapped[str] = mapped_column(String(50))
     best_odds: Mapped[float] = mapped_column(Float)
 
+    # Cote sur laquelle l'utilisateur a été alerté la dernière fois.
+    # Jamais abaissée : seul un nouveau plus haut redéclenche une notification.
+    alerted_odds: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     # Edge
     edge: Mapped[float] = mapped_column(Float, index=True)
     classification: Mapped[str] = mapped_column(String(20))  # VALUE, NO_VALUE, AVOID
