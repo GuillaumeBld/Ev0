@@ -1,8 +1,10 @@
 """Tests du canal d'alertes multi-provider (routage, dédup, formatage, robustesse)."""
+import logging
+
 import pytest
 
 from app import alerts, notifications
-from app.alerts import _html_to_whatsapp, send_alert
+from app.alerts import ErrorAlertHandler, _html_to_whatsapp, send_alert
 
 
 def _reset_rate_limit() -> None:
@@ -221,3 +223,60 @@ async def test_telegram_is_primary_when_token_set(monkeypatch):
     assert await alerts.send_alert("via-telegram-primaire", channel="value") is True
     assert tg_calls == [("via-telegram-primaire", "value")]
     assert wa_calls == []  # WhatsApp jamais tenté
+
+
+# ── Plafond anti-crashloop ────────────────────────────────────────
+
+
+def _record(msg: str, name: str = "app.worker") -> logging.LogRecord:
+    return logging.LogRecord(name, logging.ERROR, __file__, 1, msg, None, None)
+
+
+def test_error_handler_caps_at_three_per_hour(monkeypatch):
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "app.alerts.alert_bg", lambda message, channel: sent.append((message, channel))
+    )
+
+    handler = ErrorAlertHandler(level=logging.ERROR)
+    for i in range(3):
+        handler.emit(_record(f"boom {i}"))
+
+    assert len(sent) == 3
+    assert all(channel == "incidents" for _, channel in sent)
+    assert all(m.startswith("🔴") for m, _ in sent)
+
+    handler.emit(_record("boom 4"))
+    assert len(sent) == 4
+    assert sent[-1][0].startswith("⚠️")
+    assert "erreur" in sent[-1][0]
+
+    handler.emit(_record("boom 5"))
+    assert len(sent) == 4, "la 5e erreur est absorbée, pas de 2e synthèse dans l'heure"
+
+
+def test_error_handler_budget_resets_after_window(monkeypatch):
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "app.alerts.alert_bg", lambda message, channel: sent.append((message, channel))
+    )
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(alerts.time, "monotonic", lambda: clock["t"])
+
+    handler = ErrorAlertHandler(level=logging.ERROR)
+    for i in range(4):
+        handler.emit(_record(f"boom {i}"))
+    assert len(sent) == 4
+
+    clock["t"] += 3601
+    handler.emit(_record("nouvelle heure"))
+    assert len(sent) == 5
+    assert sent[-1][0].startswith("🔴")
+
+
+def test_error_handler_ignores_its_own_modules(monkeypatch):
+    sent: list = []
+    monkeypatch.setattr("app.alerts.alert_bg", lambda message, channel: sent.append(message))
+    handler = ErrorAlertHandler(level=logging.ERROR)
+    handler.emit(_record("récursion", name="app.alerts"))
+    assert sent == []

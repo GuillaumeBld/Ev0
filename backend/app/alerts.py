@@ -124,17 +124,49 @@ class ErrorAlertHandler(logging.Handler):
     """Handler de logs : tout record >= ERROR du worker part sur `incidents`.
 
     Indispensable car les jobs attrapent leurs exceptions (logger.exception)
-    — un listener APScheduler seul ne verrait rien. La dédup de send_alert
-    protège contre le spam des crashloops.
+    — un listener APScheduler seul ne verrait rien.
+
+    Plafond anti-crashloop : au-delà de `_CAP` alertes dans une fenêtre
+    glissante de `_WINDOW_S`, les erreurs sont absorbées et remplacées par un
+    unique message de synthèse (au plus un par fenêtre). La dédup de
+    `send_alert` ne suffit pas : elle ne couvre que 15 min et un bug dont le
+    message varie (id de fixture, exception différente) y échappe entièrement.
     """
 
     _IGNORED = ("app.alerts", "app.notifications")
+    _CAP = 3
+    _WINDOW_S = 3600
+
+    def __init__(self, level: int = logging.ERROR) -> None:
+        super().__init__(level)
+        self._sent_at: list[float] = []
+        self._suppressed = 0
+        self._summary_at = float("-inf")
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             if record.name.startswith(self._IGNORED):
                 return
-            msg = record.getMessage()
-            alert_bg(f"🔴 [Ev0 worker] {record.name}\n{msg[:500]}", channel="incidents")
+
+            now = time.monotonic()
+            self._sent_at = [t for t in self._sent_at if now - t < self._WINDOW_S]
+
+            if len(self._sent_at) < self._CAP:
+                self._sent_at.append(now)
+                alert_bg(
+                    f"🔴 [Ev0 worker] {record.name}\n{record.getMessage()[:500]}",
+                    channel="incidents",
+                )
+                return
+
+            self._suppressed += 1
+            if now - self._summary_at >= self._WINDOW_S:
+                self._summary_at = now
+                count, self._suppressed = self._suppressed, 0
+                alert_bg(
+                    f"⚠️ [Ev0 worker] {count} erreur(s) supprimée(s) — "
+                    f"cadence trop élevée, voir les logs du worker",
+                    channel="incidents",
+                )
         except Exception:  # jamais de récursion / crash depuis le handler
             pass
