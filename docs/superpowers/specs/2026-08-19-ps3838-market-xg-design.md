@@ -207,7 +207,54 @@ l'avance, cette situation ne doit jamais survenir dans la fenêtre utile — si 
 survient, c'est un bug à corriger sous 7 jours, avec le nom du match dans
 l'alerte.
 
-### 6. Ce qui ne change pas
+### 6. Bibliothèque des xG de référence (ouverture et closing)
+
+Le **closing** — la dernière estimation avant le coup d'envoi — est l'estimation
+la plus affûtée que le marché produise. C'est la référence contre laquelle un
+modèle se juge. L'**ouverture**, comparée au closing, mesure de combien et dans
+quel sens le marché a bougé : elle révèle les matchs où l'information est arrivée
+tard (blessure, composition surprise).
+
+Ces deux valeurs sont archivées **définitivement**, à raison de deux lignes par
+match.
+
+**Stockage.** La table `team_xg_estimates` existe déjà, documentée « append-only
+time series », avec exactement les colonnes nécessaires (`as_of_utc`,
+`lambda_home`, `lambda_away`, `fit_residual`, `flagged`, `data_source`,
+`input_snapshot_ids`) — et **n'a jamais reçu la moindre ligne**. On la branche
+plutôt que d'en créer une nouvelle.
+
+Migration : ajout de `phase VARCHAR(10) NOT NULL` (`'opening'` | `'closing'`) et
+d'une contrainte d'unicité `(fixture_id, phase)`. L'écriture est donc idempotente :
+une phase archivée n'est jamais réécrite ni dupliquée.
+
+**Capture de l'ouverture.** Le premier calcul de xG réussi pour un match, dès que
+PS3838 ouvre sa ligne. Écrit une fois, jamais écrasé.
+
+**Capture du closing.** Calculé **après** le coup d'envoi, à partir du dernier
+snapshot PS3838 dont `snapshot_utc` précède le coup d'envoi. Prendre la mesure
+après plutôt qu'avant supprime toute course contre la montre, et rend l'opération
+rejouable si un incident l'a fait échouer.
+
+**Condition indispensable : PS3838 doit être scrapé jusqu'au dernier moment.**
+Le planificateur de cotes accélère déjà à l'approche du coup d'envoi
+(`job_odds_scheduler_tick`, cadence adaptative selon la distance au coup
+d'envoi). PS3838 doit entrer dans cette cadence — sans quoi le « closing »
+archivé aura plusieurs heures de retard et ne vaudra rien.
+
+**Rétention.** `job_purge_old_snapshots` efface `match_odds_snapshots` et
+`player_odds_snapshots` au-delà de 45 jours : passé ce délai, plus aucun moyen de
+recalculer un closing. La bibliothèque doit donc être écrite **avant** la purge,
+et `team_xg_estimates` ne doit **jamais** être ajoutée à la liste des tables
+purgées. Les `input_snapshot_ids` deviendront des références mortes après 45
+jours ; c'est acceptable, les valeurs calculées sont conservées telles quelles.
+
+**Pas de reconstitution du passé.** La bibliothèque démarre vide et se remplit à
+partir de la mise en service. Au-delà de 45 jours les cotes n'existent plus, et
+en deçà elles proviennent des sources dont ce document établit qu'elles sont
+parfois fausses : les archiver empoisonnerait la référence dès le premier jour.
+
+### 7. Ce qui ne change pas
 
 Betclic, Unibet et PMU **restent inchangés** pour les cotes buteur et passeur :
 c'est là que l'utilisateur mise, et une value est l'écart entre le prix juste et
@@ -238,6 +285,12 @@ fixture.
   20 jours sans ancrage → silence.
 - **Isolation** : `MarketXgService` ne lit aucun snapshot dont le bookmaker n'est
   pas `ps3838`.
+- **Ouverture** : premier calcul réussi → une ligne `phase='opening'` ; un second
+  calcul le lendemain ne l'écrase pas et n'en crée pas une deuxième.
+- **Closing** : calculé après le coup d'envoi, retient le dernier snapshot dont
+  `snapshot_utc < kickoff_utc` et ignore ceux d'après ; rejouer le job une
+  seconde fois ne duplique rien.
+- **Rétention** : `job_purge_old_snapshots` ne touche pas `team_xg_estimates`.
 
 ## Hors périmètre
 
@@ -245,5 +298,7 @@ fixture.
 - Piwi247 (joignable depuis le VPS, non exploré — PS3838 suffit).
 - Correction du rapprochement par noms des books FR pour les cotes joueur : le
   problème existe aussi là, mais il ne relève pas de ce chantier.
-- La table `team_xg_estimates`, vide depuis toujours (0 ligne) et jamais écrite :
-  à traiter séparément.
+- Reconstitution rétroactive de la bibliothèque de xG (impossible : cotes
+  purgées au-delà de 45 jours, non fiables en deçà).
+- Trajectoire complète du xG entre ouverture et closing (la table le permettrait,
+  mais elle demanderait sa propre politique de rétention).
