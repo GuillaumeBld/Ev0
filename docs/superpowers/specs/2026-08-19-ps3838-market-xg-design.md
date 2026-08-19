@@ -236,11 +236,20 @@ snapshot PS3838 dont `snapshot_utc` précède le coup d'envoi. Prendre la mesure
 après plutôt qu'avant supprime toute course contre la montre, et rend l'opération
 rejouable si un incident l'a fait échouer.
 
-**Condition indispensable : PS3838 doit être scrapé jusqu'au dernier moment.**
-Le planificateur de cotes accélère déjà à l'approche du coup d'envoi
-(`job_odds_scheduler_tick`, cadence adaptative selon la distance au coup
-d'envoi). PS3838 doit entrer dans cette cadence — sans quoi le « closing »
-archivé aura plusieurs heures de retard et ne vaudra rien.
+**Les cadences de scraping existantes sont conservées telles quelles.** PS3838 se
+branche sur le tick adaptatif déjà en place (`odds_scheduler.py`), sans aucune
+modification de ses seuils :
+
+| Distance au coup d'envoi | Intervalle |
+|---|---|
+| > 6 h | 2 h (`_INTERVAL_LOW`) |
+| 2 h → 6 h | 30 min (`_INTERVAL_MID`) |
+| < 2 h | **2 min** (`_INTERVAL_HIGH`) |
+| 5 dernières minutes | arrêt (`_STOP_BEFORE_KO`) |
+
+Cette cadence suffit déjà : le dernier relevé avant le coup d'envoi aura au pire
+**7 minutes** (intervalle de 2 min, arrêt à KO−5 min). C'est un closing au sens
+propre. Aucun réglage de timing n'est à créer ni à modifier pour ce chantier.
 
 **Rétention.** `job_purge_old_snapshots` efface `match_odds_snapshots` et
 `player_odds_snapshots` au-delà de 45 jours : passé ce délai, plus aucun moyen de
@@ -263,8 +272,11 @@ calcul du xG** disparaît.
 
 ## Cadence
 
-Le scraper PS3838 tourne sur le même tick que le scheduler de cotes existant. La
-résolution des identifiants tourne une fois par jour et à la création d'une
+**Aucune cadence nouvelle, aucun seuil modifié.** Le scraper PS3838 est appelé
+depuis le tick existant (`job_odds_scheduler_tick`, toutes les 60 s) et respecte
+les intervalles adaptatifs déjà en place, détaillés en section 6.
+
+La résolution des identifiants tourne une fois par jour et à la création d'une
 fixture.
 
 ## Tests
