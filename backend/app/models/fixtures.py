@@ -18,6 +18,10 @@ class Fixture(Base, TimestampMixin):
         String(100), nullable=True, index=True, unique=True
     )
 
+    # Ancrage PS3838 : resolu une seule fois (equipes + date), puis les cotes
+    # sont recuperees par cet identifiant, jamais par nom.
+    ps3838_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True)
+
     # Match info
     league: Mapped[str] = mapped_column(String(50), index=True)  # ligue1, premier_league
     season: Mapped[str] = mapped_column(String(10))  # 2024-25
