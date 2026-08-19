@@ -24,10 +24,15 @@ _UA = (
 )
 _TIMEOUT = 30.0
 
-# Le premier renvoie les matchs imminents (~2h), le second ceux a partir du
-# lendemain. Un match a 3h du coup d'envoi peut n'etre dans aucun des deux :
-# les deux appels sont faits a chaque cycle et fusionnes.
-_QUERIES = ({"sp": _SOCCER}, {"sp": _SOCCER, "mk": 0, "pa": 0})
+# Deux flux distincts, interroges a chaque cycle puis fusionnes. Un match a
+# 3h du coup d'envoi peut n'etre dans aucun des deux.
+_QUERY_IMMINENT = {"sp": _SOCCER}  # matchs a venir sous ~2h
+_QUERY_UPCOMING = {"sp": _SOCCER, "mk": 0, "pa": 0}  # matchs a partir du lendemain
+
+# Ordre de fusion explicite : "upcoming" est ecrit en premier, puis
+# "imminent" ecrase les doublons — ses cotes sont les plus fraiches pres du
+# coup d'envoi, c'est donc lui qui doit primer.
+_QUERIES_IN_MERGE_ORDER = (_QUERY_UPCOMING, _QUERY_IMMINENT)
 
 
 @dataclass
@@ -42,7 +47,7 @@ class Ps3838Event:
     total_line: float | None = None
 
 
-def _f(value) -> float | None:
+def _to_decimal_odds(value) -> float | None:
     try:
         f = float(value)
     except (TypeError, ValueError):
@@ -54,7 +59,7 @@ def _parse_h2h(raw) -> dict[str, float] | None:
     """PS3838 range le 1X2 en [exterieur, domicile, nul]."""
     if not raw or len(raw) < 3:
         return None
-    away, home, draw = _f(raw[0]), _f(raw[1]), _f(raw[2])
+    away, home, draw = _to_decimal_odds(raw[0]), _to_decimal_odds(raw[1]), _to_decimal_odds(raw[2])
     if home is None or draw is None or away is None:
         return None
     return {"home": home, "draw": draw, "away": away}
@@ -73,7 +78,12 @@ def _parse_totals(raw) -> tuple[float | None, dict[str, float] | None]:
     for entry in raw:
         if not entry or len(entry) < 4:
             continue
-        label, line, over, under = entry[0], entry[1], _f(entry[2]), _f(entry[3])
+        label, line, over, under = (
+            entry[0],
+            entry[1],
+            _to_decimal_odds(entry[2]),
+            _to_decimal_odds(entry[3]),
+        )
         if isinstance(label, str) and "-" in label:
             continue
         try:
@@ -138,7 +148,7 @@ async def fetch_events() -> list[Ps3838Event]:
     async with httpx.AsyncClient(
         timeout=_TIMEOUT, headers={"User-Agent": _UA, "Accept": "application/json"}
     ) as client:
-        for params in reversed(_QUERIES):  # le flux imminent ecrase l'autre
+        for params in _QUERIES_IN_MERGE_ORDER:
             try:
                 r = await client.get(_BASE, params=params)
                 r.raise_for_status()

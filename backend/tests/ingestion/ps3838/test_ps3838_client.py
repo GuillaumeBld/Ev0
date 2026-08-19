@@ -2,7 +2,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.ingestion.ps3838.client import Ps3838Event, parse_events
+from app.ingestion.ps3838 import client as ps3838_client
+from app.ingestion.ps3838.client import Ps3838Event, fetch_events, parse_events
 
 FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "ps3838_events.json"
 
@@ -72,3 +73,140 @@ def test_event_ids_are_unique():
     evs = parse_events(_payload())
     ids = [e.event_id for e in evs]
     assert len(ids) == len(set(ids))
+
+
+# --- fetch_events : fusion des deux flux, sans reseau ---------------------
+#
+# httpx.AsyncClient est remplace par un faux client dont .get() renvoie une
+# reponse (ou leve une exception) selon les parametres de requete recus.
+# parse_events est remplace par une simple table de correspondance tag ->
+# evenements, pour ne pas dependre de la structure reelle du payload : elle
+# est deja couverte par les tests de parse_events ci-dessus.
+
+
+def _event(event_id: int, home_odds: float) -> Ps3838Event:
+    return Ps3838Event(
+        event_id=event_id,
+        home="Home",
+        away="Away",
+        kickoff_utc=datetime(2026, 1, 1, tzinfo=UTC),
+        league="Test League",
+        h2h={"home": home_odds, "draw": 3.0, "away": 3.0},
+    )
+
+
+def _params_key(params: dict) -> tuple:
+    return tuple(sorted(params.items()))
+
+
+class _FakeResponse:
+    def __init__(self, tag):
+        self._tag = tag
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._tag
+
+
+class _FakeAsyncClient:
+    """Remplace httpx.AsyncClient : .get() rejoue une reponse ou une
+    exception preparee par le test, sans toucher au reseau."""
+
+    def __init__(self, responses: dict, **_kwargs):
+        self._responses = responses
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc_info):
+        return False
+
+    async def get(self, _url, params=None):
+        outcome = self._responses[_params_key(params)]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _patch_fetch(monkeypatch, responses: dict, tag_to_events: dict):
+    monkeypatch.setattr(
+        ps3838_client.httpx,
+        "AsyncClient",
+        lambda **kw: _FakeAsyncClient(responses, **kw),
+    )
+    monkeypatch.setattr(
+        ps3838_client, "parse_events", lambda payload: tag_to_events.get(payload, [])
+    )
+
+
+async def test_fetch_events_merges_distinct_events(monkeypatch):
+    _patch_fetch(
+        monkeypatch,
+        responses={
+            _params_key(ps3838_client._QUERY_IMMINENT): _FakeResponse("imminent"),
+            _params_key(ps3838_client._QUERY_UPCOMING): _FakeResponse("upcoming"),
+        },
+        tag_to_events={
+            "imminent": [_event(1, 1.5)],
+            "upcoming": [_event(2, 2.5)],
+        },
+    )
+
+    evs = await fetch_events()
+
+    assert {e.event_id for e in evs} == {1, 2}
+
+
+async def test_fetch_events_imminent_wins_on_duplicate(monkeypatch):
+    """Meme event_id present dans les deux flux, avec des cotes differentes :
+    c'est la version du flux imminent (sp=29 seul) qui doit gagner."""
+    _patch_fetch(
+        monkeypatch,
+        responses={
+            _params_key(ps3838_client._QUERY_IMMINENT): _FakeResponse("imminent"),
+            _params_key(ps3838_client._QUERY_UPCOMING): _FakeResponse("upcoming"),
+        },
+        tag_to_events={
+            "imminent": [_event(1, 1.5)],
+            "upcoming": [_event(1, 9.9)],
+        },
+    )
+
+    evs = await fetch_events()
+
+    assert len(evs) == 1
+    assert evs[0].h2h["home"] == 1.5
+
+
+async def test_fetch_events_tolerates_one_call_failure(monkeypatch):
+    """L'appel 'upcoming' echoue : les evenements du flux 'imminent' sont
+    quand meme retournes, sans exception propagee."""
+    _patch_fetch(
+        monkeypatch,
+        responses={
+            _params_key(ps3838_client._QUERY_IMMINENT): _FakeResponse("imminent"),
+            _params_key(ps3838_client._QUERY_UPCOMING): RuntimeError("boom"),
+        },
+        tag_to_events={"imminent": [_event(1, 1.5)]},
+    )
+
+    evs = await fetch_events()
+
+    assert [e.event_id for e in evs] == [1]
+
+
+async def test_fetch_events_both_calls_fail_returns_empty(monkeypatch):
+    _patch_fetch(
+        monkeypatch,
+        responses={
+            _params_key(ps3838_client._QUERY_IMMINENT): RuntimeError("boom1"),
+            _params_key(ps3838_client._QUERY_UPCOMING): RuntimeError("boom2"),
+        },
+        tag_to_events={},
+    )
+
+    evs = await fetch_events()
+
+    assert evs == []
