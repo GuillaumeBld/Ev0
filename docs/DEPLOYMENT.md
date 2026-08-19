@@ -63,6 +63,35 @@ docker logs --since 10m ev0-compose-z5hvqt-worker-1 | grep -iE 'error|failed'
 Un conteneur nommé `<hash>_ev0-compose-…` = résidu d'un déploiement en course
 → le supprimer puis refaire le recreate manuel ci-dessus.
 
+## HTTPS / certificats
+
+Les domaines `*.sslip.io` sont routés par des **labels Traefik dans
+`docker-compose.yml`**, pas par la configuration de domaine de Dokploy (la table
+`domain` ne connaît que les hôtes `traefik.me` internes).
+
+Chaque routeur `websecure` a besoin de **deux** labels, pas un :
+
+```yaml
+- traefik.http.routers.<routeur>-websecure.tls=true
+- traefik.http.routers.<routeur>-websecure.tls.certresolver=letsencrypt
+```
+
+`tls=true` seul dit à Traefik « sers ce domaine en HTTPS » sans jamais lui
+demander d'obtenir un certificat : il sert alors son **TRAEFIK DEFAULT CERT**
+auto-signé. Symptôme : le site marche sur un ordinateur où l'exception de
+sécurité a été acceptée une fois, mais un téléphone refuse de l'ouvrir.
+
+Vérification :
+
+```bash
+echo | openssl s_client -connect <domaine>:443 -servername <domaine> 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+```
+
+L'émetteur doit être Let's Encrypt. `CN=TRAEFIK DEFAULT CERT` signale le label
+manquant. Les certificats obtenus sont listés dans
+`/etc/dokploy/traefik/dynamic/acme.json` (résolveur `letsencrypt`).
+
 ## Alerting
 
 Telegram est le transport primaire, WhatsApp (CallMeBot) le secours.
