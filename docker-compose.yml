@@ -62,6 +62,7 @@ services:
       - traefik.http.routers.ev0-compose-z5hvqt-4-websecure.rule=Host(`ev0-api-213-130-144-204.sslip.io`)
       - traefik.http.routers.ev0-compose-z5hvqt-4-websecure.entrypoints=websecure
       - traefik.http.routers.ev0-compose-z5hvqt-4-websecure.tls=true
+      - traefik.http.routers.ev0-compose-z5hvqt-4-websecure.tls.certresolver=letsencrypt
       - traefik.http.routers.ev0-compose-z5hvqt-4-websecure.service=ev0-compose-z5hvqt-4-web
       - traefik.http.services.ev0-compose-z5hvqt-4-web.loadbalancer.server.port=8000
       - traefik.http.middlewares.ev0-https-redirect.redirectscheme.scheme=https
@@ -159,6 +160,7 @@ services:
       - traefik.http.routers.ev0-compose-z5hvqt-3-websecure.rule=Host(`ev0-213-130-144-204.sslip.io`)
       - traefik.http.routers.ev0-compose-z5hvqt-3-websecure.entrypoints=websecure
       - traefik.http.routers.ev0-compose-z5hvqt-3-websecure.tls=true
+      - traefik.http.routers.ev0-compose-z5hvqt-3-websecure.tls.certresolver=letsencrypt
       - traefik.http.routers.ev0-compose-z5hvqt-3-websecure.service=ev0-compose-z5hvqt-3-web
       - traefik.http.services.ev0-compose-z5hvqt-3-web.loadbalancer.server.port=3000
       - traefik.http.middlewares.ev0-https-redirect.redirectscheme.scheme=https
