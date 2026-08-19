@@ -26,6 +26,12 @@ class Settings(BaseSettings):  # type: ignore[misc]
     telegram_chat_id_incidents: str = ""
     telegram_chat_id_autopilot: str = ""
 
+    # Domaines dont le certificat TLS est surveille par le rapport de sante
+    # quotidien (separes par des virgules ; vide = surveillance desactivee).
+    cert_check_domains: str = (
+        "ev0-213-130-144-204.sslip.io,ev0-api-213-130-144-204.sslip.io"
+    )
+
     # GitHub API — garde-fou anti-mort-silencieuse squad-sync (issue + PR
     # correctif d'attente sur echec). Vide -> degradation propre (log CRITICAL,
     # jamais d'appel API), voir app.ingestion.transfermarkt.failure_surface.

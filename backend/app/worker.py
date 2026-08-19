@@ -1660,6 +1660,53 @@ async def job_purge_old_snapshots() -> None:
 _HEALTH_STALE_H = 24
 _HEALTH_BACKLOG_MAX = 20
 
+# Traefik renouvelle a 30 jours de l'expiration. On alerte a 21 : si le
+# renouvellement automatique echoue, il reste trois semaines pour reagir avant
+# que le site ne devienne inaccessible (certificat invalide = telephones bloques).
+_CERT_WARN_DAYS = 21
+
+
+def _cert_expiry(host: str, timeout: float = 10.0) -> datetime | None:
+    """Date d'expiration du certificat TLS servi par `host`. None si illisible."""
+    import socket
+    import ssl
+
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((host, 443), timeout=timeout) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                cert = ssock.getpeercert()
+        return datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=UTC)
+    except Exception as exc:
+        logger.warning("Certificat de %s illisible: %s", host, exc)
+        return None
+
+
+def _cert_status(
+    domains: list[str],
+    now: datetime,
+    fetch=_cert_expiry,
+) -> list[tuple[str, int | None]]:
+    """(hote, jours restants) pour chaque domaine. `None` = lecture impossible."""
+    out: list[tuple[str, int | None]] = []
+    for host in domains:
+        expiry = fetch(host)
+        out.append((host, None if expiry is None else (expiry - now).days))
+    return out
+
+
+def _cert_red_flags(statuses: list[tuple[str, int | None]]) -> list[str]:
+    """Certificats trop proches de l'expiration.
+
+    Un hote injoignable ne declenche rien : on verifie tous les jours et Traefik
+    renouvelle bien avant le seuil, quelques echecs de lecture sont sans gravite.
+    """
+    return [
+        f"certificat {host} expire dans {days}j"
+        for host, days in statuses
+        if days is not None and days < _CERT_WARN_DAYS
+    ]
+
 
 def _health_red_flags(row: dict, now: datetime) -> list[str]:
     """Indicateurs de santé au rouge. Liste vide = rien à signaler."""
@@ -1723,11 +1770,19 @@ async def job_daily_health_report() -> None:
                 return f"il y a {mins // 60}h{mins % 60:02d}"
             return f"il y a {mins // 1440}j ⚠️"
 
-        red = _health_red_flags(row, now)
+        # Lecture TLS bloquante -> thread, pour ne pas figer la boucle du scheduler
+        domains = [d.strip() for d in settings.cert_check_domains.split(",") if d.strip()]
+        certs = await asyncio.to_thread(_cert_status, domains, now) if domains else []
+
+        red = _health_red_flags(row, now) + _cert_red_flags(certs)
         title = (
             f"🚨 <b>[Ev0] Santé — {', '.join(red)}</b>"
             if red
             else "🩺 <b>[Ev0] Santé quotidienne</b>"
+        )
+        cert_lines = "".join(
+            f"\nCertificat {host} : " + ("illisible ⚠️" if days is None else f"{days} j")
+            for host, days in certs
         )
         msg = (
             f"{title}\n\n"
@@ -1737,6 +1792,7 @@ async def job_daily_health_report() -> None:
             f"Pricing WC : {age(row['wc_pricing_at'])}\n"
             f"Recos 24h : {row['recs_24h']} (pending: {row['recs_pending']})\n"
             f"Backlog settle : {row['backlog_settle']} décision(s)"
+            f"{cert_lines}"
         )
         await send_alert(msg, channel="incidents" if red else "autopilot")
     except Exception as exc:
