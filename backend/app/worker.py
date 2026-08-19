@@ -805,8 +805,6 @@ async def job_expire_recommendations():
 
 async def job_refresh_recommendation_odds():
     """Every 30 min: update best_odds/edge on pending recs from fresh snapshots; expire EV-."""
-    from datetime import timedelta
-
     from app.db import async_session
     from app.models.fixtures import Fixture
     from app.models.player_odds_snapshot import PlayerOddsSnapshot
@@ -876,8 +874,6 @@ async def job_refresh_recommendation_odds():
 async def job_auto_settle():
     """Every 3 hours: auto-settle approved recommendations via Understat."""
     logger.info("=== Starting auto-settle job ===")
-    from datetime import timedelta
-
     from app.models.fixtures import Fixture
     from app.alerts import send_alert
 
@@ -937,8 +933,6 @@ async def job_auto_finish_fixtures():
     This time-based fallback ensures settlement can proceed for recent matches.
     Sends a Telegram alert listing which fixtures were auto-finished.
     """
-    from datetime import timedelta
-
     from app.models.fixtures import Fixture
     from app.alerts import send_alert
 
@@ -1663,8 +1657,6 @@ _HEALTH_BACKLOG_MAX = 20
 
 def _health_red_flags(row: dict, now: datetime) -> list[str]:
     """Indicateurs de santé au rouge. Liste vide = rien à signaler."""
-    from datetime import timedelta
-
     stale = timedelta(hours=_HEALTH_STALE_H)
     flags: list[str] = []
 
