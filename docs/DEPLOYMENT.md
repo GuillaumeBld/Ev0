@@ -92,6 +92,38 @@ L'émetteur doit être Let's Encrypt. `CN=TRAEFIK DEFAULT CERT` signale le label
 manquant. Les certificats obtenus sont listés dans
 `/etc/dokploy/traefik/dynamic/acme.json` (résolveur `letsencrypt`).
 
+## xG d'équipe — source PS3838
+
+Le xG d'équipe qui alimente le pricing buteur/passeur provient **exclusivement**
+de PS3838 (déclinaison de la plateforme Pinnacle, mêmes identifiants
+d'événements, joignable depuis le VPS là où `guest.api.arcadia.pinnacle.com`
+répond 403).
+
+Les cotes sont rattachées aux matchs par `fixtures.ps3838_event_id`, résolu une
+seule fois en vérifiant les équipes **et** la date. Aucun rapprochement par nom
+n'intervient au moment du scraping.
+
+Betclic, Unibet et PMU restent utilisés pour les **cotes buteur et passeur**
+uniquement — jamais pour le calcul du xG : ils rattachent parfois les cotes au
+mauvais match.
+
+Vérifier qu'un match est ancré et pricé :
+
+```bash
+docker exec ev0-compose-z5hvqt-db-1 psql -U ev0 -d ev0 -c "
+SELECT home_team, away_team, ps3838_event_id FROM fixtures
+WHERE kickoff_utc > now() AND kickoff_utc < now() + interval '7 days'
+  AND ps3838_event_id IS NULL;"
+```
+
+Toute ligne renvoyée est une anomalie : PS3838 ouvre ses lignes ~10 jours à
+l'avance. Ces matchs n'auront aucune recommandation, et une alerte part sur le
+canal `incidents`.
+
+La bibliothèque `team_xg_estimates` archive l'ouverture et le closing de chaque
+match. **Elle ne doit jamais être ajoutée à `job_purge_old_snapshots`** : les
+cotes brutes disparaissent à 45 jours, ces valeurs sont la seule trace durable.
+
 ## Alerting
 
 Telegram est le transport primaire, WhatsApp (CallMeBot) le secours.
