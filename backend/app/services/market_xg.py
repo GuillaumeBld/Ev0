@@ -1,15 +1,19 @@
 """Market-implied xG service — derives λh, λa from bookmaker odds.
 
 Pipeline:
-  1. Load freshest MatchOddsSnapshot for the fixture.
-  2. Devig totals + h2h markets (oddsportal preferred, betfair, pinnacle fallback).
-  3. If BTTS market available: solve via 4-constraint L-BFGS-B (_fit_lambdas).
-     Otherwise: solve λt from Over-2.5, then λh from H2H via brentq (2-constraint).
+  1. Load freshest MatchOddsSnapshot for the fixture, source unique XG_BOOKMAKER
+     (ps3838) — plus de choix multi-bookmaker, pour eviter qu'un book fautif
+     (cotes rattachees au mauvais match) ne fausse le calcul.
+  2. Devig totals (ligne reellement cotee, demi-entiere ou entiere) + h2h.
+  3. Solve λt from Over/Under (solve_lambda_t_from_line), then λh from H2H via
+     brentq (2-constraint) — PS3838 n'expose pas de marche BTTS, le chemin a
+     quatre contraintes (_fit_lambdas) est inatteignable sur ce chemin.
   4. Flag result if fit_residual > FIT_RESIDUAL_FLAG_THRESHOLD.
   5. Return None (not a Dixon-Coles fallback) when data missing / solvers fail.
 
-Note: BTTS market may not be available for all fixtures.
-The legacy BTTS solvers (solve_lambda_home, cross_validate) are kept for tests.
+Note: _fit_lambdas, _preferred_bookmaker et les solveurs BTTS legacy sont
+conserves car des tests unitaires les exercent directement, mais ne sont plus
+appeles depuis _try_market_implied.
 """
 
 from __future__ import annotations
@@ -39,6 +43,11 @@ logger = logging.getLogger(__name__)
 
 MAX_SNAPSHOT_AGE = timedelta(hours=4)  # scraper runs every 2h for matches >6h out
 FIT_RESIDUAL_FLAG_THRESHOLD = 0.06
+
+# Source unique du xG d'equipe. Les books FR restent utilises pour les cotes
+# joueur, jamais pour ce calcul : ils rattachent parfois les cotes au mauvais
+# match (cf. spec 2026-08-19-ps3838-market-xg-design.md).
+XG_BOOKMAKER = "ps3838"
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +99,57 @@ def solve_lambda_t(p_over_2_5: float) -> float:
     def f(lam):
         return 1 - math.exp(-lam) * (1 + lam + lam**2 / 2) - p_over_2_5
     return brentq(f, 0.1, 10.0)
+
+
+def _poisson_cdf(k: int, lam: float) -> float:
+    """Fonction de repartition de Poisson : P(X <= k)."""
+    return sum(math.exp(-lam) * lam ** i / math.factorial(i) for i in range(k + 1))
+
+
+def solve_lambda_t_from_line(p_over: float, line: float) -> float:
+    """Resout lambda_total depuis P(over) sur une ligne quelconque.
+
+    Ligne demi-entiere (2.5) : over = total >= 3, pas de remboursement.
+    Ligne entiere (3.0)      : over = total >= 4, under = total <= 2, et le
+                               total exact de 3 est rembourse. Le devig a deux
+                               issues donne donc P(over | pas de remboursement).
+
+    Leve ValueError si aucune racine dans [0.1, 10].
+    """
+    is_integer = abs(line - round(line)) < 1e-9
+
+    if is_integer:
+        k = int(round(line))
+
+        def f(lam: float) -> float:
+            p_hi = 1.0 - _poisson_cdf(k, lam)
+            p_lo = _poisson_cdf(k - 1, lam)
+            total = p_hi + p_lo
+            if total <= 0:
+                return -p_over
+            return p_hi / total - p_over
+    else:
+        k = math.ceil(line)
+
+        def f(lam: float) -> float:
+            return (1.0 - _poisson_cdf(k - 1, lam)) - p_over
+
+    return brentq(f, 0.1, 10.0)
+
+
+def p_over_model(lambda_t: float, lambda_h: float, lambda_a: float, line: float) -> float:
+    """P(over) predite par le modele, dans la MEME convention que le solveur.
+
+    Indispensable pour la validation croisee : comparer une prediction calculee
+    sur 2.5 a une probabilite de marche issue d'une ligne 3.0 signalerait a tort
+    des calculs corrects.
+    """
+    if abs(line - round(line)) < 1e-9:
+        k = int(round(line))
+        p_hi = 1.0 - _poisson_cdf(k, lambda_t)
+        p_lo = _poisson_cdf(k - 1, lambda_t)
+        return p_hi / (p_hi + p_lo) if (p_hi + p_lo) > 0 else 0.0
+    return 1.0 - _poisson_cdf(math.ceil(line) - 1, lambda_t)
 
 
 def solve_lambda_home(lambda_t: float, p_btts: float) -> tuple[float, float]:
@@ -202,6 +262,23 @@ def cross_validate_h2h(
     if h2h_err > 0.08:
         return False, f"H2H cross-validation error {h2h_err:.3f} > 0.08"
 
+    return True, None
+
+
+def cross_validate_line(
+    lambda_h: float, lambda_a: float, p_over_true: float, p_home_true: float, line: float
+) -> tuple[bool, str | None]:
+    """Comme cross_validate_h2h, mais sur la ligne de totals reellement cotee.
+
+    Meme seuil de 8 % d'erreur absolue.
+    """
+    lt = lambda_h + lambda_a
+    pred_over = p_over_model(lt, lambda_h, lambda_a, line)
+    pred_home = _poisson_home_win(lambda_h, lambda_a)
+    if abs(pred_over - p_over_true) > 0.08:
+        return False, f"Over {line:g} ecart {abs(pred_over - p_over_true):.3f} > 0.08"
+    if abs(pred_home - p_home_true) > 0.08:
+        return False, f"H2H ecart {abs(pred_home - p_home_true):.3f} > 0.08"
     return True, None
 
 
@@ -366,8 +443,8 @@ class MarketXgService:
         """Level 1: derive λh/λa from bookmaker odds snapshots.
 
         Returns None if no fresh snapshot, missing markets, or solvers fail.
-        Uses 4-constraint L-BFGS-B solver when BTTS available, otherwise
-        2-constraint brentq solver (Over-2.5 + H2H).
+        Source unique : XG_BOOKMAKER (ps3838). Solveur 2-contraintes brentq
+        (Over ligne reelle + H2H) -- PS3838 n'expose pas de marche BTTS.
         """
         from app.models.match_odds import MatchOddsSnapshot
 
@@ -375,6 +452,7 @@ class MarketXgService:
         freshest_result = await session.execute(
             select(MatchOddsSnapshot.snapshot_utc)
             .where(MatchOddsSnapshot.fixture_id == fixture_id)
+            .where(MatchOddsSnapshot.bookmaker == XG_BOOKMAKER)
             .order_by(MatchOddsSnapshot.snapshot_utc.desc())
             .limit(1)
         )
@@ -403,12 +481,13 @@ class MarketXgService:
             return None
 
         # Load all rows within MAX_SNAPSHOT_AGE (absolute window).
-        # Different scrapers write at different intervals; a 15-min relative window
-        # would exclude betclic/pmu totals when bzzoiro h2h lands later.
+        # Totals et h2h peuvent etre scrapes a des instants legerement differents ;
+        # une fenetre relative trop courte exclurait l'un des deux marches.
         # ASC order so later rows overwrite older ones per (market, bm, outcome).
         rows_result = await session.execute(
             select(MatchOddsSnapshot)
             .where(MatchOddsSnapshot.fixture_id == fixture_id)
+            .where(MatchOddsSnapshot.bookmaker == XG_BOOKMAKER)
             .where(MatchOddsSnapshot.snapshot_utc >= now - MAX_SNAPSHOT_AGE)
             .order_by(MatchOddsSnapshot.snapshot_utc)
         )
@@ -436,26 +515,30 @@ class MarketXgService:
             )
             return None
 
-        # Devig totals
-        totals_bm = _preferred_bookmaker(set(markets["totals"].keys()))
-        if totals_bm is None:
-            return None
-        totals_outcomes = markets["totals"][totals_bm]
-        over_odds = totals_outcomes.get("over_2.5")
-        under_odds = totals_outcomes.get("under_2.5")
-        if over_odds is None or under_odds is None:
+        # Plus de choix de bookmaker : une seule source est lue.
+        totals_outcomes = markets["totals"].get(XG_BOOKMAKER)
+        h2h_outcomes = markets["h2h"].get(XG_BOOKMAKER)
+        if not totals_outcomes or not h2h_outcomes:
             logger.info(
-                "market_xg: missing over/under odds for fixture %s → trying fallbacks",
-                fixture_id,
+                "market_xg: pas de cotes %s pour fixture %s", XG_BOOKMAKER, fixture_id
             )
             return None
-        p_over_2_5, _ = multiplicative_devig([over_odds, under_odds])
+
+        over_key = next((k for k in totals_outcomes if k.startswith("over_")), None)
+        if over_key is None:
+            logger.info("market_xg: pas de ligne totals pour fixture %s", fixture_id)
+            return None
+        total_line = float(over_key.removeprefix("over_"))
+        under_key = f"under_{over_key.removeprefix('over_')}"
+        over_odds = totals_outcomes.get(over_key)
+        under_odds = totals_outcomes.get(under_key)
+        if over_odds is None or under_odds is None:
+            logger.info("market_xg: ligne totals incomplete pour fixture %s", fixture_id)
+            return None
+        p_over, _ = multiplicative_devig([over_odds, under_odds])
+        data_source = XG_BOOKMAKER
 
         # Devig h2h
-        h2h_bm = _preferred_bookmaker(set(markets["h2h"].keys()))
-        if h2h_bm is None:
-            return None
-        h2h_outcomes = markets["h2h"][h2h_bm]
         home_odds = h2h_outcomes.get("home")
         draw_odds = h2h_outcomes.get("draw")
         away_odds = h2h_outcomes.get("away")
@@ -468,52 +551,26 @@ class MarketXgService:
         h2h_clean = multiplicative_devig([home_odds, draw_odds, away_odds])
         p_home_win, p_draw_val, p_away_win = h2h_clean
 
-        data_source = _preferred_bookmaker(
-            set(markets.get("h2h", {}).keys()) | set(markets.get("totals", {}).keys())
-        ) or "unknown"
-
-        # Devig btts (optional) — average across all available bookmakers.
-        # Single-bookmaker BTTS (especially Betclic) can be entertainment-priced
-        # on lopsided matches; averaging dampens outliers.
-        p_btts_yes: float | None = None
-        if "btts" in markets:
-            btts_samples: list[float] = []
-            for bm_outcomes in markets["btts"].values():
-                yes_odds = bm_outcomes.get("yes")
-                no_odds = bm_outcomes.get("no")
-                if yes_odds is not None and no_odds is not None:
-                    btts_samples.append(multiplicative_devig([yes_odds, no_odds])[0])
-            if btts_samples:
-                p_btts_yes = sum(btts_samples) / len(btts_samples)
-
         lambda_h: float
         lambda_a: float
         fit_residual: float
 
-        if p_btts_yes is not None:
-            try:
-                lambda_h, lambda_a, fit_residual = _fit_lambdas(
-                    p_home_win, p_draw_val, p_over_2_5, p_btts_yes
-                )
-            except Exception as exc:
-                logger.warning(
-                    "market_xg: L-BFGS-B solver failed for fixture %s: %s → trying fallbacks",
-                    fixture_id, exc,
-                )
-                return None
-        else:
-            try:
-                lambda_t = solve_lambda_t(p_over_2_5)
-                lambda_h = solve_lambda_home_from_h2h(lambda_t, p_home_win)
-                lambda_a = lambda_t - lambda_h
-                ok, reason = cross_validate_h2h(lambda_h, lambda_a, p_over_2_5, p_home_win)
-                fit_residual = 0.0 if ok else FIT_RESIDUAL_FLAG_THRESHOLD + 0.01
-            except ValueError as exc:
-                logger.warning(
-                    "market_xg: brentq solver failed for fixture %s: %s → trying fallbacks",
-                    fixture_id, exc,
-                )
-                return None
+        # PS3838 n'expose pas de marche BTTS : le chemin a quatre contraintes
+        # (_fit_lambdas) est desormais inatteignable. Solveur a deux
+        # contraintes uniquement : Over/Under (ligne reelle) + H2H.
+        try:
+            lambda_t = solve_lambda_t_from_line(p_over, total_line)
+            lambda_h = solve_lambda_home_from_h2h(lambda_t, p_home_win)
+            lambda_a = lambda_t - lambda_h
+            ok, reason = cross_validate_line(
+                lambda_h, lambda_a, p_over, p_home_win, total_line
+            )
+            fit_residual = 0.0 if ok else FIT_RESIDUAL_FLAG_THRESHOLD + 0.01
+        except ValueError as exc:
+            logger.warning(
+                "market_xg: solveur brentq echoue pour fixture %s: %s", fixture_id, exc
+            )
+            return None
 
         lambda_h = max(0.05, lambda_h)
         lambda_a = max(0.05, lambda_a)
