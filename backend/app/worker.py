@@ -1629,6 +1629,74 @@ async def job_capture_xg_closing() -> None:
         logger.exception("job_capture_xg_closing failed: %s", exc)
 
 
+# ── PS3838 Anchor Resolution (Task 7) ────────────────────────────
+
+# PS3838 ouvre ses lignes ~10 jours a l'avance : un match non ancre a moins de
+# 7 jours est un bug, pas un cas limite. Un match non ancre est un match sans
+# aucune recommandation (load_match_pricing renvoie None faute de xG).
+_ANCHOR_ALERT_HORIZON = timedelta(days=7)
+
+
+def _unanchored_alert_lines(rows, now: datetime) -> list[str]:
+    """Libelles des matchs non ancres a moins de 7 jours. Vide = rien a signaler."""
+    out = []
+    for label, kickoff in rows:
+        if kickoff is None:
+            continue
+        ko = kickoff if kickoff.tzinfo else kickoff.replace(tzinfo=UTC)
+        delta = ko - now
+        if timedelta(0) < delta < _ANCHOR_ALERT_HORIZON:
+            out.append(f"• {label} ({ko:%d/%m %H:%M} UTC)")
+    return out
+
+
+async def job_resolve_ps3838_anchors() -> None:
+    """Resout les ancrages PS3838 et signale les matchs proches restes orphelins."""
+    try:
+        from app.alerts import send_alert
+        from app.ingestion.ps3838.anchor import resolve_anchors
+        from app.ingestion.ps3838.client import fetch_events
+        from app.models.fixtures import Fixture
+
+        events = await fetch_events()
+        if not events:
+            await send_alert(
+                "🚨 <b>[Ev0] PS3838 injoignable</b>\n\n"
+                "Aucun événement récupéré — le xG d'équipe ne sera plus calculé.",
+                channel="incidents",
+            )
+            return
+
+        async with async_session() as session:
+            resolved, _ = await resolve_anchors(session, events)
+
+            now = datetime.now(UTC)
+            rows = (await session.execute(
+                select(Fixture.home_team, Fixture.away_team, Fixture.kickoff_utc).where(
+                    Fixture.ps3838_event_id.is_(None),
+                    Fixture.kickoff_utc > now,
+                    Fixture.kickoff_utc < now + _ANCHOR_ALERT_HORIZON,
+                    Fixture.status.notin_(["finished", "cancelled", "postponed"]),
+                ).order_by(Fixture.kickoff_utc)
+            )).all()
+
+        lines = _unanchored_alert_lines(
+            [(f"{h} - {a}", ko) for h, a, ko in rows], now
+        )
+        logger.info("PS3838 anchors: %d resolus, %d orphelins proches", resolved, len(lines))
+
+        if lines:
+            await send_alert(
+                f"🚨 <b>[Ev0] {len(lines)} match(s) sans ancrage PS3838 à moins de 7j</b>\n\n"
+                + "\n".join(lines[:10])
+                + ("\n…" if len(lines) > 10 else "")
+                + "\n\nCes matchs n'auront aucune recommandation.",
+                channel="incidents",
+            )
+    except Exception as exc:
+        logger.exception("job_resolve_ps3838_anchors failed: %s", exc)
+
+
 SNAPSHOT_RETENTION_DAYS = 45
 _PURGE_BATCH = 50_000
 
@@ -2104,6 +2172,15 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
         max_instances=1,
         coalesce=True,
+    )
+
+    scheduler.add_job(
+        job_resolve_ps3838_anchors,
+        CronTrigger(hour=6, minute=0),
+        id="resolve_ps3838_anchors",
+        name="Résout les ancrages PS3838 et signale les matchs orphelins",
+        replace_existing=True,
+        max_instances=1,
     )
 
     return scheduler
