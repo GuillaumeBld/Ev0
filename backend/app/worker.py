@@ -9,6 +9,7 @@ Runs periodic jobs via APScheduler:
 """
 
 import asyncio
+import html
 import json
 import logging
 from datetime import UTC, date, datetime, timedelta
@@ -1607,6 +1608,163 @@ async def job_deactivate_stale_wc_odds() -> None:
         logger.exception("job_deactivate_stale_wc_odds failed: %s", exc)
 
 
+async def job_capture_xg_opening() -> None:
+    """Archive la premiere estimation xG publiee pour chaque match."""
+    try:
+        from app.services.xg_library import capture_opening
+
+        async with async_session() as session:
+            await capture_opening(session)
+    except Exception as exc:
+        logger.exception("job_capture_xg_opening failed: %s", exc)
+
+
+async def job_capture_xg_closing() -> None:
+    """Archive la derniere estimation xG avant le coup d'envoi."""
+    try:
+        from app.services.xg_library import capture_closing
+
+        async with async_session() as session:
+            await capture_closing(session)
+    except Exception as exc:
+        logger.exception("job_capture_xg_closing failed: %s", exc)
+
+
+# ── PS3838 Anchor Resolution (Task 7) ────────────────────────────
+
+# PS3838 ouvre ses lignes ~10 jours a l'avance : un match non ancre a moins de
+# 7 jours est un bug, pas un cas limite. Un match non ancre est un match sans
+# aucune recommandation (load_match_pricing renvoie None faute de xG).
+_ANCHOR_ALERT_HORIZON = timedelta(days=7)
+
+
+def _unanchored_alert_lines(rows, now: datetime) -> list[str]:
+    """Libelles des matchs non ancres a moins de 7 jours. Vide = rien a signaler.
+
+    Le libelle vient de noms d'equipe en base et part dans un message Telegram
+    en HTML : un & (ou < / >) non echappe casse le parsing du message entier
+    et l'alerte est perdue en silence (send_alert avale l'echec). On echappe
+    donc la partie variable uniquement, jamais les balises <b> construites
+    par l'appelant.
+    """
+    out = []
+    for label, kickoff in rows:
+        if kickoff is None:
+            continue
+        ko = kickoff if kickoff.tzinfo else kickoff.replace(tzinfo=UTC)
+        delta = ko - now
+        if timedelta(0) < delta < _ANCHOR_ALERT_HORIZON:
+            safe_label = html.escape(label, quote=False)
+            out.append(f"• {safe_label} ({ko:%d/%m %H:%M} UTC) — non ancré")
+    return out
+
+
+def _stale_odds_alert_lines(rows, now: datetime) -> list[str]:
+    """Libelles des matchs ANCRES a moins de 7 jours mais sans cotes PS3838
+    exploitables recentes (evenement disparu du flux, marche disparu, ou
+    simplement jamais scrape). Vide = rien a signaler.
+
+    La spec exige une alerte pour un match sans identifiant resolu OU sans
+    cotes exploitables : cette fonction couvre la seconde cause, avec un
+    libelle distinct de _unanchored_alert_lines pour que l'alerte Telegram
+    ne melange pas les deux diagnostics. Meme echappement HTML, meme motif :
+    voir la docstring de _unanchored_alert_lines.
+    """
+    out = []
+    for label, kickoff in rows:
+        if kickoff is None:
+            continue
+        ko = kickoff if kickoff.tzinfo else kickoff.replace(tzinfo=UTC)
+        delta = ko - now
+        if timedelta(0) < delta < _ANCHOR_ALERT_HORIZON:
+            safe_label = html.escape(label, quote=False)
+            out.append(f"• {safe_label} ({ko:%d/%m %H:%M} UTC) — ancré mais sans cotes")
+    return out
+
+
+async def job_resolve_ps3838_anchors() -> None:
+    """Resout les ancrages PS3838 et signale les matchs proches restes orphelins."""
+    try:
+        from app.alerts import send_alert
+        from app.ingestion.ps3838.anchor import resolve_anchors
+        from app.ingestion.ps3838.client import fetch_events
+        from app.models.fixtures import Fixture
+        from app.models.match_odds import MatchOddsSnapshot
+        from app.services.market_xg import MAX_SNAPSHOT_AGE, XG_BOOKMAKER
+
+        events = await fetch_events()
+        if not events:
+            await send_alert(
+                "🚨 <b>[Ev0] PS3838 injoignable</b>\n\n"
+                "Aucun événement récupéré — le xG d'équipe ne sera plus calculé.",
+                channel="incidents",
+            )
+            return
+
+        async with async_session() as session:
+            resolved, _ = await resolve_anchors(session, events)
+
+            now = datetime.now(UTC)
+            unanchored_rows = (await session.execute(
+                select(Fixture.home_team, Fixture.away_team, Fixture.kickoff_utc).where(
+                    Fixture.ps3838_event_id.is_(None),
+                    Fixture.kickoff_utc > now,
+                    Fixture.kickoff_utc < now + _ANCHOR_ALERT_HORIZON,
+                    Fixture.status.notin_(["finished", "cancelled", "postponed"]),
+                ).order_by(Fixture.kickoff_utc)
+            )).all()
+
+            # Ancrees mais sans cotes PS3838 exploitables recemment : meme
+            # horizon de proximite que ci-dessus, meme fenetre de fraicheur
+            # que MarketXgService (MAX_SNAPSHOT_AGE) pour rester coherent
+            # avec ce qui alimente reellement le pricing. Pas de colonne
+            # dediee : on interroge simplement les snapshots existants.
+            anchored_near = (await session.execute(
+                select(
+                    Fixture.id, Fixture.home_team, Fixture.away_team, Fixture.kickoff_utc
+                ).where(
+                    Fixture.ps3838_event_id.isnot(None),
+                    Fixture.kickoff_utc > now,
+                    Fixture.kickoff_utc < now + _ANCHOR_ALERT_HORIZON,
+                    Fixture.status.notin_(["finished", "cancelled", "postponed"]),
+                ).order_by(Fixture.kickoff_utc)
+            )).all()
+
+            stale_rows: list[tuple[str, datetime]] = []
+            if anchored_near:
+                fresh_ids = set((await session.execute(
+                    select(MatchOddsSnapshot.fixture_id).where(
+                        MatchOddsSnapshot.fixture_id.in_([fid for fid, _, _, _ in anchored_near]),
+                        MatchOddsSnapshot.bookmaker == XG_BOOKMAKER,
+                        MatchOddsSnapshot.snapshot_utc >= now - MAX_SNAPSHOT_AGE,
+                    ).distinct()
+                )).scalars().all())
+                stale_rows = [
+                    (f"{h} - {a}", ko)
+                    for fid, h, a, ko in anchored_near
+                    if fid not in fresh_ids
+                ]
+
+        lines = _unanchored_alert_lines(
+            [(f"{h} - {a}", ko) for h, a, ko in unanchored_rows], now
+        ) + _stale_odds_alert_lines(stale_rows, now)
+        logger.info(
+            "PS3838 anchors: %d resolus, %d non ancres proches, %d ancres sans cotes proches",
+            resolved, len(unanchored_rows), len(stale_rows),
+        )
+
+        if lines:
+            await send_alert(
+                f"🚨 <b>[Ev0] {len(lines)} match(s) sans ancrage ou sans cotes PS3838 à moins de 7j</b>\n\n"
+                + "\n".join(lines[:10])
+                + ("\n…" if len(lines) > 10 else "")
+                + "\n\nCes matchs n'auront aucune recommandation.",
+                channel="incidents",
+            )
+    except Exception as exc:
+        logger.exception("job_resolve_ps3838_anchors failed: %s", exc)
+
+
 SNAPSHOT_RETENTION_DAYS = 45
 _PURGE_BATCH = 50_000
 
@@ -2063,6 +2221,37 @@ def create_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
 
+    # Bibliotheque xG (Task 6) : archivage definitif ouverture + closing
+    scheduler.add_job(
+        job_capture_xg_opening,
+        IntervalTrigger(hours=1),
+        id="capture_xg_opening",
+        name="Archive l'ouverture xG des matchs nouvellement cotes",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    scheduler.add_job(
+        job_capture_xg_closing,
+        IntervalTrigger(minutes=30),
+        id="capture_xg_closing",
+        name="Archive le closing xG des matchs commences",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    scheduler.add_job(
+        job_resolve_ps3838_anchors,
+        IntervalTrigger(hours=1),
+        id="resolve_ps3838_anchors",
+        name="Résout les ancrages PS3838 et signale les matchs orphelins",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     return scheduler
 
 
@@ -2110,6 +2299,10 @@ async def main():
     await job_sync_match_events()
     await job_sync_wc_bracket()
     await job_sync_wc_match_stats()
+    # Ancrage PS3838 juste apres la sync des fixtures : sans ca, un demarrage
+    # laisse ps3838_event_id a NULL partout jusqu'au prochain passage du job
+    # planifie, donc aucune recommandation sur tout le site pendant des heures.
+    await job_resolve_ps3838_anchors()
 
     # Keep running
     try:

@@ -747,6 +747,7 @@ class OddsScheduler:
         from app.ingestion.betclic_grpc_scraper import scrape_betclic_leagues
         from app.ingestion.odds_storage import store_match_scrape_result
         from app.ingestion.pmu_scraper import scrape_all_pmu
+        from app.ingestion.ps3838.scraper import scrape_ps3838
         from app.ingestion.unibet_lvs_scraper import scrape_all_unibet
         from app.models.canonical_teams import CanonicalTeam
         from app.models.fixtures import Fixture
@@ -815,43 +816,47 @@ class OddsScheduler:
                 )
             )
 
+        # NOTE : contrairement au brief initial, l'absence de ligue reconnue
+        # ne fait plus sortir tick() en anticipe (`return 0, []`). PS3838 n'a
+        # besoin d'aucune ligue reconnue — il lit toute la categorie football
+        # et travaille par identifiant (ps3838_event_id) — donc il doit
+        # pouvoir tourner meme quand betclic/unibet/pmu n'ont rien a scraper.
+        all_results = []
         if not leagues_needed:
             logger.warning("OddsScheduler.tick: no recognized leagues in due fixtures")
-            return 0, []
-
-        # Canonical-team indexes for the per-team matcher. Small table —
-        # loading it in full is cheap and avoids missing entries.
-        canonical_teams = (await session.execute(select(CanonicalTeam))).scalars().all()
-        canonical_alias_map = _build_canonical_alias_map(canonical_teams)
-        canonical_names_by_id = _build_canonical_names_by_id(canonical_teams)
-
-        # Scrape les 3 books en parallèle
-        betclic_results, unibet_results, pmu_results = await asyncio.gather(
-            scrape_betclic_leagues(list(leagues_needed)),
-            scrape_all_unibet(list(leagues_needed)),
-            scrape_all_pmu(list(leagues_needed)),
-            return_exceptions=True,
-        )
-
-        all_results = []
-        if isinstance(betclic_results, BaseException):
-            logger.error(
-                "OddsScheduler: betclic scrape failed: %s", betclic_results, exc_info=betclic_results
-            )
         else:
-            all_results.extend(betclic_results)
-        if isinstance(unibet_results, BaseException):
-            logger.error(
-                "OddsScheduler: unibet scrape failed: %s", unibet_results, exc_info=unibet_results
+            # Canonical-team indexes for the per-team matcher. Small table —
+            # loading it in full is cheap and avoids missing entries.
+            canonical_teams = (await session.execute(select(CanonicalTeam))).scalars().all()
+            canonical_alias_map = _build_canonical_alias_map(canonical_teams)
+            canonical_names_by_id = _build_canonical_names_by_id(canonical_teams)
+
+            # Scrape les 3 books en parallèle
+            betclic_results, unibet_results, pmu_results = await asyncio.gather(
+                scrape_betclic_leagues(list(leagues_needed)),
+                scrape_all_unibet(list(leagues_needed)),
+                scrape_all_pmu(list(leagues_needed)),
+                return_exceptions=True,
             )
-        else:
-            all_results.extend(unibet_results)
-        if isinstance(pmu_results, BaseException):
-            logger.error(
-                "OddsScheduler: pmu scrape failed: %s", pmu_results, exc_info=pmu_results
-            )
-        else:
-            all_results.extend(pmu_results)
+
+            if isinstance(betclic_results, BaseException):
+                logger.error(
+                    "OddsScheduler: betclic scrape failed: %s", betclic_results, exc_info=betclic_results
+                )
+            else:
+                all_results.extend(betclic_results)
+            if isinstance(unibet_results, BaseException):
+                logger.error(
+                    "OddsScheduler: unibet scrape failed: %s", unibet_results, exc_info=unibet_results
+                )
+            else:
+                all_results.extend(unibet_results)
+            if isinstance(pmu_results, BaseException):
+                logger.error(
+                    "OddsScheduler: pmu scrape failed: %s", pmu_results, exc_info=pmu_results
+                )
+            else:
+                all_results.extend(pmu_results)
 
         # Match scraped results to fixture_ids and store
         scraped = 0
@@ -891,6 +896,20 @@ class OddsScheduler:
             r.fixture_id = fixture_id
             await store_match_scrape_result(r, session)
             stored_fixture_ids.add(fixture_id)
+            scraped += 1
+
+        # PS3838 — source unique du xG d'equipe. Les resultats portent deja le
+        # bon fixture_id (ancrage par identifiant) : ils NE PASSENT PAS par le
+        # rapprochement de noms, qui ecraserait fixture_id.
+        try:
+            ps_results = await scrape_ps3838(session, [f.id for f in due])
+        except Exception as exc:
+            logger.error("OddsScheduler: ps3838 scrape failed: %s", exc, exc_info=exc)
+            ps_results = []
+
+        for r in ps_results:
+            await store_match_scrape_result(r, session)
+            stored_fixture_ids.add(r.fixture_id)
             scraped += 1
 
         # Update odds_scrape_state for all due fixtures

@@ -2,6 +2,10 @@
 
 Uses a mocked AsyncSession — no real DB required.
 Pipeline: Over-2.5 → λt, H2H → λh (Poisson inversion), cross-validate.
+Source unique : ps3838 (XG_BOOKMAKER). D'autres bookmakers presents dans les
+rows mockees doivent etre ignores -- la vraie requete SQL les filtrerait deja
+via bookmaker == XG_BOOKMAKER, mais le mock ne rejoue pas le WHERE (cf.
+test_asof_xg.py) donc on verifie ici le filtrage cote Python.
 
 NOTE: compute() now returns None (not Dixon-Coles) on failure/staleness.
 Staleness is based on now - snapshot_utc > MAX_SNAPSHOT_AGE (3 h), not kickoff-relative.
@@ -48,7 +52,7 @@ def _make_row(
     market_type: str,
     outcome: str,
     odds: float,
-    bookmaker: str = "betfair",
+    bookmaker: str = "ps3838",
     snapshot_utc: datetime = None,
 ) -> MagicMock:
     if snapshot_utc is None:
@@ -92,7 +96,7 @@ _AWAY_ODDS = 1.0 / _P_AWAY_WIN
 
 def _make_full_rows(
     snapshot_utc: datetime = None,
-    bookmaker: str = "betfair",
+    bookmaker: str = "ps3838",
 ) -> list[MagicMock]:
     if snapshot_utc is None:
         snapshot_utc = SNAPSHOT_UTC
@@ -143,7 +147,7 @@ def _make_session(
 
 
 class TestMarketXgServiceHappyPath:
-    """Valid betfair odds for totals + h2h → market_implied result."""
+    """Valid ps3838 odds for totals + h2h → market_implied result."""
 
     @pytest.mark.asyncio
     async def test_returns_market_implied_source(self):
@@ -183,8 +187,8 @@ class TestMarketXgServiceHappyPath:
         assert result.xg_away > 0
 
     @pytest.mark.asyncio
-    async def test_pinnacle_fallback_when_no_betfair(self):
-        """Pinnacle rows used when betfair absent."""
+    async def test_non_ps3838_bookmaker_alone_returns_none(self):
+        """Plus de fallback multi-bookmaker : sans ps3838, aucune source n'est lue."""
         fixture = _make_fixture()
         rows = _make_full_rows(bookmaker="pinnacle")
         session = _make_session(fixture, SNAPSHOT_UTC, rows)
@@ -192,24 +196,25 @@ class TestMarketXgServiceHappyPath:
         svc = MarketXgService()
         result = await svc.compute(1, session)
 
-        assert result is not None
-        assert result.xg_source == "market_implied"
+        assert result is None
 
     @pytest.mark.asyncio
-    async def test_oddsportal_preferred_over_betfair(self):
-        """oddsportal rows are preferred over betfair."""
+    async def test_other_bookmakers_ignored_when_ps3838_present(self):
+        """Des rows pinnacle en plus des rows ps3838 ne doivent rien changer au
+        resultat -- une seule source est lue, jamais un melange."""
         fixture = _make_fixture()
-        # Build rows for both oddsportal and betfair
-        oddsportal_rows = _make_full_rows(bookmaker="oddsportal")
-        betfair_rows = _make_full_rows(bookmaker="betfair")
-        rows = oddsportal_rows + betfair_rows
+        ps3838_rows = _make_full_rows(bookmaker="ps3838")
+        pinnacle_rows = _make_full_rows(bookmaker="pinnacle")
+        rows = ps3838_rows + pinnacle_rows
         session = _make_session(fixture, SNAPSHOT_UTC, rows)
 
         svc = MarketXgService()
         result = await svc.compute(1, session)
 
         assert result is not None
-        assert result.xg_source in ("market_implied", "market_implied_flagged")
+        assert result.xg_source == "market_implied"
+        assert abs(result.xg_home - _LAMBDA_H) < 0.05
+        assert abs(result.xg_away - _LAMBDA_A) < 0.05
 
 
 class TestMarketXgServiceStaleSnapshot:
@@ -239,6 +244,44 @@ class TestMarketXgServiceStaleSnapshot:
 
         assert result is not None
         assert result.xg_source in ("market_implied", "market_implied_flagged")
+
+
+class TestMarketXgServiceTotalsLineFreshness:
+    """I3 : la ligne de totals retenue doit etre celle du releve le plus
+    recent, comme le 1X2 (deja ecrase par le plus recent) -- pas la premiere
+    rencontree dans l'ordre d'insertion du dict (la plus ancienne, puisque
+    les rows sont triees ASC par snapshot_utc)."""
+
+    @pytest.mark.asyncio
+    async def test_uses_freshest_totals_line_not_first_seen(self):
+        old_utc = datetime.now(timezone.utc) - timedelta(hours=3)
+        fresh_utc = datetime.now(timezone.utc) - timedelta(minutes=2)
+
+        rows = [
+            # Ligne perimee (3h) : cotes tres deviees, produirait un lambda
+            # tres different si elle etait retenue a tort.
+            _make_row("totals", "over_1.5", 1.01, snapshot_utc=old_utc),
+            _make_row("totals", "under_1.5", 50.0, snapshot_utc=old_utc),
+            # Ligne fraiche (2 min), coherente avec le 1X2 ci-dessous
+            # (lambda_h=1.3, lambda_a=1.1 -> lambda_t=2.4).
+            _make_row("totals", "over_2.4", _OVER_ODDS, snapshot_utc=fresh_utc),
+            _make_row("totals", "under_2.4", _UNDER_ODDS, snapshot_utc=fresh_utc),
+            _make_row("h2h", "home", _HOME_ODDS, snapshot_utc=fresh_utc),
+            _make_row("h2h", "draw", _DRAW_ODDS, snapshot_utc=fresh_utc),
+            _make_row("h2h", "away", _AWAY_ODDS, snapshot_utc=fresh_utc),
+        ]
+        fixture = _make_fixture()
+        session = _make_session(fixture, fresh_utc, rows)
+
+        svc = MarketXgService()
+        result = await svc.compute(1, session)
+
+        assert result is not None
+        # Coherent avec la ligne fraiche (2.4) + le 1X2 -> lambda_h≈1.3,
+        # lambda_a≈1.1. Si la ligne perimee (1.5, cotes tres deviees) avait
+        # ete retenue par erreur, ces valeurs seraient tres differentes.
+        assert abs(result.xg_home - _LAMBDA_H) < 0.05
+        assert abs(result.xg_away - _LAMBDA_A) < 0.05
 
 
 class TestMarketXgServiceMissingMarkets:
