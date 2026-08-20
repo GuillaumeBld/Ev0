@@ -2185,11 +2185,12 @@ def create_scheduler() -> AsyncIOScheduler:
 
     scheduler.add_job(
         job_resolve_ps3838_anchors,
-        CronTrigger(hour=6, minute=0),
+        IntervalTrigger(hours=1),
         id="resolve_ps3838_anchors",
         name="Résout les ancrages PS3838 et signale les matchs orphelins",
         replace_existing=True,
         max_instances=1,
+        coalesce=True,
     )
 
     return scheduler
@@ -2239,6 +2240,10 @@ async def main():
     await job_sync_match_events()
     await job_sync_wc_bracket()
     await job_sync_wc_match_stats()
+    # Ancrage PS3838 juste apres la sync des fixtures : sans ca, un demarrage
+    # laisse ps3838_event_id a NULL partout jusqu'au prochain passage du job
+    # planifie, donc aucune recommandation sur tout le site pendant des heures.
+    await job_resolve_ps3838_anchors()
 
     # Keep running
     try:
