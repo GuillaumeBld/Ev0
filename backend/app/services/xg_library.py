@@ -99,6 +99,7 @@ async def _archive(session: AsyncSession, fixture_id: int, phase: str, snapshot_
             data_source=XG_BOOKMAKER,
             fallback_used=False,
             input_snapshot_ids=ids,
+            odds=markets,
         )
         .on_conflict_do_nothing(constraint="uq_team_xg_estimates_fixture_phase")
     )

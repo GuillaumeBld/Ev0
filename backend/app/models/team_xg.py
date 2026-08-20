@@ -30,6 +30,13 @@ class TeamXgEstimate(Base):
     data_source: Mapped[str] = mapped_column(String(20), nullable=False)
     fallback_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     input_snapshot_ids: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
+
+    # Cotes brutes ayant produit ce lambda, telles que le bookmaker les
+    # affichait : {"h2h": {...}, "totals": {...}}. Conservees pour que toute
+    # evolution future de la methode reste rejouable sur l'historique, une fois
+    # les snapshots purges a 45 jours. On archive la preuve, pas la conclusion :
+    # aucune probabilite devigee ici, tout se recalcule.
+    odds: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default="now()", nullable=False
     )
