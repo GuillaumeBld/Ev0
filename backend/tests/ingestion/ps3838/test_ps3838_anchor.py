@@ -157,7 +157,7 @@ async def test_duplicate_target_event_id_anchors_only_the_first_no_exception(ses
     events = [_ev(111, "Atletico Madrid", "Malaga", FUTURE_KO)]
 
     async with session_factory() as session:
-        resolved, unresolved = await resolve_anchors(session, events)
+        resolved, unresolved = await resolve_anchors(session, alias_map={}, events=events)
 
     assert resolved == 1
     assert len(unresolved) == 1
@@ -188,7 +188,7 @@ async def test_event_id_already_taken_in_db_is_not_reused(session_factory):
     events = [_ev(111, "Atletico Madrid", "Malaga", FUTURE_KO)]
 
     async with session_factory() as session:
-        resolved, unresolved = await resolve_anchors(session, events)
+        resolved, unresolved = await resolve_anchors(session, alias_map={}, events=events)
 
     assert resolved == 0
     assert len(unresolved) == 1
@@ -211,7 +211,7 @@ async def test_unmatched_fixture_is_unresolved_and_labelled(session_factory):
     events = [_ev(111, "Atletico Madrid", "Malaga", FUTURE_KO)]
 
     async with session_factory() as session:
-        resolved, unresolved = await resolve_anchors(session, events)
+        resolved, unresolved = await resolve_anchors(session, alias_map={}, events=events)
 
     assert resolved == 0
     assert len(unresolved) == 1
@@ -230,7 +230,7 @@ async def test_nominal_case_persists_event_id_after_commit(session_factory):
     events = [_ev(111, "Atletico Madrid", "Malaga", FUTURE_KO)]
 
     async with session_factory() as session:
-        resolved, unresolved = await resolve_anchors(session, events)
+        resolved, unresolved = await resolve_anchors(session, alias_map={}, events=events)
 
     assert resolved == 1
     assert unresolved == []
