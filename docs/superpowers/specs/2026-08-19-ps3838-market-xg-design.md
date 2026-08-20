@@ -121,7 +121,7 @@ exploitable est une liste de sports ; `sport[2]` donne les ligues,
 
 | Index | Contenu |
 |---|---|
-| `[0]` | handicaps asiatiques — `[hcp_dom, hcp_ext, label, cote_dom, cote_ext, …]` |
+| `[0]` | handicaps asiatiques — **`[hcp_ext, hcp_dom, label, cote_ext, cote_dom, …]`** |
 | `[1]` | totals — `[label, ligne, cote_over, cote_under, …]` |
 | `[2]` | 1X2 — **`[extérieur, domicile, nul, …]`** |
 
@@ -136,6 +136,12 @@ matchs, dont deux au centième près contre Pinnacle :
 
 Se tromper sur cet ordre inverserait domicile et extérieur — exactement la classe
 de bug que cette refonte élimine. Un test doit le verrouiller.
+
+**Le handicap suit le même ordre que le 1X2 : extérieur d'abord.** Vérifié le
+20/08 sur 131 matchs très déséquilibrés (favori sous 1.50, écart de cote > 2) :
+la convention « extérieur en premier » est cohérente **131 fois sur 131**, la
+convention inverse 0 fois. Al Ahly favori à domicile porte `-1.5` en seconde
+position ; Avondale favori à l'extérieur porte `-0.75` en première.
 
 **Pas de marché BTTS** dans ce flux.
 
@@ -270,6 +276,99 @@ c'est là que l'utilisateur mise, et une value est l'écart entre le prix juste 
 le prix réellement obtenable. Seul l'usage de leurs cotes **1X2/totals pour le
 calcul du xG** disparaît.
 
+## Structure de la marge Pinnacle — mesures du 20/08/2026
+
+Le retrait de marge actuel est **proportionnel** : on répartit l'excédent à
+parts égales sur toutes les issues. Les mesures ci-dessous, prises sur le flux
+réel (982 matchs, 1 776 lignes de handicap), montrent que cette hypothèse est
+fausse sur le handicap asiatique — et que la question reste ouverte sur le 1X2.
+
+### Clés observées
+
+| Marché | Clé médiane | p10 – p90 |
+|---|---|---|
+| Over/Under buts | **105,6 %** | 104,3 – 106,7 |
+| 1X2 | 106,7 % | 105,0 – 109,3 |
+| Handicap asiatique | 105,2 % | — |
+
+La clé du 1X2 **croît avec le déséquilibre** du match : 107,6 % quand le favori
+est sous 1.40, contre 106,5 % sur un match équilibré.
+
+### Handicap asiatique : la marge pèse sur le favori (confirmé)
+
+Une ligne de handicap est censée équilibrer les deux camps. Après retrait
+**proportionnel** de la marge, on devrait donc retomber près de 50/50. On
+obtient systématiquement plus, et l'écart croît avec la taille du handicap :
+
+| Taille du handicap | P(favori) après retrait proportionnel | Écart |
+|---|---|---|
+| 0.25 – 0.5 | 52,29 % | +2,3 pts |
+| 0.75 – 1.0 | 52,86 % | +2,9 pts |
+| 1.25 – 1.75 | 53,21 % | +3,2 pts |
+| 2.0 et plus | 53,18 % | +3,2 pts |
+
+C'est la signature d'une marge chargée sur le favori. Test **indépendant de tout
+modèle** : il ne compare que les deux prix d'une même ligne.
+
+**Conséquence** : le jour où le handicap servira à dériver un xG, un retrait
+proportionnel surestimera le favori de 2 à 3 points de probabilité.
+
+### 1X2 : la marge pèse sur l'outsider (non concluant)
+
+Probabilités du match reconstruites **sans utiliser le 1X2** (totals pour
+λ_total, handicap pour la répartition), puis comparées aux probabilités brutes
+du 1X2. L'excédent par issue, en points :
+
+| | Favori | Outsider | Nul |
+|---|---|---|---|
+| Favori très net (<1.5) | −2,28 | **+5,19** | +5,10 |
+| Favori moyen (1.5–2.2) | −0,52 | +2,69 | +4,10 |
+
+Le favori ressort légèrement **sous-évalué**, l'outsider nettement surévalué.
+Cohérent avec le fait que le chargement sur le favori est propre au handicap.
+
+**Deux réserves qui empêchent d'en tirer une correction :**
+
+- La colonne du **nul est contaminée** par le modèle. La reconstruction utilise
+  un Poisson, qui sous-estime structurellement les nuls (pas de corrélation
+  entre les scores des deux équipes). Une part du +4 à +7 est le modèle, pas la
+  marge — impossible de séparer les deux avec ces données.
+- La catégorie « match en flip » (favori > 2.2) donnait −15,01 / +14,98 : c'est
+  un **artefact de sélection**, pas un effet de marché. Sur un match équilibré,
+  désigner un favori tient à quelques centièmes ; trier sur ce critère puis
+  mesurer l'erreur du modèle produit mécaniquement deux médianes opposées.
+
+### Impact du choix de méthode sur λ
+
+Écart médian sur λ_domicile entre retrait proportionnel et retrait « puissance » :
+
+| Type de match | Écart sur λ_dom |
+|---|---|
+| Match équilibré | 0,6 % |
+| Favori 1.40 – 2.00 | 1,9 % |
+| **Favori sous 1.40** | **4,3 %** |
+
+Jusqu'à 25 % dans le cas extrême. Sur un modèle qui chasse des edges de 5 à
+10 %, un biais systématique de 4 % sur les gros favoris n'est pas du bruit.
+
+### Ce qu'il faut mesurer pour trancher
+
+Départager deux méthodes de retrait de marge exige de confronter les
+probabilités obtenues aux **résultats réels**, sur quelques centaines de matchs.
+La bibliothèque de closing (section 6) accumule exactement cette matière depuis
+le 20/08/2026.
+
+Protocole, le jour venu : pour chaque méthode candidate (proportionnelle,
+puissance, Shin, additive), recalculer les probabilités depuis les closings
+archivés, puis mesurer le score de Brier et la calibration **par tranche de
+cote du favori** — c'est sur les gros favoris que les méthodes divergent.
+
+**Prérequis non satisfait aujourd'hui : les handicaps ne sont pas archivés.**
+Le client les lit (`periodes["0"][0]`) mais les jette. Sans eux, impossible de
+reconstruire les probabilités sans passer par le 1X2, donc impossible de refaire
+le test ci-dessus a posteriori. À décider avant que la fenêtre de 45 jours ne
+commence à effacer les cotes brutes.
+
 ## Cadence
 
 **Aucune cadence nouvelle, aucun seuil modifié.** Le scraper PS3838 est appelé
@@ -314,3 +413,7 @@ fixture.
   purgées au-delà de 45 jours, non fiables en deçà).
 - Trajectoire complète du xG entre ouverture et closing (la table le permettrait,
   mais elle demanderait sa propre politique de rétention).
+- Changement de méthode de retrait de marge : mesuré et documenté ci-dessus,
+  mais **non tranché** — la décision attend des résultats réels.
+- Archivage des handicaps asiatiques : nécessaire pour pouvoir trancher plus
+  tard, à décider séparément.
