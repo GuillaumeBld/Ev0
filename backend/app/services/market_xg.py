@@ -497,10 +497,24 @@ class MarketXgService:
         snapshot_ids: list[int] = []
         snapshot_source: str = "unknown"
         snapshot_fallback_used: bool = False
+        # La ligne de totals la plus recente (ex: "3.0" dans "over_3.0"). Les
+        # cles over_X/under_X different d'une ligne a l'autre, donc un simple
+        # dict ne les ecrase JAMAIS entre elles (contrairement au 1X2, dont
+        # les cles home/draw/away sont fixes et sont bien ecrasees par le
+        # relevé le plus recent). Sans ce suivi explicite, on retombe sur la
+        # premiere ligne rencontree — la plus ancienne, puisque `rows` est
+        # trie ASC par snapshot_utc — au lieu de la ligne actuelle.
+        latest_totals_line: str | None = None
         for row in rows:
             markets.setdefault(row.market_type, {}).setdefault(row.bookmaker, {})[
                 row.outcome
             ] = row.odds
+            if (
+                row.market_type == "totals"
+                and row.bookmaker == XG_BOOKMAKER
+                and row.outcome.startswith("over_")
+            ):
+                latest_totals_line = row.outcome.removeprefix("over_")
             if hasattr(row, "id") and row.id is not None:
                 snapshot_ids.append(row.id)
             if hasattr(row, "source") and row.source:
@@ -524,8 +538,10 @@ class MarketXgService:
             )
             return None
 
-        over_key = next((k for k in totals_outcomes if k.startswith("over_")), None)
-        if over_key is None:
+        # Ligne du relevé le plus recent (pas l'ordre d'insertion du dict) :
+        # coherent avec le 1X2, qui lui est deja ecrase par le plus recent.
+        over_key = f"over_{latest_totals_line}" if latest_totals_line is not None else None
+        if over_key is None or over_key not in totals_outcomes:
             logger.info("market_xg: pas de ligne totals pour fixture %s", fixture_id)
             return None
         total_line = float(over_key.removeprefix("over_"))

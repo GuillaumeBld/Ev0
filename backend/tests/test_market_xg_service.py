@@ -246,6 +246,44 @@ class TestMarketXgServiceStaleSnapshot:
         assert result.xg_source in ("market_implied", "market_implied_flagged")
 
 
+class TestMarketXgServiceTotalsLineFreshness:
+    """I3 : la ligne de totals retenue doit etre celle du releve le plus
+    recent, comme le 1X2 (deja ecrase par le plus recent) -- pas la premiere
+    rencontree dans l'ordre d'insertion du dict (la plus ancienne, puisque
+    les rows sont triees ASC par snapshot_utc)."""
+
+    @pytest.mark.asyncio
+    async def test_uses_freshest_totals_line_not_first_seen(self):
+        old_utc = datetime.now(timezone.utc) - timedelta(hours=3)
+        fresh_utc = datetime.now(timezone.utc) - timedelta(minutes=2)
+
+        rows = [
+            # Ligne perimee (3h) : cotes tres deviees, produirait un lambda
+            # tres different si elle etait retenue a tort.
+            _make_row("totals", "over_1.5", 1.01, snapshot_utc=old_utc),
+            _make_row("totals", "under_1.5", 50.0, snapshot_utc=old_utc),
+            # Ligne fraiche (2 min), coherente avec le 1X2 ci-dessous
+            # (lambda_h=1.3, lambda_a=1.1 -> lambda_t=2.4).
+            _make_row("totals", "over_2.4", _OVER_ODDS, snapshot_utc=fresh_utc),
+            _make_row("totals", "under_2.4", _UNDER_ODDS, snapshot_utc=fresh_utc),
+            _make_row("h2h", "home", _HOME_ODDS, snapshot_utc=fresh_utc),
+            _make_row("h2h", "draw", _DRAW_ODDS, snapshot_utc=fresh_utc),
+            _make_row("h2h", "away", _AWAY_ODDS, snapshot_utc=fresh_utc),
+        ]
+        fixture = _make_fixture()
+        session = _make_session(fixture, fresh_utc, rows)
+
+        svc = MarketXgService()
+        result = await svc.compute(1, session)
+
+        assert result is not None
+        # Coherent avec la ligne fraiche (2.4) + le 1X2 -> lambda_h≈1.3,
+        # lambda_a≈1.1. Si la ligne perimee (1.5, cotes tres deviees) avait
+        # ete retenue par erreur, ces valeurs seraient tres differentes.
+        assert abs(result.xg_home - _LAMBDA_H) < 0.05
+        assert abs(result.xg_away - _LAMBDA_A) < 0.05
+
+
 class TestMarketXgServiceMissingMarkets:
     """Missing required markets → returns None."""
 
