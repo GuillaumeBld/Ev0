@@ -25,6 +25,33 @@ _STOP = {
     "club", "de", "la", "le", "los", "el", "sk", "nk", "gnk", "calcio", "cfr",
 }
 
+# Marqueurs de variante (reserve / jeunes / feminine) : un token identique de
+# part et d'autre change l'equipe, meme si le reste du nom se contient
+# (ex: 'Real Sociedad' vs 'Real Sociedad II'). Repris de l'approche
+# _TEAM_VARIANT_MARKERS de odds_scheduler.py. Le 'b' isole ne doit matcher
+# qu'en tant que token entier ('Bayern' ne tokenise jamais en 'b').
+_VARIANT_MARKERS = frozenset({
+    "ii", "iii", "b", "w", "res", "reserves", "fem", "women", "youth",
+})
+_VARIANT_AGE_RE = re.compile(r"^u\d{2}$")
+
+
+def _raw_tokens(name: str) -> set[str]:
+    """Tokens bruts (accents plies, ponctuation retiree), sans filtre de
+    longueur ni mots vides -- utilise pour detecter les marqueurs de variante
+    AVANT que norm_team ne les supprime (ii, b, w font 1 ou 2 caracteres)."""
+    s = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode().lower()
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
+    return {t for t in s.split() if t}
+
+
+def _variant_markers(name: str) -> frozenset[str]:
+    """Marqueurs de variante (reserve/jeunes/feminine) presents dans le nom."""
+    return frozenset(
+        t for t in _raw_tokens(name)
+        if t in _VARIANT_MARKERS or _VARIANT_AGE_RE.match(t)
+    )
+
 
 def norm_team(name: str) -> set[str]:
     """Tokens normalises : accents plies, suffixes de club retires."""
@@ -36,6 +63,11 @@ def norm_team(name: str) -> set[str]:
 def _same_team(a: str, b: str) -> bool:
     ta, tb = norm_team(a), norm_team(b)
     if not ta or not tb:
+        return False
+    # Les deux cotes doivent porter exactement le meme jeu de marqueurs de
+    # variante : 'Real Sociedad' (aucun marqueur) ne doit jamais matcher
+    # 'Real Sociedad II' (marqueur 'ii'), meme si le reste du nom se contient.
+    if _variant_markers(a) != _variant_markers(b):
         return False
     # Un cote doit etre entierement contenu dans l'autre : 'Real Madrid' et
     # 'Real Sociedad' partagent 'real' mais ne se contiennent pas.

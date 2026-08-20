@@ -11,12 +11,27 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ingestion.ps3838.anchor import MAX_KICKOFF_DELTA
 from app.ingestion.ps3838.client import Ps3838Event, fetch_events
 from app.ingestion.scrape_result import MatchScrapeResult
 
 logger = logging.getLogger(__name__)
 
 BOOKMAKER = "ps3838"
+
+
+def _kickoff_drifted(fx_ko: datetime | None, ev_ko: datetime | None) -> bool:
+    """Filet de securite : l'ancrage est pose une fois pour toutes, mais si
+    l'identifiant PS3838 a ete reattribue depuis (ou l'ancrage etait deja
+    mauvais), le coup d'envoi ne colle plus. Rejette au-dela de 2h d'ecart,
+    la meme tolerance qu'a la pose de l'ancrage dans anchor.py."""
+    if fx_ko is None or ev_ko is None:
+        return True
+    if fx_ko.tzinfo is None:
+        fx_ko = fx_ko.replace(tzinfo=UTC)
+    if ev_ko.tzinfo is None:
+        ev_ko = ev_ko.replace(tzinfo=UTC)
+    return abs(ev_ko - fx_ko) > MAX_KICKOFF_DELTA
 
 
 def build_results(fixtures, events: list[Ps3838Event]) -> list[MatchScrapeResult]:
@@ -31,6 +46,12 @@ def build_results(fixtures, events: list[Ps3838Event]) -> list[MatchScrapeResult
             continue
         ev = by_id.get(eid)
         if ev is None or not ev.h2h or not ev.totals:
+            continue
+        if _kickoff_drifted(fx.kickoff_utc, ev.kickoff_utc):
+            logger.warning(
+                "PS3838: ecart de coup d'envoi > 2h pour fixture %s (event %s) -> rejete",
+                fx.id, eid,
+            )
             continue
         out.append(
             MatchScrapeResult(

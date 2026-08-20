@@ -66,6 +66,35 @@ def test_partial_team_overlap_is_not_enough():
     assert match_event(_fx("Real Madrid", "Málaga CF"), evs) is None
 
 
+def test_reserve_side_ii_does_not_match_first_team():
+    """'Real Sociedad' (equipe premiere) ne doit jamais s'ancrer sur
+    l'evenement de sa reserve 'Real Sociedad II'."""
+    evs = [_ev(111, "Real Sociedad II", "Malaga")]
+    assert match_event(_fx("Real Sociedad", "Malaga"), evs) is None
+
+
+def test_reserve_home_and_away_ii_does_not_match_first_team():
+    evs = [_ev(111, "Celta Vigo II", "Real Sociedad II")]
+    assert match_event(_fx("Celta Vigo", "Real Sociedad"), evs) is None
+
+
+def test_women_marker_w_does_not_match_mens_team():
+    evs = [_ev(111, "Brann (W)", "Malaga")]
+    assert match_event(_fx("Brann", "Malaga"), evs) is None
+
+
+def test_reserve_marker_b_does_not_match_first_team():
+    evs = [_ev(111, "Sparta Prague B", "Malaga")]
+    assert match_event(_fx("Sparta Prague", "Malaga"), evs) is None
+
+
+def test_same_reserve_marker_both_sides_still_resolves():
+    """Les deux cotes portent le meme marqueur 'II' : c'est bien la reserve
+    face a la reserve, l'ancrage doit continuer a se poser."""
+    evs = [_ev(111, "Real Sociedad II", "Malaga")]
+    assert match_event(_fx("Real Sociedad II", "Malaga"), evs).event_id == 111
+
+
 def test_two_hour_tolerance_is_symmetric_for_events_before_kickoff():
     """abs() doit couvrir les deux sens : un evenement ANTERIEUR au coup
     d'envoi de la fixture doit aussi passer la tolerance de 2h (et etre

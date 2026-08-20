@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.ingestion.ps3838.client import Ps3838Event
@@ -55,6 +55,23 @@ def test_event_without_h2h_is_skipped():
 
 def test_event_without_totals_is_skipped():
     assert build_results([_fx(1, 111)], [_ev(111, totals=None)]) == []
+
+
+def test_kickoff_drift_beyond_two_hours_is_rejected():
+    """Filet de securite : meme ancree, une fixture dont le coup d'envoi
+    s'ecarte de plus de 2h de celui de l'evenement PS3838 est rejetee (une
+    reattribution d'identifiant cote PS3838 ne doit pas passer inapercue)."""
+    ev = _ev(111)
+    fx = _fx(1, 111)
+    fx.kickoff_utc = KO + timedelta(hours=2, minutes=1)
+    assert build_results([fx], [ev]) == []
+
+
+def test_kickoff_within_two_hours_is_kept():
+    ev = _ev(111)
+    fx = _fx(1, 111)
+    fx.kickoff_utc = KO + timedelta(hours=1, minutes=59)
+    assert len(build_results([fx], [ev])) == 1
 
 
 def test_names_never_used_for_matching():
