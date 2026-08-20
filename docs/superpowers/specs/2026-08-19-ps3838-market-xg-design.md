@@ -294,6 +294,28 @@ fausse sur le handicap asiatique — et que la question reste ouverte sur le 1X2
 La clé du 1X2 **croît avec le déséquilibre** du match : 107,6 % quand le favori
 est sous 1.40, contre 106,5 % sur un match équilibré.
 
+**La clé n'est pas rigide : elle suit le niveau de la compétition.**
+
+| | Clé médiane | Minimum observé |
+|---|---|---|
+| Grandes compétitions (5 grands championnats, C1, C3) | **103,88 %** | **102,79 %** |
+| Toutes les autres | 106,76 % | 103,67 % |
+
+Près de 3 points d'écart. Le bas de la distribution est occupé exclusivement par
+les grands championnats (Rayo–Alavés 102,79 %, Ipswich–Sunderland 103,24 %) ; le
+haut par les compétitions confidentielles (réserves, championnats féminins,
+divisions inférieures), jusqu'à **116 %**.
+
+Relevé du 20/08 en pleine trêve : aucune affiche majeure au programme. Sur un
+Clásico ou un match à élimination directe de C1, la clé descend probablement
+plus bas encore — Pinnacle resserre avec la liquidité et relève ses limites.
+
+**Conséquence structurelle : une correction de marge ne peut pas être une
+constante.** Elle doit se dériver de la clé observée sur le match lui-même. Et
+il reste à vérifier si la *répartition* de la marge sur le favori varie elle
+aussi avec la clé — un marché à 103 % ne charge probablement pas comme un
+marché à 112 %.
+
 ### Handicap asiatique : la marge pèse sur le favori (confirmé)
 
 Une ligne de handicap est censée équilibrer les deux camps. Après retrait
