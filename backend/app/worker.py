@@ -1667,7 +1667,7 @@ def _stale_odds_alert_lines(rows, now: datetime) -> list[str]:
     La spec exige une alerte pour un match sans identifiant resolu OU sans
     cotes exploitables : cette fonction couvre la seconde cause, avec un
     libelle distinct de _unanchored_alert_lines pour que l'alerte Telegram
-    ne mélange pas les deux diagnostics. Meme echappement HTML, meme motif :
+    ne melange pas les deux diagnostics. Meme echappement HTML, meme motif :
     voir la docstring de _unanchored_alert_lines.
     """
     out = []

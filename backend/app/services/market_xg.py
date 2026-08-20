@@ -501,7 +501,7 @@ class MarketXgService:
         # cles over_X/under_X different d'une ligne a l'autre, donc un simple
         # dict ne les ecrase JAMAIS entre elles (contrairement au 1X2, dont
         # les cles home/draw/away sont fixes et sont bien ecrasees par le
-        # relevé le plus recent). Sans ce suivi explicite, on retombe sur la
+        # releve le plus recent). Sans ce suivi explicite, on retombe sur la
         # premiere ligne rencontree — la plus ancienne, puisque `rows` est
         # trie ASC par snapshot_utc — au lieu de la ligne actuelle.
         latest_totals_line: str | None = None
@@ -538,7 +538,7 @@ class MarketXgService:
             )
             return None
 
-        # Ligne du relevé le plus recent (pas l'ordre d'insertion du dict) :
+        # Ligne du releve le plus recent (pas l'ordre d'insertion du dict) :
         # coherent avec le 1X2, qui lui est deja ecrase par le plus recent.
         over_key = f"over_{latest_totals_line}" if latest_totals_line is not None else None
         if over_key is None or over_key not in totals_outcomes:
