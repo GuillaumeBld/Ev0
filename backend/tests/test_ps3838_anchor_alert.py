@@ -28,3 +28,13 @@ def test_past_fixture_is_ignored():
 
 def test_empty_input_is_silent():
     assert _unanchored_alert_lines([], NOW) == []
+
+
+def test_ampersand_in_label_is_escaped():
+    """Un & non echappe casse le parsing HTML Telegram et perd le message entier."""
+    rows = [("Foo & Bar - Baz", NOW + timedelta(days=1))]
+    lines = _unanchored_alert_lines(rows, NOW)
+    assert len(lines) == 1
+    assert "&amp;" in lines[0]
+    # aucun '&' nu en dehors de l'entite HTML echappee
+    assert lines[0].replace("&amp;", "").count("&") == 0

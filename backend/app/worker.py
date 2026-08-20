@@ -9,6 +9,7 @@ Runs periodic jobs via APScheduler:
 """
 
 import asyncio
+import html
 import json
 import logging
 from datetime import UTC, date, datetime, timedelta
@@ -1638,7 +1639,14 @@ _ANCHOR_ALERT_HORIZON = timedelta(days=7)
 
 
 def _unanchored_alert_lines(rows, now: datetime) -> list[str]:
-    """Libelles des matchs non ancres a moins de 7 jours. Vide = rien a signaler."""
+    """Libelles des matchs non ancres a moins de 7 jours. Vide = rien a signaler.
+
+    Le libelle vient de noms d'equipe en base et part dans un message Telegram
+    en HTML : un & (ou < / >) non echappe casse le parsing du message entier
+    et l'alerte est perdue en silence (send_alert avale l'echec). On echappe
+    donc la partie variable uniquement, jamais les balises <b> construites
+    par l'appelant.
+    """
     out = []
     for label, kickoff in rows:
         if kickoff is None:
@@ -1646,7 +1654,8 @@ def _unanchored_alert_lines(rows, now: datetime) -> list[str]:
         ko = kickoff if kickoff.tzinfo else kickoff.replace(tzinfo=UTC)
         delta = ko - now
         if timedelta(0) < delta < _ANCHOR_ALERT_HORIZON:
-            out.append(f"• {label} ({ko:%d/%m %H:%M} UTC)")
+            safe_label = html.escape(label, quote=False)
+            out.append(f"• {safe_label} ({ko:%d/%m %H:%M} UTC)")
     return out
 
 
