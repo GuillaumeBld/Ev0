@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -17,6 +17,9 @@ class TeamXgEstimate(Base):
     fixture_id: Mapped[int] = mapped_column(
         ForeignKey("fixtures.id"), nullable=False, index=True
     )
+    # "opening" = premiere estimation publiee, "closing" = derniere avant le
+    # coup d'envoi. Une ligne de chaque par match, archivee definitivement.
+    phase: Mapped[str] = mapped_column(String(10), nullable=False, server_default="closing")
     as_of_utc: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -29,4 +32,8 @@ class TeamXgEstimate(Base):
     input_snapshot_ids: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default="now()", nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("fixture_id", "phase", name="uq_team_xg_estimates_fixture_phase"),
     )

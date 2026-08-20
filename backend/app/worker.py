@@ -1607,6 +1607,28 @@ async def job_deactivate_stale_wc_odds() -> None:
         logger.exception("job_deactivate_stale_wc_odds failed: %s", exc)
 
 
+async def job_capture_xg_opening() -> None:
+    """Archive la premiere estimation xG publiee pour chaque match."""
+    try:
+        from app.services.xg_library import capture_opening
+
+        async with async_session() as session:
+            await capture_opening(session)
+    except Exception as exc:
+        logger.exception("job_capture_xg_opening failed: %s", exc)
+
+
+async def job_capture_xg_closing() -> None:
+    """Archive la derniere estimation xG avant le coup d'envoi."""
+    try:
+        from app.services.xg_library import capture_closing
+
+        async with async_session() as session:
+            await capture_closing(session)
+    except Exception as exc:
+        logger.exception("job_capture_xg_closing failed: %s", exc)
+
+
 SNAPSHOT_RETENTION_DAYS = 45
 _PURGE_BATCH = 50_000
 
@@ -2058,6 +2080,27 @@ def create_scheduler() -> AsyncIOScheduler:
         IntervalTrigger(hours=1),
         id="sync_wc_bracket",
         name="Recompute WC2026 bracket advancement probabilities (ELO + Monte Carlo)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Bibliotheque xG (Task 6) : archivage definitif ouverture + closing
+    scheduler.add_job(
+        job_capture_xg_opening,
+        IntervalTrigger(hours=1),
+        id="capture_xg_opening",
+        name="Archive l'ouverture xG des matchs nouvellement cotes",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    scheduler.add_job(
+        job_capture_xg_closing,
+        IntervalTrigger(minutes=30),
+        id="capture_xg_closing",
+        name="Archive le closing xG des matchs commences",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
