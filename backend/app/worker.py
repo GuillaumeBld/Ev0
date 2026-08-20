@@ -1655,7 +1655,30 @@ def _unanchored_alert_lines(rows, now: datetime) -> list[str]:
         delta = ko - now
         if timedelta(0) < delta < _ANCHOR_ALERT_HORIZON:
             safe_label = html.escape(label, quote=False)
-            out.append(f"• {safe_label} ({ko:%d/%m %H:%M} UTC)")
+            out.append(f"• {safe_label} ({ko:%d/%m %H:%M} UTC) — non ancré")
+    return out
+
+
+def _stale_odds_alert_lines(rows, now: datetime) -> list[str]:
+    """Libelles des matchs ANCRES a moins de 7 jours mais sans cotes PS3838
+    exploitables recentes (evenement disparu du flux, marche disparu, ou
+    simplement jamais scrape). Vide = rien a signaler.
+
+    La spec exige une alerte pour un match sans identifiant resolu OU sans
+    cotes exploitables : cette fonction couvre la seconde cause, avec un
+    libelle distinct de _unanchored_alert_lines pour que l'alerte Telegram
+    ne mélange pas les deux diagnostics. Meme echappement HTML, meme motif :
+    voir la docstring de _unanchored_alert_lines.
+    """
+    out = []
+    for label, kickoff in rows:
+        if kickoff is None:
+            continue
+        ko = kickoff if kickoff.tzinfo else kickoff.replace(tzinfo=UTC)
+        delta = ko - now
+        if timedelta(0) < delta < _ANCHOR_ALERT_HORIZON:
+            safe_label = html.escape(label, quote=False)
+            out.append(f"• {safe_label} ({ko:%d/%m %H:%M} UTC) — ancré mais sans cotes")
     return out
 
 
@@ -1666,6 +1689,8 @@ async def job_resolve_ps3838_anchors() -> None:
         from app.ingestion.ps3838.anchor import resolve_anchors
         from app.ingestion.ps3838.client import fetch_events
         from app.models.fixtures import Fixture
+        from app.models.match_odds import MatchOddsSnapshot
+        from app.services.market_xg import MAX_SNAPSHOT_AGE, XG_BOOKMAKER
 
         events = await fetch_events()
         if not events:
@@ -1680,7 +1705,7 @@ async def job_resolve_ps3838_anchors() -> None:
             resolved, _ = await resolve_anchors(session, events)
 
             now = datetime.now(UTC)
-            rows = (await session.execute(
+            unanchored_rows = (await session.execute(
                 select(Fixture.home_team, Fixture.away_team, Fixture.kickoff_utc).where(
                     Fixture.ps3838_event_id.is_(None),
                     Fixture.kickoff_utc > now,
@@ -1689,14 +1714,48 @@ async def job_resolve_ps3838_anchors() -> None:
                 ).order_by(Fixture.kickoff_utc)
             )).all()
 
+            # Ancrees mais sans cotes PS3838 exploitables recemment : meme
+            # horizon de proximite que ci-dessus, meme fenetre de fraicheur
+            # que MarketXgService (MAX_SNAPSHOT_AGE) pour rester coherent
+            # avec ce qui alimente reellement le pricing. Pas de colonne
+            # dediee : on interroge simplement les snapshots existants.
+            anchored_near = (await session.execute(
+                select(
+                    Fixture.id, Fixture.home_team, Fixture.away_team, Fixture.kickoff_utc
+                ).where(
+                    Fixture.ps3838_event_id.isnot(None),
+                    Fixture.kickoff_utc > now,
+                    Fixture.kickoff_utc < now + _ANCHOR_ALERT_HORIZON,
+                    Fixture.status.notin_(["finished", "cancelled", "postponed"]),
+                ).order_by(Fixture.kickoff_utc)
+            )).all()
+
+            stale_rows: list[tuple[str, datetime]] = []
+            if anchored_near:
+                fresh_ids = set((await session.execute(
+                    select(MatchOddsSnapshot.fixture_id).where(
+                        MatchOddsSnapshot.fixture_id.in_([fid for fid, _, _, _ in anchored_near]),
+                        MatchOddsSnapshot.bookmaker == XG_BOOKMAKER,
+                        MatchOddsSnapshot.snapshot_utc >= now - MAX_SNAPSHOT_AGE,
+                    ).distinct()
+                )).scalars().all())
+                stale_rows = [
+                    (f"{h} - {a}", ko)
+                    for fid, h, a, ko in anchored_near
+                    if fid not in fresh_ids
+                ]
+
         lines = _unanchored_alert_lines(
-            [(f"{h} - {a}", ko) for h, a, ko in rows], now
+            [(f"{h} - {a}", ko) for h, a, ko in unanchored_rows], now
+        ) + _stale_odds_alert_lines(stale_rows, now)
+        logger.info(
+            "PS3838 anchors: %d resolus, %d non ancres proches, %d ancres sans cotes proches",
+            resolved, len(unanchored_rows), len(stale_rows),
         )
-        logger.info("PS3838 anchors: %d resolus, %d orphelins proches", resolved, len(lines))
 
         if lines:
             await send_alert(
-                f"🚨 <b>[Ev0] {len(lines)} match(s) sans ancrage PS3838 à moins de 7j</b>\n\n"
+                f"🚨 <b>[Ev0] {len(lines)} match(s) sans ancrage ou sans cotes PS3838 à moins de 7j</b>\n\n"
                 + "\n".join(lines[:10])
                 + ("\n…" if len(lines) > 10 else "")
                 + "\n\nCes matchs n'auront aucune recommandation.",
