@@ -109,7 +109,7 @@ export default function SanctuairePage() {
   const clotureForcee = minMove !== ''
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-4xl space-y-6">
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold text-ev-t1">Sanctuaire</h1>
         <p className="text-sm text-ev-t2 max-w-2xl">
