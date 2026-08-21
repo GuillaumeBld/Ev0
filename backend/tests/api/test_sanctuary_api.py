@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from app.api.sanctuary import _fold, list_matches, max_move_pct
+from app.api.sanctuary import _fold, list_leagues, list_matches, max_move_pct
 
 OUV = {"h2h": {"home": 2.29, "draw": 3.10, "away": 3.73}}
 CLO = {"h2h": {"home": 2.52, "draw": 3.13, "away": 3.18}}
@@ -99,13 +99,17 @@ def _estimate(phase, odds, lambda_home=1.5, lambda_away=1.2, as_of=None):
 
 
 class _FakeResult:
-    """Imite l'objet renvoye par AsyncSession.execute : seul .all() est lu."""
+    """Imite l'objet renvoye par AsyncSession.execute : .all() pour
+    list_matches, .scalars().all() pour list_leagues."""
 
     def __init__(self, rows):
         self._rows = rows
 
     def all(self):
         return self._rows
+
+    def scalars(self):
+        return self
 
 
 class _FakeSession:
@@ -169,6 +173,65 @@ async def test_mouvement_sous_le_seuil_absent():
     ])
     out = await list_matches(team=None, league=None, with_closing=False, min_move=20.0, db=db)
     assert out == []
+
+
+async def test_bibliotheque_vide_donne_une_liste_vide():
+    """Aucune ligne renvoyee par la requete -- pas d'erreur, juste rien."""
+    db = _FakeSession([])
+    out = await list_matches(team=None, league=None, with_closing=False, min_move=None, db=db)
+    assert out == []
+
+
+async def test_filtre_equipe_trouve_des_deux_cotes():
+    """_fold est teste isole plus haut, mais pas la condition de list_matches
+    elle-meme -- un 'and'/'not in' facon De Morgan qu'une inversion casserait
+    silencieusement. Le filtre doit trouver l'equipe qu'elle soit domicile ou
+    exterieur, et exclure un match ou aucune des deux ne correspond."""
+    fx_domicile = _fixture(1, home="Deportivo Alavés", away="Rayo")
+    fx_exterieur = _fixture(2, home="Rayo", away="Deportivo Alavés")
+    fx_absent = _fixture(3, home="Arsenal", away="Chelsea")
+    db = _FakeSession([
+        (_estimate("opening", OUV), fx_domicile),
+        (_estimate("opening", OUV), fx_exterieur),
+        (_estimate("opening", OUV), fx_absent),
+    ])
+    out = await list_matches(team="alaves", league=None, with_closing=False, min_move=None, db=db)
+    assert {m.fixture_id for m in out} == {1, 2}
+
+
+async def test_list_leagues_filtre_les_valeurs_nulles():
+    """La requete restreint deja aux ligues jointes a une estimation (c'est le
+    JOIN + isnot(None) SQL qui garantit qu'une ligue sans archive n'apparait
+    jamais) ; cote Python, list_leagues ne fait que filtrer les None restants
+    et n'a aujourd'hui aucun test, meme pas celui-la."""
+    db = _FakeSession(["ligue1", None, "premier_league"])
+    out = await list_leagues(db=db)
+    assert out == ["ligue1", "premier_league"]
+
+
+async def test_list_leagues_vide_donne_une_liste_vide():
+    db = _FakeSession([])
+    out = await list_leagues(db=db)
+    assert out == []
+
+
+async def test_deux_filtres_actifs_se_cumulent():
+    """team et min_move actifs ensemble doivent se cumuler (ET logique), pas
+    s'annuler : un match qui ne satisfait que l'un des deux doit rester
+    exclu, seul celui qui satisfait les deux doit ressortir."""
+    fx_bonne_equipe_faible_mouvement = _fixture(1, home="Deportivo Alavés", away="Rayo")
+    fx_mauvaise_equipe_fort_mouvement = _fixture(2, home="Arsenal", away="Chelsea")
+    fx_bonne_equipe_fort_mouvement = _fixture(3, home="Deportivo Alavés", away="Betis")
+    db = _FakeSession([
+        (_estimate("opening", OUV), fx_bonne_equipe_faible_mouvement),
+        (_estimate("closing", dict(OUV)), fx_bonne_equipe_faible_mouvement),
+        (_estimate("opening", OUV), fx_mauvaise_equipe_fort_mouvement),
+        (_estimate("closing", CLO), fx_mauvaise_equipe_fort_mouvement),
+        (_estimate("opening", OUV), fx_bonne_equipe_fort_mouvement),
+        (_estimate("closing", CLO), fx_bonne_equipe_fort_mouvement),
+    ])
+    out = await list_matches(team="alaves", league=None, with_closing=False, min_move=10.0, db=db)
+    assert [m.fixture_id for m in out] == [3]
 
 
 async def test_regroupe_les_deux_phases_et_respecte_l_ordre_des_lignes():
