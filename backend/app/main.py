@@ -21,6 +21,7 @@ from app.api import (
     players,
     pricing,
     recommendations,
+    sanctuary,
 )
 from app.api import (
     lineups as lineups_api,
@@ -82,6 +83,7 @@ app.include_router(bankroll.router, prefix="/api/v1", tags=["bankroll"])
 app.include_router(settings_api.router, prefix="/api/v1", tags=["settings"])
 app.include_router(autopilot.router, prefix="/api/v1", tags=["autopilot"])
 app.include_router(lineups_api.router, prefix="/api/v1", tags=["lineups"])
+app.include_router(sanctuary.router, prefix="/api/v1", tags=["sanctuary"])
 app.include_router(pen_takers.router, prefix="/api/v1", tags=["pen-takers"])
 app.include_router(wc2026_api.router, prefix="/api/v1", tags=["wc2026"])
 app.include_router(wc2026_lineups_api.router, prefix="/api/v1", tags=["wc2026"])
