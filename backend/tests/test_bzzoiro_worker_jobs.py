@@ -474,3 +474,81 @@ async def test_job_sync_squads_never_raises_even_if_failure_tracking_itself_fail
     critical_records = [r for r in caplog.records if r.levelname == "CRITICAL"]
     assert len(critical_records) == 1
     assert "AUCUNE trace persistee" in critical_records[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# Regime d'approche des compos
+#
+# Les compos vivent dans bzz_events.lineups, alimente par le sync des
+# evenements planifie toutes les 6 h. Bzzoiro les publie environ 1 h avant le
+# coup d'envoi : a cette cadence, elles arrivent souvent apres le match.
+# sync_bzzoiro_lineups (30 min) ne recupere rien, il relit ce bloc.
+# ---------------------------------------------------------------------------
+
+
+def _session_comptant(n: int):
+    session = MagicMock()
+    r = MagicMock()
+    r.scalar.return_value = n
+    session.execute = AsyncMock(return_value=r)
+    return session
+
+
+async def test_regime_approche_si_match_dans_moins_de_trois_heures():
+    from app.worker import has_imminent_kickoff
+
+    assert await has_imminent_kickoff(_session_comptant(1)) is True
+
+
+async def test_regime_normal_si_aucun_match_proche():
+    from app.worker import has_imminent_kickoff
+
+    assert await has_imminent_kickoff(_session_comptant(0)) is False
+
+
+async def test_regime_normal_si_le_compte_est_nul():
+    """scalar() peut rendre None : ce n'est pas un coup d'envoi imminent."""
+    from app.worker import has_imminent_kickoff
+
+    assert await has_imminent_kickoff(_session_comptant(None)) is False
+
+
+async def test_job_approche_ne_synchronise_pas_sans_match_proche():
+    """Sans coup d'envoi imminent, le job sort sans appeler le sync."""
+    from app.worker import job_sync_bzzoiro_events_approche
+
+    with patch("app.worker.settings") as mock_settings, patch(
+        "app.worker.has_imminent_kickoff", new=AsyncMock(return_value=False)
+    ), patch(
+        "app.worker.job_sync_bzzoiro_events", new=AsyncMock()
+    ) as mock_sync:
+        mock_settings.bzzoiro_api_key = "cle"
+        await job_sync_bzzoiro_events_approche()
+
+    mock_sync.assert_not_called()
+
+
+async def test_job_approche_synchronise_quand_un_match_approche():
+    from app.worker import job_sync_bzzoiro_events_approche
+
+    with patch("app.worker.settings") as mock_settings, patch(
+        "app.worker.has_imminent_kickoff", new=AsyncMock(return_value=True)
+    ), patch(
+        "app.worker.job_sync_bzzoiro_events", new=AsyncMock()
+    ) as mock_sync:
+        mock_settings.bzzoiro_api_key = "cle"
+        await job_sync_bzzoiro_events_approche()
+
+    mock_sync.assert_awaited_once()
+
+
+async def test_job_approche_sans_cle_ne_fait_rien():
+    from app.worker import job_sync_bzzoiro_events_approche
+
+    with patch("app.worker.settings") as mock_settings, patch(
+        "app.worker.job_sync_bzzoiro_events", new=AsyncMock()
+    ) as mock_sync:
+        mock_settings.bzzoiro_api_key = None
+        await job_sync_bzzoiro_events_approche()
+
+    mock_sync.assert_not_called()

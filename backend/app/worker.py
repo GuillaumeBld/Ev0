@@ -1328,6 +1328,45 @@ async def job_sync_bzzoiro_odds() -> None:
         logger.exception("job_sync_bzzoiro_odds failed: %s", exc)
 
 
+async def has_imminent_kickoff(session, heures: int = 3) -> bool:
+    """Vrai si au moins un match commence dans les prochaines heures."""
+    from app.models.fixtures import Fixture
+
+    maintenant = datetime.now(UTC)
+    result = await session.execute(
+        select(func.count())
+        .select_from(Fixture)
+        .where(
+            Fixture.kickoff_utc > maintenant,
+            Fixture.kickoff_utc <= maintenant + timedelta(hours=heures),
+        )
+    )
+    return (result.scalar() or 0) > 0
+
+
+async def job_sync_bzzoiro_events_approche() -> None:
+    """Toutes les 10 min : rafraichit les evenements quand un coup d'envoi approche.
+
+    Les compos vivent dans bzz_events.lineups, alimente par le sync des
+    evenements. Bzzoiro les publie environ 1 h avant le coup d'envoi : a la
+    cadence normale de 6 h, elles arrivent souvent apres le match.
+
+    Le job ne fait rien tant qu'aucun match n'est proche, ce qui laisse la
+    cadence normale seule active la plupart du temps.
+    """
+    if not settings.bzzoiro_api_key:
+        return
+    try:
+        async with async_session() as session:
+            proche = await has_imminent_kickoff(session)
+        if not proche:
+            return
+        logger.info("Coup d'envoi imminent — rafraichissement des evenements")
+        await job_sync_bzzoiro_events()
+    except Exception as exc:
+        logger.error("Echec du rafraichissement d'approche : %s", exc, exc_info=True)
+
+
 async def job_sync_bzzoiro_lineups() -> None:
     """Sync lineups from bzz_events JSONB into TeamLineup."""
     logger.info("job_sync_bzzoiro_lineups: start")
@@ -2095,6 +2134,19 @@ def create_scheduler() -> AsyncIOScheduler:
         id="sync_bzzoiro_player_stats",
         name="Sync Bzzoiro per-match player stats (14 days back)",
         replace_existing=True,
+    )
+
+    # Régime d'approche : toutes les 10 min, mais ne déclenche un sync que si
+    # un coup d'envoi est dans les 3 heures. C'est ce qui fait arriver les
+    # compos avant le match — le job à 6 h les captait souvent après.
+    scheduler.add_job(
+        job_sync_bzzoiro_events_approche,
+        IntervalTrigger(minutes=10),
+        id="sync_bzzoiro_events_approche",
+        name="Sync Bzzoiro events — régime d'approche",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
 
     # Bzzoiro full-season events refresh: weekly Monday 01:00 UTC
