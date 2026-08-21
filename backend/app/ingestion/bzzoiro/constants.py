@@ -55,3 +55,15 @@ TARGET_LEAGUE_API_ID_LIST: list[int] = list(TARGET_LEAGUE_API_IDS.values())
 TARGET_LEAGUE_INTERNAL_ID_LIST: list[int] = list(TARGET_LEAGUE_INTERNAL_IDS.values())
 INTERNATIONAL_LEAGUE_API_ID_LIST: list[int] = list(INTERNATIONAL_LEAGUE_API_IDS.values())
 INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST: list[int] = list(INTERNATIONAL_LEAGUE_INTERNAL_IDS.values())
+
+# Profondeur du rattrapage historique — perimetre valide le 21/08/2026.
+# Une saison se definit par une fenetre de dates : le parametre season= de
+# l'API est inoperant (il rend 408 110 evenements remontant a 1930).
+# Volume mesure sur 2024-2025, six competitions : 2 042 matchs.
+BACKFILL_SEASONS: list[str] = [
+    "2021-2022",
+    "2022-2023",
+    "2023-2024",
+    "2024-2025",
+    "2025-2026",
+]
