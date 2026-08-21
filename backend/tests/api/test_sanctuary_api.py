@@ -59,6 +59,17 @@ def test_fold_ne_plante_pas_sur_vide():
     assert _fold(None) == ""
 
 
+def test_fold_reutilise_anchor_pour_les_lettres_non_decomposables():
+    """anchor._fold traite les lettres qui ne se decomposent pas en NFKD
+    (o barre, l barre, thorn, ae ligature) -- une copie locale sans leurs
+    entrees majuscules les perd des lors qu'elles sont en initiale, avant
+    meme que .lower() n'entre en jeu."""
+    assert "lks" in _fold("ŁKS Łódź")
+    assert "orn" in _fold("Ørn Horten")
+    assert "thor" in _fold("Þór Akureyri")
+    assert "aegir" in _fold("Ægir")
+
+
 # ── Tests de list_matches, sans PostgreSQL ──────────────────────────────────
 #
 # La requete SQL n'est qu'une jointure ; le regroupement des deux phases et

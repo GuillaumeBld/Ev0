@@ -11,7 +11,6 @@ archive, ni plus ni moins.
 from __future__ import annotations
 
 import re
-import unicodedata
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -19,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.ingestion.ps3838.anchor import _fold as _fold_anchor
 from app.models.fixtures import Fixture
 from app.models.team_xg import TeamXgEstimate
 
@@ -28,18 +28,13 @@ _ISSUES = ("home", "draw", "away")
 
 
 def _fold(name: str) -> str:
-    """Nom plie en minuscules sans accents, pour la recherche par equipe.
+    """Nom plie pour la recherche par equipe.
 
-    Meme intention que app/ingestion/ps3838/anchor.py : 'Alaves' doit trouver
-    'Deportivo Alaves' ecrit avec son accent.
+    Delegue a anchor._fold, qui traite les lettres non decomposables
+    (o barre, l barre, thorn...) que l'encodage ascii supprimerait sinon.
+    On compacte en plus les espaces pour que 'man utd' trouve 'Man. Utd'.
     """
-    extra = str.maketrans({
-        "ø": "o", "æ": "ae", "å": "a",
-        "ł": "l", "đ": "d", "ß": "ss",
-    })
-    s = (name or "").translate(extra)
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
-    return re.sub(r"[^a-z0-9]+", " ", s).strip()
+    return re.sub(r"\s+", " ", _fold_anchor(name)).strip()
 
 
 def max_move_pct(opening_odds: dict | None, closing_odds: dict | None) -> float | None:
