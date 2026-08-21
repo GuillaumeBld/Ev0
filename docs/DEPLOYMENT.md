@@ -124,6 +124,35 @@ La bibliothèque `team_xg_estimates` archive l'ouverture et le closing de chaque
 match. **Elle ne doit jamais être ajoutée à `job_purge_old_snapshots`** : les
 cotes brutes disparaissent à 45 jours, ces valeurs sont la seule trace durable.
 
+### Cotes archivées
+
+Chaque ligne de `team_xg_estimates` conserve, dans sa colonne `odds`, les cotes
+brutes qui ont produit son λ — au format `{"h2h": {...}, "totals": {...}}`.
+
+C'est ce qui rend rejouable sur l'historique toute évolution future de la
+méthode (retrait de marge, solveur, ligne de totals retenue). Sans elles, il ne
+resterait que la conclusion après la purge des snapshots à 45 jours, et chaque
+idée exigerait d'attendre des mois de nouvelles données.
+
+Vérifier qu'aucune estimation n'est sans preuve :
+
+```bash
+docker exec ev0-compose-z5hvqt-db-1 psql -U ev0 -d ev0 -c "
+SELECT phase, count(*) AS total, count(*) FILTER (WHERE odds IS NULL) AS sans_cotes
+FROM team_xg_estimates GROUP BY phase;"
+```
+
+`sans_cotes` doit rester à 0 pour toute ligne écrite après le déploiement. Une
+valeur non nulle sur des lignes anciennes signale un rattrapage non exécuté —
+ou des snapshots déjà purgés, auquel cas c'est irrattrapable.
+
+Rattrapage des lignes antérieures à la migration 053 :
+
+```bash
+docker exec -e PYTHONPATH=/app -w /app ev0-compose-z5hvqt-worker-1 \
+  python -m app.scripts.backfill_xg_odds
+```
+
 ## Alerting
 
 Telegram est le transport primaire, WhatsApp (CallMeBot) le secours.
