@@ -37,6 +37,33 @@ Au-delà de 100, `order_by(name)` tronque alphabétiquement. L'utilisateur reço
 donc une liste polluée par d'autres clubs **et** amputée de la fin de l'alphabet
 du club recherché.
 
+**La colonne interrogée est en outre corrompue.** Bzzoiro expose les équipes
+sous **deux espaces d'identifiants distincts**, et la base mélange les deux :
+
+- `bzz_players.current_team_api_id` et `canonical_teams.bzz_team_id` partagent
+  un même espace, cohérent ;
+- `bzz_teams.api_id` en utilise un autre.
+
+`bzz_players.current_team_name` a été rempli en joignant les deux — d'où des
+libellés faux. Les joueurs du Barça portent `current_team_name = "Saint George"`
+(un club éthiopien), parce que leur `current_team_api_id` vaut 2817, qui désigne
+Barcelone dans un espace et Saint George dans l'autre.
+
+Le filtre du sélecteur porte donc sur une colonne fausse. Rechercher
+« Barcelone » ne peut structurellement pas retourner l'effectif du Barça.
+
+En revanche, les identifiants numériques sont fiables — vérifié le 21/08/2026 :
+
+| Club canonique | `bzz_team_id` | Joueurs retournés |
+|---|---|---|
+| Barcelone | 2817 | Balde, Christensen, Dani Olmo, Eric García |
+| Inter Milan | 2697 | Bastoni, Pavard, Bonny |
+| Dortmund | 2673 | Emre Can, Nmecha, Svensson |
+| Naples | 2714 | Meret, Rrahmani, Buongiorno |
+
+Toute résolution d'équipe doit donc passer par les identifiants, jamais par les
+noms d'équipe stockés.
+
 ### 2. Seuls 16 % des joueurs ont des statistiques
 
 96 318 joueurs sont rattachés à un club ; 15 421 ont des stats 2025-2026.
@@ -112,10 +139,20 @@ environ 250 requêtes d'énumération.
 
 ### Chantier 1 — Sélecteur du calculateur
 
-Résoudre l'équipe vers son identifiant Bzzoiro, puis filtrer sur
-`current_team_api_id` en égalité stricte. Supprimer la limite à 100 : un
-effectif exact ne la dépasse pas, et la troncature alphabétique est précisément
-le défaut à corriger.
+Résoudre le nom d'équipe reçu vers `canonical_teams.bzz_team_id`, puis filtrer
+`bzz_players.current_team_api_id` en égalité stricte. Supprimer la limite à
+100 : un effectif exact ne la dépasse pas, et la troncature alphabétique est
+précisément le défaut à corriger.
+
+La résolution se fait sur `canonical_teams.name_fr` et `name_en`, en repliant
+les accents avec le `_fold` existant de `app/ingestion/ps3838/anchor.py`.
+
+**Aucun repli sur les noms d'équipe.** Ni `bzz_teams.name` ni
+`current_team_name` ne sont utilisables : ils relèvent de l'espace
+d'identifiants erroné. Une équipe non résolue retourne une liste vide. Une
+liste vide est un défaut visible qui se corrige en complétant
+`canonical_teams` ; une liste peuplée par un autre club est un défaut
+invisible qui contamine les compos.
 
 Ce chantier est indépendant des trois autres et ne dépend d'aucune ingestion.
 
@@ -140,7 +177,18 @@ la clé d'insertion.
 
 Un joueur inconnu de `bzz_players` doit être créé à partir de l'identité fournie
 dans la réponse, jamais silencieusement ignoré — c'est le mécanisme même qui
-comble les 84 % manquants.
+comble les 84 % manquants. La table `bzz_player_match_stats` porte une clé
+étrangère vers `bzz_players.api_id` : sans cette création, l'insertion échoue.
+
+**Deux colonnes aujourd'hui vides sont remplies au passage.** Sur 1 135 494
+lignes, `team_api_id` et `is_home` ne sont renseignées que 2 153 fois. La
+réponse ne porte pas ces champs — le code actuel lit `row["team"]` et
+`row["is_home"]`, absents de la réponse, et écrit donc `NULL` à chaque ligne.
+
+L'appel par match les fournit indirectement : `player.team` donne le nom du club
+du joueur, `event.home_team` et `event.away_team` ceux des deux camps. Les trois
+chaînes viennent de la même réponse et se comparent donc sans ambiguïté, ce qui
+donne `is_home`, puis `team_api_id` par lecture de `bzz_events`.
 
 L'en-tête du module doit être réécrit : la contrainte qu'il énonce est fausse et
 a dicté toute l'architecture actuelle.
@@ -198,9 +246,13 @@ Le job `sync_bzzoiro_lineups` conserve sa cadence : il n'est pas en cause.
 ## Tests
 
 **Chantier 1**
-- « Inter » ne retourne que l'effectif de l'Inter Milan, ni Inter Miami ni Internacional.
+- « Inter Milan » ne retourne que l'effectif de l'Inter, ni Inter Miami ni Internacional.
+- La résolution passe par `bzz_team_id` : un club dont le `current_team_name`
+  stocké est faux retourne malgré tout le bon effectif.
 - Un club de plus de 100 joueurs rattachés retourne l'effectif entier, sans troncature.
-- Une équipe inconnue retourne une liste vide, pas une erreur.
+- Une équipe absente de `canonical_teams` retourne une liste vide, pas une erreur
+  et pas l'effectif d'un autre club.
+- La résolution ignore les accents : « Seville » trouve « Séville ».
 
 **Chantier 2**
 - Une réponse `event=` produit une ligne de statistiques par joueur retourné.
@@ -209,6 +261,8 @@ Le job `sync_bzzoiro_lineups` conserve sa cadence : il n'est pas en cause.
   renvoyé est retrouvé, même si son `id` interne diffère.
 - Rejouer le même match n'ajoute pas de doublon.
 - Un match sans statistiques publiées n'écrit rien et ne lève pas d'erreur.
+- `is_home` vaut vrai pour un joueur dont le club égale `event.home_team`, faux
+  pour l'autre camp, et `team_api_id` est renseigné dans les deux cas.
 
 **Chantier 3**
 - L'énumération d'une saison n'utilise que `date_from` / `date_to`, jamais `season=`.
