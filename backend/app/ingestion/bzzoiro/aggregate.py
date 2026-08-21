@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.bzzoiro import BzzEvent, BzzPlayerMatchStat, BzzPlayerSeasonStat
 from app.services.season_service import current_season
+from app.services.season_service import season_end as season_end_of
 from app.services.season_service import season_start as season_start_of
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,11 @@ async def aggregate_season_stats(
     """
     all_league_ids = [league_api_id] + (league_api_id_aliases or [])
     cutoff_date = date.fromisoformat(season_start) if season_start else season_start_of(season)
+    # Borne haute exclusive : sans elle, agreger une saison passee ramasse
+    # toutes les saisons suivantes presentes en base. Inoffensif tant que la
+    # base ne portait que la saison courante, faux des qu'un historique y est
+    # verse (rattrapage 5 saisons du 21/08/2026).
+    cutoff_end = season_end_of(season)
 
     # Step 1: Query aggregated stats grouped by player
     agg_stmt = (
@@ -101,6 +107,7 @@ async def aggregate_season_stats(
             BzzEvent.league_api_id.in_(all_league_ids),
             BzzEvent.status == "finished",
             BzzEvent.event_date >= cutoff_date,
+            BzzEvent.event_date < cutoff_end,
         )
         .group_by(BzzPlayerMatchStat.player_api_id)
     )
@@ -131,6 +138,7 @@ async def aggregate_season_stats(
             BzzEvent.league_api_id.in_(all_league_ids),
             BzzEvent.status == "finished",
             BzzEvent.event_date >= cutoff_date,
+            BzzEvent.event_date < cutoff_end,
         )
         .subquery()
     )

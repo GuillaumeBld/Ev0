@@ -19,3 +19,35 @@ def test_models_have_expected_columns():
     assert hasattr(BzzPlayerSeasonStat, "form_xg_5")
     assert hasattr(BzzEvent, "shotmap")
     assert hasattr(BzzPrediction, "prob_over_25")
+
+
+# ---------------------------------------------------------------------------
+# Bornes de saison — season_start / season_end
+# ---------------------------------------------------------------------------
+
+
+def test_season_end_est_le_1er_aout_de_la_seconde_annee():
+    from datetime import date
+
+    from app.services.season_service import season_end, season_start
+
+    assert season_start("2021-2022") == date(2021, 8, 1)
+    assert season_end("2021-2022") == date(2022, 8, 1)
+    assert season_end("2025-2026") == date(2026, 8, 1)
+
+
+def test_season_end_refuse_une_saison_discontinue():
+    import pytest as _pytest
+
+    from app.services.season_service import season_end
+
+    with _pytest.raises(ValueError):
+        season_end("2021-2023")
+
+
+def test_les_bornes_de_saison_ne_se_chevauchent_pas():
+    """La fin d'une saison est exactement le debut de la suivante (borne exclusive)."""
+    from app.services.season_service import season_end, season_start
+
+    assert season_end("2021-2022") == season_start("2022-2023")
+    assert season_end("2024-2025") == season_start("2025-2026")

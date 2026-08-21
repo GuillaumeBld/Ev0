@@ -69,3 +69,20 @@ async def current_season(session: AsyncSession, today: date | None = None) -> st
             SEASON_CONFIG_KEY, value,
         )
     return compute_season(today or date.today())
+
+
+def season_end(season: str) -> date:
+    """Date de fin exclusive d'une saison "NNNN-NNNN" : 1er août de la 2e année.
+
+    Complement de season_start. Sans borne haute, agreger une saison passee
+    ramasse toutes les saisons suivantes presentes en base -- inoffensif tant
+    que la base ne portait que la saison courante, faux des qu'un historique
+    y est verse.
+    """
+    match = _match_continuous_season(season)
+    if not match:
+        raise ValueError(
+            f"Format de saison invalide: {season!r} "
+            "(attendu NNNN-NNNN avec continuité — deuxième année = première + 1)"
+        )
+    return date(int(match.group(2)), SEASON_ROLLOVER_MONTH, 1)
