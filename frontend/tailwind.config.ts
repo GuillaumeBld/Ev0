@@ -30,6 +30,8 @@ const config: Config = {
         'ev-pos':  'var(--ev-pos)',
         'ev-neg':  'var(--ev-neg)',
         'ev-warn': 'var(--ev-warn)',
+        'ev-open':  'var(--ev-open)',
+        'ev-close': 'var(--ev-close)',
         brand: {
           50: '#f0fdf4',
           100: '#dcfce7',

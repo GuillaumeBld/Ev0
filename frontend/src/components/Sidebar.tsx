@@ -22,6 +22,7 @@ import {
   X,
   BarChart2,
   Trophy,
+  Library,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 
@@ -45,6 +46,7 @@ const navGroups = [
     items: [
       { name: 'Joueurs', href: '/dashboard/players', icon: Users },
       { name: 'Matchs', href: '/dashboard/matches', icon: Calendar },
+      { name: 'Sanctuaire', href: '/dashboard/sanctuaire', icon: Library },
       { name: 'Équipes', href: '/dashboard/teams', icon: Shield },
       { name: 'Compos', href: '/dashboard/lineups', icon: ClipboardList },
       { name: 'Backtest', href: '/dashboard/backtest', icon: TrendingUp },

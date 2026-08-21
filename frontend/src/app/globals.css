@@ -23,6 +23,10 @@
   --ev-pos:  #34d399;
   --ev-neg:  #fb7185;
   --ev-warn: #fbbf24;
+
+  /* Code de lecture du Sanctuaire : bleu = ouverture, jaune = cloture. */
+  --ev-open:  #60a5fa;
+  --ev-close: #fbbf24;
 }
 
 html.light {
@@ -44,6 +48,9 @@ html.light {
   --ev-pos:  #059669;
   --ev-neg:  #e11d48;
   --ev-warn: #d97706;
+
+  --ev-open:  #2563eb;
+  --ev-close: #d97706;
 }
 
 html,
