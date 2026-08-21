@@ -153,6 +153,15 @@ docker exec -e PYTHONPATH=/app -w /app ev0-compose-z5hvqt-worker-1 \
   python -m app.scripts.backfill_xg_odds
 ```
 
+La bibliothèque est consultable sur `/dashboard/sanctuaire` — une carte par
+match, la clôture en jaune et l'ouverture en bleu, avec quatre filtres : équipe,
+compétition, présence de la clôture, et amplitude du mouvement.
+
+L'amplitude est le **plus grand** mouvement relatif parmi les trois cotes du
+1X2 : un seul camp qui décroche est le signal recherché, une moyenne le
+diluerait. Choisir un seuil impose le filtre « avec clôture », un match sans
+clôture n'ayant pas de mouvement.
+
 ## Alerting
 
 Telegram est le transport primaire, WhatsApp (CallMeBot) le secours.
