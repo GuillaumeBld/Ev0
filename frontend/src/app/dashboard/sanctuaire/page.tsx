@@ -53,16 +53,31 @@ function kickoff(iso: string): string {
   })
 }
 
-/** Une case : cloture en jaune au-dessus, ouverture en bleu en dessous. */
+/**
+ * Une case : cloture en jaune au-dessus, ouverture en bleu en dessous.
+ *
+ * `close === null` ne dit pas pourquoi la case est vide : le match peut ne
+ * pas avoir encore de cloture ("en attente", normal), ou avoir sa cloture
+ * sans que ses cotes aient survecu à la purge 45 j des snapshots
+ * ("non archivé", un trou d'archive — voir backfill_xg_odds.py). D'où le
+ * prop `closePhaseExists`, distinct de la valeur elle-même.
+ */
 function Cell({
-  close, open, align = 'left',
-}: { close: number | null; open: number | null; align?: 'left' | 'center' | 'right' }) {
+  close, open, closePhaseExists, align = 'left',
+}: {
+  close: number | null
+  open: number | null
+  closePhaseExists: boolean
+  align?: 'left' | 'center' | 'right'
+}) {
   return (
     <div className={clsx('flex flex-col gap-0.5',
       align === 'right' && 'items-end',
       align === 'center' && 'items-center')}>
       {close === null ? (
-        <span className="font-mono text-sm text-ev-t4">en attente</span>
+        <span className={clsx('font-mono text-sm', closePhaseExists ? 'text-ev-warn' : 'text-ev-t4')}>
+          {closePhaseExists ? 'non archivé' : 'en attente'}
+        </span>
       ) : (
         <span className="font-mono tabular-nums text-xl font-semibold text-ev-close">
           {fmt(close)}
@@ -163,6 +178,7 @@ export default function SanctuairePage() {
         {(data ?? []).map((m) => {
           const co = m.closing?.odds?.h2h ?? null
           const oo = m.opening?.odds?.h2h ?? null
+          const closePhaseExists = m.closing !== null
           return (
             <article key={m.fixture_id}
               className="rounded-lg border border-ev-bd bg-ev-surface p-4">
@@ -183,19 +199,19 @@ export default function SanctuairePage() {
               <div className="border-t border-ev-bd2 pt-3">
                 <p className="mb-2 text-[10px] uppercase tracking-wider text-ev-t4">Cote</p>
                 <div className="grid grid-cols-[1fr_84px_1fr] gap-x-3">
-                  <Cell close={co?.home ?? null} open={oo?.home ?? null} />
-                  <Cell close={co?.draw ?? null} open={oo?.draw ?? null} align="center" />
-                  <Cell close={co?.away ?? null} open={oo?.away ?? null} align="right" />
+                  <Cell close={co?.home ?? null} open={oo?.home ?? null} closePhaseExists={closePhaseExists} />
+                  <Cell close={co?.draw ?? null} open={oo?.draw ?? null} closePhaseExists={closePhaseExists} align="center" />
+                  <Cell close={co?.away ?? null} open={oo?.away ?? null} closePhaseExists={closePhaseExists} align="right" />
                 </div>
               </div>
 
               <div className="mt-3 border-t border-ev-bd2 pt-3">
                 <p className="mb-2 text-[10px] uppercase tracking-wider text-ev-t4">xG</p>
                 <div className="grid grid-cols-[1fr_84px_1fr] gap-x-3">
-                  <Cell close={m.closing?.xg_home ?? null} open={m.opening?.xg_home ?? null} />
+                  <Cell close={m.closing?.xg_home ?? null} open={m.opening?.xg_home ?? null} closePhaseExists={closePhaseExists} />
                   {/* Le nul est une issue, pas une equipe : jamais de xG. */}
                   <div className="text-center font-mono text-lg text-ev-t4">—</div>
-                  <Cell close={m.closing?.xg_away ?? null} open={m.opening?.xg_away ?? null} align="right" />
+                  <Cell close={m.closing?.xg_away ?? null} open={m.opening?.xg_away ?? null} closePhaseExists={closePhaseExists} align="right" />
                 </div>
               </div>
             </article>
