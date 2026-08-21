@@ -1,34 +1,40 @@
-"""Sync per-match player statistics from Bzzoiro into bzz_player_match_stats.
+"""Ingestion des statistiques joueur par match depuis Bzzoiro.
 
-The Bzzoiro /api/player-stats/ endpoint never includes player identity in its
-response. The only correct approach is to query per-player using the player's
-internal_id (the Bzzoiro DB primary key, distinct from api_id). Each response
-row contains event.api_id which identifies the match.
+L'endpoint /api/player-stats/ accepte un filtre ``event=<api_id>`` qui rend
+en une seule page l'integralite des joueurs des deux equipes (44 lignes
+observees le 21/08/2026), chacune portant l'identite du joueur sous la cle
+``player``.
 
-Filter: use ``player=<internal_id>`` (NOT ``player_id=``).
+C'est la voie retenue : une requete par match au lieu d'une par joueur.
+L'ancienne approche par joueur demandait environ 30 000 requetes pour couvrir
+une saison et n'aboutissait jamais, d'ou une couverture bloquee a 16 % des
+joueurs.
 
-Two modes:
-  - Regular sync (days_back): processes players from recently finished events.
-  - Full backfill (full_season=True): processes ALL players who appeared in any
-    finished event across the 6 target leagues in the DB.
+Correspondance des identifiants : ``player.id`` de la reponse vaut
+``bzz_players.api_id``, et non ``internal_id`` ni ``bzz_players.id``.
+
+Les cles ``team`` et ``is_home`` sont absentes de la reponse -- c'est pourquoi
+l'ancien code, qui lisait ``row["team"]``, laissait ces deux colonnes a NULL
+sur 1 133 341 lignes sur 1 135 494. Le camp se deduit desormais en comparant
+``player.team`` a ``event.home_team`` : les deux chaines proviennent de la
+meme reponse et se comparent donc sans ambiguite.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_INTERNAL_ID_LIST
+from app.models.bzzoiro import BzzEvent
 
-# Canonical Bzzoiro internal IDs only — old SofaScore api_ids (8,17,23,34,35) now
-# map to Saudi Pro League, Europa League, etc. in Bzzoiro and must be excluded.
+# Identifiants internes Bzzoiro — c'est la valeur stockee dans
+# bzz_events.league_api_id pour les six competitions du perimetre.
 _ALL_LEAGUE_IDS = TARGET_LEAGUE_INTERNAL_ID_LIST  # [1,3,4,5,6,7]
-from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzTeam
 
 logger = logging.getLogger(__name__)
 
@@ -92,70 +98,128 @@ def compute_derived_metrics(row: dict[str, Any]) -> dict[str, float | None]:
     }
 
 
-async def sync_player_stats_for_player(
-    session: AsyncSession,
-    client: BzzoiroClient,  # type: ignore[name-defined]
-    player_api_id: int,
-    player_internal_id: int,
-) -> int:
-    """Fetch and upsert all stats for a single player. Returns row count."""
-    from app.models.bzzoiro import BzzPlayerMatchStat  # local import avoids circular
+def build_stat_values(
+    row: dict[str, Any],
+    event_api_id: int,
+    team_api_id: int | None,
+    is_home: bool | None,
+) -> dict[str, Any]:
+    """Construit la ligne a inserer dans bzz_player_match_stats."""
+    player = row.get("player") or {}
+    return {
+        "player_api_id": player.get("id"),
+        "event_api_id": event_api_id,
+        "team_api_id": team_api_id,
+        "is_home": is_home,
+        "minutes_played": row.get("minutes_played"),
+        "rating": row.get("rating"),
+        "touches": row.get("touches"),
+        "goals": row.get("goals"),
+        "goal_assist": row.get("goal_assist"),
+        "expected_goals": row.get("expected_goals"),
+        "expected_assists": row.get("expected_assists"),
+        "total_shots": row.get("total_shots"),
+        "shots_on_target": row.get("shots_on_target"),
+        "total_pass": row.get("total_pass"),
+        "accurate_pass": row.get("accurate_pass"),
+        "key_pass": row.get("key_pass"),
+        "total_long_balls": row.get("total_long_balls"),
+        "accurate_long_balls": row.get("accurate_long_balls"),
+        "total_cross": row.get("total_cross"),
+        "accurate_cross": row.get("accurate_cross"),
+        "duel_won": row.get("duel_won"),
+        "duel_lost": row.get("duel_lost"),
+        "aerial_won": row.get("aerial_won"),
+        "aerial_lost": row.get("aerial_lost"),
+        "total_tackle": row.get("total_tackle"),
+        "won_tackle": row.get("won_tackle"),
+        "total_clearance": row.get("total_clearance"),
+        "interception": row.get("interception"),
+        "ball_recovery": row.get("ball_recovery"),
+        "yellow_card": row.get("yellow_card"),
+        "red_card": row.get("red_card"),
+        "fouls": row.get("fouls"),
+        "was_fouled": row.get("was_fouled"),
+        "dispossessed": row.get("dispossessed"),
+        "possession_lost": row.get("possession_lost"),
+        "saves": row.get("saves"),
+        "goals_conceded": row.get("goals_conceded"),
+        **compute_derived_metrics(row),
+    }
 
-    rows = await client.get_all("/api/player-stats/", {"player": player_internal_id})
+
+async def ensure_player_exists(session: AsyncSession, player: dict[str, Any]) -> int:
+    """Cree le joueur s'il est absent de bzz_players. Rend son api_id.
+
+    bzz_player_match_stats.player_api_id est une cle etrangere vers
+    bzz_players.api_id : sans cette creation, l'insertion des statistiques
+    echoue. C'est ce mecanisme qui comble les joueurs manquants.
+
+    on_conflict_do_nothing garantit qu'un joueur deja connu n'est jamais
+    ecrase : bzz_players est alimentee par un sync dedie, plus riche que ce
+    que porte la reponse de statistiques.
+    """
+    from app.models.bzzoiro import BzzPlayer
+
+    api_id = player["id"]
+    stmt = (
+        pg_insert(BzzPlayer)
+        .values(
+            api_id=api_id,
+            name=player.get("name") or f"Joueur {api_id}",
+            short_name=player.get("short_name"),
+            position=player.get("position"),
+        )
+        .on_conflict_do_nothing(index_elements=["api_id"])
+    )
+    await session.execute(stmt)
+    return api_id
+
+
+async def sync_player_stats_for_event(
+    session: AsyncSession,
+    client: Any,
+    event_api_id: int,
+    home_team_api_id: int | None,
+    away_team_api_id: int | None,
+) -> int:
+    """Ingere les statistiques des deux equipes d'un match.
+
+    Retourne le nombre de lignes ecrites.
+    """
+    from app.models.bzzoiro import BzzPlayerMatchStat
+
+    rows = await client.get_all("/api/player-stats/", {"event": event_api_id})
+    if not rows:
+        return 0
+
     count = 0
     for row in rows:
-        event = row.get("event") or {}
-        event_api_id = event.get("api_id") or event.get("id")
-        if event_api_id is None:
+        player = row.get("player") or {}
+        if not player.get("id"):
             continue
 
-        derived = compute_derived_metrics(row)
+        event = row.get("event") or {}
+        club = player.get("team")
 
-        team = row.get("team") or {}
-        values: dict[str, Any] = {
-            "player_api_id": player_api_id,
-            "event_api_id": event_api_id,
-            "team_api_id": team.get("api_id") or team.get("id"),
-            "is_home": row.get("is_home"),
-            "minutes_played": row.get("minutes_played"),
-            "rating": row.get("rating"),
-            "touches": row.get("touches"),
-            "goals": row.get("goals"),
-            "goal_assist": row.get("goal_assist"),
-            "expected_goals": row.get("expected_goals"),
-            "expected_assists": row.get("expected_assists"),
-            "total_shots": row.get("total_shots"),
-            "shots_on_target": row.get("shots_on_target"),
-            "total_pass": row.get("total_pass"),
-            "accurate_pass": row.get("accurate_pass"),
-            "key_pass": row.get("key_pass"),
-            "total_long_balls": row.get("total_long_balls"),
-            "accurate_long_balls": row.get("accurate_long_balls"),
-            "total_cross": row.get("total_cross"),
-            "accurate_cross": row.get("accurate_cross"),
-            "duel_won": row.get("duel_won"),
-            "duel_lost": row.get("duel_lost"),
-            "aerial_won": row.get("aerial_won"),
-            "aerial_lost": row.get("aerial_lost"),
-            "total_tackle": row.get("total_tackle"),
-            "won_tackle": row.get("won_tackle"),
-            "total_clearance": row.get("total_clearance"),
-            "interception": row.get("interception"),
-            "ball_recovery": row.get("ball_recovery"),
-            "yellow_card": row.get("yellow_card"),
-            "red_card": row.get("red_card"),
-            "fouls": row.get("fouls"),
-            "was_fouled": row.get("was_fouled"),
-            "dispossessed": row.get("dispossessed"),
-            "possession_lost": row.get("possession_lost"),
-            "saves": row.get("saves"),
-            "goals_conceded": row.get("goals_conceded"),
-            **derived,
-        }
+        if club is not None and club == event.get("home_team"):
+            is_home, team_api_id = True, home_team_api_id
+        elif club is not None and club == event.get("away_team"):
+            is_home, team_api_id = False, away_team_api_id
+        else:
+            # Club ne correspondant a aucun camp : on ne devine pas. Le reste
+            # des statistiques reste exploitable.
+            is_home, team_api_id = None, None
 
+        await ensure_player_exists(session, player)
+
+        values = build_stat_values(row, event_api_id, team_api_id, is_home)
         stmt = pg_insert(BzzPlayerMatchStat).values(**values).on_conflict_do_update(
             index_elements=["player_api_id", "event_api_id"],
-            set_={k: v for k, v in values.items() if k not in ("player_api_id", "event_api_id")},
+            set_={
+                k: v for k, v in values.items()
+                if k not in ("player_api_id", "event_api_id")
+            },
         )
         await session.execute(stmt)
         count += 1
@@ -166,56 +230,30 @@ async def sync_player_stats_for_player(
     return count
 
 
-async def _get_players_for_recent_events(
+async def _get_events_to_sync(
     session: AsyncSession,
-    days_back: int,
-) -> list[tuple[int, int]]:
-    """Return (player_api_id, player_internal_id) for players from recently finished events."""
-    cutoff = datetime.now(UTC) - timedelta(days=days_back)
-    result = await session.execute(
-        select(BzzPlayer.api_id, BzzPlayer.internal_id)
-        .join(BzzTeam, BzzPlayer.current_team_api_id == BzzTeam.api_id)
-        .join(
-            BzzEvent,
-            or_(
-                BzzEvent.home_team_api_id == BzzTeam.api_id,
-                BzzEvent.away_team_api_id == BzzTeam.api_id,
-            ),
-        )
-        .where(
-            BzzEvent.status == "finished",
-            BzzEvent.event_date >= cutoff,
-            BzzEvent.league_api_id.in_(_ALL_LEAGUE_IDS),
-            BzzPlayer.internal_id.is_not(None),
-        )
-        .distinct()
-    )
-    return result.fetchall()
+    days_back: int | None,
+) -> list[tuple[int, int | None, int | None]]:
+    """Rend (event_api_id, home_team_api_id, away_team_api_id) des matchs termines.
 
+    days_back=None couvre toute la base, sans restriction de date.
+    """
+    conditions = [
+        BzzEvent.status == "finished",
+        BzzEvent.league_api_id.in_(_ALL_LEAGUE_IDS),
+        BzzEvent.api_id.is_not(None),
+    ]
+    if days_back is not None:
+        conditions.append(
+            BzzEvent.event_date >= datetime.now(UTC) - timedelta(days=days_back)
+        )
 
-async def _get_players_for_full_season(
-    session: AsyncSession,
-) -> list[tuple[int, int]]:
-    """Return (player_api_id, player_internal_id) for ALL players in finished events
-    across the 6 target leagues — no date restriction."""
     result = await session.execute(
-        select(BzzPlayer.api_id, BzzPlayer.internal_id)
-        .join(BzzTeam, BzzPlayer.current_team_api_id == BzzTeam.api_id)
-        .join(
-            BzzEvent,
-            or_(
-                BzzEvent.home_team_api_id == BzzTeam.api_id,
-                BzzEvent.away_team_api_id == BzzTeam.api_id,
-            ),
-        )
-        .where(
-            BzzEvent.status == "finished",
-            BzzEvent.league_api_id.in_(_ALL_LEAGUE_IDS),
-            BzzPlayer.internal_id.is_not(None),
-        )
-        .distinct()
+        select(BzzEvent.api_id, BzzEvent.home_team_api_id, BzzEvent.away_team_api_id)
+        .where(*conditions)
+        .order_by(BzzEvent.event_date.desc())
     )
-    return result.fetchall()
+    return list(result.all())
 
 
 async def sync_player_stats(
@@ -224,47 +262,37 @@ async def sync_player_stats(
     days_back: int = 14,
     full_season: bool = False,
 ) -> int:
-    """Sync player stats for players who appeared in finished events.
+    """Ingere les statistiques joueur, un appel par match.
 
     Args:
-        days_back: Days of history to cover (ignored when full_season=True).
-        full_season: If True, processes ALL players across the entire season
-                     in the 6 target leagues — use for initial backfill.
+        days_back: profondeur en jours (ignore si full_season=True).
+        full_season: si vrai, couvre tous les matchs termines de la base.
     """
-    if full_season:
-        players = await _get_players_for_full_season(session)
-        logger.info("Full-season backfill: %d players to sync", len(players))
-    else:
-        players = await _get_players_for_recent_events(session, days_back)
-        logger.info("Incremental sync (days_back=%d): %d players", days_back, len(players))
-
-    if not players:
-        logger.info("No players with internal_id found — nothing to sync")
+    events = await _get_events_to_sync(session, None if full_season else days_back)
+    logger.info(
+        "Statistiques joueur : %d matchs a traiter (full_season=%s)",
+        len(events), full_season,
+    )
+    if not events:
         return 0
 
     total = 0
-    errors = 0
-    for i, (player_api_id, player_internal_id) in enumerate(players):
+    erreurs = 0
+    for i, (event_api_id, home_id, away_id) in enumerate(events):
         try:
-            count = await sync_player_stats_for_player(
-                session, client, player_api_id, player_internal_id
+            total += await sync_player_stats_for_event(
+                session, client, event_api_id, home_id, away_id
             )
-            total += count
         except Exception as exc:
-            errors += 1
-            logger.warning(
-                "Failed stats for player api_id=%d (internal=%d): %s",
-                player_api_id, player_internal_id, exc,
+            erreurs += 1
+            logger.warning("Echec statistiques match %s : %s", event_api_id, exc)
+        if i % 50 == 49:
+            logger.info(
+                "  Progression : %d/%d matchs, %d lignes", i + 1, len(events), total
             )
-        # Throttle every 10 players to avoid hammering the API
-        if i % 10 == 9:
-            await asyncio.sleep(0.5)
-        # Progress log every 100 players during backfill
-        if full_season and i % 100 == 99:
-            logger.info("  Progress: %d/%d players processed, %d rows so far", i + 1, len(players), total)
 
     logger.info(
-        "Synced %d total player-match stats for %d players (%d errors, full_season=%s)",
-        total, len(players), errors, full_season,
+        "Statistiques joueur : %d lignes sur %d matchs (%d erreurs)",
+        total, len(events), erreurs,
     )
     return total

@@ -3,9 +3,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import app.ingestion.bzzoiro.sync_player_stats as mod
 from app.ingestion.bzzoiro.sync_player_stats import (
+    build_stat_values,
     compute_derived_metrics,
-    sync_player_stats_for_player,
+    sync_player_stats_for_event,
 )
 
 
@@ -80,117 +82,6 @@ def test_compute_derived_metrics_zero_denominator():
     assert result["tackle_success_rate"] is None
 
 
-@pytest.mark.asyncio
-async def test_sync_player_stats_for_player():
-    """The API returns stats without player identity; player is known from context."""
-    stat_rows = [
-        {
-            "event": {"id": 500, "api_id": 999},
-            "minutes_played": 90,
-            "rating": 7.5,
-            "touches": 55,
-            "goals": 1,
-            "goal_assist": 0,
-            "expected_goals": 0.8,
-            "expected_assists": 0.2,
-            "total_shots": 4,
-            "shots_on_target": 2,
-            "total_pass": 30,
-            "accurate_pass": 24,
-            "key_pass": 1,
-            "total_long_balls": 3,
-            "accurate_long_balls": 2,
-            "total_cross": 2,
-            "accurate_cross": 1,
-            "duel_won": 5,
-            "duel_lost": 3,
-            "aerial_won": 2,
-            "aerial_lost": 1,
-            "total_tackle": 4,
-            "won_tackle": 3,
-            "total_clearance": 0,
-            "interception": 1,
-            "ball_recovery": 4,
-            "yellow_card": 0,
-            "red_card": 0,
-            "fouls": 1,
-            "was_fouled": 2,
-            "dispossessed": 1,
-            "possession_lost": 3,
-            "saves": 0,
-            "goals_conceded": 0,
-        },
-        {
-            "event": {"id": 501, "api_id": 998},
-            "minutes_played": 85,
-            "rating": 6.8,
-            "touches": 42,
-            "goals": 0,
-            "goal_assist": 1,
-            "expected_goals": 0.3,
-            "expected_assists": 0.5,
-            "total_shots": 2,
-            "shots_on_target": 1,
-            "total_pass": 50,
-            "accurate_pass": 40,
-            "key_pass": 3,
-            "total_long_balls": None,
-            "accurate_long_balls": None,
-            "total_cross": None,
-            "accurate_cross": None,
-            "duel_won": 2,
-            "duel_lost": 4,
-            "aerial_won": None,
-            "aerial_lost": None,
-            "total_tackle": 2,
-            "won_tackle": 1,
-            "total_clearance": 2,
-            "interception": 0,
-            "ball_recovery": 2,
-            "yellow_card": 1,
-            "red_card": 0,
-            "fouls": 2,
-            "was_fouled": 0,
-            "dispossessed": 2,
-            "possession_lost": 5,
-            "saves": 0,
-            "goals_conceded": 0,
-        },
-    ]
-
-    client = MagicMock()
-    client.get_all = AsyncMock(return_value=stat_rows)
-
-    session = MagicMock()
-    session.execute = AsyncMock()
-    session.commit = AsyncMock()
-
-    count = await sync_player_stats_for_player(
-        session, client, player_api_id=101, player_internal_id=42
-    )
-    assert count == 2
-    client.get_all.assert_called_once_with("/api/player-stats/", {"player": 42})
-
-
-@pytest.mark.asyncio
-async def test_sync_player_stats_for_player_skips_missing_event_api_id():
-    """Rows without event.api_id are silently skipped."""
-    stat_rows = [
-        {"event": {}, "minutes_played": 90, "rating": 7.0},  # no api_id in event
-        {"event": {"api_id": 999}, "minutes_played": 45, "rating": 6.5},
-    ]
-
-    client = MagicMock()
-    client.get_all = AsyncMock(return_value=stat_rows)
-
-    session = MagicMock()
-    session.execute = AsyncMock()
-    session.commit = AsyncMock()
-
-    count = await sync_player_stats_for_player(session, client, player_api_id=101, player_internal_id=42)
-    assert count == 1
-
-
 def test_compute_derived_metrics_partial_duel():
     row = {
         "total_shots": None, "shots_on_target": None,
@@ -206,3 +97,156 @@ def test_compute_derived_metrics_partial_duel():
     result = compute_derived_metrics(row)
     assert result["duel_win_rate"] is None
     assert result["aerial_win_rate"] is None
+
+
+# --- Ingestion par match ---------------------------------------------------
+#
+# L'endpoint accepte ?event=<id> et rend en une page les joueurs des deux
+# equipes, chacun portant son identite sous la cle "player". Les cles "team"
+# et "is_home" sont absentes : le camp se deduit en comparant player.team a
+# event.home_team.
+
+
+def _ligne(player_id: int, club: str, **extra):
+    base = {
+        "event": {"id": 223384, "home_team": "FC Schalke 04", "away_team": "Real Madrid"},
+        "player": {"id": player_id, "name": f"Joueur {player_id}", "team": club},
+        "minutes_played": 90, "goals": 1, "goal_assist": 0,
+        "expected_goals": 0.4, "expected_assists": 0.1,
+        "total_shots": 2, "shots_on_target": 1,
+        "total_pass": 30, "accurate_pass": 24,
+    }
+    base.update(extra)
+    return base
+
+
+def _session():
+    session = MagicMock()
+    session.execute = AsyncMock()
+    session.commit = AsyncMock()
+    session.flush = AsyncMock()
+    return session
+
+
+@pytest.fixture
+def joueur_toujours_present(monkeypatch):
+    """Neutralise la creation de joueur : on teste l'ingestion, pas l'upsert."""
+    async def _stub(session, player):
+        return player["id"]
+
+    monkeypatch.setattr(mod, "ensure_player_exists", _stub)
+
+
+def test_build_stat_values_domicile():
+    v = build_stat_values(_ligne(27598, "FC Schalke 04"), 223384, 500, True)
+    assert v["player_api_id"] == 27598
+    assert v["event_api_id"] == 223384
+    assert v["team_api_id"] == 500
+    assert v["is_home"] is True
+    assert v["minutes_played"] == 90
+    # les metriques derivees sont bien fusionnees dans la meme ligne
+    assert v["shot_accuracy"] == pytest.approx(0.5)
+
+
+def test_build_stat_values_exterieur():
+    v = build_stat_values(_ligne(594, "Real Madrid"), 223384, 600, False)
+    assert v["team_api_id"] == 600
+    assert v["is_home"] is False
+
+
+async def test_sync_par_match_rattache_chaque_joueur_a_son_camp(joueur_toujours_present):
+    rows = [_ligne(27598, "FC Schalke 04"), _ligne(594, "Real Madrid")]
+    client = MagicMock()
+    client.get_all = AsyncMock(return_value=rows)
+
+    ecrites = []
+    session = _session()
+
+    async def _capture(stmt):
+        ecrites.append(stmt.compile().params)
+
+    session.execute = AsyncMock(side_effect=_capture)
+
+    count = await sync_player_stats_for_event(
+        session, client, event_api_id=223384,
+        home_team_api_id=500, away_team_api_id=600,
+    )
+
+    assert count == 2
+    client.get_all.assert_called_once_with("/api/player-stats/", {"event": 223384})
+    par_joueur = {p["player_api_id"]: p for p in ecrites}
+    assert par_joueur[27598]["is_home"] is True
+    assert par_joueur[27598]["team_api_id"] == 500
+    assert par_joueur[594]["is_home"] is False
+    assert par_joueur[594]["team_api_id"] == 600
+
+
+async def test_sync_par_match_ignore_une_ligne_sans_identite(joueur_toujours_present):
+    rows = [_ligne(27598, "FC Schalke 04"), {"event": {"id": 223384}, "minutes_played": 12}]
+    client = MagicMock()
+    client.get_all = AsyncMock(return_value=rows)
+
+    count = await sync_player_stats_for_event(
+        _session(), client, event_api_id=223384,
+        home_team_api_id=500, away_team_api_id=600,
+    )
+    assert count == 1
+
+
+async def test_sync_par_match_club_inconnu_laisse_le_camp_vide(joueur_toujours_present):
+    """Un club ne correspondant a aucun camp ne se voit pas attribuer au hasard."""
+    rows = [_ligne(999, "Club Fantome")]
+    client = MagicMock()
+    client.get_all = AsyncMock(return_value=rows)
+
+    ecrites = []
+    session = _session()
+
+    async def _capture(stmt):
+        ecrites.append(stmt.compile().params)
+
+    session.execute = AsyncMock(side_effect=_capture)
+
+    count = await sync_player_stats_for_event(
+        session, client, event_api_id=223384,
+        home_team_api_id=500, away_team_api_id=600,
+    )
+    assert count == 1
+    assert ecrites[0]["is_home"] is None
+    assert ecrites[0]["team_api_id"] is None
+    # le reste des statistiques est conserve
+    assert ecrites[0]["minutes_played"] == 90
+
+
+async def test_sync_par_match_sans_stats_n_ecrit_rien():
+    client = MagicMock()
+    client.get_all = AsyncMock(return_value=[])
+    session = _session()
+
+    count = await sync_player_stats_for_event(
+        session, client, event_api_id=999,
+        home_team_api_id=500, away_team_api_id=600,
+    )
+    assert count == 0
+    session.commit.assert_not_called()
+
+
+async def test_sync_par_match_cree_le_joueur_manquant():
+    """bzz_player_match_stats.player_api_id est une FK : sans creation, echec."""
+    crees = []
+
+    async def _stub(session, player):
+        crees.append(player["id"])
+        return player["id"]
+
+    client = MagicMock()
+    client.get_all = AsyncMock(return_value=[_ligne(27598, "FC Schalke 04")])
+
+    import unittest.mock as um
+    with um.patch.object(mod, "ensure_player_exists", _stub):
+        await sync_player_stats_for_event(
+            _session(), client, event_api_id=223384,
+            home_team_api_id=500, away_team_api_id=600,
+        )
+
+    assert crees == [27598]

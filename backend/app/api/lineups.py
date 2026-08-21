@@ -2,6 +2,8 @@
 """API CRUD pour les compositions d'équipe."""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -9,10 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.ingestion.lineup_resolver import resolve_lineup
+from app.ingestion.ps3838.anchor import _fold
 from app.models.bzzoiro import BzzPlayer
+from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
 from app.models.lineups import TeamLineup, TeamLineupPlayer
 from app.models.wc2026_lineups import WC2026ExpectedLineup, WC2026ExpectedLineupPlayer
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["lineups"])
 
@@ -259,14 +265,61 @@ async def get_fixture_lineups(
 
 # Static segment "team-players" must come BEFORE any dynamic {lineup_id} GET
 # route (if one is added later) to avoid shadowing.
+def _norm(name: str | None) -> str:
+    """Nom replié et espaces compactés, pour comparaison d'équipes."""
+    return " ".join(_fold(name or "").split())
+
+
+async def resolve_team_bzz_id(team: str, session: AsyncSession) -> int | None:
+    """Résout un nom d'équipe vers son identifiant Bzzoiro.
+
+    Passe exclusivement par canonical_teams : bzz_teams.name et
+    bzz_players.current_team_name relèvent d'un autre espace d'identifiants
+    et sont faux pour de nombreux clubs (les joueurs du Barça y portent
+    current_team_name = "Saint George").
+
+    Le repliage se fait des deux côtés en Python : _fold remplace la
+    ponctuation par des espaces ("Paris Saint-Germain" → "paris saint
+    germain"), ce qu'aucune fonction SQL ne reproduit. Comparer à
+    lower(unaccent(...)) laisserait le tiret et ne résoudrait jamais le PSG.
+    La table ne compte qu'une centaine de lignes.
+    """
+    cible = _norm(team)
+    if not cible:
+        return None
+
+    result = await session.execute(
+        select(
+            CanonicalTeam.name_fr, CanonicalTeam.name_en, CanonicalTeam.bzz_team_id
+        ).where(CanonicalTeam.bzz_team_id.is_not(None))
+    )
+
+    for name_fr, name_en, bzz_team_id in result.all():
+        if _norm(name_fr) == cible or _norm(name_en) == cible:
+            return bzz_team_id
+
+    return None
+
+
 @router.get("/lineups/team-players/{team}", response_model=list[str])
 async def get_team_players(team: str, session: AsyncSession = Depends(get_db)):
-    """Retourne les noms des joueurs en DB pour cette équipe (pour le sélecteur)."""
+    """Retourne l'effectif du club, résolu par identifiant.
+
+    Une équipe absente de canonical_teams rend une liste vide : un effectif
+    vide se corrige en complétant la table, alors qu'un effectif emprunté à
+    un autre club contaminerait silencieusement les compos.
+    """
+    bzz_id = await resolve_team_bzz_id(team, session)
+    if bzz_id is None:
+        logger.warning(
+            "team-players : équipe non résolue dans canonical_teams : %s", team
+        )
+        return []
+
     result = await session.execute(
         select(BzzPlayer.name)
-        .where(BzzPlayer.current_team_name.ilike(f"%{team}%"))
+        .where(BzzPlayer.current_team_api_id == bzz_id)
         .order_by(BzzPlayer.name)
-        .limit(100)
     )
     return [row[0] for row in result]
 
