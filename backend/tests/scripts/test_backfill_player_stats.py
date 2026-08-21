@@ -18,10 +18,11 @@ def _event(event_id: int, status: str = "finished"):
     }
 
 
-def _session(deja_ingeres=()):
+def _session(complets=()):
+    """complets : identifiants des matchs portant deja une feuille complete."""
     session = MagicMock()
     result = MagicMock()
-    result.scalars.return_value.all.return_value = list(deja_ingeres)
+    result.scalars.return_value.all.return_value = list(complets)
     session.execute = AsyncMock(return_value=result)
     session.commit = AsyncMock()
     return session
@@ -56,8 +57,8 @@ async def test_enumeration_par_fenetre_de_dates_jamais_par_season():
         assert params["league"] == 6
 
 
-async def test_saute_les_matchs_deja_ingeres():
-    """Une execution interrompue puis relancee ne retraite pas l'existant."""
+async def test_saute_les_matchs_deja_complets():
+    """Une execution interrompue puis relancee ne retraite pas ce qui est fait."""
     client = MagicMock()
 
     async def _get_all(path, params=None):
@@ -68,10 +69,53 @@ async def test_saute_les_matchs_deja_ingeres():
     client.get_all = AsyncMock(side_effect=_get_all)
 
     traites, ignores = await backfill(
-        _session(deja_ingeres=[111]), client, seasons=["2024-2025"], leagues=[6],
+        _session(complets=[111]), client, seasons=["2024-2025"], leagues=[6],
     )
     assert ignores == 1
     assert traites == 1
+
+
+async def test_retraite_un_match_partiel():
+    """Le critere est la completude, pas la presence.
+
+    L'ancienne ingestion par joueur a seme des lignes eparses sur 122 795
+    matchs. Mesure du 21/08/2026 sur la Ligue 1 2024-2025 : 196 matchs
+    complets sur 310. Un critere de simple presence les aurait tous sautes
+    en annoncant un succes.
+    """
+    client = MagicMock()
+
+    async def _get_all(path, params=None):
+        if path == "/api/events/":
+            return [_event(111)]
+        return []
+
+    client.get_all = AsyncMock(side_effect=_get_all)
+
+    # 111 porte des lignes, mais pas assez pour etre complet : il n'apparait
+    # donc pas dans l'ensemble rendu par _events_complets.
+    traites, ignores = await backfill(
+        _session(complets=[]), client, seasons=["2024-2025"], leagues=[6],
+    )
+    assert traites == 1
+    assert ignores == 0
+
+
+async def test_seuil_de_completude_interroge_avec_un_having():
+    """_events_complets ne doit pas rendre tous les matchs presents."""
+    from app.scripts.backfill_player_stats import (
+        LIGNES_MATCH_COMPLET,
+        _events_complets,
+    )
+
+    assert LIGNES_MATCH_COMPLET == 30
+
+    session = _session(complets=[111, 222])
+    assert await _events_complets(session) == {111, 222}
+
+    requete = str(session.execute.call_args.args[0])
+    assert "GROUP BY" in requete.upper()
+    assert "HAVING" in requete.upper()
 
 
 async def test_ignore_les_matchs_non_termines():

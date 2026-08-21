@@ -16,8 +16,15 @@ Les identifiants d'equipe viennent de home_team_obj.id / away_team_obj.id --
 meme espace que canonical_teams.bzz_team_id (le PSG y vaut 114 des deux
 cotes).
 
-Reprenable : les matchs deja presents dans bzz_player_match_stats sont
-ignores, une execution interrompue redemarre donc sans retraiter l'existant.
+Reprenable : les matchs deja **complets** sont ignores, une execution
+interrompue redemarre donc sans retraiter ce qui est fait.
+
+Le critere est la completude, pas la presence. L'ancienne ingestion par
+joueur ramenait toute la carriere du joueur interroge, ce qui a seme des
+lignes eparses sur 122 795 matchs -- dont beaucoup n'en portent qu'une
+poignee. Mesure du 21/08/2026 sur la Ligue 1 2024-2025 : 196 matchs complets
+sur 310, 113 partiels, 1 vide. Un critere de simple presence aurait saute
+les 310 en annoncant un succes.
 """
 from __future__ import annotations
 
@@ -25,7 +32,7 @@ import asyncio
 import logging
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.bzzoiro.constants import (
@@ -44,12 +51,27 @@ def season_window(season: str) -> tuple[str, str]:
     return f"{debut}-07-01", f"{fin}-06-30"
 
 
-async def _events_deja_ingeres(session: AsyncSession) -> set[int]:
-    """Identifiants des matchs portant deja des statistiques."""
+# Une feuille de match complete compte les deux effectifs, titulaires et
+# remplaces : environ 40 lignes (44 observees, 40 sur Le Havre-PSG). Le seuil
+# est volontairement bas pour tolerer les rencontres a effectif reduit sans
+# jamais considerer complet un match a moitie rempli.
+LIGNES_MATCH_COMPLET = 30
+
+
+async def _events_complets(
+    session: AsyncSession, seuil: int = LIGNES_MATCH_COMPLET
+) -> set[int]:
+    """Identifiants des matchs portant deja une feuille complete.
+
+    Le critere est la completude et non la presence : voir le docstring du
+    module. Un match a 3 lignes doit etre retraite, pas saute.
+    """
     from app.models.bzzoiro import BzzPlayerMatchStat
 
     result = await session.execute(
-        select(BzzPlayerMatchStat.event_api_id).distinct()
+        select(BzzPlayerMatchStat.event_api_id)
+        .group_by(BzzPlayerMatchStat.event_api_id)
+        .having(func.count() >= seuil)
     )
     return set(result.scalars().all())
 
@@ -67,8 +89,8 @@ async def backfill(
     seasons = seasons or BACKFILL_SEASONS
     leagues = leagues or TARGET_LEAGUE_INTERNAL_ID_LIST
 
-    deja = await _events_deja_ingeres(session)
-    logger.info("%d matchs deja ingeres, ils seront ignores", len(deja))
+    complets = await _events_complets(session)
+    logger.info("%d matchs deja complets, ils seront ignores", len(complets))
 
     traites = ignores = 0
 
@@ -87,7 +109,7 @@ async def backfill(
                 event_api_id = event.get("id")
                 if event_api_id is None or event.get("status") != "finished":
                     continue
-                if event_api_id in deja:
+                if event_api_id in complets:
                     ignores += 1
                     continue
 
@@ -100,8 +122,8 @@ async def backfill(
                         domicile.get("id"),
                         exterieur.get("id"),
                     )
-                    if lignes:
-                        deja.add(event_api_id)
+                    if lignes >= LIGNES_MATCH_COMPLET:
+                        complets.add(event_api_id)
                     traites += 1
                 except Exception as exc:
                     logger.warning("Echec match %s : %s", event_api_id, exc)
