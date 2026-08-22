@@ -427,18 +427,12 @@ async def test_list_player_leagues():
 
 @pytest.mark.asyncio
 async def test_list_player_teams_no_filter(monkeypatch):
+    """Sans championnat demande : toutes les equipes, via la requete derivee."""
     from app.api import players as players_mod
-
-    seen_seasons: list = []
-
-    async def fake_dominant(session, season=None):
-        seen_seasons.append(season)
-        return {"Arsenal": 25, "Chelsea": -1}
 
     async def fake_current_season(session):
         return "2025-2026"
 
-    monkeypatch.setattr(players_mod, "_get_team_dominant_leagues", fake_dominant)
     monkeypatch.setattr(players_mod, "current_season", fake_current_season)
 
     result = MagicMock()
@@ -450,35 +444,40 @@ async def test_list_player_teams_no_filter(monkeypatch):
     assert len(response) == 2
     assert response[0] == {"api_id": 100, "name": "Arsenal"}
     assert response[1] == {"api_id": 200, "name": "Chelsea"}
-    # La saison résolue (pas None, pas un objet Query) est propagée au helper
-    assert seen_seasons == ["2025-2026"]
-    # ... et bindée en paramètre de la CTE (plus de littéral en dur)
+    # La saison résolue est bindée en paramètre de la CTE (plus de littéral en dur)
     assert mock_db.execute.call_args.args[1] == {"season": "2025-2026"}
 
 
 # ---------------------------------------------------------------------------
-# Test: list_teams — filtered by league (via ligues dominantes)
+# Test: list_teams — filtered by league (depuis le referentiel)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_list_player_teams_with_league(monkeypatch):
+async def test_list_player_teams_with_league():
+    """Championnat demande : la liste vient directement du referentiel.
+
+    C'est ce qui garantit les 18 ou 20 clubs — un club sans aucun joueur en
+    base doit tout de meme apparaitre dans son championnat.
+    """
     from app.api import players as players_mod
 
-    async def fake_dominant(session, season=None):
-        return {"Arsenal": 25, "Chelsea": -1}
-
-    monkeypatch.setattr(players_mod, "_get_team_dominant_leagues", fake_dominant)
-
     result = MagicMock()
-    result.all.return_value = [(100, "Arsenal"), (200, "Chelsea")]
+    result.all.return_value = [(63, "Milan"), (77, "Inter Milan")]
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(return_value=result)
 
     response = await players_mod.list_player_teams(
-        session=mock_db, league_api_id=25, season="2025-2026"
+        session=mock_db, league_api_id=4, season="2026-2027"
     )
-    assert response == [{"api_id": 100, "name": "Arsenal"}]
+    assert response == [
+        {"api_id": 63, "name": "Milan"},
+        {"api_id": 77, "name": "Inter Milan"},
+    ]
+    # une seule requete, sur canonical_teams — pas la CTE derivee des noms
     mock_db.execute.assert_called_once()
+    requete = str(mock_db.execute.call_args.args[0])
+    assert "canonical_teams" in requete
+    assert "current_team_name" not in requete
 
 
 # ---------------------------------------------------------------------------

@@ -295,7 +295,6 @@ class PlayerDetail(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-_MIN_PLAYERS_FOR_TARGET_LEAGUE = 10
 
 
 def _safe_div(num: Any, den: Any) -> float | None:
@@ -507,60 +506,27 @@ def _python_sort(results: list[dict[str, Any]], sort_by: str, sort_order: str) -
             results.sort(key=lambda r: (r.get(field) is None, r.get(field) or 0))
 
 
-async def _get_team_dominant_leagues(
-    session: AsyncSession,
-    season: str | None = None,
-) -> dict[str, int]:
-    """Return {team_name: effective_league_api_id}.
+async def team_ids_for_league(
+    session: AsyncSession, league_api_id: int, season: str
+) -> list[int]:
+    """Identifiants Bzzoiro des clubs engages dans ce championnat.
 
-    Effective league = dominant league if it is a target league with >= MIN_PLAYERS_FOR_TARGET_LEAGUE
-    stats rows, else -1 (Autres). This prevents 1-2-row data contamination from miscategorizing
-    non-Big5/UCL teams into target leagues.
+    Resolution par identifiant : le championnat est une colonne de
+    canonical_teams depuis la migration 054. Il etait auparavant deduit en
+    regroupant les joueurs par current_team_name, colonne fausse pour 37 %
+    d'entre eux — d'ou des clubs andorrans dans les filtres.
     """
-    if season is None:
-        season = await current_season(session)
-    stmt = text("""
-        WITH per_name_league AS (
-            SELECT COALESCE(bp.loan_team_name, bp.current_team_name) AS eff_team_name,
-                   bpss.league_api_id, COUNT(*) AS cnt
-            FROM bzz_players bp
-            JOIN bzz_player_season_stats bpss ON bpss.player_api_id = bp.api_id
-            WHERE bpss.season = :season
-              AND COALESCE(bp.loan_team_name, bp.current_team_name) IS NOT NULL
-            GROUP BY eff_team_name, bpss.league_api_id
-        ),
-        -- Best domestic Big5 league per team (excluding UCL so UCL rows don't shadow domestic)
-        domestic_ranked AS (
-            SELECT eff_team_name, league_api_id, cnt,
-                   ROW_NUMBER() OVER (PARTITION BY eff_team_name ORDER BY cnt DESC) AS rn
-            FROM per_name_league WHERE league_api_id IN (1,3,4,5,6)
-        ),
-        domestic_best AS (
-            SELECT eff_team_name, league_api_id AS domestic_league, cnt AS domestic_cnt
-            FROM domestic_ranked WHERE rn = 1
-        ),
-        ucl_stats AS (
-            SELECT eff_team_name, cnt AS ucl_cnt
-            FROM per_name_league WHERE league_api_id = 7
-        ),
-        all_teams AS (
-            SELECT DISTINCT eff_team_name FROM per_name_league
+    from app.models.canonical_teams import CanonicalTeam
+
+    result = await session.execute(
+        select(CanonicalTeam.bzz_team_id).where(
+            CanonicalTeam.league_api_id == league_api_id,
+            CanonicalTeam.season == season,
+            CanonicalTeam.bzz_team_id.is_not(None),
         )
-        SELECT
-            t.eff_team_name,
-            CASE
-                WHEN db.domestic_league IS NOT NULL AND db.domestic_cnt >= :min_cnt
-                    THEN db.domestic_league
-                WHEN u.ucl_cnt >= :min_cnt
-                    THEN 7
-                ELSE -1
-            END AS effective_league
-        FROM all_teams t
-        LEFT JOIN domestic_best db ON db.eff_team_name = t.eff_team_name
-        LEFT JOIN ucl_stats u ON u.eff_team_name = t.eff_team_name
-    """)
-    result = await session.execute(stmt, {"season": season, "min_cnt": _MIN_PLAYERS_FOR_TARGET_LEAGUE})
-    return {row[0]: row[1] for row in result.all()}
+    )
+    return list(result.scalars().all())
+
 
 
 # ---------------------------------------------------------------------------
@@ -599,12 +565,23 @@ async def list_player_teams(
     if season is None:
         season = await current_season(session)
 
-    dominant = await _get_team_dominant_leagues(session, season)
-
+    # Championnat demande : la liste vient directement du referentiel. C'est ce
+    # qui garantit mecaniquement les 18 ou 20 clubs, sans dependre de ce que
+    # les statistiques laissent deviner — un club sans aucun joueur en base
+    # doit tout de meme apparaitre dans son championnat.
     if league_api_id is not None:
-        valid_names: set[str] | None = {n for n, lg in dominant.items() if lg == league_api_id}
-    else:
-        valid_names = None
+        from app.models.canonical_teams import CanonicalTeam
+
+        clubs = (await session.execute(
+            select(CanonicalTeam.bzz_team_id, CanonicalTeam.name_fr)
+            .where(
+                CanonicalTeam.league_api_id == league_api_id,
+                CanonicalTeam.season == season,
+                CanonicalTeam.bzz_team_id.is_not(None),
+            )
+            .order_by(CanonicalTeam.name_fr)
+        )).all()
+        return [{"api_id": tid, "name": nom} for tid, nom in clubs]
 
     stmt = text("""
         WITH team_counts AS (
@@ -630,12 +607,9 @@ async def list_player_teams(
     result = await session.execute(stmt, {"season": season})
     rows = result.all()
 
-    output = []
-    for api_id, name in rows:
-        if valid_names is not None and name not in valid_names:
-            continue
-        output.append({"api_id": api_id, "name": name})
-    return output
+    # Ne sert plus que le cas "toutes competitions" : le cas d'un championnat
+    # donne est sorti plus haut, directement depuis le referentiel.
+    return [{"api_id": api_id, "name": name} for api_id, name in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -658,11 +632,12 @@ async def export_players_csv(
     # Fetch players with their season stats (all leagues), then aggregate per player
     player_id_subq = select(BzzPlayer.api_id).where(BzzPlayer.internal_id.is_not(None))
     if league_api_id:
-        dominant = await _get_team_dominant_leagues(session, season)
-        team_names = [n for n, lg in dominant.items() if lg == league_api_id]
-        if team_names:
-            eff_team = func.coalesce(BzzPlayer.loan_team_name, BzzPlayer.current_team_name)
-            player_id_subq = player_id_subq.where(eff_team.in_(team_names))
+        team_ids = await team_ids_for_league(session, league_api_id, season)
+        if team_ids:
+            eff_team = func.coalesce(
+                BzzPlayer.loan_team_api_id, BzzPlayer.current_team_api_id
+            )
+            player_id_subq = player_id_subq.where(eff_team.in_(team_ids))
 
     players = (await session.execute(
         select(BzzPlayer).where(BzzPlayer.api_id.in_(player_id_subq))
@@ -754,12 +729,13 @@ async def list_players(
     player_id_subq = select(BzzPlayer.api_id).where(BzzPlayer.internal_id.is_not(None))
 
     if league_api_id is not None:
-        dominant = await _get_team_dominant_leagues(session, season)
-        team_names = [n for n, lg in dominant.items() if lg == league_api_id]
-        if not team_names:
+        team_ids = await team_ids_for_league(session, league_api_id, season)
+        if not team_ids:
             return []
-        eff_team = func.coalesce(BzzPlayer.loan_team_name, BzzPlayer.current_team_name)
-        player_id_subq = player_id_subq.where(eff_team.in_(team_names))
+        eff_team = func.coalesce(
+            BzzPlayer.loan_team_api_id, BzzPlayer.current_team_api_id
+        )
+        player_id_subq = player_id_subq.where(eff_team.in_(team_ids))
     if team_api_id is not None:
         player_id_subq = player_id_subq.where(
             or_(

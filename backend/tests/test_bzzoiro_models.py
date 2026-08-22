@@ -51,3 +51,19 @@ def test_les_bornes_de_saison_ne_se_chevauchent_pas():
 
     assert season_end("2021-2022") == season_start("2022-2023")
     assert season_end("2024-2025") == season_start("2025-2026")
+
+
+def test_canonical_team_porte_son_championnat():
+    """Le championnat est une donnee, plus une deduction depuis les noms.
+
+    Il etait auparavant devine en regroupant les joueurs par
+    current_team_name, colonne fausse pour 886 joueurs sur 2 401.
+    """
+    from app.models.canonical_teams import CanonicalTeam
+
+    cols = CanonicalTeam.__table__.columns
+    assert "league_api_id" in cols
+    assert "season" in cols
+    # Nullables : un relegue garde sa ligne et son historique sans engagement.
+    assert cols["league_api_id"].nullable is True
+    assert cols["season"].nullable is True
