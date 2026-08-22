@@ -722,6 +722,37 @@ async def list_player_leagues(
 
 
 # ---------------------------------------------------------------------------
+# GET /players/seasons — saisons disponibles (selecteur de la page Joueurs)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/seasons", response_model=list[dict])
+async def list_player_seasons(
+    session: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """Saisons ayant des statistiques, de la plus recente a la plus ancienne.
+
+    La liste vient des donnees et non d'un litteral : rien a retoucher chaque
+    ete. La saison en cours y figure toujours, meme si aucun match n'a encore
+    ete joue — sans quoi le selecteur ne la proposerait pas en aout.
+    """
+    result = await session.execute(
+        select(BzzPlayerSeasonStat.season)
+        .where(BzzPlayerSeasonStat.league_api_id.in_(_ALL_LEAGUE_IDS))
+        .distinct()
+    )
+    saisons = {s for s in result.scalars().all() if s}
+
+    courante = await current_season(session)
+    saisons.add(courante)
+
+    return [
+        {"season": s, "current": s == courante}
+        for s in sorted(saisons, reverse=True)
+    ]
+
+
+# ---------------------------------------------------------------------------
 # GET /players/teams  — équipes du championnat (ou toutes)
 # ---------------------------------------------------------------------------
 

@@ -14,6 +14,9 @@ type SortField =
   | 'avg_rating' | 'shots_on_target_per_90' | 'form_xg_5' | 'minutes_played'
 type PositionFilter = '' | 'G' | 'D' | 'M' | 'F'
 
+/** Saison proposee par le selecteur. `current` marque la saison en cours. */
+type SaisonDispo = { season: string; current: boolean }
+
 // Recherche insensible aux accents : « e » doit matcher « é è ê ë », etc.
 // Décompose (NFD) puis retire les diacritiques combinants, et minusculise.
 const foldAccents = (s: string): string =>
@@ -147,6 +150,13 @@ export default function PlayersPage() {
   // toujours les joueurs actifs qu'on price.
   const [comparer, setComparer] = useState(true)
 
+  // Saison des statistiques. null = laisser le serveur resoudre la saison en
+  // cours. Initialisee depuis l'URL pour que le retour arriere la restitue.
+  const [saisons, setSaisons] = useState<SaisonDispo[]>([])
+  const [saison, setSaison] = useState<string | null>(
+    () => searchParams.get('season')
+  )
+
   const [mode, setMode] = useState<'leagues' | 'cdm2026'>('leagues')
   const [wcNations, setWcNations] = useState<WCNation[]>([])
   const [wcSelectedNation, setWcSelectedNation] = useState<string | null>(null)
@@ -161,12 +171,20 @@ export default function PlayersPage() {
     if (teamApiId !== null) params.set('team', teamApiId.toString())
     if (search) params.set('search', search)
     if (positionFilter) params.set('position', positionFilter)
+    if (saison) params.set('season', saison)
     if (sortField !== 'xg_per_90') params.set('sort_by', sortField)
     if (sortDir !== 'desc') params.set('sort_order', sortDir)
     const qs = params.toString()
     router.replace(`/dashboard/players${qs ? `?${qs}` : ''}`, { scroll: false })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leagueApiId, teamApiId, search, positionFilter, sortField, sortDir])
+  }, [leagueApiId, teamApiId, search, positionFilter, saison, sortField, sortDir])
+
+  useEffect(() => {
+    fetch('/api/v1/players/seasons')
+      .then((r) => (r.ok ? r.json() : []))
+      .then((d: SaisonDispo[]) => setSaisons(d))
+      .catch(() => setSaisons([]))
+  }, [])
 
   const fetchTeams = useCallback(async (leagueId: number | null) => {
     try {
@@ -187,6 +205,7 @@ export default function PlayersPage() {
     setFetchError(null)
     try {
       const params = new URLSearchParams({ limit: '500' })
+      if (saison) params.set('season', saison)
       if (comparer) params.set('compare_previous', 'true')
       if (leagueApiId !== null) params.set('league_api_id', leagueApiId.toString())
       if (teamApiId !== null) params.set('team_api_id', teamApiId.toString())
@@ -209,7 +228,7 @@ export default function PlayersPage() {
     } finally {
       setLoading(false)
     }
-  }, [leagueApiId, teamApiId, positionFilter, sortField, sortDir, comparer])
+  }, [leagueApiId, teamApiId, positionFilter, sortField, sortDir, comparer, saison])
 
   const fetchWcNations = useCallback(async () => {
     try {
@@ -412,6 +431,18 @@ export default function PlayersPage() {
               <option value="">🏟️ Toutes les équipes</option>
               {teams.map((t) => (
                 <option key={t.api_id} value={t.api_id}>{t.name}</option>
+              ))}
+            </select>
+
+            <select
+              value={saison ?? ''}
+              onChange={(e) => setSaison(e.target.value || null)}
+              title="Saison des statistiques — les équipes restent celles de la saison en cours"
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-brand-500"
+            >
+              <option value="">📅 Saison en cours</option>
+              {saisons.filter((s) => !s.current).map((s) => (
+                <option key={s.season} value={s.season}>📅 {s.season}</option>
               ))}
             </select>
 
