@@ -470,8 +470,12 @@ async def test_list_player_teams_with_league(monkeypatch):
     async def fake_noms(session, ids):
         return [{"api_id": 63, "name": "Milan"}, {"api_id": 77, "name": "Inter Milan"}]
 
+    async def fake_current(session):
+        return "2026-2027"
+
     monkeypatch.setattr(players_mod, "team_ids_for_league", fake_ids)
     monkeypatch.setattr(players_mod, "_nommer_clubs", fake_noms)
+    monkeypatch.setattr(players_mod, "current_season", fake_current)
 
     response = await players_mod.list_player_teams(
         session=AsyncMock(), league_api_id=4, season="2026-2027"
@@ -491,7 +495,11 @@ async def test_list_player_teams_league_sans_club(monkeypatch):
     async def fake_ids(session, league_api_id, season):
         return []
 
+    async def fake_current(session):
+        return "2026-2027"
+
     monkeypatch.setattr(players_mod, "team_ids_for_league", fake_ids)
+    monkeypatch.setattr(players_mod, "current_season", fake_current)
 
     assert await players_mod.list_player_teams(
         session=AsyncMock(), league_api_id=99, season="2026-2027"

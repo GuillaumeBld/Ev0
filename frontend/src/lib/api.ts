@@ -625,6 +625,21 @@ export interface PlayerSummary {
   matches_played: number | null
   minutes_played: number | null
   season: string
+  /** Saison précédente, affichée sous la valeur courante. Null si le joueur
+   *  n'a pas joué cette saison-là ou si la comparaison n'est pas demandée. */
+  previous: PreviousSeason | null
+}
+
+/** Valeurs de la saison précédente servant de repère sous la saison en cours. */
+export interface PreviousSeason {
+  season: string | null
+  matches_played: number | null
+  minutes_played: number | null
+  goals: number | null
+  goal_assist: number | null
+  xg_per_90: number | null
+  xa_per_90: number | null
+  avg_rating: number | null
 }
 
 export interface SeasonStatsOut {

@@ -43,6 +43,61 @@ function fmt(v: number | null | undefined, decimals = 2): string {
   return v.toFixed(decimals)
 }
 
+/** Nombre de matchs sous lequel une évolution n'est pas fiable.
+ *  Sur un ou deux matchs les ratios s'emballent : la couleur est atténuée et
+ *  une pastille signale l'échantillon. */
+const MATCHS_ECHANTILLON_FIABLE = 3
+
+/** Cellule de volume : valeur courante, saison précédente en rappel dessous.
+ *  Jamais colorée — comparer 2 buts en 2 matchs à 14 en 38 n'a pas de sens. */
+function CelluleVolume({ valeur, precedent }: { valeur: number | null; precedent: number | null | undefined }) {
+  return (
+    <span className="inline-flex flex-col items-end leading-tight">
+      <span className="text-sm font-mono text-white font-semibold">{valeur ?? '—'}</span>
+      {precedent !== undefined && precedent !== null && (
+        <span className="text-[11px] font-mono text-gray-500">{precedent}</span>
+      )}
+    </span>
+  )
+}
+
+/** Cellule de statistique ramenée au temps de jeu : colorée selon l'évolution.
+ *  Vert en progression, rouge en baisse, flèche en plus de la couleur pour
+ *  rester lisible sans distinguer les teintes. */
+function CelluleTaux({
+  valeur, precedent, decimals = 2, matchs,
+}: {
+  valeur: number | null
+  precedent: number | null | undefined
+  decimals?: number
+  matchs: number | null
+}) {
+  const comparable = valeur != null && precedent != null
+  const ecart = comparable ? valeur - precedent : 0
+  // Un écart infime n'est pas une évolution : sous ce seuil, on reste neutre.
+  const seuil = decimals === 1 ? 0.05 : 0.02
+  const sens = !comparable || Math.abs(ecart) < seuil ? 'plat' : ecart > 0 ? 'hausse' : 'baisse'
+  const faible = matchs != null && matchs < MATCHS_ECHANTILLON_FIABLE
+
+  return (
+    <span className="inline-flex flex-col items-end leading-tight">
+      <span className={clsx('text-sm font-mono font-medium inline-flex items-center gap-0.5',
+        sens === 'hausse' && 'text-emerald-400',
+        sens === 'baisse' && 'text-rose-400',
+        sens === 'plat' && 'text-gray-300',
+        faible && sens !== 'plat' && 'opacity-60',
+      )}>
+        {sens === 'hausse' && <span className="text-[9px]">▲</span>}
+        {sens === 'baisse' && <span className="text-[9px]">▼</span>}
+        {fmt(valeur, decimals)}
+      </span>
+      {precedent != null && (
+        <span className="text-[11px] font-mono text-gray-500">{fmt(precedent, decimals)}</span>
+      )}
+    </span>
+  )
+}
+
 function positionColor(pos: string | null | undefined): string {
   switch (pos) {
     case 'F': return 'bg-red-500/20 text-red-400'
@@ -86,6 +141,12 @@ export default function PlayersPage() {
     searchParams.get('sort_order') === 'asc' ? 'asc' : 'desc'
   )
 
+  // Comparaison avec la saison précédente, affichée sous chaque valeur.
+  // La saison des statistiques n'est pas envoyée : le serveur résout la saison
+  // en cours. La structure (clubs, effectifs) ne suit pas la saison — ce sont
+  // toujours les joueurs actifs qu'on price.
+  const [comparer, setComparer] = useState(true)
+
   const [mode, setMode] = useState<'leagues' | 'cdm2026'>('leagues')
   const [wcNations, setWcNations] = useState<WCNation[]>([])
   const [wcSelectedNation, setWcSelectedNation] = useState<string | null>(null)
@@ -109,7 +170,7 @@ export default function PlayersPage() {
 
   const fetchTeams = useCallback(async (leagueId: number | null) => {
     try {
-      const params = new URLSearchParams({ season: '2025-2026' })
+      const params = new URLSearchParams()
       if (leagueId !== null) params.set('league_api_id', leagueId.toString())
       const res = await fetch(`/api/v1/players/teams?${params}`)
       if (res.ok) {
@@ -125,7 +186,8 @@ export default function PlayersPage() {
     setLoading(true)
     setFetchError(null)
     try {
-      const params = new URLSearchParams({ season: '2025-2026', limit: '500' })
+      const params = new URLSearchParams({ limit: '500' })
+      if (comparer) params.set('compare_previous', 'true')
       if (leagueApiId !== null) params.set('league_api_id', leagueApiId.toString())
       if (teamApiId !== null) params.set('team_api_id', teamApiId.toString())
       if (positionFilter) params.set('position', positionFilter)
@@ -147,7 +209,7 @@ export default function PlayersPage() {
     } finally {
       setLoading(false)
     }
-  }, [leagueApiId, teamApiId, positionFilter, sortField, sortDir])
+  }, [leagueApiId, teamApiId, positionFilter, sortField, sortDir, comparer])
 
   const fetchWcNations = useCallback(async () => {
     try {
@@ -353,6 +415,19 @@ export default function PlayersPage() {
               ))}
             </select>
 
+            <button
+              onClick={() => setComparer((v) => !v)}
+              title="Affiche la saison précédente sous chaque valeur"
+              className={clsx(
+                'px-3 py-2 text-sm font-medium rounded-lg border transition-colors whitespace-nowrap',
+                comparer
+                  ? 'bg-gray-700 border-gray-600 text-white'
+                  : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'
+              )}
+            >
+              {comparer ? '↕ 2 saisons' : '— saison seule'}
+            </button>
+
             <div className="flex rounded-lg overflow-hidden border border-gray-700">
               {positions.map((pos) => (
                 <button
@@ -444,27 +519,22 @@ export default function PlayersPage() {
                           </span>
                         </td>
                         <td className="px-3 py-3 text-right hidden sm:table-cell">
-                          <span className="text-sm font-mono text-white font-semibold">{player.goals ?? '—'}</span>
+                          <CelluleVolume valeur={player.goals} precedent={player.previous?.goals} />
                         </td>
                         <td className="px-3 py-3 text-right hidden sm:table-cell">
-                          <span className="text-sm font-mono text-gray-300 font-semibold">{player.goal_assist ?? '—'}</span>
+                          <CelluleVolume valeur={player.goal_assist} precedent={player.previous?.goal_assist} />
                         </td>
                         <td className="px-3 py-3 text-right hidden sm:table-cell">
-                          <span className="text-sm font-mono text-green-400 font-medium">{fmt(player.xg_per_90)}</span>
+                          <CelluleTaux valeur={player.xg_per_90} precedent={player.previous?.xg_per_90}
+                                       matchs={player.matches_played} />
                         </td>
                         <td className="px-3 py-3 text-right hidden sm:table-cell">
-                          <span className="text-sm font-mono text-blue-400">{fmt(player.xa_per_90)}</span>
+                          <CelluleTaux valeur={player.xa_per_90} precedent={player.previous?.xa_per_90}
+                                       matchs={player.matches_played} />
                         </td>
                         <td className="px-3 py-3 text-right hidden md:table-cell">
-                          <span className={clsx('text-sm font-mono',
-                            player.avg_rating != null
-                              ? player.avg_rating >= 7.5 ? 'text-amber-400 font-semibold'
-                              : player.avg_rating >= 7.0 ? 'text-yellow-400'
-                              : 'text-gray-300'
-                              : 'text-gray-600'
-                          )}>
-                            {fmt(player.avg_rating, 1)}
-                          </span>
+                          <CelluleTaux valeur={player.avg_rating} precedent={player.previous?.avg_rating}
+                                       decimals={1} matchs={player.matches_played} />
                         </td>
                         <td className="px-3 py-3 text-right hidden md:table-cell">
                           <span className="text-sm font-mono text-gray-300">{fmt(player.shots_on_target_per_90)}</span>
