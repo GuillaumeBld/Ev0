@@ -539,6 +539,45 @@ async def team_ids_for_league(
     return await _team_ids_from_events(session, league_api_id, season)
 
 
+async def _nommer_clubs(
+    session: AsyncSession, ids: list[int]
+) -> list[dict[str, Any]]:
+    """Nomme des clubs a partir de leurs identifiants, tries par nom.
+
+    canonical_teams fait autorite. Un club qui n'y figure pas — un relegue
+    d'une saison ancienne, par exemple — est nomme d'apres ce que portent ses
+    joueurs, et a defaut par son identifiant : mieux vaut une ligne nommee
+    approximativement qu'un club absent de la liste.
+    """
+    from app.models.canonical_teams import CanonicalTeam
+
+    noms: dict[int, str] = dict(
+        (await session.execute(
+            select(CanonicalTeam.bzz_team_id, CanonicalTeam.name_fr).where(
+                CanonicalTeam.bzz_team_id.in_(ids)
+            )
+        )).all()
+    )
+
+    manquants = [i for i in ids if i not in noms]
+    if manquants:
+        restes = (await session.execute(
+            select(
+                BzzPlayer.current_team_api_id, BzzPlayer.current_team_name
+            ).where(
+                BzzPlayer.current_team_api_id.in_(manquants),
+                BzzPlayer.current_team_name.is_not(None),
+            ).distinct()
+        )).all()
+        for tid, nom in restes:
+            noms.setdefault(tid, nom)
+
+    return sorted(
+        ({"api_id": i, "name": noms.get(i) or f"Club {i}"} for i in ids),
+        key=lambda x: x["name"],
+    )
+
+
 async def _team_ids_from_events(
     session: AsyncSession, league_api_id: int, season: str
 ) -> list[int]:
@@ -610,19 +649,14 @@ async def list_player_teams(
     # qui garantit mecaniquement les 18 ou 20 clubs, sans dependre de ce que
     # les statistiques laissent deviner — un club sans aucun joueur en base
     # doit tout de meme apparaitre dans son championnat.
+    # Pour une saison passee, team_ids_for_league se replie sur le calendrier :
+    # canonical_teams ne porte que l'engagement courant, et le frontend
+    # interroge explicitement la saison precedente.
     if league_api_id is not None:
-        from app.models.canonical_teams import CanonicalTeam
-
-        clubs = (await session.execute(
-            select(CanonicalTeam.bzz_team_id, CanonicalTeam.name_fr)
-            .where(
-                CanonicalTeam.league_api_id == league_api_id,
-                CanonicalTeam.season == season,
-                CanonicalTeam.bzz_team_id.is_not(None),
-            )
-            .order_by(CanonicalTeam.name_fr)
-        )).all()
-        return [{"api_id": tid, "name": nom} for tid, nom in clubs]
+        ids = await team_ids_for_league(session, league_api_id, season)
+        if not ids:
+            return []
+        return await _nommer_clubs(session, ids)
 
     stmt = text("""
         WITH team_counts AS (
