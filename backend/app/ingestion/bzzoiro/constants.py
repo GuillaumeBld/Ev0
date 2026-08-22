@@ -67,3 +67,17 @@ BACKFILL_SEASONS: list[str] = [
     "2024-2025",
     "2025-2026",
 ]
+
+# Effectifs reglementaires par championnat — invariant de segmentation.
+# Releve le 22/08/2026 sur /api/events/ : 20, 20, 20, 18, 18, aucun club
+# engage dans deux competitions. Un ecart interrompt la reconstruction du
+# referentiel avant toute ecriture.
+# La Ligue des champions (7) en est absente tant que les tirages de la phase
+# de ligue n'ont pas eu lieu.
+EFFECTIFS_REGLEMENTAIRES: dict[int, int] = {
+    1: 20,  # Premier League
+    3: 20,  # La Liga
+    4: 20,  # Serie A
+    5: 18,  # Bundesliga
+    6: 18,  # Ligue 1
+}
