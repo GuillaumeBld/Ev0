@@ -115,3 +115,71 @@ async def test_repli_borne_la_saison_des_deux_cotes():
     requete = str(session.execute.call_args.args[0])
     assert "bzz_events" in requete
     assert requete.count("event_date") >= 2
+
+
+# ---------------------------------------------------------------------------
+# Liste d'equipes : le frontend interroge la saison PRECEDENTE
+# ---------------------------------------------------------------------------
+
+
+async def test_liste_equipes_saison_passee_n_est_pas_vide():
+    """Le frontend demande season=2025-2026 ; le referentiel ne porte que
+    2026-2027. Sans repli, le selecteur d'equipe etait vide."""
+    import app.api.players as mod
+
+    async def _ids(sess, league_api_id, season):
+        return [63, 77]
+
+    async def _noms(sess, ids):
+        return [{"api_id": 63, "name": "AC Milan"}, {"api_id": 77, "name": "Inter"}]
+
+    o1, o2 = mod.team_ids_for_league, mod._nommer_clubs
+    mod.team_ids_for_league, mod._nommer_clubs = _ids, _noms
+    try:
+        res = await mod.list_player_teams(
+            session=MagicMock(), league_api_id=4, season="2025-2026"
+        )
+    finally:
+        mod.team_ids_for_league, mod._nommer_clubs = o1, o2
+
+    assert res == [
+        {"api_id": 63, "name": "AC Milan"},
+        {"api_id": 77, "name": "Inter"},
+    ]
+
+
+async def test_nommer_clubs_prefere_le_referentiel():
+    import app.api.players as mod
+
+    session = MagicMock()
+    canon = MagicMock()
+    canon.all.return_value = [(63, "AC Milan"), (77, "Inter")]
+    session.execute = AsyncMock(return_value=canon)
+
+    res = await mod._nommer_clubs(session, [63, 77])
+
+    assert res == [
+        {"api_id": 63, "name": "AC Milan"},
+        {"api_id": 77, "name": "Inter"},
+    ]
+
+
+async def test_nommer_clubs_replie_puis_rend_un_libelle_de_secours():
+    """Un club inconnu du referentiel garde une ligne plutot que disparaitre."""
+    import app.api.players as mod
+
+    session = MagicMock()
+    canon = MagicMock()
+    canon.all.return_value = [(63, "AC Milan")]
+    joueurs = MagicMock()
+    joueurs.all.return_value = [(77, "Inter Milan")]
+    session.execute = AsyncMock(side_effect=[canon, joueurs])
+
+    res = await mod._nommer_clubs(session, [63, 77, 999])
+
+    noms = {x["api_id"]: x["name"] for x in res}
+    assert noms[63] == "AC Milan"
+    assert noms[77] == "Inter Milan"
+    assert noms[999] == "Club 999"
+    # tri par nom
+    assert [x["name"] for x in res] == sorted(noms.values())

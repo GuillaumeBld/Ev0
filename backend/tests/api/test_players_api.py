@@ -453,31 +453,49 @@ async def test_list_player_teams_no_filter(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_list_player_teams_with_league():
-    """Championnat demande : la liste vient directement du referentiel.
+async def test_list_player_teams_with_league(monkeypatch):
+    """Championnat demande : la liste vient du referentiel, resolue par identifiant.
 
     C'est ce qui garantit les 18 ou 20 clubs — un club sans aucun joueur en
     base doit tout de meme apparaitre dans son championnat.
     """
     from app.api import players as players_mod
 
-    result = MagicMock()
-    result.all.return_value = [(63, "Milan"), (77, "Inter Milan")]
-    mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(return_value=result)
+    vus = []
+
+    async def fake_ids(session, league_api_id, season):
+        vus.append((league_api_id, season))
+        return [63, 77]
+
+    async def fake_noms(session, ids):
+        return [{"api_id": 63, "name": "Milan"}, {"api_id": 77, "name": "Inter Milan"}]
+
+    monkeypatch.setattr(players_mod, "team_ids_for_league", fake_ids)
+    monkeypatch.setattr(players_mod, "_nommer_clubs", fake_noms)
 
     response = await players_mod.list_player_teams(
-        session=mock_db, league_api_id=4, season="2026-2027"
+        session=AsyncMock(), league_api_id=4, season="2026-2027"
     )
     assert response == [
         {"api_id": 63, "name": "Milan"},
         {"api_id": 77, "name": "Inter Milan"},
     ]
-    # une seule requete, sur canonical_teams — pas la CTE derivee des noms
-    mock_db.execute.assert_called_once()
-    requete = str(mock_db.execute.call_args.args[0])
-    assert "canonical_teams" in requete
-    assert "current_team_name" not in requete
+    assert vus == [(4, "2026-2027")]
+
+
+@pytest.mark.asyncio
+async def test_list_player_teams_league_sans_club(monkeypatch):
+    """Aucun club resolu : liste vide, jamais la CTE derivee des noms."""
+    from app.api import players as players_mod
+
+    async def fake_ids(session, league_api_id, season):
+        return []
+
+    monkeypatch.setattr(players_mod, "team_ids_for_league", fake_ids)
+
+    assert await players_mod.list_player_teams(
+        session=AsyncMock(), league_api_id=99, season="2026-2027"
+    ) == []
 
 
 # ---------------------------------------------------------------------------
