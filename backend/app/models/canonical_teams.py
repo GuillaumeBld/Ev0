@@ -17,3 +17,11 @@ class CanonicalTeam(Base):
     sofascore_team_id = Column(Integer, nullable=True, unique=True)
     transfermarkt_club_id = Column(Integer, nullable=True, unique=True)
     aliases = Column(ARRAY(Text), nullable=False, server_default="{}")
+
+    # Engagement du club pour la saison courante. Nullables : un club relegue
+    # garde sa ligne et son historique, il perd seulement son engagement.
+    # Le championnat devient une donnee — il etait auparavant deduit en
+    # regroupant les joueurs par nom de club, colonne fausse pour 37 % d'entre
+    # eux, d'ou des clubs andorrans dans le filtre Ligue des champions.
+    league_api_id = Column(Integer, nullable=True)
+    season = Column(String(10), nullable=True)
