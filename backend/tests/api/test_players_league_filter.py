@@ -183,3 +183,36 @@ async def test_nommer_clubs_replie_puis_rend_un_libelle_de_secours():
     assert noms[999] == "Club 999"
     # tri par nom
     assert [x["name"] for x in res] == sorted(noms.values())
+
+
+async def test_repli_refuse_les_competitions_sans_format_connu():
+    """La Ligue des champions rendait 141 clubs, tours preliminaires compris.
+
+    Le calendrier melange preliminaires et phase principale, et aucun seuil de
+    matchs joues ne les separe (71 clubs encore a 8 matchs). Une liste vide
+    est visible et se corrige ; 141 clubs induisent en erreur.
+    """
+    import app.api.players as mod
+
+    session = MagicMock()
+    vide = MagicMock()
+    vide.scalars.return_value.all.return_value = []
+    session.execute = AsyncMock(return_value=vide)
+
+    appele = []
+
+    async def _repli(sess, league_api_id, season):
+        appele.append(league_api_id)
+        return [1, 2, 3]
+
+    original = mod._team_ids_from_events
+    mod._team_ids_from_events = _repli
+    try:
+        ldc = await team_ids_for_league(session, 7, "2025-2026")
+        serie_a = await team_ids_for_league(session, 4, "2025-2026")
+    finally:
+        mod._team_ids_from_events = original
+
+    assert ldc == []          # LDC : pas de repli
+    assert serie_a == [1, 2, 3]  # championnat : repli applique
+    assert appele == [4]
