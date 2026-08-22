@@ -2,6 +2,7 @@
 
 import csv
 import io
+import re
 from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
@@ -127,6 +128,9 @@ class PlayerSummary(BaseModel):
     matches_played: int | None
     minutes_played: int | None
     season: str
+    # Saison precedente, affichee sous la valeur courante. None si non demandee
+    # ou si le joueur n'a pas joue cette saison-la.
+    previous: dict[str, Any] | None = None
 
 
 class RecentMatch(BaseModel):
@@ -507,6 +511,86 @@ def _python_sort(results: list[dict[str, Any]], sort_by: str, sort_order: str) -
             results.sort(key=lambda r: (r.get(field) is None, r.get(field) or 0))
 
 
+# Champs rendus par _merge_season_stats. Sert a fabriquer une ligne vide
+# pour un joueur sans statistiques dans la saison demandee : en
+# comparaison, il reste affiche avec des tirets.
+_CHAMPS_VIDES: tuple[str, ...] = (
+    "goals",
+    "goal_assist",
+    "xg_per_90",
+    "xa_per_90",
+    "avg_rating",
+    "shots_on_target_per_90",
+    "form_xg_5",
+    "matches_played",
+    "minutes_played",
+    "season",
+    "total_shots",
+    "shots_on_target",
+    "key_pass",
+    "expected_goals",
+    "expected_assists",
+    "yellow_card",
+    "red_card",
+    "saves",
+    "shots_per_90",
+    "key_pass_per_90",
+    "accurate_cross_per_90",
+    "recoveries_per_90",
+    "tackles_per_90",
+    "interceptions_per_90",
+    "shot_accuracy",
+    "xg_per_shot",
+    "finishing_delta",
+    "xa_delta",
+    "pass_completion",
+    "long_ball_accuracy",
+    "cross_accuracy",
+    "duel_win_rate",
+    "aerial_win_rate",
+    "tackle_success_rate",
+    "avg_minutes_per_match",
+    "starts_pct",
+    "form_rating_5",
+    "form_goals_5",
+    "form_assists_5",
+    "rating_trend",
+)
+
+
+_SAISON_RE = re.compile(r"^(\d{4})-(\d{4})$")
+
+
+def saison_precedente(season: str) -> str:
+    """Saison precedant celle donnee : les deux annees reculent d'un cran."""
+    m = _SAISON_RE.match(season)
+    if not m or int(m.group(2)) != int(m.group(1)) + 1:
+        raise ValueError(f"Format de saison invalide: {season!r}")
+    debut = int(m.group(1))
+    return f"{debut - 1}-{debut}"
+
+
+def bloc_precedent(merged: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Valeurs de la saison precedente affichees sous celles de la saison courante.
+
+    Ne porte que ce que la page montre : volumes en rappel, et statistiques
+    ramenees au temps de jeu, seules a etre comparables entre deux saisons de
+    longueurs differentes.
+    """
+    if not merged:
+        return None
+    return {
+        "season": merged.get("season"),
+        "matches_played": merged.get("matches_played"),
+        "minutes_played": merged.get("minutes_played"),
+        "goals": merged.get("goals"),
+        "goal_assist": merged.get("goal_assist"),
+        "xg_per_90": merged.get("xg_per_90"),
+        "xa_per_90": merged.get("xa_per_90"),
+        "avg_rating": merged.get("avg_rating"),
+    }
+
+
 async def team_ids_for_league(
     session: AsyncSession, league_api_id: int, season: str
 ) -> list[int]:
@@ -659,11 +743,13 @@ async def list_player_teams(
     # qui garantit mecaniquement les 18 ou 20 clubs, sans dependre de ce que
     # les statistiques laissent deviner — un club sans aucun joueur en base
     # doit tout de meme apparaitre dans son championnat.
-    # Pour une saison passee, team_ids_for_league se replie sur le calendrier :
-    # canonical_teams ne porte que l'engagement courant, et le frontend
-    # interroge explicitement la saison precedente.
+    # La structure ne suit PAS la saison demandee : les clubs et les effectifs
+    # restent ceux de la saison en cours, ce sont les joueurs actifs a pricer.
+    # Le parametre season ne concerne que les statistiques affichees.
     if league_api_id is not None:
-        ids = await team_ids_for_league(session, league_api_id, season)
+        ids = await team_ids_for_league(
+            session, league_api_id, await current_season(session)
+        )
         if not ids:
             return []
         return await _nommer_clubs(session, ids)
@@ -799,6 +885,10 @@ async def list_players(
     position: str | None = Query(None, description="Filter by position: G/D/M/F"),
     min_minutes: int = Query(0, description="Minimum minutes played"),
     season: str | None = Query(None),
+    compare_previous: bool = Query(
+        False,
+        description="Joindre les stats de la saison precedente sous chaque valeur",
+    ),
     sort_by: str = Query("xg_per_90"),
     sort_order: str = Query("desc"),
     limit: int = Query(50, le=500),
@@ -814,7 +904,10 @@ async def list_players(
     player_id_subq = select(BzzPlayer.api_id).where(BzzPlayer.internal_id.is_not(None))
 
     if league_api_id is not None:
-        team_ids = await team_ids_for_league(session, league_api_id, season)
+        # Effectifs de la saison en cours, quelle que soit la saison des stats.
+        team_ids = await team_ids_for_league(
+            session, league_api_id, await current_season(session)
+        )
         if not team_ids:
             return []
         eff_team = func.coalesce(
@@ -846,6 +939,20 @@ async def list_players(
         )
     )).scalars().all()
 
+    # Appele directement (tests), compare_previous porte l'objet Query, qui est
+    # toujours vrai : on teste donc l'identite, pas la veracite.
+    comparer = compare_previous is True
+    saison_prec = saison_precedente(season) if comparer else None
+    stats_prec_by_player: dict[int, list] = defaultdict(list)
+    if saison_prec:
+        for row in (await session.execute(
+            select(BzzPlayerSeasonStat).where(
+                BzzPlayerSeasonStat.player_api_id.in_(player_id_subq),
+                BzzPlayerSeasonStat.season == saison_prec,
+            )
+        )).scalars().all():
+            stats_prec_by_player[row.player_api_id].append(row)
+
     # Step 3: group by player
     stats_by_player: dict[int, list] = defaultdict(list)
     for s in all_stats:
@@ -869,14 +976,22 @@ async def list_players(
     results: list[dict[str, Any]] = []
     for pid, player in player_by_id.items():
         rows = stats_by_player.get(pid)
-        if not rows:
-            continue  # no season stats yet
+        rows_prec = stats_prec_by_player.get(pid)
 
-        merged = _merge_season_stats(rows, season)
-        if not merged:
+        # En comparaison, un joueur sans stats courantes reste affiche : ses
+        # colonnes montrent des tirets, ce qui est l'information utile en debut
+        # de saison. Sans comparaison, on garde le comportement d'origine.
+        if not rows and not (comparer and rows_prec):
             continue
 
-        if min_minutes > 0 and (merged["minutes_played"] or 0) < min_minutes:
+        merged = _merge_season_stats(rows, season) if rows else None
+        if not merged and not (comparer and rows_prec):
+            continue
+        if merged is None:
+            merged = {k: None for k in _CHAMPS_VIDES}
+            merged["season"] = season
+
+        if min_minutes > 0 and (merged.get("minutes_played") or 0) < min_minutes:
             continue
 
         results.append({
@@ -896,6 +1011,9 @@ async def list_players(
             "matches_played": merged["matches_played"],
             "minutes_played": merged["minutes_played"],
             "season": merged["season"],
+            "previous": bloc_precedent(
+                _merge_season_stats(rows_prec, saison_prec) if rows_prec else None
+            ) if comparer else None,
             # Extra numeric fields needed for sort but not in PlayerSummary schema
             "total_shots": merged["total_shots"],
             "shots_on_target": merged["shots_on_target"],

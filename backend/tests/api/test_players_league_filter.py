@@ -133,14 +133,17 @@ async def test_liste_equipes_saison_passee_n_est_pas_vide():
     async def _noms(sess, ids):
         return [{"api_id": 63, "name": "AC Milan"}, {"api_id": 77, "name": "Inter"}]
 
-    o1, o2 = mod.team_ids_for_league, mod._nommer_clubs
-    mod.team_ids_for_league, mod._nommer_clubs = _ids, _noms
+    async def _courante(session):
+        return "2026-2027"
+
+    o1, o2, o3 = mod.team_ids_for_league, mod._nommer_clubs, mod.current_season
+    mod.team_ids_for_league, mod._nommer_clubs, mod.current_season = _ids, _noms, _courante
     try:
         res = await mod.list_player_teams(
             session=MagicMock(), league_api_id=4, season="2025-2026"
         )
     finally:
-        mod.team_ids_for_league, mod._nommer_clubs = o1, o2
+        mod.team_ids_for_league, mod._nommer_clubs, mod.current_season = o1, o2, o3
 
     assert res == [
         {"api_id": 63, "name": "AC Milan"},
