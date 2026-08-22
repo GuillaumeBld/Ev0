@@ -83,6 +83,44 @@ match. Il devient la clé unique du référentiel.
 Un référentiel d'équipes où chaque club porte **son identifiant d'espace A et
 son championnat**, et où tout filtre résout par identifiant — jamais par nom.
 
+## Invariant de segmentation
+
+C'est l'exigence structurante, et elle est vérifiable par une requête.
+
+**Pour la saison en cours, chaque championnat porte exactement son nombre
+réglementaire d'engagés, ni plus ni moins :**
+
+| Championnat | Identifiant | Engagés |
+|---|---|---|
+| Premier League | 1 | **20** |
+| La Liga | 3 | **20** |
+| Serie A | 4 | **20** |
+| Bundesliga | 5 | **18** |
+| Ligue 1 | 6 | **18** |
+
+Total : **96 clubs**. C'est le compte relevé le 22/08/2026 sur l'API, et il
+correspond au format de chaque compétition.
+
+Trois règles en découlent :
+
+1. **Un club engagé appartient à exactement un championnat.** Aucun club ne
+   peut être engagé dans deux compétitions la même saison. La paire
+   `(bzz_team_id, season)` est unique.
+
+2. **Aucun club hors format.** Un club qui n'est pas dans les 18 ou 20 engagés
+   n'a aucun engagement pour la saison courante — il ne peut donc apparaître
+   dans aucun filtre de championnat. C'est ce qui exclut « Alcione Milano » de
+   la Serie A et « Inter Club d'Escaldes » de la Ligue des champions.
+
+3. **Un écart est un échec, pas un avertissement.** Si l'énumération rend 19
+   clubs en Premier League ou 21 en Serie A, la reconstruction s'arrête et ne
+   commet rien. Une segmentation approximative est pire qu'une absence de
+   segmentation : elle donne l'illusion d'être juste.
+
+**Les clubs relégués gardent leur ligne et leur historique**, mais perdent leur
+engagement pour la saison courante. Ils restent interrogeables par identifiant
+pour les backtests ; ils disparaissent des filtres de championnat.
+
 ## Conception
 
 ### Une colonne de championnat sur `canonical_teams`
@@ -103,11 +141,21 @@ matchs via `GET /api/events/?league=<id>&date_from=…&date_to=…`, et collecte
 les `home_team_obj` / `away_team_obj` distincts. Chaque objet porte `id` et
 `name` : c'est la liste officielle des engagés, promus inclus.
 
+**Contrôle avant écriture.** L'énumération doit rendre exactement 20, 20, 20,
+18 et 18 clubs. Le compte est vérifié **avant** toute écriture ; un écart
+interrompt la reconstruction sans rien commettre, en nommant le championnat
+fautif et le compte obtenu. C'est le garde-fou de l'invariant de segmentation.
+
 Pour chaque club ainsi trouvé :
 
 - si `canonical_teams` porte déjà ce nom, **corriger** son `bzz_team_id` vers
   l'espace A et renseigner son championnat ;
 - sinon, **créer** l'entrée.
+
+Les engagements de la saison en cours sont **remplacés en bloc**, pas
+fusionnés : un club qui n'est plus dans les 18 ou 20 perd son engagement du
+seul fait de son absence de la liste. Sans cela, un relégué resterait engagé
+indéfiniment et polluerait le filtre de son ancien championnat.
 
 Aucune entrée n'est supprimée : un club relégué garde sa ligne et son
 historique, il perd seulement son engagement pour la saison courante.
@@ -151,6 +199,16 @@ tirages connus, sans modification de code.
 
 ## Tests
 
+- **Segmentation stricte** : la saison en cours compte exactement 20 engagés en
+  Premier League, 20 en Liga, 20 en Serie A, 18 en Bundesliga et 18 en Ligue 1
+  — 96 au total, pas 95, pas 97.
+- **Un club, un championnat** : aucun club n'a deux engagements pour la même
+  saison.
+- **Écart bloquant** : une énumération rendant 19 ou 21 clubs pour un
+  championnat interrompt la reconstruction sans rien écrire, et nomme le
+  championnat fautif.
+- **Remplacement en bloc** : un club relégué, absent de la nouvelle liste,
+  perd son engagement et disparaît du filtre de son ancien championnat.
 - **Référentiel** : les 96 clubs des cinq championnats 2026-2027 sont présents
   avec un championnat renseigné ; Coventry City, Hull City, Paris FC, Le Mans
   et Troyes en font partie.
