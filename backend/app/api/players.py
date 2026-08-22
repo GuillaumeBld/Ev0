@@ -27,7 +27,7 @@ from app.models.bzzoiro import (
 )
 from app.models.player_career import PlayerCareerSeason
 from app.pricing.career_blend import blended_rhythm
-from app.services.season_service import current_season
+from app.services.season_service import current_season, season_end, season_start
 
 router = APIRouter(prefix="/players", tags=["players"])
 
@@ -515,6 +515,13 @@ async def team_ids_for_league(
     canonical_teams depuis la migration 054. Il etait auparavant deduit en
     regroupant les joueurs par current_team_name, colonne fausse pour 37 %
     d'entre eux — d'ou des clubs andorrans dans les filtres.
+
+    canonical_teams ne porte que l'engagement de la SAISON COURANTE. Pour une
+    saison passee, les engages sont derives de bzz_events, qui couvre cinq
+    saisons depuis le rattrapage du 21/08/2026. Cette derivation est
+    approximative — la fenetre attrape les barrages, et le format des
+    championnats a change (Ligue 1 est passee de 20 a 18 clubs) — mais elle
+    rend l'historique consultable, ce qu'une liste vide ne fait pas.
     """
     from app.models.canonical_teams import CanonicalTeam
 
@@ -525,7 +532,41 @@ async def team_ids_for_league(
             CanonicalTeam.bzz_team_id.is_not(None),
         )
     )
-    return list(result.scalars().all())
+    engages = list(result.scalars().all())
+    if engages:
+        return engages
+
+    return await _team_ids_from_events(session, league_api_id, season)
+
+
+async def _team_ids_from_events(
+    session: AsyncSession, league_api_id: int, season: str
+) -> list[int]:
+    """Engages d'une saison passee, derives du calendrier.
+
+    Repli utilise quand canonical_teams ne porte pas d'engagement pour la
+    saison demandee. Les identifiants d'equipe de bzz_events relevent du meme
+    espace que canonical_teams.bzz_team_id.
+    """
+    from app.models.bzzoiro import BzzEvent
+
+    debut = season_start(season)
+    fin = season_end(season)
+    conditions = (
+        BzzEvent.league_api_id == league_api_id,
+        BzzEvent.event_date >= debut,
+        BzzEvent.event_date < fin,
+    )
+
+    domicile = select(BzzEvent.home_team_api_id).where(
+        *conditions, BzzEvent.home_team_api_id.is_not(None)
+    )
+    exterieur = select(BzzEvent.away_team_api_id).where(
+        *conditions, BzzEvent.away_team_api_id.is_not(None)
+    )
+
+    result = await session.execute(domicile.union(exterieur))
+    return [r[0] for r in result.all()]
 
 
 

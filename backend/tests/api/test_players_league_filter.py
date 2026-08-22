@@ -44,3 +44,74 @@ def test_la_deduction_par_nom_a_disparu():
 
     assert not hasattr(mod, "_get_team_dominant_leagues")
     assert not hasattr(mod, "_MIN_PLAYERS_FOR_TARGET_LEAGUE")
+
+
+# ---------------------------------------------------------------------------
+# Saisons passees : canonical_teams ne porte que l'engagement courant
+# ---------------------------------------------------------------------------
+
+
+async def test_saison_passee_derive_du_calendrier():
+    """Sans engagement enregistre, on derive de bzz_events plutot que de
+    rendre une liste vide — sinon tout l'historique devient infiltrable."""
+    import app.api.players as mod
+
+    session = MagicMock()
+    vide = MagicMock()
+    vide.scalars.return_value.all.return_value = []
+    session.execute = AsyncMock(return_value=vide)
+
+    appels = []
+
+    async def _repli(sess, league_api_id, season):
+        appels.append((league_api_id, season))
+        return [63, 77]
+
+    original = mod._team_ids_from_events
+    mod._team_ids_from_events = _repli
+    try:
+        ids = await team_ids_for_league(session, 4, "2024-2025")
+    finally:
+        mod._team_ids_from_events = original
+
+    assert ids == [63, 77]
+    assert appels == [(4, "2024-2025")]
+
+
+async def test_saison_courante_n_utilise_pas_le_repli():
+    """Quand l'engagement existe, il fait foi — segmentation stricte."""
+    import app.api.players as mod
+
+    session = _session_rendant([63, 77, 62])
+    appele = []
+
+    async def _repli(sess, league_api_id, season):
+        appele.append(True)
+        return []
+
+    original = mod._team_ids_from_events
+    mod._team_ids_from_events = _repli
+    try:
+        ids = await team_ids_for_league(session, 4, "2026-2027")
+    finally:
+        mod._team_ids_from_events = original
+
+    assert ids == [63, 77, 62]
+    assert appele == []
+
+
+async def test_repli_borne_la_saison_des_deux_cotes():
+    """Sans borne haute, une saison passee ramasserait les suivantes."""
+    import app.api.players as mod
+
+    session = MagicMock()
+    res = MagicMock()
+    res.all.return_value = [(63,), (77,)]
+    session.execute = AsyncMock(return_value=res)
+
+    ids = await mod._team_ids_from_events(session, 4, "2024-2025")
+
+    assert ids == [63, 77]
+    requete = str(session.execute.call_args.args[0])
+    assert "bzz_events" in requete
+    assert requete.count("event_date") >= 2
