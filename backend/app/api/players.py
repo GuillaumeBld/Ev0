@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.ingestion.bzzoiro.constants import (
+    EFFECTIFS_REGLEMENTAIRES,
     TARGET_LEAGUE_API_ID_LIST,
     TARGET_LEAGUE_INTERNAL_ID_LIST,
 )
@@ -535,6 +536,15 @@ async def team_ids_for_league(
     engages = list(result.scalars().all())
     if engages:
         return engages
+
+    # Repli reserve aux competitions au format connu. Pour une coupe, le
+    # calendrier melange tours preliminaires et phase principale : la Ligue
+    # des champions 2025-2026 rendait 141 clubs, dont des equipes amateurs,
+    # et aucun seuil de matchs joues ne les separe proprement (71 clubs
+    # encore a 8 matchs). Une liste vide est visible et se corrige ; une
+    # liste de 141 clubs induit en erreur.
+    if league_api_id not in EFFECTIFS_REGLEMENTAIRES:
+        return []
 
     return await _team_ids_from_events(session, league_api_id, season)
 
