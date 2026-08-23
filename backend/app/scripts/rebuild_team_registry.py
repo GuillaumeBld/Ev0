@@ -18,16 +18,39 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.bzzoiro.constants import EFFECTIFS_REGLEMENTAIRES
+from app.ingestion.ps3838.anchor import _fold
 from app.services.season_service import current_season, season_end, season_start
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
+
+
+# Affixes qui ne distinguent pas deux clubs : "FC Barcelona" et "Barcelone"
+# designent le meme club. Leur oubli a produit 14 doublons le 22/08.
+_AFFIXES = {
+    "fc", "ac", "as", "sc", "cf", "ud", "sd", "rc", "cd", "sv", "vfb", "vfl",
+    "tsg", "rb", "sl", "ss", "us", "afc", "bsc", "fsv", "spvgg", "club",
+}
+_ORDINAL_RE = re.compile(r"^\d+$")
+
+
+def cle_club(nom: str | None) -> str:
+    """Cle d'appariement d'un nom de club : replie, sans affixes.
+
+    Sert a reconnaitre qu'une ligne canonique existe deja sous un autre
+    libelle, plutot que d'en creer une seconde.
+    """
+    tokens = [t for t in _fold(nom or "").split() if t]
+    garde = [t for t in tokens if t not in _AFFIXES and not _ORDINAL_RE.match(t)]
+    # Un club dont le nom n'est QUE des affixes garde ses tokens d'origine.
+    return " ".join(garde or tokens)
 
 
 class SegmentationError(RuntimeError):
@@ -106,6 +129,19 @@ async def rebuild(
         .values(league_api_id=None, season=None)
     )
 
+    # Index des lignes existantes par cle d'appariement : une ligne canonique
+    # peut porter un tout autre libelle que l'API ("Barcelone" / "FC
+    # Barcelona"). Sans cet index, la reconstruction cree un doublon, et le
+    # sync Transfermarkt — qui resout vers l'ancienne ligne — reecrit ensuite
+    # le mauvais identifiant sur les joueurs chaque nuit.
+    toutes = (await session.execute(select(CanonicalTeam))).scalars().all()
+    par_cle: dict[str, CanonicalTeam] = {}
+    for ligne in toutes:
+        for libelle in (ligne.name_fr, ligne.name_en, *(ligne.aliases or [])):
+            cle = cle_club(libelle)
+            if cle:
+                par_cle.setdefault(cle, ligne)
+
     comptes: dict[int, int] = {}
     for league_api_id, engages in par_championnat.items():
         for club_id, nom in engages.items():
@@ -114,11 +150,10 @@ async def rebuild(
             )).scalar_one_or_none()
 
             if existant is None:
-                existant = (await session.execute(
-                    select(CanonicalTeam).where(CanonicalTeam.name_fr == nom)
-                )).scalar_one_or_none()
+                existant = par_cle.get(cle_club(nom))
 
             if existant is None:
+                logger.info("nouveau club au referentiel : %s (id %s)", nom, club_id)
                 session.add(CanonicalTeam(
                     name_fr=nom,
                     name_en=nom,
