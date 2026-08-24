@@ -14,6 +14,10 @@ DEFAULT_TIMEOUT = 30.0
 logger = logging.getLogger(__name__)
 
 
+class PaginationTronqueeError(RuntimeError):
+    """Le parcours des pages n'a pas ramene tout ce que l'API annonce."""
+
+
 class BzzoiroClient:
     def __init__(self, api_key: str, base_url: str = BASE_URL) -> None:
         self._api_key = api_key
@@ -55,12 +59,21 @@ class BzzoiroClient:
         return response.json()
 
     async def get_all(self, path: str, params: dict[str, Any] | None = None, max_pages: int = 500) -> list[dict[str, Any]]:
+        """Parcourt toutes les pages. Leve si le resultat est tronque.
+
+        Une troncature silencieuse a deja coute cher : la liste mondiale des
+        joueurs fait 2 349 pages pour un plafond a 500, et 78 % des joueurs
+        n'ont jamais ete rafraichis sans qu'aucun signal ne l'indique.
+        """
         all_results: list[dict[str, Any]] = []
         next_url: str | None = path
         page_params = dict(params or {})
         pages = 0
+        total_annonce: int | None = None
         while next_url and pages < max_pages:
             data = await self.get_page(next_url, page_params)
+            if total_annonce is None and isinstance(data, dict):
+                total_annonce = data.get("count")
             results = data.get("results") or data
             if isinstance(results, list):
                 all_results.extend(results)
@@ -72,4 +85,18 @@ class BzzoiroClient:
             else:
                 next_url = None
             pages += 1
+
+        if next_url:
+            raise PaginationTronqueeError(
+                f"{path} : plafond de {max_pages} pages atteint alors qu'il reste "
+                f"des pages ({len(all_results)} lignes ramenees). Reduire le "
+                f"perimetre de la requete plutot que d'accepter un resultat partiel."
+            )
+
+        if isinstance(total_annonce, int) and len(all_results) != total_annonce:
+            raise PaginationTronqueeError(
+                f"{path} : l'API annonce {total_annonce} lignes, "
+                f"{len(all_results)} recues"
+            )
+
         return all_results
