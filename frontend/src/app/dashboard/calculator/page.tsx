@@ -180,6 +180,38 @@ interface TeamTableProps {
   viewMode: ViewMode
 }
 
+/** Colonnes triables du tableau d'allocation. */
+type ColonneTri = 'nom' | 'position' | 'minutes' | 'ancien_but' | 'ancien_passe' | 'nouveau_but' | 'nouveau_passe'
+
+/** Valeur servant au tri pour une colonne donnee.
+ *  Les probabilites absentes valent -1 pour finir en bas en decroissant,
+ *  plutot que d'etre confondues avec un zero legitime. */
+function valeurTri(p: PlayerAllocationOut, col: ColonneTri): number | string {
+  switch (col) {
+    case 'nom':           return p.player_name
+    case 'position':      return p.position ?? ''
+    case 'minutes':       return p.expected_minutes ?? -1
+    case 'ancien_but':    return p.p_goal_supersub ?? -1
+    case 'ancien_passe':  return p.p_assist_supersub ?? -1
+    case 'nouveau_but':   return p.beta_p_goal_supersub ?? -1
+    case 'nouveau_passe': return p.beta_p_assist_supersub ?? -1
+  }
+}
+
+function trierJoueurs(
+  joueurs: PlayerAllocationOut[], col: ColonneTri, sens: 'asc' | 'desc',
+): PlayerAllocationOut[] {
+  const signe = sens === 'asc' ? 1 : -1
+  return [...joueurs].sort((a, b) => {
+    const va = valeurTri(a, col)
+    const vb = valeurTri(b, col)
+    if (typeof va === 'string' || typeof vb === 'string') {
+      return signe * String(va).localeCompare(String(vb), 'fr')
+    }
+    return signe * (va - vb)
+  })
+}
+
 function TeamTable({
   teamName,
   matchXg,
@@ -194,6 +226,45 @@ function TeamTable({
 }: TeamTableProps) {
   const showProba = viewMode === 'proba'
   const [logoFailed, setLogoFailed] = useState(false)
+
+  // Tri du tableau. Par defaut la probabilite de but du nouveau calcul, du
+  // plus fort au plus faible : c'est la colonne qu'on lit en premier.
+  const [triCol, setTriCol] = useState<ColonneTri>('nouveau_but')
+  const [triSens, setTriSens] = useState<'asc' | 'desc'>('desc')
+
+  const basculerTri = (col: ColonneTri) => {
+    if (col === triCol) {
+      setTriSens((s) => (s === 'desc' ? 'asc' : 'desc'))
+    } else {
+      setTriCol(col)
+      // Un nom se lit de A a Z, un chiffre du plus fort au plus faible.
+      setTriSens(col === 'nom' || col === 'position' ? 'asc' : 'desc')
+    }
+  }
+
+  const joueursTries = useMemo(
+    () => trierJoueurs(players, triCol, triSens),
+    [players, triCol, triSens],
+  )
+
+  /** En-tete cliquable : une fleche indique la colonne et le sens actifs. */
+  const ThTri = ({ col, children, className, rowSpan }: {
+    col: ColonneTri; children: React.ReactNode; className?: string; rowSpan?: number
+  }) => (
+    <th
+      rowSpan={rowSpan}
+      onClick={() => basculerTri(col)}
+      title="Cliquer pour trier — un second clic inverse l'ordre"
+      className={clsx('cursor-pointer select-none hover:text-white transition-colors', className)}
+    >
+      <span className="inline-flex items-center gap-1">
+        {children}
+        <span className={clsx('text-[9px]', triCol === col ? 'opacity-100' : 'opacity-25')}>
+          {triCol === col ? (triSens === 'desc' ? '▼' : '▲') : '▼'}
+        </span>
+      </span>
+    </th>
+  )
   const logoId = getTeamId(teamName)
 
   return (
@@ -248,9 +319,9 @@ function TeamTable({
         <table className="w-full text-xs">
           <thead>
             <tr className="text-gray-400">
-              <th rowSpan={2} className="text-left px-3 py-2 font-medium align-bottom">Joueur</th>
-              <th rowSpan={2} className="px-2 py-2 font-medium align-bottom">Pos</th>
-              <th rowSpan={2} className="px-2 py-2 font-medium align-bottom">Min</th>
+              <ThTri col="nom" rowSpan={2} className="text-left px-3 py-2 font-medium align-bottom">Joueur</ThTri>
+              <ThTri col="position" rowSpan={2} className="px-2 py-2 font-medium align-bottom">Pos</ThTri>
+              <ThTri col="minutes" rowSpan={2} className="px-2 py-2 font-medium align-bottom">Min</ThTri>
               <th colSpan={2} className="px-3 pt-2 pb-1 font-semibold text-gray-500 border-l border-gray-700 text-center uppercase tracking-wide text-[10px]">
                 Ancien calcul
               </th>
@@ -259,14 +330,14 @@ function TeamTable({
               </th>
             </tr>
             <tr className="border-b border-gray-700 text-gray-400">
-              <th className="px-3 pb-2 font-medium text-gray-500 border-l border-gray-700">Buteur</th>
-              <th className="px-3 pb-2 font-medium text-gray-500">Passeur</th>
-              <th className="px-3 pb-2 font-medium text-orange-400 border-l border-gray-700">Buteur</th>
-              <th className="px-3 pb-2 font-medium text-orange-400">Passeur</th>
+              <ThTri col="ancien_but" className="px-3 pb-2 font-medium text-gray-500 border-l border-gray-700">Buteur</ThTri>
+              <ThTri col="ancien_passe" className="px-3 pb-2 font-medium text-gray-500">Passeur</ThTri>
+              <ThTri col="nouveau_but" className="px-3 pb-2 font-medium text-orange-400 border-l border-gray-700">Buteur</ThTri>
+              <ThTri col="nouveau_passe" className="px-3 pb-2 font-medium text-orange-400">Passeur</ThTri>
             </tr>
           </thead>
           <tbody>
-            {players.map((p) => {
+            {joueursTries.map((p) => {
               const isPenTaker = penTakerOverride
                 ? p.player_id === penTakerOverride
                 : p.is_pen_taker
