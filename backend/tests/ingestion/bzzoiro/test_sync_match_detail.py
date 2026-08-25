@@ -230,3 +230,32 @@ async def test_compo_absente_n_ecrit_rien():
     session = _session()
     assert await ecrire_compos(session, 7, {"home": "A", "away": "B"}, None) == 0
     session.add.assert_not_called()
+
+
+# --- Selection des matchs a rattraper ---------------------------------------
+
+
+def test_sans_donnees_attrape_le_null_json():
+    """Piege JSONB : sync_events a ecrit `null` au sens JSON, pas NULL au sens
+    SQL. Un filtre `shotmap IS NULL` ne correspond a rien et le rattrapage
+    annoncerait 0 traite indefiniment, sans que rien ne l'explique.
+
+    Mesure du 25/08/2026 : sur 8 965 matchs termines, jsonb_typeof(shotmap)
+    vaut 'null' pour les 8 965.
+    """
+    from app.ingestion.bzzoiro.sync_match_detail import sans_donnees
+
+    compilee = sans_donnees().compile()
+    texte = str(compilee)
+    valeurs = list(compilee.params.values())
+
+    # les trois formes de vide, et elles seules
+    assert "IS NULL" in texte
+    assert "jsonb_typeof" in texte
+    assert "null" in valeurs
+    # la liste vide se lie en '[]'::jsonb ; cast("[]", JSONB) produirait
+    # '"[]"', une chaine JSON qui ne correspondrait a rien
+    assert [] in valeurs
+    # une liste POURVUE ne doit pas etre reprise : sans cette contrainte,
+    # chaque passage retraiterait tous les matchs deja faits
+    assert "jsonb_array_length" not in texte
