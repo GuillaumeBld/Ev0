@@ -54,20 +54,17 @@ def sans_donnees():
 
     Mesure du 25/08/2026 : sur les 8 965 matchs termines du perimetre,
     jsonb_typeof(shotmap) vaut 'null' pour les 8 965.
+
+    Une liste VIDE n'est PAS reprise : elle signifie "verifie, Bzzoiro n'a
+    pas de tirs pour ce match". Les donnees de tirs ne remontent pas avant
+    2025 ; sans cette marque, le job horaire reinterrogerait 6 200 matchs
+    anciens indefiniment, 600 requetes par heure pour rien.
     """
     from app.models.bzzoiro import BzzEvent
 
     return or_(
         BzzEvent.shotmap.is_(None),
         func.jsonb_typeof(BzzEvent.shotmap) == "null",
-        # Liste VIDE seulement : une liste pourvue est deja traitee, la
-        # reprendre la retraiterait a chaque passage.
-        # Comparaison directe plutot que jsonb_array_length : cette fonction
-        # leve sur une valeur qui n'est pas une liste, et PostgreSQL ne
-        # garantit pas l'evaluation paresseuse d'un OR.
-        # La liste Python vide se lie en '[]'::jsonb ; cast("[]", JSONB)
-        # produirait '"[]"', une chaine JSON qui ne correspond a rien.
-        BzzEvent.shotmap == [],
     )
 
 
@@ -321,11 +318,16 @@ async def sync_avant_match(
 async def sync_apres_match(
     session: AsyncSession, client: Any, limite: int = 200
 ) -> tuple[int, int]:
-    """Stats et carte des tirs des matchs termines. Rend (traites, incomplets).
+    """Stats et carte des tirs des matchs termines. Rend (traites, sans tirs).
 
-    Un match dont la carte des tirs revient vide n'est PAS marque traite : il
-    sera retente. Ecrire du vide sans le signaler est ce qui a laisse 8 965
-    matchs sans donnees pendant des mois.
+    Trois issues par match :
+      - donnees presentes -> ecrites ;
+      - Bzzoiro n'a pas de tirs -> liste vide, le match sort de la file ;
+      - l'appel echoue -> laisse a null, il sera retente.
+
+    La distinction compte : sans elle, les 6 200 matchs anterieurs a 2025 --
+    pour lesquels Bzzoiro n'a aucun tir -- seraient reinterroges a chaque
+    passage horaire, indefiniment.
     """
     from app.models.bzzoiro import BzzEvent
 
@@ -337,11 +339,21 @@ async def sync_apres_match(
         ).order_by(BzzEvent.event_date.desc()).limit(limite)
     )).scalars().all()
 
-    traites = incomplets = 0
+    traites = sans_tirs = echecs = 0
     for ev in evenements:
         stats = await fetch_match_stats(client, ev.api_id)
-        if not stats or not stats.get("shotmap"):
-            incomplets += 1
+
+        if stats is None:
+            # L'appel a echoue : on laisse le match a null pour le retenter.
+            echecs += 1
+            continue
+
+        if not stats.get("shotmap"):
+            # Bzzoiro connait le match mais n'a pas de tirs -- le cas de tous
+            # les matchs anterieurs a 2025. La liste vide marque "verifie,
+            # rien a prendre" et sort le match de la file.
+            ev.shotmap = []
+            sans_tirs += 1
             continue
 
         ev.shotmap = stats.get("shotmap")
@@ -354,8 +366,11 @@ async def sync_apres_match(
 
         traites += 1
 
-    if traites:
+    if traites or sans_tirs:
         await session.commit()
 
-    logger.info("Apres match : %d traites, %d incomplets", traites, incomplets)
-    return traites, incomplets
+    logger.info(
+        "Apres match : %d traites, %d sans tirs chez Bzzoiro, %d echecs",
+        traites, sans_tirs, echecs,
+    )
+    return traites, sans_tirs
