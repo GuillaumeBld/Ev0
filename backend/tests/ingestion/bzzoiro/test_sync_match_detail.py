@@ -253,9 +253,63 @@ def test_sans_donnees_attrape_le_null_json():
     assert "IS NULL" in texte
     assert "jsonb_typeof" in texte
     assert "null" in valeurs
-    # la liste vide se lie en '[]'::jsonb ; cast("[]", JSONB) produirait
-    # '"[]"', une chaine JSON qui ne correspondrait a rien
-    assert [] in valeurs
-    # une liste POURVUE ne doit pas etre reprise : sans cette contrainte,
-    # chaque passage retraiterait tous les matchs deja faits
+    # Une liste VIDE n'est PAS reprise : elle marque "verifie, Bzzoiro n'a
+    # pas de tirs". Sans cela, les 6 200 matchs anterieurs a 2025 seraient
+    # reinterroges a chaque passage horaire, indefiniment.
+    assert [] not in valeurs
+    # une liste POURVUE non plus : chaque passage retraiterait tout
     assert "jsonb_array_length" not in texte
+
+
+async def test_match_sans_tirs_sort_de_la_file():
+    """Bzzoiro connait le match mais n'a pas de tirs : on le marque.
+
+    Les donnees de tirs ne remontent pas avant 2025. Verifie le 25/08/2026 :
+    /api/v2/events/303685/stats/ (14/12/2024) rend des stats mais zero tir.
+    """
+    from app.ingestion.bzzoiro.sync_match_detail import sync_apres_match
+
+    ev = MagicMock()
+    ev.api_id = 303685
+    ev.shotmap = None
+
+    session = MagicMock()
+    r = MagicMock()
+    r.scalars.return_value.all.return_value = [ev]
+    session.execute = AsyncMock(return_value=r)
+    session.commit = AsyncMock()
+
+    client = MagicMock()
+    client.get_page = AsyncMock(return_value={"stats": {"home": {}}, "shotmap": []})
+
+    traites, sans_tirs = await sync_apres_match(session, client)
+
+    assert (traites, sans_tirs) == (0, 1)
+    # marque comme verifie : il ne reviendra plus dans la file
+    assert ev.shotmap == []
+    session.commit.assert_awaited()
+
+
+async def test_appel_echoue_laisse_le_match_a_retenter():
+    """Une panne reseau ne doit pas condamner un match."""
+    from app.ingestion.bzzoiro.sync_match_detail import sync_apres_match
+
+    ev = MagicMock()
+    ev.api_id = 1
+    ev.shotmap = None
+
+    session = MagicMock()
+    r = MagicMock()
+    r.scalars.return_value.all.return_value = [ev]
+    session.execute = AsyncMock(return_value=r)
+    session.commit = AsyncMock()
+
+    client = MagicMock()
+    client.get_page = AsyncMock(side_effect=Exception("502"))
+
+    traites, sans_tirs = await sync_apres_match(session, client)
+
+    assert (traites, sans_tirs) == (0, 0)
+    # laisse a None : il sera repris au prochain passage
+    assert ev.shotmap is None
+    session.commit.assert_not_called()
