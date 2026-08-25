@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from app.api import matches as matches_api  # noqa: F401
 from app.api import (
     autopilot,
     backtest,
@@ -74,6 +75,7 @@ app.add_middleware(
 app.include_router(health.router, tags=["health"])
 app.include_router(canonical_teams_api.router, prefix="/api/v1", tags=["canonical-teams"])
 app.include_router(players.router, prefix="/api/v1", tags=["players"])
+app.include_router(matches_api.router, prefix="/api/v1", tags=["matches"])
 app.include_router(pricing.router, prefix="/api/v1", tags=["pricing"])
 app.include_router(recommendations.router, prefix="/api/v1", tags=["recommendations"])
 app.include_router(fixtures.router, prefix="/api/v1", tags=["fixtures"])
