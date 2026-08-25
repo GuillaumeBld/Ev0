@@ -552,3 +552,41 @@ async def test_job_approche_sans_cle_ne_fait_rien():
         await job_sync_bzzoiro_events_approche()
 
     mock_sync.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Fiche match : compos avant match, donnees apres match
+# ---------------------------------------------------------------------------
+
+
+async def test_job_compos_avant_match_sans_cle_ne_fait_rien():
+    from app.worker import job_sync_compos_avant_match
+
+    with patch("app.worker.settings") as s, patch(
+        "app.worker.sync_avant_match", new=AsyncMock()
+    ) as m:
+        s.bzzoiro_api_key = None
+        await job_sync_compos_avant_match()
+    m.assert_not_called()
+
+
+async def test_job_apres_match_sans_cle_ne_fait_rien():
+    from app.worker import job_sync_donnees_apres_match
+
+    with patch("app.worker.settings") as s, patch(
+        "app.worker.sync_apres_match", new=AsyncMock()
+    ) as m:
+        s.bzzoiro_api_key = None
+        await job_sync_donnees_apres_match()
+    m.assert_not_called()
+
+
+def test_les_deux_jobs_sont_planifies():
+    """5 min avant match, 1 h apres : les cadences sont dictees par la donnee."""
+    import inspect
+
+    import app.worker as w
+
+    src = inspect.getsource(w)
+    assert 'id="sync_compos_avant_match"' in src
+    assert 'id="sync_donnees_apres_match"' in src
