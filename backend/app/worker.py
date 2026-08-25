@@ -36,6 +36,7 @@ from app.ingestion.bzzoiro.sync_fixtures_from_bzz import sync_fixtures_from_bzz
 from app.ingestion.bzzoiro.sync_reference import sync_leagues, sync_teams
 from app.ingestion.bzzoiro.sync_bzzoiro_odds import sync_bzzoiro_odds
 from app.ingestion.bzzoiro.sync_bzzoiro_lineups import sync_bzzoiro_lineups
+from app.ingestion.bzzoiro.sync_match_detail import sync_apres_match, sync_avant_match
 from app.ingestion.bzzoiro.sync_incidents import sync_incidents
 from app.ingestion.bzzoiro.sync_wc_squads import sync_wc_squads
 from app.ingestion.bzzoiro.constants import INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST
@@ -1367,6 +1368,40 @@ async def job_sync_bzzoiro_events_approche() -> None:
         logger.error("Echec du rafraichissement d'approche : %s", exc, exc_info=True)
 
 
+async def job_sync_compos_avant_match() -> None:
+    """Toutes les 5 min : suit les compos des matchs a venir.
+
+    Bzzoiro publie une compo probable un a deux jours avant, puis l'officielle
+    peu avant le coup d'envoi. La regle d'interrogation limite la veille a une
+    vingtaine de requetes par match : voir doit_interroger.
+    """
+    if not settings.bzzoiro_api_key:
+        return
+    try:
+        async with async_session() as session, BzzoiroClient(
+            settings.bzzoiro_api_key
+        ) as client:
+            await sync_avant_match(session, client)
+    except Exception as exc:
+        logger.error("Echec du suivi des compos : %s", exc, exc_info=True)
+
+
+async def job_sync_donnees_apres_match() -> None:
+    """Toutes les heures : carte des tirs et statistiques des matchs termines.
+
+    Ces donnees sont definitives : un match traite ne l'est qu'une fois.
+    """
+    if not settings.bzzoiro_api_key:
+        return
+    try:
+        async with async_session() as session, BzzoiroClient(
+            settings.bzzoiro_api_key
+        ) as client:
+            await sync_apres_match(session, client)
+    except Exception as exc:
+        logger.error("Echec des donnees d'apres match : %s", exc, exc_info=True)
+
+
 async def job_sync_bzzoiro_lineups() -> None:
     """Sync lineups from bzz_events JSONB into TeamLineup."""
     logger.info("job_sync_bzzoiro_lineups: start")
@@ -2187,6 +2222,30 @@ def create_scheduler() -> AsyncIOScheduler:
         id="sync_bzzoiro_odds",
         replace_existing=True,
         max_instances=1,
+    )
+
+    # Compos des matchs a venir. 5 minutes : c'est le delai maximal entre la
+    # publication de la compo officielle par Bzzoiro et sa disponibilite chez
+    # nous. La regle d'interrogation evite la veille inutile entre-temps.
+    scheduler.add_job(
+        job_sync_compos_avant_match,
+        IntervalTrigger(minutes=5),
+        id="sync_compos_avant_match",
+        name="Compos Bzzoiro — matchs a venir",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Donnees d'apres match — definitives, une passe horaire suffit.
+    scheduler.add_job(
+        job_sync_donnees_apres_match,
+        IntervalTrigger(hours=1),
+        id="sync_donnees_apres_match",
+        name="Tirs et stats Bzzoiro — matchs termines",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
 
     # Bzzoiro lineups sync — toutes les 30 min
