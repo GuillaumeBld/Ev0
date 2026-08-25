@@ -1,7 +1,16 @@
 """TeamLineup et TeamLineupPlayer — compositions d'équipe par match."""
 from __future__ import annotations
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
+from datetime import datetime
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -19,6 +28,15 @@ class TeamLineup(Base, TimestampMixin):
     lineup_type: Mapped[str] = mapped_column(String(20))
     source: Mapped[str] = mapped_column(String(50), default="manual")
     created_by: Mapped[str] = mapped_column(String(100), default="system")
+
+    # Ce que Bzzoiro declare : "confirmed" pour une compo officielle,
+    # "predicted" pour une compo probable publiee un a deux jours avant.
+    # Nullable : une compo manuelle n'a pas de statut Bzzoiro.
+    lineup_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Heure de publication annoncee par Bzzoiro (updated_at).
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     players: Mapped[list[TeamLineupPlayer]] = relationship(
         back_populates="lineup", cascade="all, delete-orphan"
