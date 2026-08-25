@@ -536,48 +536,67 @@ from datetime import UTC, datetime, timedelta
 
 from app.ingestion.bzzoiro.sync_match_detail import doit_interroger
 
+MAINTENANT = datetime(2026, 8, 25, 12, tzinfo=UTC)
 
-def _session_types(types):
+
+def _session_compos(lignes):
+    """lignes : liste de (lineup_type, updated_at)."""
     s = MagicMock()
     r = MagicMock()
-    r.scalars.return_value.all.return_value = list(types)
+    r.all.return_value = list(lignes)
     s.execute = AsyncMock(return_value=r)
     return s
 
 
 async def test_interroge_quand_aucune_compo():
-    maintenant = datetime(2026, 8, 25, 12, tzinfo=UTC)
-    ko = maintenant + timedelta(hours=40)
-    assert await doit_interroger(_session_types([]), 7, ko, maintenant) is True
+    ko = MAINTENANT + timedelta(hours=40)
+    assert await doit_interroger(_session_compos([]), 7, ko, MAINTENANT) is True
 
 
-async def test_n_interroge_plus_une_fois_la_compo_officielle_connue():
+async def test_n_interroge_plus_une_fois_l_officielle_connue():
     """Elle ne changera plus : inutile d'y revenir."""
-    maintenant = datetime(2026, 8, 25, 12, tzinfo=UTC)
-    ko = maintenant + timedelta(minutes=30)
-    assert await doit_interroger(_session_types(["official"]), 7, ko, maintenant) is False
+    ko = MAINTENANT + timedelta(minutes=30)
+    session = _session_compos([("official", MAINTENANT)])
+    assert await doit_interroger(session, 7, ko, MAINTENANT) is False
 
 
-async def test_probable_en_base_suspend_jusqu_a_90_minutes():
+async def test_probable_captee_suspend_la_veille():
     """Deux jours de requetes pour rien : on s'arrete apres la probable."""
-    maintenant = datetime(2026, 8, 25, 12, tzinfo=UTC)
-    loin = maintenant + timedelta(hours=40)
-    proche = maintenant + timedelta(minutes=80)
-
-    assert await doit_interroger(_session_types(["bzzoiro"]), 7, loin, maintenant) is False
-    assert await doit_interroger(_session_types(["bzzoiro"]), 7, proche, maintenant) is True
+    ko = MAINTENANT + timedelta(hours=40)
+    session = _session_compos([("bzzoiro", MAINTENANT)])
+    assert await doit_interroger(session, 7, ko, MAINTENANT) is False
 
 
-async def test_reprise_exactement_au_seuil():
-    maintenant = datetime(2026, 8, 25, 12, tzinfo=UTC)
-    seuil = maintenant + timedelta(minutes=90)
-    assert await doit_interroger(_session_types(["bzzoiro"]), 7, seuil, maintenant) is True
+async def test_controle_a_h_moins_24():
+    """Une requete quand on passe sous 24 h, pas une de plus."""
+    ko = MAINTENANT + timedelta(hours=20)
+    # capture faite avant l'entree dans la fenetre H-24
+    avant = ko - timedelta(hours=30)
+    assert await doit_interroger(_session_compos([("bzzoiro", avant)]), 7, ko, MAINTENANT) is True
+    # capture deja faite dans la fenetre : on n'y revient pas
+    dedans = ko - timedelta(hours=22)
+    assert await doit_interroger(_session_compos([("bzzoiro", dedans)]), 7, ko, MAINTENANT) is False
+
+
+async def test_controle_a_h_moins_6():
+    ko = MAINTENANT + timedelta(hours=5)
+    avant = ko - timedelta(hours=20)   # capture du controle H-24
+    assert await doit_interroger(_session_compos([("bzzoiro", avant)]), 7, ko, MAINTENANT) is True
+    dedans = ko - timedelta(hours=5, minutes=30)
+    assert await doit_interroger(_session_compos([("bzzoiro", dedans)]), 7, ko, MAINTENANT) is False
+
+
+async def test_veille_serree_dans_les_90_dernieres_minutes():
+    """La compo officielle parait la : on interroge a chaque passage."""
+    ko = MAINTENANT + timedelta(minutes=80)
+    session = _session_compos([("bzzoiro", MAINTENANT)])
+    assert await doit_interroger(session, 7, ko, MAINTENANT) is True
 
 
 async def test_sans_coup_d_envoi_connu_on_interroge():
     """Mieux vaut une requete de trop qu'une compo manquee."""
-    maintenant = datetime(2026, 8, 25, 12, tzinfo=UTC)
-    assert await doit_interroger(_session_types(["bzzoiro"]), 7, None, maintenant) is True
+    session = _session_compos([("bzzoiro", MAINTENANT)])
+    assert await doit_interroger(session, 7, None, MAINTENANT) is True
 ```
 
 - [ ] **Step 6 : Écrire l'écriture des compos**
@@ -691,10 +710,12 @@ Expected: PASS
 Ajouter dans `sync_match_detail.py` :
 
 ```python
-# Une compo officielle parait peu avant le coup d'envoi. Tant qu'on detient
-# deja la compo probable, interroger l'API pendant deux jours ne rapporte
-# rien : on reprend a partir de ce delai.
-REPRISE_AVANT_COUP_ENVOI = timedelta(minutes=90)
+# Rythme de veille sur un match a venir, une fois la compo probable captee.
+# Interroger toutes les 5 minutes pendant deux jours ne rapporte rien : on se
+# contente de deux points de controle, puis d'une veille serree quand la compo
+# officielle est sur le point de paraitre.
+CONTROLES_INTERMEDIAIRES = (timedelta(hours=24), timedelta(hours=6))
+VEILLE_SERREE = timedelta(minutes=90)
 
 
 async def doit_interroger(
@@ -703,29 +724,47 @@ async def doit_interroger(
     coup_envoi: datetime | None,
     maintenant: datetime,
 ) -> bool:
-    """Faut-il encore interroger l'API pour ce match ?
+    """Faut-il interroger l'API pour ce match, maintenant ?
 
-    Trois cas :
-      - compo officielle deja en base -> non, elle ne changera plus ;
-      - aucune compo -> oui, on cherche la probable ;
-      - probable en base -> non, jusqu'a 90 minutes du coup d'envoi.
+    - compo officielle en base -> non, elle ne changera plus ;
+    - aucune compo -> oui, on cherche la probable ;
+    - probable en base -> une seule requete a H-24, une a H-6, puis veille
+      serree dans les 90 dernieres minutes.
 
-    Contrepartie assumee : une compo probable revisee par Bzzoiro entre sa
-    publication et ce delai ne sera pas captee. Elle le sera a la reprise.
+    Les deux controles intermediaires rattrapent une compo revisee entre-temps
+    (blessure a l'entrainement) sans payer deux jours de veille.
     """
     from app.models.lineups import TeamLineup
 
-    types = set((await session.execute(
-        select(TeamLineup.lineup_type).where(TeamLineup.fixture_id == fixture_id)
-    )).scalars().all())
+    lignes = (await session.execute(
+        select(TeamLineup.lineup_type, TeamLineup.updated_at)
+        .where(TeamLineup.fixture_id == fixture_id)
+    )).all()
 
-    if "official" in types:
+    if any(t == "official" for t, _ in lignes):
         return False
-    if not types:
+    if not lignes:
         return True
     if coup_envoi is None:
+        # Sans coup d'envoi connu, mieux vaut une requete de trop qu'une
+        # compo manquee.
         return True
-    return coup_envoi - maintenant <= REPRISE_AVANT_COUP_ENVOI
+
+    reste = coup_envoi - maintenant
+    if reste <= VEILLE_SERREE:
+        return True
+
+    derniere = max((u for _, u in lignes if u is not None), default=None)
+    if derniere is None:
+        return True
+
+    # Un controle par fenetre : on n'interroge que si la derniere capture
+    # date d'avant l'entree dans cette fenetre.
+    for seuil in CONTROLES_INTERMEDIAIRES:
+        if reste <= seuil and derniere < coup_envoi - seuil:
+            return True
+
+    return False
 
 
 async def sync_avant_match(
