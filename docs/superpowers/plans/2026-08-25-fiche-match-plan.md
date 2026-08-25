@@ -527,6 +527,59 @@ async def test_compo_absente_n_ecrit_rien():
     session.add.assert_not_called()
 ```
 
+- [ ] **Step 5 bis : Écrire les tests de la règle d'interrogation**
+
+Ajouter au même fichier :
+
+```python
+from datetime import UTC, datetime, timedelta
+
+from app.ingestion.bzzoiro.sync_match_detail import doit_interroger
+
+
+def _session_types(types):
+    s = MagicMock()
+    r = MagicMock()
+    r.scalars.return_value.all.return_value = list(types)
+    s.execute = AsyncMock(return_value=r)
+    return s
+
+
+async def test_interroge_quand_aucune_compo():
+    maintenant = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    ko = maintenant + timedelta(hours=40)
+    assert await doit_interroger(_session_types([]), 7, ko, maintenant) is True
+
+
+async def test_n_interroge_plus_une_fois_la_compo_officielle_connue():
+    """Elle ne changera plus : inutile d'y revenir."""
+    maintenant = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    ko = maintenant + timedelta(minutes=30)
+    assert await doit_interroger(_session_types(["official"]), 7, ko, maintenant) is False
+
+
+async def test_probable_en_base_suspend_jusqu_a_90_minutes():
+    """Deux jours de requetes pour rien : on s'arrete apres la probable."""
+    maintenant = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    loin = maintenant + timedelta(hours=40)
+    proche = maintenant + timedelta(minutes=80)
+
+    assert await doit_interroger(_session_types(["bzzoiro"]), 7, loin, maintenant) is False
+    assert await doit_interroger(_session_types(["bzzoiro"]), 7, proche, maintenant) is True
+
+
+async def test_reprise_exactement_au_seuil():
+    maintenant = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    seuil = maintenant + timedelta(minutes=90)
+    assert await doit_interroger(_session_types(["bzzoiro"]), 7, seuil, maintenant) is True
+
+
+async def test_sans_coup_d_envoi_connu_on_interroge():
+    """Mieux vaut une requete de trop qu'une compo manquee."""
+    maintenant = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    assert await doit_interroger(_session_types(["bzzoiro"]), 7, None, maintenant) is True
+```
+
 - [ ] **Step 6 : Écrire l'écriture des compos**
 
 Ajouter dans `sync_match_detail.py` :
@@ -638,6 +691,43 @@ Expected: PASS
 Ajouter dans `sync_match_detail.py` :
 
 ```python
+# Une compo officielle parait peu avant le coup d'envoi. Tant qu'on detient
+# deja la compo probable, interroger l'API pendant deux jours ne rapporte
+# rien : on reprend a partir de ce delai.
+REPRISE_AVANT_COUP_ENVOI = timedelta(minutes=90)
+
+
+async def doit_interroger(
+    session: AsyncSession,
+    fixture_id: int,
+    coup_envoi: datetime | None,
+    maintenant: datetime,
+) -> bool:
+    """Faut-il encore interroger l'API pour ce match ?
+
+    Trois cas :
+      - compo officielle deja en base -> non, elle ne changera plus ;
+      - aucune compo -> oui, on cherche la probable ;
+      - probable en base -> non, jusqu'a 90 minutes du coup d'envoi.
+
+    Contrepartie assumee : une compo probable revisee par Bzzoiro entre sa
+    publication et ce delai ne sera pas captee. Elle le sera a la reprise.
+    """
+    from app.models.lineups import TeamLineup
+
+    types = set((await session.execute(
+        select(TeamLineup.lineup_type).where(TeamLineup.fixture_id == fixture_id)
+    )).scalars().all())
+
+    if "official" in types:
+        return False
+    if not types:
+        return True
+    if coup_envoi is None:
+        return True
+    return coup_envoi - maintenant <= REPRISE_AVANT_COUP_ENVOI
+
+
 async def sync_avant_match(
     session: AsyncSession, client: Any, heures: int = 72
 ) -> tuple[int, int]:
@@ -670,14 +760,8 @@ async def sync_avant_match(
         if fixture is None:
             continue
 
-        deja = (await session.execute(
-            select(TeamLineup).where(
-                TeamLineup.fixture_id == fixture.id,
-                TeamLineup.lineup_type == "official",
-            )
-        )).first()
-        if deja:
-            continue  # officielle deja en base, plus rien a suivre
+        if not await doit_interroger(session, fixture.id, ev.event_date, maintenant):
+            continue
 
         vus += 1
         brut = await fetch_lineups(client, ev.api_id)
