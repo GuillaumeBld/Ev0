@@ -351,7 +351,7 @@ async def test_fetch_stats_appelle_le_bon_point_d_acces():
 
 def test_compo_confirmee():
     assert est_confirmee(_reponse_compos("confirmed")) is True
-    assert est_confirmee(_reponse_compos("probable")) is False
+    assert est_confirmee(_reponse_compos("predicted")) is False
     assert est_confirmee(None) is False
     assert est_confirmee({}) is False
 
@@ -363,7 +363,7 @@ def test_type_de_compo_suit_le_statut():
     official (0) a bzzoiro (1) sans qu'aucune ligne ne soit a reecrire.
     """
     assert type_de_compo(_reponse_compos("confirmed")) == "official"
-    assert type_de_compo(_reponse_compos("probable")) == "bzzoiro"
+    assert type_de_compo(_reponse_compos("predicted")) == "bzzoiro"
 ```
 
 - [ ] **Step 2 : Lancer les tests et vérifier qu'ils échouent**
@@ -442,7 +442,11 @@ async def fetch_incidents(client: Any, event_api_id: int) -> list[dict] | None:
 
 
 def est_confirmee(brut: dict[str, Any] | None) -> bool:
-    """Vrai si Bzzoiro declare la compo officielle."""
+    """Vrai si Bzzoiro declare la compo officielle.
+
+    Valeurs observees le 25/08/2026 : "predicted" pour une compo probable
+    publiee un a deux jours avant, "confirmed" pour l'officielle.
+    """
     return bool(brut) and brut.get("lineup_status") == "confirmed"
 
 
@@ -635,12 +639,13 @@ Ajouter dans `sync_match_detail.py` :
 
 ```python
 async def sync_avant_match(
-    session: AsyncSession, client: Any, heures: int = 6
+    session: AsyncSession, client: Any, heures: int = 72
 ) -> tuple[int, int]:
     """Compos des matchs a venir. Rend (matchs vus, compos ecrites).
 
-    On cesse d'interroger un match des que sa compo est confirmee : elle ne
-    changera plus.
+    Fenetre de 72 h : Bzzoiro publie une compo probable jusqu'a deux jours
+    avant le match, ce qui permet de pricer tot. On cesse d'interroger un
+    match des que sa compo est confirmee : elle ne changera plus.
     """
     from app.models.bzzoiro import BzzEvent
     from app.models.fixtures import Fixture
@@ -798,10 +803,13 @@ Puis, près de `job_sync_bzzoiro_lineups` :
 
 ```python
 async def job_sync_compos_avant_match() -> None:
-    """Toutes les 10 min : suit les compos des matchs a venir.
+    """Toutes les 5 min : suit les compos des matchs a venir.
 
-    Bzzoiro publie la compo officielle environ 1 h avant le coup d'envoi. On
-    cesse de suivre un match des qu'elle est confirmee.
+    Bzzoiro publie une compo "predicted" un a deux jours avant le match
+    (mesure du 25/08/2026 : Real Madrid-Real Sociedad a J-23h, Barcelone-
+    Athletic a J-47h), puis la passe a "confirmed" peu avant le coup d'envoi.
+    On cesse de suivre un match des qu'elle est confirmee : elle ne changera
+    plus.
     """
     if not settings.bzzoiro_api_key:
         return
@@ -835,11 +843,12 @@ async def job_sync_donnees_apres_match() -> None:
 Dans la fonction de planification, après le bloc `sync_bzzoiro_lineups` :
 
 ```python
-    # Compos des matchs a venir — meme cadence que le regime d'approche des
-    # evenements, puisque c'est la meme fenetre qui compte.
+    # Compos des matchs a venir. 5 minutes : c'est le delai maximal entre la
+    # publication de la compo officielle par Bzzoiro et sa disponibilite chez
+    # nous. Le job sort immediatement s'il n'y a aucun match dans la fenetre.
     scheduler.add_job(
         job_sync_compos_avant_match,
-        IntervalTrigger(minutes=10),
+        IntervalTrigger(minutes=5),
         id="sync_compos_avant_match",
         name="Compos Bzzoiro — matchs a venir",
         replace_existing=True,
