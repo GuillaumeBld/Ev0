@@ -23,7 +23,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_INTERNAL_IDS
@@ -42,6 +42,33 @@ LEAGUES_FICHE_MATCH: list[int] = [
 # points de controle, puis une veille serree quand l'officielle va paraitre.
 CONTROLES_INTERMEDIAIRES = (timedelta(hours=24), timedelta(hours=6))
 VEILLE_SERREE = timedelta(minutes=90)
+
+
+def sans_donnees():
+    """Clause selectionnant les matchs dont la carte des tirs manque.
+
+    PIEGE JSONB : sync_events ecrivait `row.get("shotmap")` -- soit None --
+    dans une colonne JSONB, ce qui stocke `null` au sens JSON et non NULL au
+    sens SQL. Un filtre `shotmap IS NULL` ne correspond alors a RIEN : le
+    rattrapage annoncait 0 traite indefiniment, sans que rien ne l'explique.
+
+    Mesure du 25/08/2026 : sur les 8 965 matchs termines du perimetre,
+    jsonb_typeof(shotmap) vaut 'null' pour les 8 965.
+    """
+    from app.models.bzzoiro import BzzEvent
+
+    return or_(
+        BzzEvent.shotmap.is_(None),
+        func.jsonb_typeof(BzzEvent.shotmap) == "null",
+        # Liste VIDE seulement : une liste pourvue est deja traitee, la
+        # reprendre la retraiterait a chaque passage.
+        # Comparaison directe plutot que jsonb_array_length : cette fonction
+        # leve sur une valeur qui n'est pas une liste, et PostgreSQL ne
+        # garantit pas l'evaluation paresseuse d'un OR.
+        # La liste Python vide se lie en '[]'::jsonb ; cast("[]", JSONB)
+        # produirait '"[]"', une chaine JSON qui ne correspond a rien.
+        BzzEvent.shotmap == [],
+    )
 
 
 # ── Recuperation ────────────────────────────────────────────────────────────
@@ -306,7 +333,7 @@ async def sync_apres_match(
         select(BzzEvent).where(
             BzzEvent.league_api_id.in_(LEAGUES_FICHE_MATCH),
             BzzEvent.status == "finished",
-            BzzEvent.shotmap.is_(None),
+            sans_donnees(),
         ).order_by(BzzEvent.event_date.desc()).limit(limite)
     )).scalars().all()
 
