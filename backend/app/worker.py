@@ -1842,42 +1842,80 @@ async def job_resolve_ps3838_anchors() -> None:
 SNAPSHOT_RETENTION_DAYS = 45
 _PURGE_BATCH = 50_000
 
+# Ce que la purge efface, et ce qu'elle garde pour toujours.
+#
+# player_odds_snapshots n'a JAMAIS contenu d'historique : sa contrainte
+# d'unicite porte sur (fixture, bookmaker, marche, joueur) sans horodatage,
+# donc chaque scrape ecrase le precedent. Une ligne = une selection = la
+# derniere cote avant le coup d'envoi. La purger ne supprimait donc aucun
+# doublon : elle supprimait les matchs passes, c'est-a-dire la seule matiere
+# dont on dispose pour calibrer le pricing joueur. Elle en est retiree.
+# Cout de la conservation : ~43 000 lignes par 45 jours, soit 115 Mo par an.
+#
+# match_odds_snapshots, lui, garde bien tout le mouvement de ligne : 107
+# snapshots par selection en moyenne. On y efface les points intermediaires
+# passe le delai, mais on conserve definitivement l'ouverture et la cloture —
+# 1 % du volume, et c'est ce couple qui sert a mesurer le marche.
+#
+# Troisieme categorie protegee : les snapshots qu'une estimation de xG
+# d'equipe designe nommement par input_snapshot_ids. Les effacer rendrait
+# cette estimation non rejouable, ce que le modele team_xg cherche justement
+# a eviter.
+_PURGE_INTERMEDIAIRES = """
+    WITH ancres AS (
+        SELECT DISTINCT (e.value)::int AS id
+        FROM team_xg_estimates t,
+             LATERAL jsonb_array_elements_text(t.input_snapshot_ids) AS e(value)
+        WHERE jsonb_typeof(t.input_snapshot_ids) = 'array'
+    )
+    DELETE FROM match_odds_snapshots WHERE id IN (
+        SELECT t.id FROM (
+            SELECT id,
+                   row_number() OVER w AS rang_debut,
+                   row_number() OVER (PARTITION BY fixture_id, bookmaker,
+                                      market_type, outcome
+                                      ORDER BY snapshot_utc DESC) AS rang_fin
+            FROM match_odds_snapshots
+            WHERE snapshot_utc < now() - make_interval(days => :d)
+            WINDOW w AS (PARTITION BY fixture_id, bookmaker, market_type,
+                         outcome ORDER BY snapshot_utc)
+        ) t
+        WHERE t.rang_debut > 1 AND t.rang_fin > 1
+          AND NOT EXISTS (SELECT 1 FROM ancres a WHERE a.id = t.id)
+        LIMIT :batch
+    )
+"""
+
 
 async def job_purge_old_snapshots() -> None:
-    """Daily 04:30 UTC: purge les snapshots de cotes plus vieux que 45 jours.
+    """Daily 04:30 UTC: allege l'historique des cotes d'equipe.
 
-    Sans risque : les recs réglées portent leurs cotes en dur, le pricing et
-    market_xg ne lisent que le dernier snapshot, le moteur de recos a une
-    fenêtre de 24h. Suppression par lots pour éviter les locks longs.
+    Ne touche plus aux cotes joueurs (voir le commentaire ci-dessus) et ne
+    supprime que les points intermediaires du mouvement de ligne, en gardant
+    l'ouverture et la cloture de chaque selection.
+
+    Sans risque : les recos reglees portent leurs cotes en dur, le pricing et
+    market_xg ne lisent que le dernier snapshot — qui est justement celui
+    qu'on conserve. Suppression par lots pour eviter les locks longs.
     """
     try:
-        totals = {}
-        for table, ts_col in (
-            ("match_odds_snapshots", "created_at"),
-            ("player_odds_snapshots", "scraped_at"),
-        ):
-            deleted = 0
-            while True:
-                async with async_session() as session:
-                    res = await session.execute(
-                        text(
-                            f"DELETE FROM {table} WHERE id IN ("
-                            f" SELECT id FROM {table}"
-                            f" WHERE {ts_col} < now() - make_interval(days => :d)"
-                            f" LIMIT :batch)"
-                        ),
-                        {"d": SNAPSHOT_RETENTION_DAYS, "batch": _PURGE_BATCH},
-                    )
-                    await session.commit()
-                n = res.rowcount or 0
-                deleted += n
-                if n < _PURGE_BATCH:
-                    break
-            totals[table] = deleted
-        if any(totals.values()):
+        deleted = 0
+        while True:
+            async with async_session() as session:
+                res = await session.execute(
+                    text(_PURGE_INTERMEDIAIRES),
+                    {"d": SNAPSHOT_RETENTION_DAYS, "batch": _PURGE_BATCH},
+                )
+                await session.commit()
+            n = res.rowcount or 0
+            deleted += n
+            if n < _PURGE_BATCH:
+                break
+        if deleted:
             logger.info(
-                "job_purge_old_snapshots: %s supprimés (> %d jours)",
-                totals, SNAPSHOT_RETENTION_DAYS,
+                "job_purge_old_snapshots: %s points intermediaires supprimés "
+                "(> %d jours) ; ouvertures, clôtures et cotes joueurs conservées",
+                deleted, SNAPSHOT_RETENTION_DAYS,
             )
     except Exception as exc:
         logger.exception("job_purge_old_snapshots failed: %s", exc)
@@ -2282,7 +2320,8 @@ def create_scheduler() -> AsyncIOScheduler:
         job_purge_old_snapshots,
         CronTrigger(hour=4, minute=30),
         id="purge_old_snapshots",
-        name="Purge des snapshots de cotes > 45 jours",
+        name="Allègement du mouvement de ligne > 45 jours "
+             "(ouvertures, clôtures et cotes joueurs conservées)",
         replace_existing=True,
     )
 
