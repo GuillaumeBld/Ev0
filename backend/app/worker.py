@@ -1387,9 +1387,15 @@ async def job_sync_compos_avant_match() -> None:
 
 
 async def job_sync_donnees_apres_match() -> None:
-    """Toutes les heures : carte des tirs et statistiques des matchs termines.
+    """Toutes les heures : tirs, statistiques et compos des matchs termines.
 
-    Ces donnees sont definitives : un match traite ne l'est qu'une fois.
+    Ces donnees sont definitives : un match traite ne l'est qu'une fois. Les
+    tirs et la compo forment deux files independantes — un match dont les tirs
+    sont pris peut rester en attente de sa compo.
+
+    Le rattrapage des compos porte sur 9 012 matchs et avance par lots de 200
+    a l'heure, soit environ deux jours. Aucun script separe : la file se vide
+    d'elle-meme, et un match sans compo chez Bzzoiro en sort definitivement.
     """
     if not settings.bzzoiro_api_key:
         return
