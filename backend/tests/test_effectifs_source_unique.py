@@ -104,3 +104,27 @@ def test_un_echec_de_resolution_ne_bloque_pas_la_synchro():
     bloc = source[source.index("_resolve_clubs_blocking"):]
     assert "except Exception" in bloc
     assert "logger.error" in bloc
+
+
+def test_un_effectif_se_lit_en_entier():
+    """Quand un club precis est demande, un joueur sans statistiques de la
+    saison reste affiche (colonnes a tirets). Debut septembre, apres deux
+    journees, le filtre sur les statistiques vidait les effectifs de leurs
+    blesses et de leurs gardiens remplacants : 4 joueurs sur 25 disparaissaient
+    a Newcastle, dont le gardien titulaire Nick Pope."""
+    from app.api import players
+
+    source = inspect.getsource(players.list_players)
+    assert "garder_sans_stats" in source
+    assert "team_api_id is not None" in source.split("garder_sans_stats")[1][:120]
+
+
+def test_la_vue_par_championnat_reste_filtree():
+    """Sans club demande, on classe des joueurs : y faire remonter des milliers
+    de lignes vides n'aide personne."""
+    from app.api import players
+
+    source = inspect.getsource(players.list_players)
+    bloc = source[source.index("garder_sans_stats ="):]
+    assert "if not rows and not garder_sans_stats:" in bloc
+    assert "continue" in bloc
