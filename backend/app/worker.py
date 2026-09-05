@@ -26,7 +26,6 @@ from app.config import settings
 from app.db import DATABASE_URL, async_session, engine
 from app.ingestion.auto_settle import settle_approved_recommendations
 from app.ingestion.bzzoiro.aggregate import aggregate_all_leagues
-from app.ingestion.bzzoiro.sync_loan_teams import sync_loan_teams
 from app.ingestion.bzzoiro.client import BzzoiroClient
 from app.ingestion.bzzoiro.sync_events import sync_events
 from app.ingestion.bzzoiro.sync_player_stats import sync_player_stats
@@ -45,6 +44,7 @@ from app.ingestion.storage import (
     store_recommendation,
 )
 from app.ingestion.transfermarkt.failure_surface import surface_failure
+from app.ingestion.transfermarkt.resolve_clubs import resolve_and_store_club_ids
 from app.ingestion.transfermarkt.schedule import should_run_today
 from app.ingestion.transfermarkt.sync_squads import sync_squads
 from app.models.canonical_teams import CanonicalTeam
@@ -1212,18 +1212,6 @@ async def job_aggregate_season_stats():
     logger.info("=== Bzzoiro season stats aggregation complete ===")
 
 
-async def job_sync_loan_teams():
-    """Daily at 04:30 UTC: detect on-loan players from match stats and update loan_team_*."""
-    logger.info("=== Starting loan team sync ===")
-    try:
-        async with async_session() as session:
-            changed = await sync_loan_teams(session)
-            logger.info("Loan team sync: %d rows changed", changed)
-    except Exception as exc:
-        logger.error("Error in loan team sync: %s", exc, exc_info=True)
-    logger.info("=== Loan team sync complete ===")
-
-
 async def job_sync_bzzoiro_events():
     """Every 6h: sync Bzzoiro match events — 3 days back, 30 days forward."""
     logger.info("=== Starting Bzzoiro events sync ===")
@@ -1577,6 +1565,35 @@ def _run_sync_squads_blocking(
     return asyncio.run(_run())
 
 
+def _resolve_clubs_blocking():
+    """Resout les `transfermarkt_club_id` manquants, dans un thread dedie.
+
+    Meme contrainte que `_run_sync_squads_blocking` (client HTTP synchrone,
+    engine dedie NullPool) — voir sa docstring.
+
+    Sans ce passage, un club entrant dans le referentiel (promu, bascule de
+    saison) n'obtenait JAMAIS d'identifiant Transfermarkt : la resolution
+    n'existait que dans le script manuel `run_squad_sync_once`, et le job
+    quotidien ne selectionnait que les clubs deja resolus. Consequence
+    observee le 05/09/2026 : 32 clubs des cinq grands championnats (Rayo
+    Vallecano, Torino, Hamburger SV, Coventry City, ...) n'avaient aucun
+    effectif synchronise depuis la bascule 2026-2027.
+    """
+
+    async def _run():
+        client = TransfermarktClient()
+        eng = create_async_engine(DATABASE_URL, poolclass=NullPool)
+        sm = async_sessionmaker(eng, expire_on_commit=False)
+        try:
+            async with sm() as session:
+                return await resolve_and_store_club_ids(session, client=client)
+        finally:
+            client.close()
+            await eng.dispose()
+
+    return asyncio.run(_run())
+
+
 async def job_sync_squads() -> None:
     """Daily at 04:30 UTC: reconcile Transfermarkt squads into `bzz_players`.
 
@@ -1604,6 +1621,26 @@ async def job_sync_squads() -> None:
                 logger.info("job_sync_squads: no-op (hors fenêtre / hebdo déjà fait)")
                 return
 
+        # Ancrage AVANT selection : un club neuf au referentiel obtient son
+        # identifiant Transfermarkt ici, donc son effectif est synchronise des
+        # ce run et non jamais. Un echec de resolution ne doit pas empecher la
+        # synchro des clubs deja ancres -> on log et on continue.
+        try:
+            rapport = await asyncio.to_thread(_resolve_clubs_blocking)
+            logger.info(
+                "job_sync_squads: resolution clubs -> %s resolus, %s clubs TM non "
+                "apparies, %s canoniques sans id TM",
+                rapport.resolved,
+                len(rapport.unresolved_tm),
+                len(rapport.unmatched_canonical),
+            )
+        except Exception as exc:
+            logger.error(
+                "job_sync_squads: resolution des clubs TM en echec (%s) — la synchro "
+                "continue sur les clubs deja ancres.", exc, exc_info=True,
+            )
+
+        async with async_session() as session:
             clubs_result = await session.execute(
                 select(CanonicalTeam).where(
                     CanonicalTeam.transfermarkt_club_id.isnot(None),
@@ -2167,15 +2204,6 @@ def create_scheduler() -> AsyncIOScheduler:
         CronTrigger(hour=4, minute=0),
         id="aggregate_season_stats",
         name="Aggregate Bzzoiro per-match stats into season totals",
-        replace_existing=True,
-    )
-
-    # Loan team detection: daily at 04:30 UTC (after aggregation)
-    scheduler.add_job(
-        job_sync_loan_teams,
-        CronTrigger(hour=4, minute=30),
-        id="sync_loan_teams",
-        name="Detect on-loan players from match stats and update loan_team_*",
         replace_existing=True,
     )
 

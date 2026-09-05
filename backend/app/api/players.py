@@ -946,11 +946,13 @@ async def list_players(
         )
         player_id_subq = player_id_subq.where(eff_team.in_(team_ids))
     if team_api_id is not None:
+        # Un joueur appartient a UN club : celui que porte l'effectif
+        # Transfermarkt (`sync_squads`), seule autorite sur la composition.
+        # L'ancien filtre retombait aussi sur le club de PRET, ce qui faisait
+        # apparaitre le meme joueur dans DEUX effectifs des qu'une etiquette
+        # trainait — c'est ainsi que Newcastle et Tottenham se melangeaient.
         player_id_subq = player_id_subq.where(
-            or_(
-                BzzPlayer.current_team_api_id == team_api_id,
-                BzzPlayer.loan_team_api_id == team_api_id,
-            )
+            BzzPlayer.current_team_api_id == team_api_id
         )
     if position is not None:
         player_id_subq = player_id_subq.where(BzzPlayer.position == position.upper())
