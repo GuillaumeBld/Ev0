@@ -12,8 +12,14 @@ L'API v2 les fournit toutes. Deux regimes, dictes par la nature de la donnee :
   "predicted" un a deux jours avant (mesure : Real Madrid-Real Sociedad a
   J-23h, Barcelone-Athletic a J-47h), puis la passe a "confirmed" peu avant le
   coup d'envoi.
-- APRES match, tout devient definitif. On interroge une fois, et on n'y
+- APRES match, tout devient definitif : tirs, momentum, positions moyennes,
+  incidents, et la compo officielle. On interroge une fois, et on n'y
   revient plus.
+
+La compo des matchs PASSES n'est pas un agrement d'affichage. Sans elle, le
+titulaire se devine par son temps de jeu : un titulaire remplace a la 60e
+compte pour un remplacant, un entrant de la 20e compte pour un titulaire.
+Toute estimation d'un rythme "sur 90 minutes" hérite de cette confusion.
 
 Aucun de ces points d'acces n'est pagine : get_page, jamais get_all.
 """
@@ -68,6 +74,29 @@ def sans_donnees():
     )
 
 
+def sans_compos():
+    """Clause selectionnant les matchs termines dont la compo manque.
+
+    Meme piege JSONB que ci-dessus, et meme convention : un objet VIDE
+    signifie "verifie, Bzzoiro n'a pas la compo" et sort le match de la file.
+
+    Pourquoi les compos des matchs PASSES comptent : sans elles, on devine le
+    titulaire par son temps de jeu. Un titulaire remplace a la 60e passe alors
+    pour un remplacant, et un entrant de la 20e passe pour un titulaire. Cette
+    approximation contamine toute estimation d'un rythme "sur 90 minutes".
+
+    Verifie le 31/08/2026 : Bzzoiro rend une compo confirmee sur les cinq
+    saisons, jusqu'au 31/12/2021 -- titulaires, remplacants, formation,
+    numeros et capitaine.
+    """
+    from app.models.bzzoiro import BzzEvent
+
+    return or_(
+        BzzEvent.lineups.is_(None),
+        func.jsonb_typeof(BzzEvent.lineups) == "null",
+    )
+
+
 # ── Recuperation ────────────────────────────────────────────────────────────
 
 
@@ -100,6 +129,17 @@ async def fetch_incidents(client: Any, event_api_id: int) -> list[dict] | None:
 
 
 # ── Statut de la compo ──────────────────────────────────────────────────────
+
+
+def _a_des_titulaires(brut: dict[str, Any] | None) -> bool:
+    """Vrai si la reponse porte au moins un onze de depart.
+
+    Bzzoiro repond parfois une enveloppe sans joueur : c'est un "il n'y a pas
+    de compo", pas un echec. Sans ce test on archiverait une coquille vide en
+    croyant avoir la donnee.
+    """
+    blocs = (brut or {}).get("lineups") or {}
+    return any((blocs.get(cote) or {}).get("players") for cote in ("home", "away"))
 
 
 def est_confirmee(brut: dict[str, Any] | None) -> bool:
@@ -318,11 +358,13 @@ async def sync_avant_match(
 async def sync_apres_match(
     session: AsyncSession, client: Any, limite: int = 200
 ) -> tuple[int, int]:
-    """Stats et carte des tirs des matchs termines. Rend (traites, sans tirs).
+    """Tirs et compos des matchs termines. Rend (traites tirs, sans tirs).
 
-    Trois issues par match :
-      - donnees presentes -> ecrites ;
-      - Bzzoiro n'a pas de tirs -> liste vide, le match sort de la file ;
+    Deux donnees independantes, deux files : un match dont la carte des tirs
+    est deja prise peut rester en attente de sa compo, et reciproquement.
+    Chacune connait les trois memes issues :
+      - donnee presente -> ecrite ;
+      - Bzzoiro ne l'a pas -> marque vide, le match sort de CETTE file ;
       - l'appel echoue -> laisse a null, il sera retente.
 
     La distinction compte : sans elle, les 6 200 matchs anterieurs a 2025 --
@@ -335,42 +377,57 @@ async def sync_apres_match(
         select(BzzEvent).where(
             BzzEvent.league_api_id.in_(LEAGUES_FICHE_MATCH),
             BzzEvent.status == "finished",
-            sans_donnees(),
+            or_(sans_donnees(), sans_compos()),
         ).order_by(BzzEvent.event_date.desc()).limit(limite)
     )).scalars().all()
 
     traites = sans_tirs = echecs = 0
+    compos = sans_compo = echecs_compos = 0
     for ev in evenements:
-        stats = await fetch_match_stats(client, ev.api_id)
+        # JSONB null se relit en None cote Python : meme test que la clause SQL.
+        if ev.shotmap is None:
+            stats = await fetch_match_stats(client, ev.api_id)
 
-        if stats is None:
-            # L'appel a echoue : on laisse le match a null pour le retenter.
-            echecs += 1
-            continue
+            if stats is None:
+                # L'appel a echoue : on laisse le match a null pour le retenter.
+                echecs += 1
+            elif not stats.get("shotmap"):
+                # Bzzoiro connait le match mais n'a pas de tirs -- le cas de
+                # tous les matchs anterieurs a 2025. La liste vide marque
+                # "verifie, rien a prendre" et sort le match de la file.
+                ev.shotmap = []
+                sans_tirs += 1
+            else:
+                ev.shotmap = stats.get("shotmap")
+                ev.momentum = stats.get("momentum")
+                ev.average_positions = stats.get("average_positions")
 
-        if not stats.get("shotmap"):
-            # Bzzoiro connait le match mais n'a pas de tirs -- le cas de tous
-            # les matchs anterieurs a 2025. La liste vide marque "verifie,
-            # rien a prendre" et sort le match de la file.
-            ev.shotmap = []
-            sans_tirs += 1
-            continue
+                incidents = await fetch_incidents(client, ev.api_id)
+                if incidents:
+                    ev.incidents = incidents
 
-        ev.shotmap = stats.get("shotmap")
-        ev.momentum = stats.get("momentum")
-        ev.average_positions = stats.get("average_positions")
+                traites += 1
 
-        incidents = await fetch_incidents(client, ev.api_id)
-        if incidents:
-            ev.incidents = incidents
+        if ev.lineups is None:
+            brut = await fetch_lineups(client, ev.api_id)
+            if brut is None:
+                echecs_compos += 1
+            elif not _a_des_titulaires(brut):
+                ev.lineups = {}
+                sans_compo += 1
+            else:
+                # On archive la reponse entiere, statut et horodatage compris,
+                # et non le seul bloc "lineups" : sync_bzzoiro_lineups sait
+                # deballer les deux formes.
+                ev.lineups = brut
+                compos += 1
 
-        traites += 1
-
-    if traites or sans_tirs:
+    if traites or sans_tirs or compos or sans_compo:
         await session.commit()
 
     logger.info(
-        "Apres match : %d traites, %d sans tirs chez Bzzoiro, %d echecs",
-        traites, sans_tirs, echecs,
+        "Apres match : tirs %d traites / %d sans tirs / %d echecs ; "
+        "compos %d ecrites / %d absentes / %d echecs",
+        traites, sans_tirs, echecs, compos, sans_compo, echecs_compos,
     )
     return traites, sans_tirs
