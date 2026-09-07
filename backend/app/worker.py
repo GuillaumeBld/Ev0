@@ -1241,6 +1241,52 @@ async def job_sync_bzzoiro_events():
     except Exception as exc:
         logger.error("Error in fixture status sync from BzzEvent: %s", exc, exc_info=True)
 
+    # Controle de coherence : les autres garde-fous demandent tous "est-ce que
+    # les donnees arrivent encore ?". Celui-ci demande "est-ce que ce qui est
+    # arrive tient debout ?". Le 07/09/2026, 126 matchs de C1 perimes ont
+    # coexiste avec les 18 vrais sans qu'aucune alerte ne parte : ils
+    # AUGMENTAIENT le nombre de cotes et de recommandations, donc tous les
+    # indicateurs de vitalite etaient au vert.
+    try:
+        from app.alerts import send_alert
+        from app.models.bzzoiro import BzzEvent
+        from app.services.coherence_calendrier import (
+            MatchAControler,
+            controler,
+            resumer,
+        )
+
+        async with async_session() as session:
+            lignes = (await session.execute(
+                select(
+                    BzzEvent.api_id,
+                    BzzEvent.league_api_id,
+                    BzzEvent.home_team_api_id,
+                    BzzEvent.away_team_api_id,
+                    BzzEvent.event_date,
+                ).where(BzzEvent.event_date >= datetime.now(UTC))
+            )).all()
+
+        violations = controler([
+            MatchAControler(
+                identifiant=api_id,
+                competition=league,
+                equipe_domicile=dom,
+                equipe_exterieur=ext,
+                coup_denvoi=quand,
+            )
+            for api_id, league, dom, ext, quand in lignes
+            if quand is not None
+        ])
+        if violations:
+            message = resumer(violations)
+            logger.error("Coherence calendrier: %s", message)
+            await send_alert(message, channel="incidents")
+        else:
+            logger.info("Coherence calendrier: %d matchs a venir, rien a signaler", len(lignes))
+    except Exception as exc:
+        logger.error("Controle de coherence du calendrier en echec: %s", exc, exc_info=True)
+
     logger.info("=== Bzzoiro events sync complete ===")
 
 

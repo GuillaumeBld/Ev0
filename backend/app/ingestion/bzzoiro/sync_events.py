@@ -5,6 +5,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +16,11 @@ from app.services.season_service import current_season, season_start
 
 logger = logging.getLogger(__name__)
 
+# Sentinelle de la reconciliation (voir `_reconcilier`). Si une fenetre rend
+# moins que cette part de ce qu'on a en base, on ne supprime rien : une source
+# partiellement muette ne doit jamais pouvoir vider le calendrier.
+PART_MINIMALE_RENDUE = 0.5
+
 
 def _extract_odds(event: dict[str, Any]) -> tuple[dict | None, dict | None, dict | None]:
     odds = event.get("odds") or {}
@@ -22,6 +28,74 @@ def _extract_odds(event: dict[str, Any]) -> tuple[dict | None, dict | None, dict
     odds_ou = odds.get("over_under") or odds.get("totals")
     odds_btts = odds.get("btts") or odds.get("both_teams_to_score")
     return odds_1x2, odds_ou, odds_btts
+
+
+async def _reconcilier(
+    session: AsyncSession,
+    *,
+    league_api_ids: set[int],
+    api_ids_rendus: set[int],
+    debut: datetime,
+    fin: datetime,
+) -> int:
+    """Retire les matchs A VENIR que la source ne rend plus.
+
+    Pourquoi. `sync_events` n'a longtemps fait qu'ajouter et mettre a jour :
+    une ligne ecrite un jour restait en base pour toujours, meme quand Bzzoiro
+    cessait de la publier. Le 29/08/2026, la C1 a rendu un calendrier
+    provisoire de 144 matchs pour la premiere journee ; le 07/09 elle rendait
+    les 18 vrais matchs, avec d'autres identifiants. Faute de reconciliation,
+    les deux versions ont coexiste : le calendrier et le calculateur
+    affichaient Real Madrid disputant huit matchs au meme coup d'envoi, et
+    3 582 cotes plus 523 recommandations se sont accrochees a des matchs qui
+    n'existaient pas.
+
+    Perimetre volontairement etroit :
+      - uniquement les matchs NON COMMENCES. Un match joue porte des
+        statistiques et des paris regles ; il ne disparait jamais, meme si la
+        source cesse de le publier.
+      - uniquement la fenetre et les competitions effectivement interrogees.
+        Ce qui n'a pas ete demande ne peut pas etre juge absent.
+
+    Sentinelle : si la source rend moins de `PART_MINIMALE_RENDUE` de ce que
+    porte la fenetre, on ne supprime RIEN et on le signale. Une API a moitie
+    muette ne doit jamais pouvoir vider le calendrier — c'est la meme regle que
+    la sentinelle des clubs KO de la synchro d'effectifs.
+    """
+    if not league_api_ids:
+        return 0
+
+    existants = set((await session.execute(
+        select(BzzEvent.api_id).where(
+            BzzEvent.league_api_id.in_(league_api_ids),
+            BzzEvent.event_date >= debut,
+            BzzEvent.event_date <= fin,
+            BzzEvent.status == "notstarted",
+        )
+    )).scalars().all())
+
+    perimes = existants - api_ids_rendus
+    if not perimes:
+        return 0
+
+    if existants and len(existants - perimes) < len(existants) * PART_MINIMALE_RENDUE:
+        logger.error(
+            "sync_events: reconciliation ANNULEE — la source ne rend que %d des "
+            "%d matchs a venir de la fenetre (%d seraient supprimes). Source "
+            "probablement partielle : aucune suppression.",
+            len(existants - perimes), len(existants), len(perimes),
+        )
+        return 0
+
+    await session.execute(
+        delete(BzzEvent).where(BzzEvent.api_id.in_(perimes))
+    )
+    logger.warning(
+        "sync_events: %d match(s) a venir retire(s), plus publie(s) par la "
+        "source sur la fenetre %s → %s.",
+        len(perimes), debut.date(), fin.date(),
+    )
+    return len(perimes)
 
 
 async def sync_events(
@@ -68,6 +142,8 @@ async def sync_events(
         all_rows.extend(league_rows)
 
     count = 0
+    api_ids_rendus: set[int] = set()
+    leagues_rendues: set[int] = set()
     for row in all_rows:
         api_id = row.get("api_id") or row.get("id")
         if not api_id:
@@ -114,7 +190,20 @@ async def sync_events(
         )
         await session.execute(stmt)
         count += 1
+        api_ids_rendus.add(api_id)
+        if values["league_api_id"] is not None:
+            leagues_rendues.add(values["league_api_id"])
+
+    # La source fait autorite sur ce qui EXISTE, pas seulement sur ce qui
+    # change : un match qu'elle ne publie plus doit disparaitre de chez nous.
+    retires = await _reconcilier(
+        session,
+        league_api_ids=leagues_rendues,
+        api_ids_rendus=api_ids_rendus,
+        debut=datetime.fromisoformat(date_from).replace(tzinfo=UTC),
+        fin=datetime.fromisoformat(date_to).replace(tzinfo=UTC) + timedelta(days=1),
+    )
 
     await session.commit()
-    logger.info("Synced %d events total", count)
+    logger.info("Synced %d events total (%d retire(s))", count, retires)
     return count
