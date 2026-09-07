@@ -222,3 +222,40 @@ def test_sans_fraicheur_connue_on_ecarte_tout_le_groupe():
     ]
 
     assert identifiants_incoherents(matchs) == {1, 2}
+
+
+# ---------------------------------------------------------------------------
+# Le calculateur ne propose que ce qu'il sait pricer
+# ---------------------------------------------------------------------------
+
+
+def test_les_selections_nationales_sont_exclues_du_calculateur():
+    """Le calculateur price des joueurs de club a partir de leurs statistiques
+    de championnat et de l'effectif de leur equipe. Une selection nationale n'a
+    ni l'un ni l'autre : 178 matchs de Ligue des Nations et d'amicaux noyaient
+    les 109 vrais matchs de championnat."""
+    from app.api.fixtures import COMPETITIONS_DE_SELECTIONS
+
+    for cle in (
+        "nations_league_uefa",
+        "nations_league_concacaf",
+        "friendly_international",
+        "world_cup_2026",
+    ):
+        assert cle in COMPETITIONS_DE_SELECTIONS
+
+    # Les competitions de clubs ne doivent jamais y figurer.
+    for cle in ("premier_league", "champions_league", "ligue_1", "la_liga"):
+        assert cle not in COMPETITIONS_DE_SELECTIONS
+
+
+def test_le_filtre_est_optionnel_et_desactive_par_defaut():
+    """Le calendrier continue d'afficher les selections : seul le calculateur
+    demande le filtre."""
+    import inspect
+
+    from app.api.fixtures import list_fixtures
+
+    signature = inspect.signature(list_fixtures)
+    assert "clubs_only" in signature.parameters
+    assert signature.parameters["clubs_only"].default.default is False

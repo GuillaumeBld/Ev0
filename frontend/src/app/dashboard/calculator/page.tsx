@@ -589,8 +589,12 @@ function CalculatorInner() {
     setLoadingFixtures(true)
     // Fetch scheduled (upcoming) and live matches together
     Promise.all([
-      getFixtures({ status: 'scheduled', limit: 150, upcoming_only: false }),
-      getFixtures({ status: 'live', limit: 50 }),
+      // clubs_only : le calculateur price des joueurs de club à partir de leurs
+      // statistiques de championnat et de l'effectif de leur équipe. Une
+      // sélection nationale n'a ni l'un ni l'autre — 178 matchs de Ligue des
+      // Nations et d'amicaux noyaient les 109 vrais matchs de championnat.
+      getFixtures({ status: 'scheduled', limit: 150, upcoming_only: false, clubs_only: true }),
+      getFixtures({ status: 'live', limit: 50, clubs_only: true }),
     ])
       .then(([scheduledRes, liveRes]) => {
         // Merge, deduplicate by id, keep live at the top

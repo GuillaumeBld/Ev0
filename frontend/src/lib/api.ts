@@ -235,6 +235,9 @@ export async function getFixtures(params?: {
   to_date?: string
   limit?: number
   upcoming_only?: boolean
+  // Ne renvoyer que les compétitions de clubs. Une sélection nationale n'a chez
+  // nous ni effectif ni statistiques : elle n'est pas priçable.
+  clubs_only?: boolean
 }): Promise<FixturesResponse> {
   const { data } = await api.get('/api/v1/fixtures', { params })
   return data
