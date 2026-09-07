@@ -10,11 +10,19 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.ingestion.bzzoiro.constants import INTERNATIONAL_LEAGUE_INTERNAL_IDS
 from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
 from app.models.player_odds_snapshot import PlayerOddsSnapshot
 
 logger = logging.getLogger(__name__)
+
+# Cles de competition portees par `fixtures.league` qui opposent des selections
+# nationales. Derivees du referentiel d'ingestion plutot que recopiees : une
+# competition internationale ajoutee la-bas est automatiquement exclue ici.
+COMPETITIONS_DE_SELECTIONS: frozenset[str] = frozenset(
+    INTERNATIONAL_LEAGUE_INTERNAL_IDS
+)
 
 router = APIRouter()
 
@@ -94,6 +102,13 @@ async def list_fixtures(
     to_date: date | None = Query(None),
     limit: int = Query(50, le=200),
     upcoming_only: bool = Query(False),
+    clubs_only: bool = Query(
+        False,
+        description=(
+            "N'inclure que les competitions de clubs. Les selections nationales "
+            "ne sont pas pricables : pas d'effectif, pas de statistiques."
+        ),
+    ),
 ):
     """List fixtures with optional filters."""
     # Default sort: upcoming first (asc), finished last (desc)
@@ -152,6 +167,14 @@ async def list_fixtures(
             Fixture.kickoff_utc <= datetime.combine(to_date, datetime.max.time(), tzinfo=UTC)
         )
     stmt = _apply_upcoming_only_filter(stmt, upcoming_only)
+
+    # Le calculateur price des joueurs de club : il lit leurs statistiques de
+    # championnat et l'effectif de leur equipe. Une selection nationale n'a ni
+    # l'un ni l'autre chez nous — la proposer revient a offrir un bouton qui ne
+    # peut rien produire. Le 07/09/2026, 178 matchs de Ligue des Nations et
+    # d'amicaux noyaient les 109 vrais matchs de championnat.
+    if clubs_only:
+        stmt = stmt.where(Fixture.league.notin_(COMPETITIONS_DE_SELECTIONS))
 
     # Exclure les fixtures dont un nom d'équipe est un placeholder
     # Patterns : W83, L101, 1A, 2B, R32 TBD 7, R16 TBD 1, QF TBD…
