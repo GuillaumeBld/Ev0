@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import desc, func, or_, select, text
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -1011,14 +1011,24 @@ async def list_players(
         rows = stats_by_player.get(pid)
         rows_prec = stats_prec_by_player.get(pid)
 
-        # En comparaison, un joueur sans stats courantes reste affiche : ses
-        # colonnes montrent des tirets, ce qui est l'information utile en debut
-        # de saison. Sans comparaison, on garde le comportement d'origine.
-        if not rows and not (comparer and rows_prec):
+        # Un joueur sans stats de la saison courante reste affiche dans deux
+        # cas, ou son absence serait une perte d'information :
+        #   - en comparaison de saisons : ses colonnes montrent des tirets ;
+        #   - quand un club precis est demande : on regarde alors un EFFECTIF,
+        #     et un effectif se lit en entier. Debut septembre, apres deux
+        #     journees, filtrer sur les stats vidait la liste de ses blesses,
+        #     de ses gardiens remplacants et de ses recrues sans debut — a
+        #     Newcastle, 4 joueurs sur 25 disparaissaient, dont Nick Pope.
+        #     "Pope est dans l'effectif et n'a pas joue" vaut mieux que "Pope
+        #     n'existe pas".
+        # La vue par championnat, elle, reste filtree : y faire remonter des
+        # milliers de joueurs sans stats n'aide aucun classement.
+        garder_sans_stats = bool(comparer and rows_prec) or team_api_id is not None
+        if not rows and not garder_sans_stats:
             continue
 
         merged = _merge_season_stats(rows, season) if rows else None
-        if not merged and not (comparer and rows_prec):
+        if not merged and not garder_sans_stats:
             continue
         if merged is None:
             merged = {k: None for k in _CHAMPS_VIDES}
