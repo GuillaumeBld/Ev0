@@ -31,6 +31,10 @@ from app.ingestion.fixture_matcher import normalize_team_name
 from app.models.bzzoiro import BzzEvent, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
+from app.services.coherence_calendrier import (
+    MatchAControler,
+    identifiants_incoherents,
+)
 from app.services.season_service import compute_season
 
 logger = logging.getLogger(__name__)
@@ -106,6 +110,34 @@ async def sync_fixtures_from_bzz(
     if not bzz_events:
         logger.info("sync_fixtures_from_bzz: no upcoming BzzEvents found")
         return 0, 0
+
+    # Barrage : un match arithmetiquement impossible ne devient jamais une
+    # fixture, donc n'atteint ni le calendrier, ni le calculateur, ni les
+    # recommandations. Seules les regles NOMINATIVES filtrent ici (voir
+    # `REGLES_BLOQUANTES`) — un simple doute alerte, il ne supprime pas.
+    a_controler = [
+        MatchAControler(
+            identifiant=ev.api_id,
+            competition=ev.league_api_id,
+            equipe_domicile=ev.home_team_api_id,
+            equipe_exterieur=ev.away_team_api_id,
+            coup_denvoi=ev.event_date,
+            mis_a_jour_le=ev.synced_at,
+        )
+        for ev in bzz_events
+        if ev.event_date is not None
+    ]
+    ecartes = identifiants_incoherents(a_controler)
+    if ecartes:
+        logger.error(
+            "sync_fixtures_from_bzz: %d evenement(s) ecarte(s), calendrier "
+            "impossible (une equipe y dispute plusieurs matchs au meme coup "
+            "d'envoi) : %s%s",
+            len(ecartes),
+            sorted(ecartes)[:10],
+            " ..." if len(ecartes) > 10 else "",
+        )
+        bzz_events = [ev for ev in bzz_events if ev.api_id not in ecartes]
 
     # 2. Bulk-load team names for all referenced team api_ids
     team_ids: set[int] = set()
