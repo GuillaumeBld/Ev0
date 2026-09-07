@@ -249,6 +249,21 @@ def test_les_selections_nationales_sont_exclues_du_calculateur():
         assert cle not in COMPETITIONS_DE_SELECTIONS
 
 
+def test_la_supercoupe_d_uefa_reste_proposee():
+    """Piege du referentiel : `INTERNATIONAL_LEAGUE_INTERNAL_IDS` regroupe tout
+    ce qui n'est pas un championnat domestique, donc melange les selections
+    (Coupe du monde, Ligue des Nations) et des matchs de CLUBS. La Supercoupe
+    d'UEFA oppose deux clubs europeens : elle se price normalement, et l'exclure
+    priverait le calculateur d'un vrai match."""
+    from app.api.fixtures import (
+        COMPETITIONS_DE_CLUBS_HORS_CHAMPIONNAT,
+        COMPETITIONS_DE_SELECTIONS,
+    )
+
+    assert "uefa_super_cup" in COMPETITIONS_DE_CLUBS_HORS_CHAMPIONNAT
+    assert "uefa_super_cup" not in COMPETITIONS_DE_SELECTIONS
+
+
 def test_le_filtre_est_optionnel_et_desactive_par_defaut():
     """Le calendrier continue d'afficher les selections : seul le calculateur
     demande le filtre."""
