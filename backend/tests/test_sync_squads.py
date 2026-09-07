@@ -39,7 +39,7 @@ from sqlalchemy.pool import NullPool, StaticPool
 
 from app.ingestion.transfermarkt.squad_scraper import SquadResult, TMPlayer
 from app.ingestion.transfermarkt.sync_squads import sync_squads
-from app.models.bzzoiro import BzzPlayer, BzzTeam
+from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzPlayerMatchStat, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
 from app.models.squad_sync import SquadSyncRun
 
@@ -74,6 +74,10 @@ async def session_factory():
         await conn.run_sync(lambda sync_conn: BzzTeam.__table__.create(sync_conn))
         await conn.run_sync(lambda sync_conn: BzzPlayer.__table__.create(sync_conn))
         await conn.run_sync(lambda sync_conn: SquadSyncRun.__table__.create(sync_conn))
+        # Le garde-fou "il a joue" (voir sync_squads._ayant_joue_pour_le_club)
+        # interroge ces deux tables a chaque pass "departs".
+        await conn.run_sync(lambda sync_conn: BzzEvent.__table__.create(sync_conn))
+        await conn.run_sync(lambda sync_conn: BzzPlayerMatchStat.__table__.create(sync_conn))
 
     try:
         yield async_sessionmaker(engine, expire_on_commit=False)
@@ -483,3 +487,106 @@ async def test_run_sync_squads_blocking_uses_dedicated_nullpool_engine(monkeypat
     assert used_url != str(worker_module.engine.url)
 
     assert disposed["count"] == 1
+
+
+# --------------------------------------------------------------------------
+# Garde-fou : un joueur vu sur le terrain n'est JAMAIS detache
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_un_joueur_qui_a_joue_n_est_jamais_detache(session_factory, monkeypatch):
+    """Transfermarkt et Bzzoiro n'ecrivent pas les noms pareil ("Andrew" contre
+    "Andy" Robertson, les surnoms...). Sans ce garde-fou, ces joueurs
+    ressortaient non apparies a chaque run et finissaient detaches de tout
+    club — donc invisibles sur le site. Le 05/09/2026, un passage sur 124
+    clubs a ainsi fait disparaitre 222 joueurs qui avaient joue la saison en
+    cours."""
+    club_x = _team(team_id=1, bzz_team_id=10, tm_club_id=100)
+    await _seed(
+        session_factory,
+        [
+            BzzPlayer(
+                api_id=4,
+                name="Andy Robertson",  # Transfermarkt ecrit "Andrew Robertson"
+                current_team_api_id=10,
+                current_team_name="Club X",
+                tm_absent_streak=1,  # deja absent au run precedent
+            )
+        ],
+    )
+    # Il etait sur le terrain lors d'un match du club X, huit jours avant.
+    async with session_factory() as session:
+        session.add(
+            BzzEvent(
+                api_id=900,
+                event_date=dt.datetime.combine(
+                    TODAY - dt.timedelta(days=8), dt.time(16, 30), tzinfo=dt.UTC
+                ),
+                home_team_api_id=10,
+                away_team_api_id=11,
+            )
+        )
+        session.add(
+            BzzPlayerMatchStat(player_api_id=4, event_api_id=900, minutes_played=90)
+        )
+        await session.commit()
+
+    _patch_fetch(monkeypatch, {100: _ok(100, [_tm("Autre Joueur", tm_player_id=99)])})
+
+    async with session_factory() as session:
+        run, _samples = await sync_squads(
+            session, FAKE_CLIENT, [club_x], mode="daily", today=TODAY
+        )
+
+    player = await _get_player(session_factory, 4)
+    assert player.current_team_api_id == 10, "un joueur sur la pelouse reste au club"
+    assert player.current_team_name == "Club X"
+    assert player.tm_absent_streak == 0, "son compteur d'absence est remis a zero"
+    assert run.players_detached == 0
+
+
+@pytest.mark.asyncio
+async def test_un_joueur_qui_n_a_pas_joue_reste_detachable(session_factory, monkeypatch):
+    """Le garde-fou ne doit pas geler les departs : sans minute jouee, la regle
+    des deux absences consecutives s'applique normalement."""
+    club_x = _team(team_id=1, bzz_team_id=10, tm_club_id=100)
+    await _seed(
+        session_factory,
+        [
+            BzzPlayer(
+                api_id=5,
+                name="Parti Sans Jouer",
+                current_team_api_id=10,
+                current_team_name="Club X",
+                tm_absent_streak=1,
+            )
+        ],
+    )
+    # Un match du club, mais ce joueur n'y a pas pris une minute.
+    async with session_factory() as session:
+        session.add(
+            BzzEvent(
+                api_id=901,
+                event_date=dt.datetime.combine(
+                    TODAY - dt.timedelta(days=8), dt.time(16, 30), tzinfo=dt.UTC
+                ),
+                home_team_api_id=10,
+                away_team_api_id=11,
+            )
+        )
+        session.add(
+            BzzPlayerMatchStat(player_api_id=5, event_api_id=901, minutes_played=0)
+        )
+        await session.commit()
+
+    _patch_fetch(monkeypatch, {100: _ok(100, [_tm("Autre Joueur", tm_player_id=99)])})
+
+    async with session_factory() as session:
+        run, _samples = await sync_squads(
+            session, FAKE_CLIENT, [club_x], mode="daily", today=TODAY
+        )
+
+    player = await _get_player(session_factory, 5)
+    assert player.current_team_api_id is None
+    assert run.players_detached == 1

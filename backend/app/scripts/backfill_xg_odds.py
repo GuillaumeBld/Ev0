@@ -1,11 +1,13 @@
 """Rattrapage : remplit team_xg_estimates.odds sur les lignes deja archivees.
 
 Les estimations ecrites avant la migration 053 portent odds = NULL. Elles
-designent leurs snapshots par input_snapshot_ids, et ces lignes existent encore
-tant que job_purge_old_snapshots (45 jours) ne les a pas effacees.
+designent leurs snapshots par input_snapshot_ids, et job_purge_old_snapshots
+protege desormais explicitement ces lignes : elles ne disparaissent plus au
+bout de 45 jours.
 
-FENETRE LIMITEE : passe ce delai, ces estimations restent definitivement sans
-les cotes qui les ont produites. A executer des le deploiement.
+Reste le cas des estimations dont les snapshots avaient deja ete effaces par
+l'ancienne purge, avant que cette protection n'existe : celles-la restent
+definitivement sans leurs cotes.
 
 Le script ne fabrique jamais rien : une ligne dont les snapshots ont disparu
 reste a NULL et est comptee comme impossible.

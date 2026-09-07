@@ -4,8 +4,11 @@ Le closing est l'estimation la plus affutee que le marche produise : c'est la
 reference contre laquelle un modele se juge. L'ouverture, comparee au closing,
 mesure de combien le marche a bouge.
 
-La purge efface match_odds_snapshots au-dela de 45 jours : passe ce delai, plus
-aucun moyen de recalculer un closing. D'ou l'archivage definitif ici.
+La purge n'efface plus que les points intermediaires du mouvement de ligne : le
+premier et le dernier snapshot de chaque selection sont conserves indefiniment,
+donc un closing reste recalculable. Cet archivage garde neanmoins sa raison
+d'etre — il fige le xG derive, avec le bookmaker et la methode qui l'ont
+produit, la ou les snapshots ne portent que les cotes brutes.
 """
 from __future__ import annotations
 

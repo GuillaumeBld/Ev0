@@ -40,14 +40,14 @@ correspondant.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.transfermarkt.player_match import MatchReport, match_players
 from app.ingestion.transfermarkt.squad_scraper import TMPlayer, fetch_club_squad
-from app.models.bzzoiro import BzzPlayer, BzzTeam
+from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzPlayerMatchStat, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
 from app.models.squad_sync import SquadSyncRun
 from app.scripts.transfermarkt_career import TransfermarktClient
@@ -57,6 +57,9 @@ logger = logging.getLogger(__name__)
 # Sentinelle globale : au-dela de ce ratio de clubs KO (echec scrape/parsing),
 # le run entier est annule cote ecritures (cf. docstring module).
 MAX_FAILED_CLUB_RATIO = 0.30
+
+# Fenetre du garde-fou "il a joue" (voir `_ayant_joue_pour_le_club`).
+JOURS_PRESENCE_TERRAIN = 45
 
 # Nombre d'entrees max conservees dans `detail.unmatched_sample` (evite de
 # gonfler la ligne JSONB avec des centaines de joueurs non matches).
@@ -78,6 +81,45 @@ async def _load_players_by_api_id(session: AsyncSession, api_ids: set[int]) -> l
         return []
     stmt = select(BzzPlayer).where(BzzPlayer.api_id.in_(api_ids))
     return list((await session.execute(stmt)).scalars().all())
+
+
+async def _ayant_joue_pour_le_club(
+    session: AsyncSession, bzz_team_id: int, depuis: date
+) -> set[int]:
+    """Joueurs ayant dispute des minutes dans un match de `bzz_team_id` depuis
+    `depuis`. Ils ne peuvent JAMAIS etre detaches de ce club.
+
+    Pourquoi ce garde-fou. Le matching TM -> `bzz_players` exige un nom complet
+    identique ; or les deux sources n'ecrivent pas les noms pareil
+    ("Andrew Robertson" contre "Andy Robertson", "Pathe Ismael Ciss" contre
+    "Pathe Ciss", les joueurs connus par un surnom : Chupete, Natan, Alisson).
+    Ces joueurs ressortent "non apparies" a chaque run, et la regle des deux
+    absences consecutives finissait par les detacher de tout club — donc les
+    faire disparaitre du site. Le 05/09/2026, un passage sur 124 clubs a ainsi
+    detache 222 joueurs qui avaient joue la saison en cours.
+
+    Un joueur sur la pelouse appartient a l'effectif : c'est un fait constate,
+    pas une deduction. Il prime donc sur l'absence d'une page Transfermarkt.
+
+    Aucune ambiguite d'identite ici, contrairement a la deduction du club
+    depuis les feuilles de match (cf. l'ancien `sync_loan_teams`, supprime) :
+    on ne DEDUIT pas le club du joueur, on verifie seulement qu'un joueur DEJA
+    rattache a ce club etait sur le terrain lors d'un de ses matchs.
+    """
+    stmt = (
+        select(BzzPlayerMatchStat.player_api_id)
+        .join(BzzEvent, BzzEvent.api_id == BzzPlayerMatchStat.event_api_id)
+        .where(
+            BzzPlayerMatchStat.minutes_played > 0,
+            BzzEvent.event_date >= depuis,
+            or_(
+                BzzEvent.home_team_api_id == bzz_team_id,
+                BzzEvent.away_team_api_id == bzz_team_id,
+            ),
+        )
+        .distinct()
+    )
+    return set((await session.execute(stmt)).scalars().all())
 
 
 async def _load_team_names(session: AsyncSession, bzz_team_ids: set[int]) -> dict[int, str]:
@@ -248,11 +290,25 @@ async def sync_squads(
             players_updated += 1
 
     # Pass "departs" (prudent) : sur le snapshot PREALABLE, jamais sur un
-    # joueur matche/reassigne ce run (deja rattache par le pass ci-dessus).
+    # joueur matche/reassigne ce run (deja rattache par le pass ci-dessus), et
+    # JAMAIS sur un joueur vu sur le terrain avec ce club (garde-fou, voir
+    # `_ayant_joue_pour_le_club`).
+    depuis = today - timedelta(days=JOURS_PRESENCE_TERRAIN)
     players_detached = 0
+    proteges = 0
     for club, _report in ok_results:
+        sur_le_terrain = await _ayant_joue_pour_le_club(
+            session, club.bzz_team_id, depuis
+        )
         for player in snapshots[club.id]:
             if player.api_id in run_matched:
+                continue
+            if player.api_id in sur_le_terrain:
+                # Il a joue pour ce club : Transfermarkt ne l'a pas reconnu
+                # (orthographe du nom), pas l'inverse. On le garde et on remet
+                # son compteur a zero.
+                player.tm_absent_streak = 0
+                proteges += 1
                 continue
             player.tm_absent_streak += 1
             if player.tm_absent_streak >= 2:
@@ -261,6 +317,16 @@ async def sync_squads(
                 player.loan_team_api_id = None
                 player.loan_team_name = None
                 players_detached += 1
+
+    if proteges:
+        # Jamais silencieux : un chiffre qui grimpe signale une derive du
+        # matching de noms, pas un alea.
+        logger.warning(
+            "sync_squads: %d joueur(s) conserve(s) malgre leur absence de la "
+            "page Transfermarkt de leur club — ils ont joue depuis le %s. "
+            "Un chiffre eleve signale un matching de noms defaillant.",
+            proteges, depuis,
+        )
 
     unmatched_sample: list[dict[str, object]] = []
     for _club, report in ok_results:

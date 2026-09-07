@@ -116,14 +116,24 @@ def test_parse_competition_clubs_premier_league_real_fixture_returns_20_clubs():
 
 
 def test_tm_competition_codes_cover_expected_leagues():
-    assert TM_COMPETITION_CODES == {
+    """Les cinq grands championnats + la C1 restent le socle. La couverture
+    hors de ce socle (echelons etrangers et deuxiemes divisions, ajoutes le
+    05/09/2026 pour ancrer les 29 clubs sans championnat) est verifiee dans
+    `tests/test_effectifs_source_unique.py`."""
+    for cle, code in {
         "premier_league": "GB1",
         "ligue_1": "FR1",
         "bundesliga": "L1",
         "la_liga": "ES1",
         "serie_a": "IT1",
         "champions_league": "CL",
-    }
+    }.items():
+        assert TM_COMPETITION_CODES[cle] == code
+
+    # Aucun code en double : deux cles pointant la meme page competition
+    # feraient scraper deux fois la meme liste.
+    codes = list(TM_COMPETITION_CODES.values())
+    assert len(codes) == len(set(codes))
 
 
 # --------------------------------------------------------------------------

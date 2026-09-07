@@ -47,6 +47,29 @@ TM_COMPETITION_CODES: dict[str, str] = {
     "la_liga": "ES1",
     "serie_a": "IT1",
     "champions_league": "CL",
+    # -- Clubs hors des cinq grands championnats ---------------------------
+    # `canonical_teams` porte aussi des clubs qui ne jouent dans AUCUN des
+    # cinq championnats couverts : les etrangers qualifies en Coupe d'Europe
+    # et les relegues des saisons precedentes. La page competition "CL" ne
+    # suffit pas a les ancrer (au 05/09/2026 elle n'apportait aucun club que
+    # les cinq grands ne donnaient deja). Sans ces codes, ces clubs n'ont
+    # jamais d'identifiant Transfermarkt, donc jamais d'effectif synchronise.
+    #
+    # Premiers echelons etrangers des habitues de Coupe d'Europe.
+    "eredivisie": "NL1",           # Ajax, PSV, Feyenoord
+    "liga_portugal": "PO1",        # Benfica, Porto, Sporting CP
+    "pro_league_belge": "BE1",     # Club Bruges
+    "premiership_ecossaise": "SC1",  # Celtic, Rangers
+    "bundesliga_autrichienne": "A1",  # Red Bull Salzbourg
+    "premier_league_ukraine": "UKR1",  # Shakhtar Donetsk
+    "hnl_croatie": "KR1",          # Dinamo Zagreb
+    # Deuxiemes echelons des cinq grands : c'est la que vivent les relegues
+    # (West Ham, Wolverhampton, Southampton, Schalke, Saint-Etienne, ...).
+    "championship": "GB2",
+    "bundesliga_2": "L2",
+    "ligue_2": "FR2",
+    "la_liga_2": "ES2",
+    "serie_b": "IT2",
 }
 
 # Les clubs d'une page competition TM apparaissent comme des liens

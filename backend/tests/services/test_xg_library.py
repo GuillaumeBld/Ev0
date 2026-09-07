@@ -33,9 +33,15 @@ def test_migration_052_follows_051():
 
 
 def test_library_is_never_purged():
-    """job_purge_old_snapshots ne doit toucher que les deux tables de snapshots."""
-    src = (Path(__file__).resolve().parents[2] / "app" / "worker.py").read_text()
-    start = src.index("async def job_purge_old_snapshots")
-    body = src[start:start + 2500]
-    assert "team_xg_estimates" not in body
-    assert "match_odds_snapshots" in body
+    """La purge ne supprime que des snapshots de cotes d'equipe.
+
+    Elle lit team_xg_estimates — pour epargner les snapshots qu'une estimation
+    designe — mais n'en efface jamais rien. C'est la suppression qu'on
+    verifie, pas la simple mention du nom de table.
+    """
+    import re
+
+    from app.worker import _PURGE_INTERMEDIAIRES
+
+    cibles = re.findall(r"delete\s+from\s+(\w+)", _PURGE_INTERMEDIAIRES, re.I)
+    assert cibles == ["match_odds_snapshots"]

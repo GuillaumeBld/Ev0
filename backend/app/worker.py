@@ -26,7 +26,6 @@ from app.config import settings
 from app.db import DATABASE_URL, async_session, engine
 from app.ingestion.auto_settle import settle_approved_recommendations
 from app.ingestion.bzzoiro.aggregate import aggregate_all_leagues
-from app.ingestion.bzzoiro.sync_loan_teams import sync_loan_teams
 from app.ingestion.bzzoiro.client import BzzoiroClient
 from app.ingestion.bzzoiro.sync_events import sync_events
 from app.ingestion.bzzoiro.sync_player_stats import sync_player_stats
@@ -45,6 +44,7 @@ from app.ingestion.storage import (
     store_recommendation,
 )
 from app.ingestion.transfermarkt.failure_surface import surface_failure
+from app.ingestion.transfermarkt.resolve_clubs import resolve_and_store_club_ids
 from app.ingestion.transfermarkt.schedule import should_run_today
 from app.ingestion.transfermarkt.sync_squads import sync_squads
 from app.models.canonical_teams import CanonicalTeam
@@ -1212,18 +1212,6 @@ async def job_aggregate_season_stats():
     logger.info("=== Bzzoiro season stats aggregation complete ===")
 
 
-async def job_sync_loan_teams():
-    """Daily at 04:30 UTC: detect on-loan players from match stats and update loan_team_*."""
-    logger.info("=== Starting loan team sync ===")
-    try:
-        async with async_session() as session:
-            changed = await sync_loan_teams(session)
-            logger.info("Loan team sync: %d rows changed", changed)
-    except Exception as exc:
-        logger.error("Error in loan team sync: %s", exc, exc_info=True)
-    logger.info("=== Loan team sync complete ===")
-
-
 async def job_sync_bzzoiro_events():
     """Every 6h: sync Bzzoiro match events — 3 days back, 30 days forward."""
     logger.info("=== Starting Bzzoiro events sync ===")
@@ -1583,6 +1571,35 @@ def _run_sync_squads_blocking(
     return asyncio.run(_run())
 
 
+def _resolve_clubs_blocking():
+    """Resout les `transfermarkt_club_id` manquants, dans un thread dedie.
+
+    Meme contrainte que `_run_sync_squads_blocking` (client HTTP synchrone,
+    engine dedie NullPool) — voir sa docstring.
+
+    Sans ce passage, un club entrant dans le referentiel (promu, bascule de
+    saison) n'obtenait JAMAIS d'identifiant Transfermarkt : la resolution
+    n'existait que dans le script manuel `run_squad_sync_once`, et le job
+    quotidien ne selectionnait que les clubs deja resolus. Consequence
+    observee le 05/09/2026 : 32 clubs des cinq grands championnats (Rayo
+    Vallecano, Torino, Hamburger SV, Coventry City, ...) n'avaient aucun
+    effectif synchronise depuis la bascule 2026-2027.
+    """
+
+    async def _run():
+        client = TransfermarktClient()
+        eng = create_async_engine(DATABASE_URL, poolclass=NullPool)
+        sm = async_sessionmaker(eng, expire_on_commit=False)
+        try:
+            async with sm() as session:
+                return await resolve_and_store_club_ids(session, client=client)
+        finally:
+            client.close()
+            await eng.dispose()
+
+    return asyncio.run(_run())
+
+
 async def job_sync_squads() -> None:
     """Daily at 04:30 UTC: reconcile Transfermarkt squads into `bzz_players`.
 
@@ -1610,6 +1627,26 @@ async def job_sync_squads() -> None:
                 logger.info("job_sync_squads: no-op (hors fenêtre / hebdo déjà fait)")
                 return
 
+        # Ancrage AVANT selection : un club neuf au referentiel obtient son
+        # identifiant Transfermarkt ici, donc son effectif est synchronise des
+        # ce run et non jamais. Un echec de resolution ne doit pas empecher la
+        # synchro des clubs deja ancres -> on log et on continue.
+        try:
+            rapport = await asyncio.to_thread(_resolve_clubs_blocking)
+            logger.info(
+                "job_sync_squads: resolution clubs -> %s resolus, %s clubs TM non "
+                "apparies, %s canoniques sans id TM",
+                rapport.resolved,
+                len(rapport.unresolved_tm),
+                len(rapport.unmatched_canonical),
+            )
+        except Exception as exc:
+            logger.error(
+                "job_sync_squads: resolution des clubs TM en echec (%s) — la synchro "
+                "continue sur les clubs deja ancres.", exc, exc_info=True,
+            )
+
+        async with async_session() as session:
             clubs_result = await session.execute(
                 select(CanonicalTeam).where(
                     CanonicalTeam.transfermarkt_club_id.isnot(None),
@@ -1848,42 +1885,80 @@ async def job_resolve_ps3838_anchors() -> None:
 SNAPSHOT_RETENTION_DAYS = 45
 _PURGE_BATCH = 50_000
 
+# Ce que la purge efface, et ce qu'elle garde pour toujours.
+#
+# player_odds_snapshots n'a JAMAIS contenu d'historique : sa contrainte
+# d'unicite porte sur (fixture, bookmaker, marche, joueur) sans horodatage,
+# donc chaque scrape ecrase le precedent. Une ligne = une selection = la
+# derniere cote avant le coup d'envoi. La purger ne supprimait donc aucun
+# doublon : elle supprimait les matchs passes, c'est-a-dire la seule matiere
+# dont on dispose pour calibrer le pricing joueur. Elle en est retiree.
+# Cout de la conservation : ~43 000 lignes par 45 jours, soit 115 Mo par an.
+#
+# match_odds_snapshots, lui, garde bien tout le mouvement de ligne : 107
+# snapshots par selection en moyenne. On y efface les points intermediaires
+# passe le delai, mais on conserve definitivement l'ouverture et la cloture —
+# 1 % du volume, et c'est ce couple qui sert a mesurer le marche.
+#
+# Troisieme categorie protegee : les snapshots qu'une estimation de xG
+# d'equipe designe nommement par input_snapshot_ids. Les effacer rendrait
+# cette estimation non rejouable, ce que le modele team_xg cherche justement
+# a eviter.
+_PURGE_INTERMEDIAIRES = """
+    WITH ancres AS (
+        SELECT DISTINCT (e.value)::int AS id
+        FROM team_xg_estimates t,
+             LATERAL jsonb_array_elements_text(t.input_snapshot_ids) AS e(value)
+        WHERE jsonb_typeof(t.input_snapshot_ids) = 'array'
+    )
+    DELETE FROM match_odds_snapshots WHERE id IN (
+        SELECT t.id FROM (
+            SELECT id,
+                   row_number() OVER w AS rang_debut,
+                   row_number() OVER (PARTITION BY fixture_id, bookmaker,
+                                      market_type, outcome
+                                      ORDER BY snapshot_utc DESC) AS rang_fin
+            FROM match_odds_snapshots
+            WHERE snapshot_utc < now() - make_interval(days => :d)
+            WINDOW w AS (PARTITION BY fixture_id, bookmaker, market_type,
+                         outcome ORDER BY snapshot_utc)
+        ) t
+        WHERE t.rang_debut > 1 AND t.rang_fin > 1
+          AND NOT EXISTS (SELECT 1 FROM ancres a WHERE a.id = t.id)
+        LIMIT :batch
+    )
+"""
+
 
 async def job_purge_old_snapshots() -> None:
-    """Daily 04:30 UTC: purge les snapshots de cotes plus vieux que 45 jours.
+    """Daily 04:30 UTC: allege l'historique des cotes d'equipe.
 
-    Sans risque : les recs réglées portent leurs cotes en dur, le pricing et
-    market_xg ne lisent que le dernier snapshot, le moteur de recos a une
-    fenêtre de 24h. Suppression par lots pour éviter les locks longs.
+    Ne touche plus aux cotes joueurs (voir le commentaire ci-dessus) et ne
+    supprime que les points intermediaires du mouvement de ligne, en gardant
+    l'ouverture et la cloture de chaque selection.
+
+    Sans risque : les recos reglees portent leurs cotes en dur, le pricing et
+    market_xg ne lisent que le dernier snapshot — qui est justement celui
+    qu'on conserve. Suppression par lots pour eviter les locks longs.
     """
     try:
-        totals = {}
-        for table, ts_col in (
-            ("match_odds_snapshots", "created_at"),
-            ("player_odds_snapshots", "scraped_at"),
-        ):
-            deleted = 0
-            while True:
-                async with async_session() as session:
-                    res = await session.execute(
-                        text(
-                            f"DELETE FROM {table} WHERE id IN ("
-                            f" SELECT id FROM {table}"
-                            f" WHERE {ts_col} < now() - make_interval(days => :d)"
-                            f" LIMIT :batch)"
-                        ),
-                        {"d": SNAPSHOT_RETENTION_DAYS, "batch": _PURGE_BATCH},
-                    )
-                    await session.commit()
-                n = res.rowcount or 0
-                deleted += n
-                if n < _PURGE_BATCH:
-                    break
-            totals[table] = deleted
-        if any(totals.values()):
+        deleted = 0
+        while True:
+            async with async_session() as session:
+                res = await session.execute(
+                    text(_PURGE_INTERMEDIAIRES),
+                    {"d": SNAPSHOT_RETENTION_DAYS, "batch": _PURGE_BATCH},
+                )
+                await session.commit()
+            n = res.rowcount or 0
+            deleted += n
+            if n < _PURGE_BATCH:
+                break
+        if deleted:
             logger.info(
-                "job_purge_old_snapshots: %s supprimés (> %d jours)",
-                totals, SNAPSHOT_RETENTION_DAYS,
+                "job_purge_old_snapshots: %s points intermediaires supprimés "
+                "(> %d jours) ; ouvertures, clôtures et cotes joueurs conservées",
+                deleted, SNAPSHOT_RETENTION_DAYS,
             )
     except Exception as exc:
         logger.exception("job_purge_old_snapshots failed: %s", exc)
@@ -2138,15 +2213,6 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Loan team detection: daily at 04:30 UTC (after aggregation)
-    scheduler.add_job(
-        job_sync_loan_teams,
-        CronTrigger(hour=4, minute=30),
-        id="sync_loan_teams",
-        name="Detect on-loan players from match stats and update loan_team_*",
-        replace_existing=True,
-    )
-
     # Transfermarkt squad sync: daily at 04:30 UTC (mercato: daily, season: weekly —
     # cadence itself decided at runtime by should_run_today, see job docstring)
     scheduler.add_job(
@@ -2288,7 +2354,8 @@ def create_scheduler() -> AsyncIOScheduler:
         job_purge_old_snapshots,
         CronTrigger(hour=4, minute=30),
         id="purge_old_snapshots",
-        name="Purge des snapshots de cotes > 45 jours",
+        name="Allègement du mouvement de ligne > 45 jours "
+             "(ouvertures, clôtures et cotes joueurs conservées)",
         replace_existing=True,
     )
 
