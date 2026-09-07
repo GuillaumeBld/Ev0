@@ -17,11 +17,22 @@ from app.models.player_odds_snapshot import PlayerOddsSnapshot
 
 logger = logging.getLogger(__name__)
 
+# Competitions de CLUBS rangees parmi les internationales cote ingestion.
+# `INTERNATIONAL_LEAGUE_INTERNAL_IDS` regroupe tout ce qui n'est pas un
+# championnat domestique, ce qui melange deux choses tres differentes : des
+# competitions de selections (Coupe du monde, Ligue des Nations, amicaux) et
+# des matchs de clubs (la Supercoupe d'UEFA oppose deux clubs europeens). Seuls
+# les premiers echappent au pricing ; la Supercoupe se price comme n'importe
+# quel match de clubs.
+COMPETITIONS_DE_CLUBS_HORS_CHAMPIONNAT: frozenset[str] = frozenset({
+    "uefa_super_cup",
+})
+
 # Cles de competition portees par `fixtures.league` qui opposent des selections
 # nationales. Derivees du referentiel d'ingestion plutot que recopiees : une
-# competition internationale ajoutee la-bas est automatiquement exclue ici.
-COMPETITIONS_DE_SELECTIONS: frozenset[str] = frozenset(
-    INTERNATIONAL_LEAGUE_INTERNAL_IDS
+# competition de selections ajoutee la-bas est automatiquement exclue ici.
+COMPETITIONS_DE_SELECTIONS: frozenset[str] = (
+    frozenset(INTERNATIONAL_LEAGUE_INTERNAL_IDS) - COMPETITIONS_DE_CLUBS_HORS_CHAMPIONNAT
 )
 
 router = APIRouter()
