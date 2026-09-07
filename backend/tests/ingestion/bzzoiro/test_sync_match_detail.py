@@ -313,3 +313,121 @@ async def test_appel_echoue_laisse_le_match_a_retenter():
     # laisse a None : il sera repris au prochain passage
     assert ev.shotmap is None
     session.commit.assert_not_called()
+
+
+# --- Compos des matchs termines --------------------------------------------
+#
+# Sans elles, le titulaire se devine par son temps de jeu : un titulaire
+# remplace a la 60e compte pour un remplacant, un entrant de la 20e compte
+# pour un titulaire. Verifie le 31/08/2026 : Bzzoiro rend une compo confirmee
+# sur les cinq saisons, jusqu'au 31/12/2021.
+
+
+def test_une_enveloppe_sans_joueur_n_est_pas_une_compo():
+    from app.ingestion.bzzoiro.sync_match_detail import _a_des_titulaires
+
+    assert _a_des_titulaires(_reponse_compos()) is True
+    assert _a_des_titulaires({"lineups": {"home": {"players": []},
+                                          "away": {"players": []}}}) is False
+    assert _a_des_titulaires({"lineups": {}}) is False
+    assert _a_des_titulaires({}) is False
+    assert _a_des_titulaires(None) is False
+
+
+def test_la_clause_compos_contourne_le_piege_jsonb():
+    """`lineups IS NULL` ne correspond a rien quand la colonne vaut JSON null."""
+    from app.ingestion.bzzoiro.sync_match_detail import sans_compos
+
+    sql = str(sans_compos()).lower()
+    assert "jsonb_typeof" in sql
+    assert "lineups" in sql
+
+
+def _ev(shotmap=None, lineups=None, api_id=1):
+    ev = MagicMock()
+    ev.api_id = api_id
+    ev.shotmap = shotmap
+    ev.lineups = lineups
+    return ev
+
+
+def _session_avec(evenements):
+    session = MagicMock()
+    r = MagicMock()
+    r.scalars.return_value.all.return_value = evenements
+    session.execute = AsyncMock(return_value=r)
+    session.commit = AsyncMock()
+    return session
+
+
+async def test_la_compo_d_un_match_termine_est_archivee_en_entier():
+    """Statut et horodatage comptent autant que les onze noms."""
+    from app.ingestion.bzzoiro.sync_match_detail import sync_apres_match
+
+    ev = _ev(shotmap=[], lineups=None)
+    session = _session_avec([ev])
+    client = MagicMock()
+    client.get_page = AsyncMock(return_value=_reponse_compos())
+
+    await sync_apres_match(session, client)
+
+    assert ev.lineups["lineup_status"] == "confirmed"
+    assert ev.lineups["lineups"]["home"]["formation"] == "4-2-3-1"
+    session.commit.assert_awaited()
+
+
+async def test_un_match_sans_compo_chez_bzzoiro_sort_de_la_file():
+    from app.ingestion.bzzoiro.sync_match_detail import sync_apres_match
+
+    ev = _ev(shotmap=[], lineups=None)
+    session = _session_avec([ev])
+    client = MagicMock()
+    client.get_page = AsyncMock(return_value={"lineups": {"home": {}, "away": {}}})
+
+    await sync_apres_match(session, client)
+
+    assert ev.lineups == {}
+    session.commit.assert_awaited()
+
+
+async def test_un_echec_reseau_laisse_la_compo_a_reprendre():
+    from app.ingestion.bzzoiro.sync_match_detail import sync_apres_match
+
+    ev = _ev(shotmap=[], lineups=None)
+    session = _session_avec([ev])
+    client = MagicMock()
+    client.get_page = AsyncMock(side_effect=Exception("502"))
+
+    await sync_apres_match(session, client)
+
+    assert ev.lineups is None
+    session.commit.assert_not_called()
+
+
+async def test_une_compo_deja_prise_n_est_pas_redemandee():
+    """Les deux files sont independantes : ici il ne manque que les tirs."""
+    from app.ingestion.bzzoiro.sync_match_detail import sync_apres_match
+
+    ev = _ev(shotmap=None, lineups=_reponse_compos())
+    session = _session_avec([ev])
+    client = MagicMock()
+    client.get_page = AsyncMock(return_value={"shotmap": [{"xg": 0.1}]})
+
+    await sync_apres_match(session, client)
+
+    appels = [c.args[0] for c in client.get_page.await_args_list]
+    assert not any("lineups" in a for a in appels)
+
+
+async def test_un_match_n_attendant_que_sa_compo_ne_redemande_pas_les_tirs():
+    from app.ingestion.bzzoiro.sync_match_detail import sync_apres_match
+
+    ev = _ev(shotmap=[], lineups=None)
+    session = _session_avec([ev])
+    client = MagicMock()
+    client.get_page = AsyncMock(return_value=_reponse_compos())
+
+    await sync_apres_match(session, client)
+
+    appels = [c.args[0] for c in client.get_page.await_args_list]
+    assert appels == ["/api/v2/events/1/lineups/"]

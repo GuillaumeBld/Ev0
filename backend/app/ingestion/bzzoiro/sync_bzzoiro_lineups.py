@@ -152,7 +152,13 @@ async def sync_bzzoiro_lineups(
         if not event.lineups:
             continue
 
-        lineups_data: dict[str, Any] = event.lineups
+        # Deux formes coexistent dans la colonne. sync_match_detail y archive
+        # la reponse v2 entiere -- {"lineups": {...}, "lineup_status": ...} --
+        # pour ne pas perdre le statut ni l'horodatage. Les ecritures plus
+        # anciennes n'y mettaient que le bloc par camp. On deballe la premiere,
+        # on prend la seconde telle quelle.
+        brut: dict[str, Any] = event.lineups
+        lineups_data: dict[str, Any] = brut.get("lineups") or brut
 
         # Collect all player API IDs so we can bulk-load full names
         all_player_ids: set[int] = set()
