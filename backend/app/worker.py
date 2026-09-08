@@ -329,7 +329,91 @@ async def job_generate_recommendations():
     except Exception as exc:
         logger.error("Error generating recommendations: %s", exc, exc_info=True)
 
+    await _controler_coherence_paris()
+
     logger.info("=== Recommendation generation complete ===")
+
+
+async def _controler_coherence_paris() -> None:
+    """Les cotes et les recommandations tiennent-elles debout ?
+
+    Pendant du controle du calendrier, sur les deux tables qui portent
+    l'argent. Les autres garde-fous mesurent le DEBIT — fraicheur des cotes,
+    nombre de recommandations en 24h — et restent muets quand ce qui arrive est
+    faux : au 07/09/2026, des matchs inventes AUGMENTAIENT ces compteurs.
+
+    Perimetre : les cotes du jour et les recommandations vivantes sur des
+    matchs a venir. Une ligne reglee est une trace de ce qui a ete decide ; la
+    signaler chaque jour serait du bruit, et la corriger falsifierait
+    l'historique.
+    """
+    try:
+        from app.alerts import send_alert
+        from app.models.fixtures import Fixture
+        from app.models.match_odds import MatchOddsSnapshot
+        from app.models.recommendations import Recommendation
+        from app.services.coherence_paris import (
+            CoteAControler,
+            RecommandationAControler,
+            controler_cotes,
+            controler_recommandations,
+            resumer,
+        )
+
+        depuis = datetime.now(UTC) - timedelta(days=1)
+        async with async_session() as session:
+            cotes_brutes = (await session.execute(
+                select(
+                    MatchOddsSnapshot.id,
+                    MatchOddsSnapshot.fixture_id,
+                    MatchOddsSnapshot.bookmaker,
+                    MatchOddsSnapshot.market_type,
+                    MatchOddsSnapshot.outcome,
+                    MatchOddsSnapshot.odds,
+                    MatchOddsSnapshot.snapshot_utc,
+                ).where(MatchOddsSnapshot.snapshot_utc >= depuis)
+            )).all()
+
+            recos_brutes = (await session.execute(
+                select(
+                    Recommendation.id,
+                    Recommendation.fixture_id,
+                    Recommendation.player_name,
+                    Recommendation.fair_probability,
+                    Recommendation.fair_odds,
+                    Recommendation.best_odds,
+                    Recommendation.edge,
+                )
+                .join(Fixture, Fixture.id == Recommendation.fixture_id)
+                .where(
+                    Fixture.status == "scheduled",
+                    Recommendation.status.in_(["pending", "approved"]),
+                )
+            )).all()
+
+        violations_cotes = controler_cotes([
+            CoteAControler(i, fid, bm, mt, out, odds, snap)
+            for i, fid, bm, mt, out, odds, snap in cotes_brutes
+            if odds is not None and snap is not None
+        ])
+        violations_recos = controler_recommandations([
+            RecommandationAControler(i, fid, nom, proba, juste, marche, avantage)
+            for i, fid, nom, proba, juste, marche, avantage in recos_brutes
+            if None not in (proba, juste, marche, avantage)
+        ])
+
+        for violations, quoi in (
+            (violations_cotes, "Cotes"),
+            (violations_recos, "Recommandations"),
+        ):
+            if violations:
+                message = resumer(violations, quoi)
+                logger.error("Coherence %s: %s", quoi.lower(), message)
+                await send_alert(message, channel="incidents")
+            else:
+                logger.info("Coherence %s: rien a signaler", quoi.lower())
+    except Exception as exc:
+        logger.error("Controle de coherence cotes/recos en echec: %s", exc, exc_info=True)
 
 
 async def async_session_scoped_call(func, dt, filter_config):
