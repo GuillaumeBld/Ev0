@@ -49,11 +49,26 @@ logger = logging.getLogger(__name__)
 # franche, jamais un arrondi.
 TOLERANCE = 1e-4
 
-# `fair_odds` est stocke arrondi a deux decimales (verifie : 8 935 lignes sur
-# 9 724 en production). Comparer 1/probabilite a la valeur stockee exige donc
-# d'absorber ce pas d'arrondi, sinon la regle signale 2 485 lignes parfaitement
-# saines — le genre de faux positif qui fait ignorer une alerte.
-TOLERANCE_COTE_JUSTE = 0.01
+# `fair_odds` est stocke arrondi a deux decimales et `fair_probability` a
+# quatre (verifie en production : 8 935 lignes sur 9 724). Comparer l'un a
+# l'inverse de l'autre doit absorber LES DEUX arrondis, sinon la regle signale
+# des lignes parfaitement saines — le genre de faux positif qui fait ignorer
+# une alerte.
+#
+# Le second arrondi ne se contente pas de s'ajouter : il s'amplifie. Inverser
+# une probabilite a pour derivee `-1/p^2`, donc un demi-pas sur la probabilite
+# deplace la cote de `cote^2 x PAS`. A cote 2,65 cela ne pese que 0,0004 ; a
+# 12,21 cela pese 0,0075, soit quinze fois plus. Un seuil fixe est donc trop
+# large pour les cotes courtes et trop serre pour les longues — il faisait
+# ressortir des lignes saines a 12,21.
+PAS_ARRONDI_COTE_JUSTE = 0.005
+PAS_ARRONDI_PROBABILITE = 0.00005
+
+
+def tolerance_cote_juste(cote_juste: float) -> float:
+    """Ecart entre la cote stockee et 1/probabilite que les deux arrondis de
+    stockage peuvent expliquer a eux seuls."""
+    return PAS_ARRONDI_COTE_JUSTE + (cote_juste ** 2) * PAS_ARRONDI_PROBABILITE
 
 # L'avantage est stocke en pleine precision, mais il se DEDUIT d'une cote
 # juste arrondie : l'arrondi se propage. `avantage = cote_marche / cote_juste - 1`
@@ -63,7 +78,6 @@ TOLERANCE_COTE_JUSTE = 0.01
 # comme une contradiction serait accuser l'arrondi. On compare donc chaque ligne
 # a SA propre marge d'arrondi, jamais a un seuil unique.
 TOLERANCE_AVANTAGE = 0.005
-PAS_ARRONDI_COTE_JUSTE = 0.005
 
 
 def tolerance_avantage(cote_juste: float, cote_marche: float) -> float:
@@ -213,8 +227,9 @@ def prix_contradictoire(recos: list[RecommandationAControler]) -> list[Violation
         avantage_attendu = reco.cote_marche / reco.cote_juste - 1
         ecart_cote = abs(reco.cote_juste - cote_attendue)
         ecart_avantage = abs(reco.avantage - avantage_attendu)
+        seuil_cote = tolerance_cote_juste(reco.cote_juste)
         seuil_avantage = tolerance_avantage(reco.cote_juste, reco.cote_marche)
-        if ecart_cote > TOLERANCE_COTE_JUSTE or ecart_avantage > seuil_avantage:
+        if ecart_cote > seuil_cote or ecart_avantage > seuil_avantage:
             fautives.append(reco)
             if not exemple:
                 exemple = (
