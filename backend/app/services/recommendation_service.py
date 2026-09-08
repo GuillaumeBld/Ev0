@@ -685,6 +685,15 @@ async def process_scraped_fixtures(
                         existing_rec.best_odds = market_odds
                         existing_rec.best_bookmaker = bookmaker
                         existing_rec.edge = edge
+                        # Le prix du modele bouge aussi (compo, xG revu) : sans
+                        # ces trois lignes, la reco garde son ancienne cote
+                        # juste a cote du nouvel avantage, et les deux se
+                        # contredisent — l'avantage affiche ne se deduit plus
+                        # des nombres affiches (4 797 lignes sur 9 724 au
+                        # 08/09/2026).
+                        existing_rec.lambda_intensity = round(lambda_val, 4)
+                        existing_rec.fair_probability = round(probability, 4)
+                        existing_rec.fair_odds = fair_odds
                         existing_rec.confidence = confidence
                         existing_rec.generated_utc = now
                         stats["resurrected"] += 1
@@ -709,6 +718,12 @@ async def process_scraped_fixtures(
                             existing_rec.best_odds = market_odds
                             existing_rec.best_bookmaker = bookmaker
                             existing_rec.edge = edge
+                            # Meme raison que plus haut : le prix du modele doit
+                            # suivre l'avantage qu'il a servi a calculer, sinon
+                            # la ligne se contredit elle-meme.
+                            existing_rec.lambda_intensity = round(lambda_val, 4)
+                            existing_rec.fair_probability = round(probability, 4)
+                            existing_rec.fair_odds = fair_odds
                             existing_rec.confidence = confidence
                             stats["updated"] += 1
 
