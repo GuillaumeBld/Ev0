@@ -9,28 +9,44 @@ alors que dans 2,4 % des cas, car bzz_players stocke le nom entier.
 La sortie : bzz_lineup_slots, une place par joueur, avec l'identifiant quand
 on a su le retrouver. L'archive brute n'est jamais reecrite.
 
-METHODE. On ne cherche jamais dans les 120 000 joueurs de la base, mais dans
-le seul vivier des joueurs ayant une statistique sur CE match -- une
-quarantaine. Un nom abrege y devient quasi unique, ce qui rend le
-rapprochement sur nom court a la fois efficace et sur : mesure du 09/09/2026,
-31 599 places resolues sur 32 298, soit 97,8 %.
+METHODE. On raisonne comme le ferait un observateur du match, du vivier le
+plus etroit au plus large, en s'arretant a la premiere correspondance unique :
+
+  1. les joueurs de CE camp sur CE match -- une vingtaine. Un nom abrege y
+     est presque toujours unique, et deux homonymes adverses ("R. Garcia"
+     contre "R. Garcia") cessent d'etre confondus, puisqu'ils ne sont jamais
+     compares l'un a l'autre ;
+  2. les joueurs des DEUX camps, au cas ou le camp serait mal renseigne ;
+  3. l'effectif du club, qui rattrape le remplacant non utilise : il figure
+     sur la feuille de match sans y avoir de statistique, donc il est absent
+     des deux viviers precedents.
+
+Dans chaque vivier, quatre lectures du nom, de la plus stricte a la plus
+souple : nom court exact, nom complet exact, meme nom de famille, nom de
+famille contenu. Le numero de maillot departage les rares egalites.
+
+Mesure du 09/09/2026 sur 4 034 places sans identifiant : 99,88 % resolues,
+dont 97,8 % des le nom court du meme camp. Aucune ambiguite ne subsiste.
 
 CE QU'ON NE FAIT PAS. Une place qu'on n'a pas su resoudre n'est pas jetee :
-elle est ecrite avec player_api_id a NULL et resolution = "introuvable" ou
-"ambigu". Un trou doit rester visible et denombrable. Les 660 restants sont
-des formes a initiales multiples ("R. K. Muani", "I. V. d. Brempt") qu'aucun
-rapprochement exact ne peut trancher sans risque de confusion.
+elle est ecrite avec player_api_id a NULL et resolution = "absent". Un trou
+doit rester visible et denombrable. Les 5 restantes sont des joueurs que
+bzz_players ne contient tout simplement pas -- Savinho, Yarmolyuk. C'est une
+lacune de la synchronisation des joueurs, pas du rapprochement : aucune
+methode ne peut relier un nom a une fiche qui n'existe pas.
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
 
+import re
+import unicodedata
+
 from sqlalchemy import bindparam, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.auto_settle import _normalize_name
 from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_INTERNAL_IDS
 
 logger = logging.getLogger(__name__)
@@ -38,17 +54,28 @@ logger = logging.getLogger(__name__)
 LEAGUES = [v for k, v in TARGET_LEAGUE_INTERNAL_IDS.items() if k != "champions_league"]
 
 # Vivier d'un match : tout joueur y ayant une statistique, avec ses deux
-# formes de nom. C'est l'ensemble dans lequel un nom abrege doit etre retrouve.
+# formes de nom, son camp et son numero. C'est l'ensemble dans lequel un nom
+# abrege doit d'abord etre retrouve.
 _VIVIER = text("""
-    SELECT s.player_api_id AS pid, p.name AS nom, p.short_name AS court
+    SELECT s.player_api_id AS pid, s.is_home, p.name AS nom,
+           p.short_name AS court, p.jersey_number AS maillot
     FROM bzz_player_match_stats s
     JOIN bzz_players p ON p.api_id = s.player_api_id
     WHERE s.event_api_id = :ev
 """)
 
+# Effectif d'un club, dernier recours : un remplacant non utilise figure sur
+# la feuille de match sans y avoir de statistique.
+_EFFECTIF = text("""
+    SELECT p.api_id AS pid, p.name AS nom, p.short_name AS court,
+           p.jersey_number AS maillot
+    FROM bzz_players p
+    WHERE p.current_team_api_id = :equipe
+""")
+
 # Matchs dont la compo est exploitable et pas encore resolue.
 _A_RESOUDRE = text("""
-    SELECT e.api_id, e.lineups
+    SELECT e.api_id, e.lineups, e.home_team_api_id, e.away_team_api_id
     FROM bzz_events e
     WHERE e.league_api_id IN :ligues
       AND e.status = 'finished'
@@ -62,27 +89,71 @@ _A_RESOUDRE = text("""
 """).bindparams(bindparam("ligues", expanding=True))
 
 
-def _index(vivier: list[dict[str, Any]]) -> dict[str, dict[str, list[int]]]:
-    """Deux tables de correspondance nom normalise -> identifiants.
+def _aplati(s: str) -> str:
+    """Minuscules, sans accents. « Groß » et « Gross » doivent se rejoindre."""
+    s = (s or "").lower().replace("ß", "ss")
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c)
+    )
 
-    Une liste et non un identifiant unique : deux joueurs du meme match
-    peuvent porter le meme nom abrege, et ce cas doit rester detectable
-    plutot que d'etre tranche au hasard.
+
+def _compacte(s: str) -> str:
+    """Ne garde que les lettres et chiffres : « N'Soki » et « Nsoki » coincident."""
+    return re.sub(r"[^a-z0-9]", "", _aplati(s))
+
+
+def nom_de_famille(nom: str) -> str:
+    """Dernier morceau qui n'est pas une simple initiale.
+
+    « I. V. d. Brempt » rend « brempt », « R. K. Muani » rend « muani ». C'est
+    la seule partie stable d'un nom abrege : les prenoms y sont reduits a des
+    lettres, la fin ne l'est jamais.
     """
-    par_court: dict[str, list[int]] = {}
-    par_nom: dict[str, list[int]] = {}
-    for r in vivier:
-        if r["court"]:
-            par_court.setdefault(_normalize_name(r["court"]), []).append(r["pid"])
-        if r["nom"]:
-            par_nom.setdefault(_normalize_name(r["nom"]), []).append(r["pid"])
-    return {"short_name": par_court, "name": par_nom}
+    morceaux = [m for m in _aplati(nom).split() if len(m.strip(".")) > 1]
+    return _compacte(morceaux[-1]) if morceaux else ""
+
+
+# Les quatre lectures d'un nom, de la plus stricte a la plus souple. L'ordre
+# est le garde-fou : on ne descend d'un cran que faute de correspondance unique.
+_LECTURES: tuple[tuple[str, Any], ...] = (
+    ("court", lambda v, c, f: _compacte(v.get("court")) == c),
+    ("complet", lambda v, c, f: _compacte(v.get("nom")) == c),
+    # Nom de famille contre nom de famille, et non contre la fin du nom
+    # complet : « X. Ann » se rapprochait sinon d'« Antoine Griezmann », dont
+    # la chaine compactee finit par « ann ».
+    ("famille", lambda v, c, f: bool(f) and nom_de_famille(v.get("nom")) == f),
+    # Un nom de famille noye au milieu du nom complet (« Mpasi » dans « Lionel
+    # Mpasi Nzau »). Exige quatre lettres : en deca, le hasard suffirait.
+    ("inclus", lambda v, c, f: len(f) > 3 and f in _compacte(v.get("nom"))),
+)
+
+
+def chercher(
+    vivier: list[dict[str, Any]], nom: str, maillot: Any
+) -> tuple[int | None, str | None]:
+    """(identifiant, lecture) du seul joueur du vivier portant ce nom.
+
+    Rend (None, None) si personne ne correspond, ou si plusieurs correspondent
+    sans que le numero de maillot ne departage. On ne tranche jamais au hasard.
+    """
+    compact, famille = _compacte(nom), nom_de_famille(nom)
+    for lecture, test in _LECTURES:
+        candidats = [v for v in vivier if test(v, compact, famille)]
+        if len(candidats) == 1:
+            return candidats[0]["pid"], lecture
+        if len(candidats) > 1 and maillot is not None:
+            memes = [
+                v for v in candidats if str(v.get("maillot")) == str(maillot)
+            ]
+            if len(memes) == 1:
+                return memes[0]["pid"], f"{lecture}+maillot"
+    return None, None
 
 
 def resoudre_place(
-    joueur: dict[str, Any], index: dict[str, dict[str, list[int]]]
+    joueur: dict[str, Any], viviers: list[tuple[str, list[dict[str, Any]]]]
 ) -> tuple[int | None, str]:
-    """(identifiant, chemin de resolution) pour une place de compo.
+    """(identifiant, chemin) pour une place, du vivier le plus etroit au plus large.
 
     L'identifiant fourni par l'API prime : aucun rapprochement quand il existe.
     """
@@ -92,21 +163,20 @@ def resoudre_place(
 
     nom = joueur.get("name") or ""
     if not nom:
-        return None, "introuvable"
+        return None, "absent"
 
-    cle = _normalize_name(nom)
-    ambigu = False
-    for chemin in ("short_name", "name"):
-        candidats = index[chemin].get(cle) or []
-        if len(candidats) == 1:
-            return candidats[0], chemin
-        if len(candidats) > 1:
-            ambigu = True
-    return None, "ambigu" if ambigu else "introuvable"
+    maillot = joueur.get("jersey_number")
+    for etiquette, vivier in viviers:
+        pid, lecture = chercher(vivier, nom, maillot)
+        if pid is not None:
+            return pid, f"{etiquette}/{lecture}"
+    return None, "absent"
 
 
 def places_du_match(
-    lineups: dict[str, Any], index: dict[str, dict[str, list[int]]]
+    lineups: dict[str, Any],
+    vivier_par_camp: dict[bool, list[dict[str, Any]]],
+    effectif_par_camp: dict[bool, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Toutes les places d'un match, titulaires puis remplacants, deux camps.
 
@@ -114,15 +184,23 @@ def places_du_match(
     par camp.
     """
     blocs = lineups.get("lineups") or lineups
+    effectif_par_camp = effectif_par_camp or {}
+    tout_le_match = vivier_par_camp.get(True, []) + vivier_par_camp.get(False, [])
+
     places: list[dict[str, Any]] = []
     for cote, dom in (("home", True), ("away", False)):
         bloc = blocs.get(cote) or {}
+        viviers = [
+            ("camp", vivier_par_camp.get(dom, [])),
+            ("match", tout_le_match),
+            ("effectif", effectif_par_camp.get(dom, [])),
+        ]
         for section, titulaire in (("players", True), ("substitutes", False)):
             for j in bloc.get(section) or []:
                 nom = j.get("name") or ""
                 if not nom:
                     continue
-                pid, chemin = resoudre_place(j, index)
+                pid, chemin = resoudre_place(j, viviers)
                 places.append({
                     "is_home": dom,
                     "is_starter": titulaire,
@@ -152,11 +230,36 @@ async def resoudre_compos(session: AsyncSession, limite: int = 500) -> dict[str,
 
     totaux: dict[str, int] = {}
     matchs = 0
+    # Les effectifs de club servent de dernier recours et se repetent d'un
+    # match a l'autre : on ne les relit qu'une fois par equipe.
+    effectifs: dict[int, list[dict[str, Any]]] = {}
+
+    async def effectif(equipe: int | None) -> list[dict[str, Any]]:
+        if equipe is None:
+            return []
+        if equipe not in effectifs:
+            effectifs[equipe] = [
+                dict(r) for r in (await session.execute(
+                    _EFFECTIF, {"equipe": equipe}
+                )).mappings()
+            ]
+        return effectifs[equipe]
+
     for ev in evenements:
-        vivier = (await session.execute(
+        vivier = [dict(r) for r in (await session.execute(
             _VIVIER, {"ev": ev["api_id"]}
-        )).mappings().all()
-        places = places_du_match(ev["lineups"], _index(list(vivier)))
+        )).mappings()]
+        places = places_du_match(
+            ev["lineups"],
+            {
+                True: [v for v in vivier if v["is_home"]],
+                False: [v for v in vivier if not v["is_home"]],
+            },
+            {
+                True: await effectif(ev["home_team_api_id"]),
+                False: await effectif(ev["away_team_api_id"]),
+            },
+        )
         if not places:
             continue
 

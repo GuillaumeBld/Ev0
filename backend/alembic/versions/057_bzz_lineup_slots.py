@@ -34,7 +34,7 @@ def upgrade() -> None:
         sa.Column("is_starter", sa.Boolean(), nullable=False),
         sa.Column("player_name", sa.String(length=200), nullable=False),
         sa.Column("player_api_id", sa.Integer(), nullable=True),
-        sa.Column("resolution", sa.String(length=12), nullable=False),
+        sa.Column("resolution", sa.String(length=32), nullable=False),
         sa.Column("position", sa.String(length=4), nullable=True),
         sa.Column("jersey_number", sa.Integer(), nullable=True),
         sa.Column(

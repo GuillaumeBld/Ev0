@@ -40,12 +40,12 @@ class BzzLineupSlot(Base, TimestampMixin):
     # NULL quand la resolution a echoue. Volontaire : voir le module.
     player_api_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
 
-    # "id"          -- Bzzoiro donnait l'identifiant, aucun rapprochement
-    # "short_name"  -- retrouve par nom court parmi les joueurs de ce match
-    # "name"        -- retrouve par nom complet parmi les joueurs de ce match
-    # "introuvable" -- aucune correspondance
-    # "ambigu"      -- plusieurs correspondances, aucune retenue
-    resolution: Mapped[str] = mapped_column(String(12))
+    # "id" quand Bzzoiro donnait l'identifiant. Sinon "<vivier>/<lecture>" :
+    # le vivier vaut camp, match ou effectif ; la lecture vaut court, complet,
+    # famille ou inclus, suffixee de "+maillot" si le numero a departage.
+    # "absent" quand aucun rapprochement n'aboutit -- le joueur ne figure pas
+    # dans bzz_players.
+    resolution: Mapped[str] = mapped_column(String(32))
 
     position: Mapped[str | None] = mapped_column(String(4), nullable=True)
     jersey_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
