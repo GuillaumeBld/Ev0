@@ -75,11 +75,14 @@ _GOALSCORER_LABELS = (
     "buteur anytime",
     "scorer anytime",
 )
+# Passeur anytime UNIQUEMENT : le libelle DOIT contenir "joueur passeur
+# decisif". PAS le fragment generique "passeur decisif" -> Betclic expose
+# un 2e marche "Passeur decisif (tps reg.)" (different, cotes ~2x plus
+# hautes) qui serait sinon classe assist et ecraserait la vraie cote
+# anytime (bug 09/09/2026 : Akgun assist 11 au lieu de 5).
 _ASSIST_LABELS = (
-    "joueur passeur d\u00e9cisif",   # Joueur passeur décisif (tps rég.)
+    "joueur passeur décisif",   # Joueur passeur décisif (tps rég.)
     "joueur passeur decisif",         # sans accent
-    "passeur d\u00e9cisif",           # fragment générique
-    "passeur decisif",
 )
 # "rempla" exclusion in _classify_market blocks the "+son remplaçant" variant (substitutes)
 _H2H_LABELS = ("résultat du match",)

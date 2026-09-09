@@ -25,8 +25,16 @@ def test_combined_and_boosted_passeur_variants_rejected():
         "Triple chance - Passeur décisif",
         "Passeur décisif (t. rég) - Extra gains à chaque passe décisive du joueur",
         "Joueur passeur décisif + son remplaçant (t. rég)",
+        # Régression 09/09/2026 : marché "Passeur décisif" SANS "Joueur" —
+        # marché distinct (cotes ~2x l'anytime) qui écrasait la vraie cote.
+        "Passeur décisif (tps rég.)",
     ):
         assert _classify_market(name) != "assist", name
+
+
+def test_anytime_passeur_still_classified():
+    # Le seul marché passeur anytime valide.
+    assert _classify_market("Joueur passeur décisif (tps rég.)") == "assist"
 
 
 def test_goalscorer_still_classified():
