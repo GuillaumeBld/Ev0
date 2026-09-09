@@ -3,6 +3,7 @@
 from app.models.autopilot import AutopilotDecision
 from app.models.bankroll import BankrollEntry
 from app.models.base import Base
+from app.models.bzz_lineup_slots import BzzLineupSlot  # noqa: F401
 from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
 from app.models.lineups import TeamLineup, TeamLineupPlayer  # noqa: F401
@@ -28,6 +29,7 @@ __all__ = [
     "AutopilotDecision",
     "Base",
     "BankrollEntry",
+    "BzzLineupSlot",
     "CanonicalTeam",
     "Fixture",
     "MatchEvent",

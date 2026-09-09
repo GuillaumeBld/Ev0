@@ -35,6 +35,7 @@ from app.ingestion.bzzoiro.sync_fixtures_from_bzz import sync_fixtures_from_bzz
 from app.ingestion.bzzoiro.sync_reference import sync_leagues, sync_teams
 from app.ingestion.bzzoiro.sync_bzzoiro_odds import sync_bzzoiro_odds
 from app.ingestion.bzzoiro.sync_bzzoiro_lineups import sync_bzzoiro_lineups
+from app.ingestion.bzzoiro.resolve_lineup_slots import resoudre_compos
 from app.ingestion.bzzoiro.sync_match_detail import sync_apres_match, sync_avant_match
 from app.ingestion.bzzoiro.sync_incidents import sync_incidents
 from app.ingestion.bzzoiro.sync_wc_squads import sync_wc_squads
@@ -1514,6 +1515,11 @@ async def job_sync_donnees_apres_match() -> None:
     Le rattrapage des compos porte sur 9 012 matchs et avance par lots de 200
     a l'heure, soit environ deux jours. Aucun script separe : la file se vide
     d'elle-meme, et un match sans compo chez Bzzoiro en sort definitivement.
+
+    La compo brute n'est pas exploitable telle quelle : sur 1 468 matchs,
+    Bzzoiro ne donne qu'un nom abrege sans identifiant. La resolution suit
+    donc immediatement la recuperation, et n'appelle aucune API -- elle
+    rapproche dans le seul vivier des joueurs ayant joue ce match.
     """
     if not settings.bzzoiro_api_key:
         return
@@ -1524,6 +1530,14 @@ async def job_sync_donnees_apres_match() -> None:
             await sync_apres_match(session, client)
     except Exception as exc:
         logger.error("Echec des donnees d'apres match : %s", exc, exc_info=True)
+
+    # Resolution a part : une panne de l'API Bzzoiro ne doit pas empecher de
+    # resoudre les compos deja recuperees, qui ne demandent que la base.
+    try:
+        async with async_session() as session:
+            await resoudre_compos(session)
+    except Exception as exc:
+        logger.error("Echec de la resolution des compos : %s", exc, exc_info=True)
 
 
 async def job_sync_bzzoiro_lineups() -> None:
@@ -2444,7 +2458,7 @@ def create_scheduler() -> AsyncIOScheduler:
         job_sync_donnees_apres_match,
         IntervalTrigger(hours=1),
         id="sync_donnees_apres_match",
-        name="Tirs et stats Bzzoiro — matchs termines",
+        name="Tirs, stats et compos Bzzoiro — matchs termines",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
