@@ -198,6 +198,10 @@ def places_du_match(
             ("match", tout_le_match),
             ("effectif", effectif_par_camp.get(dom, [])),
         ]
+        # Rang sur la feuille du camp : c'est lui qui identifie une place. Deux
+        # joueurs d'un meme camp peuvent porter le meme nom abrege -- Osasuna
+        # aligne deux "R. Garcia" -- et une cle nominale les confondrait.
+        rang = 0
         for section, titulaire in (("players", True), ("substitutes", False)):
             for j in bloc.get(section) or []:
                 nom = j.get("name") or ""
@@ -206,6 +210,7 @@ def places_du_match(
                 pid, chemin = resoudre_place(j, viviers)
                 places.append({
                     "is_home": dom,
+                    "slot": rang,
                     "is_starter": titulaire,
                     "player_name": nom,
                     "player_api_id": pid,
@@ -213,6 +218,7 @@ def places_du_match(
                     "position": (j.get("position") or None),
                     "jersey_number": _entier(j.get("jersey_number")),
                 })
+                rang += 1
 
     for dom in (True, False):
         _par_elimination(
@@ -308,6 +314,7 @@ async def resoudre_compos(session: AsyncSession, limite: int = 500) -> dict[str,
             constraint="uq_bzz_lineup_slot",
             set_={
                 "is_starter": stmt.excluded.is_starter,
+                "player_name": stmt.excluded.player_name,
                 "player_api_id": stmt.excluded.player_api_id,
                 "resolution": stmt.excluded.resolution,
                 "position": stmt.excluded.position,

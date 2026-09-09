@@ -33,6 +33,13 @@ class BzzLineupSlot(Base, TimestampMixin):
     is_home: Mapped[bool] = mapped_column(Boolean)
     is_starter: Mapped[bool] = mapped_column(Boolean)
 
+    # Rang de la place sur la feuille du camp, titulaires puis remplacants.
+    # C'est ce qui identifie une place, et non le nom : Osasuna aligne deux
+    # "R. Garcia" (maillots 9 et 14), Middlesbrough deux "J. Jones" (51 et 52).
+    # Mesure du 09/09/2026 : 29 collisions de ce type dans le perimetre. Une
+    # cle portant le nom les fondait en une seule ligne, effacant un joueur.
+    slot: Mapped[int] = mapped_column(Integer)
+
     # Nom tel que Bzzoiro le donne : complet quand l'identifiant est fourni,
     # abrege ("A. Mac Allister") quand il ne l'est pas. Conserve dans les deux
     # cas : c'est la seule trace lisible d'une place non resolue.
@@ -51,11 +58,11 @@ class BzzLineupSlot(Base, TimestampMixin):
     jersey_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
-        # Une place par joueur nomme et par camp. Le nom fait partie de la cle
-        # car player_api_id est nullable : deux places non resolues du meme
-        # match doivent pouvoir coexister.
+        # Le rang, pas le nom : deux joueurs d'un meme camp peuvent porter le
+        # meme nom abrege, et player_api_id est nullable. Le rang est la seule
+        # chose qui distingue deux places a coup sur.
         UniqueConstraint(
-            "event_api_id", "is_home", "player_name",
+            "event_api_id", "is_home", "slot",
             name="uq_bzz_lineup_slot",
         ),
     )

@@ -328,3 +328,48 @@ def test_l_elimination_ne_traverse_pas_les_camps():
         {True: [], False: [_j(9, "Savio Moreira", "Sávio")]},
     )
     assert places[0]["player_api_id"] is None
+
+
+# --- Deux joueurs, un seul nom ----------------------------------------------
+#
+# Osasuna aligne deux « R. García » (maillots 9 et 14), Middlesbrough deux
+# « J. Jones » (51 et 52). 29 cas dans le perimetre. Une cle portant le nom
+# les fondait en une seule ligne, effacant un joueur.
+
+
+def test_deux_homonymes_du_meme_camp_occupent_deux_places():
+    vivier = [
+        _j(1, "Raul Garcia", "R. García", 14),
+        _j(2, "Ruben Garcia", "R. García", 9),
+    ]
+    compo = {"lineups": {
+        "home": {"players": [
+            {"id": None, "name": "R. García", "jersey_number": 14},
+            {"id": None, "name": "R. García", "jersey_number": 9},
+        ], "substitutes": []},
+        "away": {"players": [], "substitutes": []},
+    }}
+
+    places = places_du_match(compo, {True: vivier, False: []})
+
+    assert [p["slot"] for p in places] == [0, 1]
+    assert [p["player_api_id"] for p in places] == [1, 2]
+
+
+def test_le_rang_numerote_les_titulaires_puis_les_remplacants():
+    places = places_du_match(_compo(), CAMPS)
+
+    domicile = [p for p in places if p["is_home"]]
+    assert [(p["slot"], p["is_starter"]) for p in domicile] == [
+        (0, True), (1, True), (2, False),
+    ]
+    # chaque camp repart de zero
+    assert [p["slot"] for p in places if not p["is_home"]] == [0]
+
+
+def test_le_rang_est_unique_par_camp():
+    """C'est la cle d'unicite en base : elle ne doit jamais collisionner."""
+    places = places_du_match(_compo(), CAMPS)
+    for dom in (True, False):
+        rangs = [p["slot"] for p in places if p["is_home"] == dom]
+        assert len(rangs) == len(set(rangs))
