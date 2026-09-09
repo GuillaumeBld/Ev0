@@ -17,7 +17,6 @@ from datetime import UTC, datetime
 
 from app.services.coherence_paris import (
     TOLERANCE_AVANTAGE,
-    TOLERANCE_COTE_JUSTE,
     CoteAControler,
     RecommandationAControler,
     controler_cotes,
@@ -27,6 +26,7 @@ from app.services.coherence_paris import (
     prix_contradictoire,
     probabilite_hors_bornes,
     resumer,
+    tolerance_cote_juste,
 )
 
 RELEVE = datetime(2026, 9, 8, 10, 0, tzinfo=UTC)
@@ -162,10 +162,23 @@ def test_un_avantage_fige_est_une_contradiction():
 
 
 def test_les_tolerances_sont_calees_sur_la_precision_reelle():
-    """La cote juste absorbe l'arrondi a deux decimales, l'avantage non : il est
-    stocke en pleine precision."""
-    assert TOLERANCE_COTE_JUSTE >= 0.005
-    assert TOLERANCE_AVANTAGE < TOLERANCE_COTE_JUSTE
+    """Les deux arrondis de stockage doivent etre absorbes, et le second
+    s'amplifie avec la cote : inverser une probabilite a pour derivee -1/p^2."""
+    # Cote courte : l'arrondi de la probabilite ne pese presque rien.
+    assert tolerance_cote_juste(2.65) < 0.006
+    # Cote longue : il pese quinze fois plus, le seuil doit suivre.
+    assert tolerance_cote_juste(12.21) > 0.012
+    assert TOLERANCE_AVANTAGE == 0.005
+
+
+def test_le_cas_reel_a_12_21_ne_doit_pas_etre_signale():
+    """Fabian Rieder, constate en production : probabilite 0.0819 stockee a
+    quatre decimales, cote juste 12.20 stockee a deux. L'inverse de la
+    probabilite vaut 12.2100, soit 0.0100 d'ecart — entierement explique par
+    les deux arrondis. Un seuil fixe a 0.01 le signalait a tort."""
+    assert prix_contradictoire([
+        _reco(1, 0.0819, 12.20, 14.20, 14.20 / 12.20 - 1)
+    ]) == []
 
 
 # ---------------------------------------------------------------------------
