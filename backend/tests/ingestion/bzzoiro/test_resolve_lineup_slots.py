@@ -223,12 +223,17 @@ def test_les_deux_formes_archivees_sont_acceptees():
 
 
 def test_une_place_non_resolue_est_conservee_et_non_jetee():
+    """Deux joueurs libres : l'elimination s'abstient, la place reste vide."""
     compo = _compo()
     compo["lineups"]["home"]["players"].append(
         {"id": None, "name": "Savinho", "position": "F", "jersey_number": 26}
     )
+    camps = {
+        True: LIVERPOOL + [_j(400, "Rodrigo Hernandez", "Rodri", 16)],
+        False: ADVERSAIRE,
+    }
 
-    perdu = [p for p in places_du_match(compo, CAMPS) if p["player_name"] == "Savinho"]
+    perdu = [p for p in places_du_match(compo, camps) if p["player_name"] == "Savinho"]
     assert len(perdu) == 1
     assert perdu[0]["player_api_id"] is None
     assert perdu[0]["resolution"] == "absent"
@@ -262,3 +267,64 @@ def test_le_chemin_de_resolution_reste_court_pour_la_colonne():
     }
     for p in places_du_match(compo, camps, {True: [], False: []}):
         assert len(p["resolution"]) <= 32
+
+
+# --- Elimination ------------------------------------------------------------
+#
+# Un surnom ne se rapproche d'aucune chaine : la compo dit « Savinho » quand
+# la fiche dit « Sávio », « M. Kim » quand elle dit « Kim Min-jae ». Seule la
+# deduction les rattrape.
+
+
+def _compo_un_camp(noms):
+    return {"lineups": {
+        "home": {"players": [{"id": None, "name": n} for n in noms],
+                 "substitutes": []},
+        "away": {"players": [], "substitutes": []},
+    }}
+
+
+def test_le_dernier_nom_designe_le_dernier_joueur_libre():
+    vivier = [
+        _j(1, "Alisson Becker", "Alisson"),
+        _j(2, "Savio Moreira", "Sávio"),
+    ]
+    places = places_du_match(
+        _compo_un_camp(["Alisson", "Savinho"]), {True: vivier, False: []}
+    )
+
+    savinho = [p for p in places if p["player_name"] == "Savinho"][0]
+    assert savinho["player_api_id"] == 2
+    assert savinho["resolution"] == "elimination"
+
+
+def test_deux_noms_restants_ne_sont_pas_apparies_au_hasard():
+    """A deux contre deux, rien ne dit lequel va avec lequel."""
+    vivier = [_j(1, "Savio Moreira", "Sávio"), _j(2, "Kim Min-jae", "M.-J. Kim")]
+    places = places_du_match(
+        _compo_un_camp(["Savinho", "M. Kim"]), {True: vivier, False: []}
+    )
+    assert all(p["player_api_id"] is None for p in places)
+    assert all(p["resolution"] == "absent" for p in places)
+
+
+def test_un_seul_nom_mais_plusieurs_joueurs_libres_reste_absent():
+    """Un remplacant non utilise laisse plusieurs joueurs sans place."""
+    vivier = [
+        _j(1, "Alisson Becker", "Alisson"),
+        _j(2, "Savio Moreira", "Sávio"),
+        _j(3, "Rodrigo Hernandez", "Rodri"),
+    ]
+    places = places_du_match(
+        _compo_un_camp(["Alisson", "Savinho"]), {True: vivier, False: []}
+    )
+    assert [p["resolution"] for p in places] == ["camp/court", "absent"]
+
+
+def test_l_elimination_ne_traverse_pas_les_camps():
+    """Le joueur libre de l'autre camp ne doit jamais etre pris."""
+    places = places_du_match(
+        _compo_un_camp(["Savinho"]),
+        {True: [], False: [_j(9, "Savio Moreira", "Sávio")]},
+    )
+    assert places[0]["player_api_id"] is None

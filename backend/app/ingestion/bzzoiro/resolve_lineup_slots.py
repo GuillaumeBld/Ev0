@@ -25,15 +25,18 @@ Dans chaque vivier, quatre lectures du nom, de la plus stricte a la plus
 souple : nom court exact, nom complet exact, meme nom de famille, nom de
 famille contenu. Le numero de maillot departage les rares egalites.
 
-Mesure du 09/09/2026 sur 4 034 places sans identifiant : 99,88 % resolues,
-dont 97,8 % des le nom court du meme camp. Aucune ambiguite ne subsiste.
+Puis, en dernier ressort, l'ELIMINATION. Quand tous les noms d'un camp sont
+attribues sauf un, et qu'un seul joueur du vivier n'a ete reclame par
+personne, les deux se designent mutuellement. C'est une deduction, pas un
+rapprochement -- et c'est le seul moyen de couvrir les surnoms, qu'aucune
+comparaison de chaines ne peut atteindre : la compo dit "Savinho" quand la
+fiche dit "Savio", "M. Kim" quand elle dit "Kim Min-jae".
 
 CE QU'ON NE FAIT PAS. Une place qu'on n'a pas su resoudre n'est pas jetee :
 elle est ecrite avec player_api_id a NULL et resolution = "absent". Un trou
-doit rester visible et denombrable. Les 5 restantes sont des joueurs que
-bzz_players ne contient tout simplement pas -- Savinho, Yarmolyuk. C'est une
-lacune de la synchronisation des joueurs, pas du rapprochement : aucune
-methode ne peut relier un nom a une fiche qui n'existe pas.
+doit rester visible et denombrable. Il s'agit alors de remplacants non
+utilises, absents du vivier faute de statistique, et dont le nom abrege ne
+correspond a aucune fiche du club.
 """
 from __future__ import annotations
 
@@ -210,7 +213,39 @@ def places_du_match(
                     "position": (j.get("position") or None),
                     "jersey_number": _entier(j.get("jersey_number")),
                 })
+
+    for dom in (True, False):
+        _par_elimination(
+            [p for p in places if p["is_home"] == dom], vivier_par_camp.get(dom, [])
+        )
     return places
+
+
+def _par_elimination(places: list[dict[str, Any]], vivier: list[dict[str, Any]]) -> None:
+    """Dernier recours : le seul nom restant designe le seul joueur restant.
+
+    C'est ce que fait un observateur devant une feuille de match. Quand tous
+    les noms d'un camp sont attribues sauf un, et qu'un seul joueur du vivier
+    n'a ete reclame par personne, les deux se designent mutuellement -- sans
+    qu'aucune chaine n'ait a se ressembler.
+
+    C'est ce qui rattrape les surnoms, que nul rapprochement litteral ne peut
+    couvrir : la compo dit "Savinho" quand la fiche dit "Savio", "M. Kim"
+    quand elle dit "Kim Min-jae", "P. T. Jimenez" quand elle dit "Pol
+    Tristan".
+
+    La deduction n'est valable qu'a UN contre UN. Des qu'il reste deux noms ou
+    deux joueurs libres, on s'abstient : rien ne dit lequel va avec lequel.
+    """
+    perdus = [p for p in places if p["player_api_id"] is None]
+    if len(perdus) != 1:
+        return
+    reclames = {p["player_api_id"] for p in places if p["player_api_id"] is not None}
+    libres = [v for v in vivier if v["pid"] not in reclames]
+    if len(libres) != 1:
+        return
+    perdus[0]["player_api_id"] = libres[0]["pid"]
+    perdus[0]["resolution"] = "elimination"
 
 
 def _entier(v: Any) -> int | None:
