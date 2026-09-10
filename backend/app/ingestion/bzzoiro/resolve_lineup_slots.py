@@ -310,6 +310,17 @@ async def resoudre_compos(session: AsyncSession, limite: int = 500) -> dict[str,
         stmt = pg_insert(BzzLineupSlot).values(
             [{"event_api_id": ev["api_id"], **p} for p in places]
         )
+        # Le conflit ne se produit pas aujourd'hui : _A_RESOUDRE ne rend que
+        # les compos non encore traitees, et aucune ligne n'a jamais ete
+        # reecrite (0 sur 382 100, mesure du 10/09/2026). Ce chemin suppose
+        # que le rang designe la meme place d'une execution a l'autre, donc
+        # que l'ordre de la feuille Bzzoiro n'a pas bouge et qu'aucune entree
+        # anonyme n'a recu de nom entre-temps -- une entree sans nom est
+        # ignoree et ne consomme pas de rang, si bien qu'un nom apparu decale
+        # tous les rangs suivants. Rejouer un match deja resolu (backfill,
+        # reprise apres une passe ratee) reattribuerait alors les places en
+        # silence. Le cas echeant, effacer les places du match avant de le
+        # rejouer plutot que de compter sur ce DO UPDATE.
         await session.execute(stmt.on_conflict_do_update(
             constraint="uq_bzz_lineup_slot",
             set_={
