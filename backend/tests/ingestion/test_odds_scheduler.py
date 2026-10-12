@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from app.ingestion.odds_scheduler import (
     _build_canonical_alias_map,
     _build_canonical_names_by_id,
+    _candidates_near_kickoff,
     _match_result_to_fixture,
     _normalize_team,
     _side_strength,
@@ -370,3 +371,45 @@ def test_etoile_rouge_alias_resolves_to_db_name():
     """Known translation mismatch (not a spelling variant, fuzzy can't bridge it):
     Betclic/PMU 'Étoile Rouge' vs the DB's 'FK Crvena zvezda' (Red Star Belgrade)."""
     assert _normalize_team("Étoile Rouge") == _normalize_team("FK Crvena zvezda")
+
+
+# ---------------------------------------------------------------------------
+# Incident du 12/10/2026 : un club engage en championnat ET en LDC dans la
+# fenetre de scraping rendait l'ancrage ambigu, le match n'etait pas scrape.
+# ---------------------------------------------------------------------------
+
+_LDC = datetime(2026, 10, 13, 16, 45, tzinfo=UTC)
+_L1 = datetime(2026, 10, 18, 15, 0, tzinfo=UTC)
+
+
+class TestKickoffNarrowsCandidates:
+    def _two_lens_fixtures(self):
+        cands = [_cand(1, "RC Lens", "Sporting CP"), _cand(2, "RC Lens", "Paris FC")]
+        return cands, {1: _LDC, 2: _L1}
+
+    def test_without_kickoff_the_lone_known_club_is_ambiguous(self):
+        cands, _ = self._two_lens_fixtures()
+        fid, reason, _, _ = _match("Lens", "Sporting Lisbon", cands)
+        assert fid is None
+        assert reason == "ambiguous_anchor"
+
+    def test_kickoff_resolves_the_club_playing_twice(self):
+        cands, ko = self._two_lens_fixtures()
+        near = _candidates_near_kickoff(cands, ko, _LDC)
+        fid, reason, _, _ = _match("Lens", "Sporting Lisbon", near)
+        assert (fid, reason) == (1, "anchor")
+
+    def test_two_hour_tolerance(self):
+        cands, ko = self._two_lens_fixtures()
+        assert [c[0] for c in _candidates_near_kickoff(cands, ko, _LDC + timedelta(hours=2))] == [1]
+        assert [c[0] for c in _candidates_near_kickoff(cands, ko, _LDC + timedelta(hours=3))] == [1, 2]
+
+    def test_unknown_or_far_kickoff_keeps_every_candidate(self):
+        cands, ko = self._two_lens_fixtures()
+        assert _candidates_near_kickoff(cands, ko, None) == cands
+        assert _candidates_near_kickoff(cands, ko, _LDC + timedelta(days=30)) == cands
+
+
+def test_unibet_names_of_la_liga_newcomers():
+    assert _normalize_team("La Corogne") == _normalize_team("Deportivo de A Coruña")
+    assert _normalize_team("Santander") == _normalize_team("Real Racing Club")
