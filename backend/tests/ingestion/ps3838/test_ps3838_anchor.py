@@ -240,3 +240,15 @@ async def test_nominal_case_persists_event_id_after_commit(session_factory):
             await session.execute(select(Fixture).where(Fixture.id == 1))
         ).scalar_one()
     assert stored.ps3838_event_id == 111
+
+
+def test_local_and_english_city_names_resolve():
+    """Club hors referentiel canonique : 'Praha' et 'Prague' designent la
+    meme ville (Sabah - Slavia, LDC du 13/10/2026, restait sans xG)."""
+    evs = [_ev(222, "Sabah FK", "Slavia Prague")]
+    assert match_event(_fx("Sabah FK", "SK Slavia Praha"), evs).event_id == 222
+
+
+def test_city_spelling_does_not_merge_two_clubs_of_the_same_city():
+    evs = [_ev(223, "Sabah FK", "Sparta Prague")]
+    assert match_event(_fx("Sabah FK", "SK Slavia Praha"), evs) is None
