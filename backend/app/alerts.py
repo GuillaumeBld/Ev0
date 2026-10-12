@@ -153,8 +153,12 @@ class ErrorAlertHandler(logging.Handler):
 
             if len(self._sent_at) < self._CAP:
                 self._sent_at.append(now)
+                # Le message d'un log est du texte brut : une exception y
+                # embarque souvent "<class '...'>", que Telegram (parse_mode
+                # HTML) rejette en 400 — l'alerte se perdait sans bruit.
                 alert_bg(
-                    f"🔴 [Ev0 worker] {record.name}\n{record.getMessage()[:500]}",
+                    f"🔴 [Ev0 worker] {html_lib.escape(record.name)}\n"
+                    f"{html_lib.escape(record.getMessage()[:500])}",
                     channel="incidents",
                 )
                 return
