@@ -74,9 +74,30 @@ def _variant_markers(name: str) -> frozenset[str]:
     )
 
 
+# Villes ecrites dans la langue locale d'un cote, en anglais de l'autre. Les
+# clubs hors des cinq grands championnats (LDC) n'ont pas d'equipe canonique :
+# seule l'inclusion de tokens peut les rapprocher, et 'SK Slavia Praha' ne
+# contenait pas 'Slavia Prague' -- le match restait sans xG (12/10/2026).
+# Ne jamais y mettre une ville qui est aussi le nom d'un club ('Torino').
+_EXONYMS = {
+    "praha": "prague",
+    "kobenhavn": "copenhagen",
+    "beograd": "belgrade",
+    "lisboa": "lisbon",
+    "bucuresti": "bucharest",
+    "wien": "vienna",
+    "kiev": "kyiv",
+}
+
+
 def norm_team(name: str) -> set[str]:
-    """Tokens normalises : lettres pliees, mots vides et suffixes de club retires."""
-    return {t for t in _fold(name).split() if t and t not in _STOP and len(t) > 2}
+    """Tokens normalises : lettres pliees, mots vides et suffixes de club retires,
+    villes ramenees a une seule ecriture."""
+    return {
+        _EXONYMS.get(t, t)
+        for t in _fold(name).split()
+        if t and t not in _STOP and len(t) > 2
+    }
 
 
 def build_alias_map(canonical_teams) -> dict[frozenset[str], int]:
