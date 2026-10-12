@@ -43,6 +43,9 @@ _BZZ_TO_FIXTURE_STATUS = {
     "live": "live",
 }
 _DATE_WINDOW = timedelta(days=5)
+# Un match termine reste relu ce temps-la : Bzzoiro corrige le score apres
+# coup (score a 90' publie apres une prolongation, but annule par la VAR).
+_RESYNC_FINISHED = timedelta(days=7)
 _KICKOFF_THRESHOLD_SECONDS = 1800  # 30 minutes
 _BZZ_EXTERNAL_ID_RE = re.compile(r"^bzz_(\d+)$")
 
@@ -59,12 +62,14 @@ def _bzz_api_id(fixture: Fixture) -> int | None:
 async def sync_fixture_status_from_bzz(session: AsyncSession) -> int:
     """Update Fixture rows from matching BzzEvent rows. Returns count updated."""
 
-    # 1. Load non-finished fixtures + finished fixtures that still have NULL scores
+    # 1. Load non-finished fixtures + finished fixtures that still have NULL
+    # scores + recently finished ones, whose score Bzzoiro may still correct
     fixture_result = await session.execute(
         select(Fixture).where(
             or_(
                 Fixture.status != "finished",
                 Fixture.home_score.is_(None),
+                Fixture.kickoff_utc >= datetime.now(UTC) - _RESYNC_FINISHED,
             )
         )
     )
