@@ -14,7 +14,7 @@ For each approved recommendation with result=None:
 
 import logging
 import unicodedata
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -75,6 +75,13 @@ def _find_pmm_by_name(pmm_list: list, player_name: str):
     return None
 
 
+# Un 1N2 se regle sur le temps reglementaire. Le soir d'un match prolonge, la
+# synchro peut capter le score apres prolongation, que Bzzoiro remplace ensuite
+# par le score a 90' : on attend que le score soit stabilise. Le 12/10/2026,
+# Belgique–Senegal (2-2 a 90', 3-2 a.p.) et Celje–Slovan (1-1, 1-2 a.p.)
+# avaient ete regles gagnants a tort.
+_H2H_SETTLE_DELAY = timedelta(hours=6)
+
 # market_type → list of valid MatchEvent.event_type values
 _MARKET_TO_EVENTS: dict[str, list[str]] = {
     "goalscorer": ["goal", "penalty_goal"],
@@ -130,6 +137,15 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
 
         # ── H2H: settle against match score ────────────────────────────────────
         if market == "h2h":
+            if (
+                fixture.kickoff_utc is not None
+                and datetime.now(UTC) < fixture.kickoff_utc + _H2H_SETTLE_DELAY
+            ):
+                logger.debug(
+                    "auto_settle: h2h rec %d — score not settled yet (kickoff %s), skipping",
+                    rec.id, fixture.kickoff_utc,
+                )
+                continue
             if fixture.home_score is None or fixture.away_score is None:
                 stuck_fixture_ids.add(fixture.id)
                 logger.debug(

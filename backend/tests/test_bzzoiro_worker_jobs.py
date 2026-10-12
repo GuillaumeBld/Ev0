@@ -653,3 +653,27 @@ async def test_sync_fixture_status_name_fallback_bounded_to_five_days():
     assert await sync_fixture_status_from_bzz(session) == 0
     assert fixture.kickoff_utc == datetime(2026, 10, 10, 18, 45, tzinfo=UTC)
     assert fixture.status == "scheduled"
+
+
+@pytest.mark.asyncio
+async def test_sync_fixture_status_rereads_recently_finished_fixtures():
+    """Un match termine depuis moins de 7 jours reste relu : Bzzoiro remplace
+    le score apres prolongation par le score a 90' (incident du 12/10/2026)."""
+    from app.ingestion.bzzoiro.sync_fixture_status import sync_fixture_status_from_bzz
+
+    kickoff = datetime(2026, 8, 26, 19, 0, tzinfo=UTC)
+    fixture = _make_fixture(
+        "NK Celje", "ŠK Slovan Bratislava", kickoff_utc=kickoff,
+        status="finished", home_score=1, away_score=2,
+    )
+    event = _make_bzz_event(50, 60, kickoff, "finished", 1, 1)
+    session = _make_session_for_sync(
+        [fixture], [event],
+        [_make_bzz_team(50, "NK Celje"), _make_bzz_team(60, "ŠK Slovan Bratislava")],
+    )
+
+    assert await sync_fixture_status_from_bzz(session) == 1
+    assert (fixture.home_score, fixture.away_score) == (1, 1)
+
+    first_query = str(session.execute.await_args_list[0].args[0])
+    assert "fixtures.kickoff_utc >=" in first_query
