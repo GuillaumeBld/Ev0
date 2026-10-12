@@ -2110,6 +2110,8 @@ async def job_purge_old_snapshots() -> None:
 
 _HEALTH_STALE_H = 24
 _HEALTH_BACKLOG_MAX = 20
+# Part minimale des matchs Bzzoiro a 7 j qui doivent exister en fixtures
+_HEALTH_CALENDRIER_RATIO_MIN = 0.8
 
 # Traefik renouvelle a 30 jours de l'expiration. On alerte a 21 : si le
 # renouvellement automatique echoue, il reste trois semaines pour reagir avant
@@ -2177,6 +2179,15 @@ def _health_red_flags(row: dict, now: datetime) -> list[str]:
     if row["recs_24h"] == 0:
         flags.append("aucune reco en 24h")
 
+    # Calendrier : Bzzoiro connait les matchs a venir, mais encore faut-il
+    # qu'ils deviennent des fixtures. Du 11/09 au 12/10/2026, plus aucune
+    # n'a ete creee alors que bzz_events en comptait 260 : rien ne sonnait,
+    # puisque le controle de coherence ne regarde que bzz_events.
+    attendus = row.get("bzz_a_venir_7j") or 0
+    presents = row.get("fixtures_a_venir_7j") or 0
+    if attendus and presents < attendus * _HEALTH_CALENDRIER_RATIO_MIN:
+        flags.append(f"calendrier incomplet ({presents}/{attendus} matchs à 7 j)")
+
     return flags
 
 
@@ -2189,7 +2200,9 @@ async def job_daily_health_report() -> None:
     aille bien ou mal finit par ne plus être lu — donc à ne plus alerter."""
     try:
         from app.alerts import send_alert
+        from app.ingestion.bzzoiro.sync_fixtures_from_bzz import _LEAGUE_API_ID_TO_KEY
 
+        ligues_calendrier = list(_LEAGUE_API_ID_TO_KEY)
         async with async_session() as session:
             row = (await session.execute(text("""
                 SELECT
@@ -2201,11 +2214,16 @@ async def job_daily_health_report() -> None:
                     WHERE created_at > now() - interval '24 hours')            AS recs_24h,
                   (SELECT count(*) FROM recommendations
                     WHERE status = 'pending')                                  AS recs_pending,
+                  (SELECT count(*) FROM bzz_events
+                    WHERE event_date BETWEEN now() AND now() + interval '7 days'
+                      AND league_api_id = ANY(:ligues))                        AS bzz_a_venir_7j,
+                  (SELECT count(*) FROM fixtures
+                    WHERE kickoff_utc BETWEEN now() AND now() + interval '7 days') AS fixtures_a_venir_7j,
                   (SELECT count(*) FROM autopilot_decisions d
                     JOIN recommendations r ON r.id = d.recommendation_id
                     JOIN fixtures f ON f.id = r.fixture_id
                     WHERE d.result IS NULL AND f.status = 'finished')          AS backlog_settle
-            """))).mappings().one()
+            """), {"ligues": ligues_calendrier})).mappings().one()
 
         now = datetime.now(UTC)
 
@@ -2240,7 +2258,9 @@ async def job_daily_health_report() -> None:
             f"Outrights WC actifs : {row['wc_odds_actives']}\n"
             f"Pricing WC : {age(row['wc_pricing_at'])}\n"
             f"Recos 24h : {row['recs_24h']} (pending: {row['recs_pending']})\n"
-            f"Backlog settle : {row['backlog_settle']} décision(s)"
+            f"Backlog settle : {row['backlog_settle']} décision(s)\n"
+            f"Calendrier 7 j : {row['fixtures_a_venir_7j']} fixtures / "
+            f"{row['bzz_a_venir_7j']} matchs Bzzoiro"
             f"{cert_lines}"
         )
         await send_alert(msg, channel="incidents" if red else "autopilot")
