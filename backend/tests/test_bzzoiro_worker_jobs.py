@@ -590,3 +590,66 @@ def test_les_deux_jobs_sont_planifies():
     src = inspect.getsource(w)
     assert 'id="sync_compos_avant_match"' in src
     assert 'id="sync_donnees_apres_match"' in src
+
+
+# ---------------------------------------------------------------------------
+# Incident du 11/10/2026 : rapprochement par noms avec le match de l'an passe
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_fixture_status_prefers_own_event_over_last_season_rematch():
+    """Une fixture liee a bzz_<id> suit SON evenement, meme reporte de plusieurs
+    semaines, et jamais la meme affiche de la saison passee."""
+    from app.ingestion.bzzoiro.sync_fixture_status import sync_fixture_status_from_bzz
+
+    fixture = _make_fixture(
+        "1. FC Köln", "Borussia M'gladbach",
+        # Date perimee plus proche du match de mars que du vrai : c'est le
+        # piege dans lequel tombait le rapprochement par noms seul.
+        kickoff_utc=datetime(2026, 4, 15, 13, 30, tzinfo=UTC),
+    )
+    fixture.external_id = "bzz_213704"
+
+    last_season = _make_bzz_event(
+        10, 20, datetime(2026, 3, 21, 14, 30, tzinfo=UTC), "finished", 3, 3,
+    )
+    last_season.api_id = 1692
+    own = _make_bzz_event(
+        10, 20, datetime(2026, 10, 11, 13, 30, tzinfo=UTC), "finished", 2, 1,
+    )
+    own.api_id = 213704
+
+    session = _make_session_for_sync(
+        [fixture], [last_season, own],
+        [_make_bzz_team(10, "1. FC Köln"), _make_bzz_team(20, "Borussia M'gladbach")],
+    )
+
+    assert await sync_fixture_status_from_bzz(session) == 1
+    assert fixture.kickoff_utc == datetime(2026, 10, 11, 13, 30, tzinfo=UTC)
+    assert (fixture.home_score, fixture.away_score) == (2, 1)
+
+
+@pytest.mark.asyncio
+async def test_sync_fixture_status_name_fallback_bounded_to_five_days():
+    """Sans identifiant Bzzoiro, une meme affiche a plus de 5 jours n'est pas
+    un candidat, meme si la requete l'a ramenee."""
+    from app.ingestion.bzzoiro.sync_fixture_status import sync_fixture_status_from_bzz
+
+    fixture = _make_fixture(
+        "Stade Brestois", "Angers",
+        kickoff_utc=datetime(2026, 10, 10, 18, 45, tzinfo=UTC),
+    )
+    fixture.external_id = None
+    last_season = _make_bzz_event(
+        30, 40, datetime(2026, 5, 17, 19, 0, tzinfo=UTC), "finished", 1, 1,
+    )
+
+    session = _make_session_for_sync(
+        [fixture], [last_season],
+        [_make_bzz_team(30, "Stade Brestois"), _make_bzz_team(40, "Angers")],
+    )
+
+    assert await sync_fixture_status_from_bzz(session) == 0
+    assert fixture.kickoff_utc == datetime(2026, 10, 10, 18, 45, tzinfo=UTC)
+    assert fixture.status == "scheduled"

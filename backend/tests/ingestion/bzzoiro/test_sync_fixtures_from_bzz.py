@@ -59,8 +59,10 @@ def _existing_fixture(
     away_bzz_team_id: int | None = 200,
     home_canonical_team_id: int | None = None,
     away_canonical_team_id: int | None = None,
+    kickoff_utc: datetime | None = None,
 ):
     f = MagicMock()
+    f.kickoff_utc = kickoff_utc
     f.id = id
     f.external_id = external_id
     f.home_team = home_team
@@ -103,7 +105,18 @@ def _make_session(bzz_events, bzz_teams, canonical_rows, existing_fixtures):
     session.execute = AsyncMock(side_effect=results)
     session.commit = AsyncMock()
     session.add = MagicMock()
+    session.begin_nested = MagicMock(side_effect=lambda: _Savepoint())
     return session
+
+
+class _Savepoint:
+    """Savepoint factice de session.begin_nested() : laisse tout passer."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
 
 
 @pytest.mark.asyncio
@@ -187,6 +200,7 @@ async def test_upsert_leaves_correctly_labeled_season_untouched():
         home_team="Team Home",
         away_team="Team Away",
         season="2026-2027",  # already correct
+        kickoff_utc=event_date,
     )
     session = _make_session(
         bzz_events=[ev],
@@ -200,3 +214,131 @@ async def test_upsert_leaves_correctly_labeled_season_untouched():
     assert created == 0
     assert updated == 0
     assert existing.season == "2026-2027"
+
+
+# ---------------------------------------------------------------------------
+# Incident du 11/10/2026 : un match reporte hors fenetre bloquait tout le lot
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rescheduled_fixture_is_found_by_id_and_realigned_not_recreated():
+    """Une fixture deja liee a l'evenement mais datee hors fenetre (match
+    reporte) doit etre retrouvee par son identifiant et recalee — jamais
+    recreee, ce qui violait uq_fixtures_external_id."""
+    event_date = datetime(2026, 10, 11, 13, 30, tzinfo=UTC)
+    ev = _bzz_event(api_id=213704, event_date=event_date)
+    stale = _existing_fixture(
+        id=1111842,
+        external_id="bzz_213704",
+        home_team="Team Home",
+        away_team="Team Away",
+        season="2026-2027",
+        kickoff_utc=datetime(2026, 3, 21, 14, 30, tzinfo=UTC),
+    )
+    session = _make_session(
+        bzz_events=[ev],
+        bzz_teams=[_bzz_team(100, "Team Home"), _bzz_team(200, "Team Away")],
+        canonical_rows=[],
+        existing_fixtures=[stale],
+    )
+
+    created, updated = await sync_fixtures_from_bzz(session)
+
+    assert created == 0
+    assert updated == 1
+    assert stale.kickoff_utc == event_date
+    session.begin_nested.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rejected_creation_does_not_cancel_the_others():
+    """Une creation refusee par la base est sautee ; les autres matchs entrent
+    quand meme et le lot est valide."""
+    from sqlalchemy.exc import IntegrityError
+
+    ev_ko = _bzz_event(api_id=1, event_date=datetime(2026, 10, 20, 19, 0, tzinfo=UTC))
+    ev_ok = _bzz_event(
+        api_id=2,
+        event_date=datetime(2026, 10, 21, 19, 0, tzinfo=UTC),
+        home_team_api_id=300,
+        away_team_api_id=400,
+    )
+    session = _make_session(
+        bzz_events=[ev_ko, ev_ok],
+        bzz_teams=[
+            _bzz_team(100, "Team Home"), _bzz_team(200, "Team Away"),
+            _bzz_team(300, "Other Home"), _bzz_team(400, "Other Away"),
+        ],
+        canonical_rows=[],
+        existing_fixtures=[],
+    )
+
+    class _Refuse(_Savepoint):
+        async def __aexit__(self, exc_type, exc, tb):
+            added = session.add.call_args[0][0]
+            if added.external_id == "bzz_1":
+                raise IntegrityError("INSERT", {}, Exception("duplicate key"))
+            return False
+
+    session.begin_nested = MagicMock(side_effect=lambda: _Refuse())
+
+    created, updated = await sync_fixtures_from_bzz(session)
+
+    assert created == 1
+    assert updated == 0
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_team_name_fallback_never_captures_a_fixture_tied_to_another_event():
+    """Meme affiche, autre evenement Bzzoiro (aller/retour, coupe) : la fixture
+    deja liee a son propre evenement ne doit pas etre detournee."""
+    event_date = datetime(2026, 10, 20, 19, 0, tzinfo=UTC)
+    ev = _bzz_event(api_id=900, event_date=event_date)
+    other = _existing_fixture(
+        id=7,
+        external_id="bzz_899",
+        home_team="Team Home",
+        away_team="Team Away",
+        season="2026-2027",
+        kickoff_utc=event_date,
+    )
+    session = _make_session(
+        bzz_events=[ev],
+        bzz_teams=[_bzz_team(100, "Team Home"), _bzz_team(200, "Team Away")],
+        canonical_rows=[],
+        existing_fixtures=[other],
+    )
+
+    created, updated = await sync_fixtures_from_bzz(session)
+
+    assert created == 1
+    assert updated == 0
+    assert other.external_id == "bzz_899"
+
+
+@pytest.mark.asyncio
+async def test_team_name_fallback_requires_same_match_day():
+    """Une fixture sans identifiant Bzzoiro n'est rapprochee par noms qu'a ±1 jour."""
+    event_date = datetime(2026, 10, 20, 19, 0, tzinfo=UTC)
+    ev = _bzz_event(api_id=901, event_date=event_date)
+    far = _existing_fixture(
+        id=8,
+        external_id="odds_abc",
+        home_team="Team Home",
+        away_team="Team Away",
+        season="2026-2027",
+        kickoff_utc=datetime(2026, 10, 5, 19, 0, tzinfo=UTC),
+    )
+    session = _make_session(
+        bzz_events=[ev],
+        bzz_teams=[_bzz_team(100, "Team Home"), _bzz_team(200, "Team Away")],
+        canonical_rows=[],
+        existing_fixtures=[far],
+    )
+
+    created, updated = await sync_fixtures_from_bzz(session)
+
+    assert created == 1
+    assert far.external_id == "odds_abc"
