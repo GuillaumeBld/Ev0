@@ -15,6 +15,8 @@ def _row(**over):
         "recs_24h": 14,
         "recs_pending": 6,
         "backlog_settle": 3,
+        "bzz_a_venir_7j": 60,
+        "fixtures_a_venir_7j": 60,
     }
     base.update(over)
     return base
@@ -48,3 +50,18 @@ def test_multiple_flags_accumulate():
         _row(last_player_odds=None, recs_24h=0, backlog_settle=99), NOW
     )
     assert set(flags) == {"cotes joueurs", "backlog settlement", "aucune reco en 24h"}
+
+
+def test_calendrier_vide_face_a_bzzoiro_est_rouge():
+    """Incident du 11/09 au 12/10/2026 : 1 fixture a venir pour 260 matchs Bzzoiro."""
+    flags = _health_red_flags(_row(bzz_a_venir_7j=60, fixtures_a_venir_7j=1), NOW)
+    assert flags == ["calendrier incomplet (1/60 matchs à 7 j)"]
+
+
+def test_calendrier_tolere_un_petit_ecart():
+    assert _health_red_flags(_row(bzz_a_venir_7j=60, fixtures_a_venir_7j=50), NOW) == []
+
+
+def test_calendrier_sans_match_bzzoiro_ne_sonne_pas():
+    """Treve internationale : rien d'attendu, rien a signaler."""
+    assert _health_red_flags(_row(bzz_a_venir_7j=0, fixtures_a_venir_7j=0), NOW) == []

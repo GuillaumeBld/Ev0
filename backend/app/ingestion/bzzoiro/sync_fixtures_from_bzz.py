@@ -5,10 +5,13 @@ Replaces job_sync_fixtures (The Odds API) as the sole fixture calendar source.
 For each upcoming BzzEvent (status != finished, next N days):
   1. Resolve home/away team names from bzz_teams.
   2. Find an existing Fixture by:
-     a. external_id = "bzz_<api_id>"  — direct hit, always preferred
-     b. Normalized team names within ±1 day of the BzzEvent date
-  3. If found and team names look like placeholders → update home_team / away_team.
-  4. If not found → create a new Fixture with correct names.
+     a. external_id = "bzz_<api_id>"  — direct hit, always preferred, whatever
+        the fixture's current kickoff_utc (a rescheduled match keeps its id)
+     b. Normalized team names within ±1 day of the BzzEvent date, only for a
+        fixture not already tied to another BzzEvent
+  3. If found → re-align kickoff_utc on the BzzEvent and fix placeholder names.
+  4. If not found → create a new Fixture with correct names. Each creation runs
+     in its own savepoint: one rejected row never cancels the others.
 
 Returns (created, updated) counts.
 """
@@ -18,7 +21,8 @@ import logging
 import re
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.bzzoiro.constants import (
@@ -59,6 +63,8 @@ for _key, _id in INTERNATIONAL_LEAGUE_INTERNAL_IDS.items():
 _DAYS_FORWARD = 30
 # How far back to look — lets us fix placeholder names on recently-finished matches
 _DAYS_BACK = 7
+# Team-name fallback (lookup b) only trusts a fixture this close to the event
+_TEAM_MATCH_WINDOW = timedelta(days=1)
 
 # A team name is a placeholder when it matches these patterns.
 # Generic patterns: winner/loser/tbd/tba/qf/sf/semi-final/quarter-final/match N
@@ -166,11 +172,19 @@ async def sync_fixtures_from_bzz(
         for ct_id, bzz_id in ct_result.all():
             canonical_map[bzz_id] = ct_id
 
-    # 3. Load all Fixtures in the same window (including finished — to fix placeholder names)
+    # 3. Load all Fixtures in the same window (including finished — to fix
+    # placeholder names) AND every fixture already tied to one of these events,
+    # whatever its kickoff_utc. Le 11/10/2026, trois matchs reportes gardaient
+    # une date hors fenetre : invisibles ici, ils etaient recrees, la contrainte
+    # uq_fixtures_external_id rejetait le lot entier, et plus aucun match
+    # n'entrait au calendrier depuis le 11/09.
+    ext_ids = [f"bzz_{ev.api_id}" for ev in bzz_events]
     fixtures_result = await session.execute(
         select(Fixture).where(
-            Fixture.kickoff_utc >= lookback,
-            Fixture.kickoff_utc <= horizon,
+            or_(
+                (Fixture.kickoff_utc >= lookback) & (Fixture.kickoff_utc <= horizon),
+                Fixture.external_id.in_(ext_ids),
+            )
         )
     )
     existing_fixtures = list(fixtures_result.scalars().all())
@@ -178,13 +192,17 @@ async def sync_fixtures_from_bzz(
     # Index 1: external_id → Fixture
     by_ext_id: dict[str, Fixture] = {f.external_id: f for f in existing_fixtures if f.external_id}
 
-    # Index 2: (norm_home, norm_away) → Fixture  (for team-name fallback)
+    # Index 2: (norm_home, norm_away) → Fixture  (for team-name fallback).
+    # Only fixtures not yet tied to a BzzEvent: one that already carries a
+    # bzz_ id belongs to that event and must never be captured by another one.
     by_teams: dict[tuple[str, str], Fixture] = {}
     for f in existing_fixtures:
+        if f.external_id and f.external_id.startswith("bzz_"):
+            continue
         key = (normalize_team_name(f.home_team or ""), normalize_team_name(f.away_team or ""))
         by_teams[key] = f
 
-    created = updated = 0
+    created = updated = failed = 0
 
     for ev in bzz_events:
         home_name = team_map.get(ev.home_team_api_id, "") if ev.home_team_api_id else ""
@@ -204,13 +222,29 @@ async def sync_fixtures_from_bzz(
         # Try lookup a: by external_id
         fixture = by_ext_id.get(ext_id)
 
-        # Try lookup b: by normalized team names
+        # Try lookup b: by normalized team names, same match day only
         if fixture is None:
             key = (normalize_team_name(home_name), normalize_team_name(away_name))
-            fixture = by_teams.get(key)
+            candidate = by_teams.get(key)
+            if (
+                candidate is not None
+                and candidate.kickoff_utc is not None
+                and abs(candidate.kickoff_utc - ev.event_date) <= _TEAM_MATCH_WINDOW
+            ):
+                fixture = by_teams.pop(key)
 
         if fixture is not None:
             changed = False
+
+            # Bzzoiro fait foi sur la date : un match reporte est recale ici,
+            # par son identifiant, sans dependre d'un rapprochement par noms.
+            if fixture.kickoff_utc != ev.event_date:
+                logger.info(
+                    "sync_fixtures_from_bzz: fix kickoff %s → %s (fixture %s)",
+                    fixture.kickoff_utc, ev.event_date, fixture.id,
+                )
+                fixture.kickoff_utc = ev.event_date
+                changed = True
 
             # Re-stamp season from the match date — self-heals fixtures that
             # were created (or last synced) before an Aug-1 season rollover.
@@ -268,8 +302,6 @@ async def sync_fixtures_from_bzz(
                 updated += 1
                 # Keep indexes current so later events don't re-match the same fixture
                 by_ext_id[ext_id] = fixture
-                new_key = (normalize_team_name(home_name), normalize_team_name(away_name))
-                by_teams[new_key] = fixture
 
         else:
             # Create new Fixture
@@ -287,22 +319,31 @@ async def sync_fixtures_from_bzz(
                 home_canonical_team_id=canonical_map.get(ev.home_team_api_id) if ev.home_team_api_id else None,
                 away_canonical_team_id=canonical_map.get(ev.away_team_api_id) if ev.away_team_api_id else None,
             )
-            session.add(new_fixture)
+            # Un savepoint par creation : une ligne rejetee est journalisee et
+            # sautee, elle n'emporte plus avec elle tout le reste du calendrier.
+            try:
+                async with session.begin_nested():
+                    session.add(new_fixture)
+            except IntegrityError as exc:
+                failed += 1
+                logger.error(
+                    "sync_fixtures_from_bzz: creation refusee pour %s (%s vs %s) : %s",
+                    ext_id, home_name, away_name, exc.orig,
+                )
+                continue
             created += 1
             logger.info(
                 "sync_fixtures_from_bzz: created fixture %s vs %s (%s, %s)",
                 home_name, away_name, league_key, ev.event_date,
             )
-            # Register in indexes to avoid duplicate creation within same run
+            # Register in index to avoid duplicate creation within same run
             by_ext_id[ext_id] = new_fixture
-            key = (normalize_team_name(home_name), normalize_team_name(away_name))
-            by_teams[key] = new_fixture
 
     if created or updated:
         await session.commit()
 
     logger.info(
-        "sync_fixtures_from_bzz: %d created, %d updated (window: next %d days)",
-        created, updated, days_forward,
+        "sync_fixtures_from_bzz: %d created, %d updated, %d failed (window: next %d days)",
+        created, updated, failed, days_forward,
     )
     return created, updated

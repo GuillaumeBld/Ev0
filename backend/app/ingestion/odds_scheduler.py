@@ -190,6 +190,13 @@ _TEAM_ALIASES: dict[str, str] = {
     "sheffield utd":            "sheffield united",
 
     # ── La Liga ───────────────────────────────────────────────────────────────
+    # DB "Deportivo de A Coruña" → "deportivo de a coruna"
+    "la corogne":               "deportivo de a coruna",
+    "deportivo a corogne":      "deportivo de a coruna",
+    "deportivo la corogne":     "deportivo de a coruna",
+    # DB "Real Racing Club" → "real racing club"
+    "santander":                "real racing club",
+    "racing santander":         "real racing club",
     # DB "Mallorca" → "mallorca"
     "majorque":                 "mallorca",
     "rcd majorque":             "mallorca",
@@ -627,6 +634,40 @@ def _anchor_match(
     return None, "no_anchor", None
 
 
+# Meme tolerance que l'ancrage PS3838 (ps3838/anchor.py MAX_KICKOFF_DELTA).
+_KICKOFF_TOLERANCE = timedelta(hours=2)
+
+
+def _candidates_near_kickoff(
+    candidates: Sequence[tuple[int, str, int | None, str, int | None]],
+    kickoff_by_fid: dict[int, datetime | None],
+    book_kickoff: datetime | None,
+) -> Sequence[tuple[int, str, int | None, str, int | None]]:
+    """Restreint les candidats aux fixtures qui commencent a ±2 h du match cote.
+
+    Un club joue souvent deux matchs dans la fenetre de scraping (championnat
+    et LDC). Sans la date, l'ancrage sur le seul club reconnu ('Lens' face a
+    'Sporting Lisbon') designait plusieurs fixtures et etait abandonne comme
+    ambigu : le 12/10/2026, six matchs de LDC n'avaient pas les cotes d'au
+    moins un bookmaker. Sans heure cote, ou si aucun candidat n'est proche,
+    on garde la liste entiere : la date affine, elle n'exclut jamais seule.
+    """
+    if book_kickoff is None:
+        return candidates
+    if book_kickoff.tzinfo is None:
+        book_kickoff = book_kickoff.replace(tzinfo=UTC)
+    near = []
+    for c in candidates:
+        ko = kickoff_by_fid.get(c[0])
+        if ko is None:
+            continue
+        if ko.tzinfo is None:
+            ko = ko.replace(tzinfo=UTC)
+        if abs(ko - book_kickoff) <= _KICKOFF_TOLERANCE:
+            near.append(c)
+    return near or candidates
+
+
 def _match_result_to_fixture(
     book_home: str,
     book_away: str,
@@ -802,6 +843,7 @@ class OddsScheduler:
         # a side can match by strict / canonical / fuzzy independently.
         leagues_needed: set[str] = set()
         match_candidates: list[tuple[int, str, int | None, str, int | None]] = []
+        kickoff_by_fid = {f.id: f.kickoff_utc for f in due}
         for f in due:
             league = _league_key(f.league)
             if league:
@@ -866,7 +908,8 @@ class OddsScheduler:
             # fuzzy, each side graded, both sides required (except anchoring),
             # strict tier priority + unique-candidate guard.
             fixture_id, reason, competing_fids, detail = _match_result_to_fixture(
-                r.home_team, r.away_team, match_candidates,
+                r.home_team, r.away_team,
+                _candidates_near_kickoff(match_candidates, kickoff_by_fid, r.kickoff_utc),
                 canonical_alias_map, canonical_names_by_id,
             )
             if fixture_id and reason == "anchor":

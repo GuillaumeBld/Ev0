@@ -280,3 +280,18 @@ def test_error_handler_ignores_its_own_modules(monkeypatch):
     handler = ErrorAlertHandler(level=logging.ERROR)
     handler.emit(_record("récursion", name="app.alerts"))
     assert sent == []
+
+
+def test_error_handler_escapes_raw_log_text_for_telegram_html(monkeypatch):
+    """Une exception SQLAlchemy contient "<class '...'>" : non echappee,
+    Telegram (parse_mode HTML) repond 400 et l'alerte se perd."""
+    sent: list = []
+    monkeypatch.setattr("app.alerts.alert_bg", lambda message, channel: sent.append(message))
+    handler = ErrorAlertHandler(level=logging.ERROR)
+
+    handler.emit(_record(
+        "job_sync_fixtures: <class 'asyncpg.exceptions.UniqueViolationError'>: duplicate key"
+    ))
+
+    assert "<class" not in sent[0]
+    assert "&lt;class &#x27;asyncpg.exceptions.UniqueViolationError&#x27;&gt;" in sent[0]

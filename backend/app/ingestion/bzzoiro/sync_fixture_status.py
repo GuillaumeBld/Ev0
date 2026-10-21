@@ -4,10 +4,16 @@ BzzEvent is the authoritative source for match dates (Bzzoiro API).
 The Fixture table may have stale kickoff_utc values from OddsAPI or manual entry.
 
 Matching strategy:
-1. Normalize home/away team names (via fixture_matcher.normalize_team_name).
-2. Load BzzTeam rows to get names from BzzEvent.home_team_api_id / away_team_api_id.
-3. For each non-finished Fixture, find BzzEvent with matching team names within ±5 days.
-4. Update kickoff_utc (if differs >30 min), status, and scores.
+1. A Fixture carrying external_id "bzz_<api_id>" is matched to THAT BzzEvent,
+   whatever the date gap — a match rescheduled by weeks stays the same match.
+2. Otherwise, fallback on normalized team names (fixture_matcher.normalize_team_name),
+   restricted to BzzEvents within ±5 days of the fixture's own kickoff_utc.
+3. Update kickoff_utc (if differs >30 min), status, and scores.
+
+Sans la borne de l'etape 2, un rapprochement par noms pouvait retenir la
+rencontre de la saison passee (meme affiche) : le 11/10/2026, Koln–Gladbach et
+Brest–Angers avaient recu la date, le statut et le score de leur match de
+mars/mai 2026.
 
 Status mapping (BzzEvent → Fixture):
   "finished"   → "finished"
@@ -19,6 +25,8 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+
+import re
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,18 +43,33 @@ _BZZ_TO_FIXTURE_STATUS = {
     "live": "live",
 }
 _DATE_WINDOW = timedelta(days=5)
+# Un match termine reste relu ce temps-la : Bzzoiro corrige le score apres
+# coup (score a 90' publie apres une prolongation, but annule par la VAR).
+_RESYNC_FINISHED = timedelta(days=7)
 _KICKOFF_THRESHOLD_SECONDS = 1800  # 30 minutes
+_BZZ_EXTERNAL_ID_RE = re.compile(r"^bzz_(\d+)$")
+
+
+def _bzz_api_id(fixture: Fixture) -> int | None:
+    """api_id of the BzzEvent a fixture was created from, if any."""
+    ext = fixture.external_id
+    if not isinstance(ext, str):
+        return None
+    m = _BZZ_EXTERNAL_ID_RE.match(ext)
+    return int(m.group(1)) if m else None
 
 
 async def sync_fixture_status_from_bzz(session: AsyncSession) -> int:
     """Update Fixture rows from matching BzzEvent rows. Returns count updated."""
 
-    # 1. Load non-finished fixtures + finished fixtures that still have NULL scores
+    # 1. Load non-finished fixtures + finished fixtures that still have NULL
+    # scores + recently finished ones, whose score Bzzoiro may still correct
     fixture_result = await session.execute(
         select(Fixture).where(
             or_(
                 Fixture.status != "finished",
                 Fixture.home_score.is_(None),
+                Fixture.kickoff_utc >= datetime.now(UTC) - _RESYNC_FINISHED,
             )
         )
     )
@@ -65,11 +88,14 @@ async def sync_fixture_status_from_bzz(session: AsyncSession) -> int:
     earliest = min(kickoffs) - _DATE_WINDOW
     latest = max(kickoffs) + _DATE_WINDOW
 
-    # 3. Load BzzEvents in that date range
+    # 3. Load BzzEvents in that date range, plus the fixtures' own events
+    own_ids = [i for i in (_bzz_api_id(f) for f in fixtures) if i is not None]
     event_result = await session.execute(
         select(BzzEvent).where(
-            BzzEvent.event_date >= earliest,
-            BzzEvent.event_date <= latest,
+            or_(
+                (BzzEvent.event_date >= earliest) & (BzzEvent.event_date <= latest),
+                BzzEvent.api_id.in_(own_ids),
+            )
         )
     )
     bzz_events = list(event_result.scalars().all())
@@ -96,7 +122,10 @@ async def sync_fixture_status_from_bzz(session: AsyncSession) -> int:
 
     # 5. Build index: (norm_home, norm_away) → list[BzzEvent]
     bzz_index: dict[tuple[str, str], list[BzzEvent]] = {}
+    by_api_id: dict[int, BzzEvent] = {}
     for ev in bzz_events:
+        if isinstance(ev.api_id, int):
+            by_api_id[ev.api_id] = ev
         home_name = team_map.get(ev.home_team_api_id, "") if ev.home_team_api_id is not None else ""
         away_name = team_map.get(ev.away_team_api_id, "") if ev.away_team_api_id is not None else ""
         if not home_name or not away_name:
@@ -112,14 +141,39 @@ async def sync_fixture_status_from_bzz(session: AsyncSession) -> int:
 
         norm_home = normalize_team_name(fixture.home_team or "")
         norm_away = normalize_team_name(fixture.away_team or "")
-        candidates = bzz_index.get((norm_home, norm_away), [])
 
-        # Neutral-venue WC games: BzzEvent may have home/away reversed vs our fixture.
-        reversed_match = False
-        if not candidates:
-            candidates = bzz_index.get((norm_away, norm_home), [])
-            if candidates:
-                reversed_match = True
+        own_id = _bzz_api_id(fixture)
+        own = by_api_id.get(own_id) if own_id is not None else None
+        if own is not None:
+            # Lien direct : c'est ce match-la, quel que soit l'ecart de date.
+            # Seule l'orientation reste a verifier (fixtures WC semees a part).
+            own_home = team_map.get(own.home_team_api_id, "")
+            own_away = team_map.get(own.away_team_api_id, "")
+            reversed_match = (
+                normalize_team_name(own_home) == norm_away
+                and normalize_team_name(own_away) == norm_home
+                and norm_home != norm_away
+            )
+            candidates = [own]
+        else:
+            def _in_window(ev: BzzEvent) -> bool:
+                return (
+                    ev.event_date is not None
+                    and abs(ev.event_date - fixture.kickoff_utc) <= _DATE_WINDOW
+                )
+
+            candidates = [
+                ev for ev in bzz_index.get((norm_home, norm_away), []) if _in_window(ev)
+            ]
+
+            # Neutral-venue WC games: BzzEvent may have home/away reversed vs our fixture.
+            reversed_match = False
+            if not candidates:
+                candidates = [
+                    ev for ev in bzz_index.get((norm_away, norm_home), []) if _in_window(ev)
+                ]
+                if candidates:
+                    reversed_match = True
 
         if not candidates:
             continue
