@@ -1715,6 +1715,81 @@ def _run_sync_squads_blocking(
     return asyncio.run(_run())
 
 
+def _run_career_import_blocking(limit: int):
+    """Lance un lot d'import carriere dans un thread dedie.
+
+    Meme contrainte que `_run_sync_squads_blocking` — voir sa docstring pour le
+    detail : `TransfermarktClient` est synchrone et s'impose 2 s entre chaque
+    requete, donc l'appeler sur la boucle du worker gelerait les cotes (toutes
+    les 60 s) et le pipeline de reglement pendant toute la duree du lot.
+
+    Un lot de 120 joueurs a trois a quatre requetes chacun represente une
+    vingtaine de minutes : c'est precisement ce qu'il ne faut pas tenir sur la
+    boucle principale.
+    """
+
+    async def _run():
+        from app.ingestion.career_import import run_career_import
+
+        client = TransfermarktClient()
+        eng = create_async_engine(DATABASE_URL, poolclass=NullPool)
+        sm = async_sessionmaker(eng, expire_on_commit=False)
+        try:
+            async with sm() as session:
+                return await run_career_import(session, client, limit=limit)
+        finally:
+            client.close()
+            await eng.dispose()
+
+    return asyncio.run(_run())
+
+
+async def job_import_careers() -> None:
+    """Importe les carrieres manquantes, un lot par nuit.
+
+    La carriere est le socle du pricing joueur : sans elle, un joueur est cote
+    sur les quelques matchs de sa saison en cours. L'import n'avait tourne que
+    les 29 et 30 juillet 2026, a la main — tout joueur arrive depuis (transferts
+    de fin de mercato, promus, jeunes qui percent) est reste sans socle.
+
+    Le lot est borne : Transfermarkt s'accommode mal d'un scrape continu, et le
+    rattrapage initial se fait de toute facon a la main, en une passe.
+    """
+    from app.alerts import send_alert
+    from app.ingestion.career_import import DEFAULT_BATCH_LIMIT
+
+    try:
+        run = await asyncio.to_thread(_run_career_import_blocking, DEFAULT_BATCH_LIMIT)
+    except Exception as exc:
+        logger.exception("Import carriere : le lot a echoue — %s", exc)
+        await send_alert(
+            f"⚠️ Import carrière : le lot nocturne a échoué\n<code>{exc}</code>",
+            channel="incidents",
+        )
+        return
+
+    if run.candidates == 0:
+        logger.info("Import carriere : rien a traiter, tous les joueurs cotes ont une carriere.")
+        return
+
+    logger.info(
+        "Import carriere : %d/%d importes, %d non resolus, %d erreurs.",
+        run.imported, run.attempted, run.unmatched, run.errors,
+    )
+
+    # On ne notifie que ce qui demande un regard : un lot entierement propre
+    # n'a pas besoin d'un message par nuit.
+    if run.status != "ok":
+        apercu = ", ".join(run.unmatched_names[:5])
+        suite = f" (+{len(run.unmatched_names) - 5})" if len(run.unmatched_names) > 5 else ""
+        await send_alert(
+            f"📇 <b>Import carrière</b> — {run.imported} importés sur {run.attempted}\n"
+            f"{run.unmatched} non résolus, {run.errors} erreurs réseau\n"
+            f"<i>{apercu}{suite}</i>",
+            channel="incidents",
+        )
+
+
 def _resolve_clubs_blocking():
     """Resout les `transfermarkt_club_id` manquants, dans un thread dedie.
 
@@ -2384,6 +2459,22 @@ def create_scheduler() -> AsyncIOScheduler:
         CronTrigger(hour=4, minute=30),
         id="sync_squads",
         name="Sync effectifs Transfermarkt (mercato: quotidien, saison: hebdo)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Import carriere Transfermarkt : 05:00 UTC, apres la synchro des effectifs
+    # (04:30) pour que les joueurs arrives la veille soient deja dans
+    # bzz_players quand la file d'attente est construite.
+    # max_instances=1 + coalesce : un lot peut durer une vingtaine de minutes,
+    # deux lots concurrents doubleraient la cadence de requetes vers
+    # Transfermarkt et se disputeraient les memes joueurs.
+    scheduler.add_job(
+        job_import_careers,
+        CronTrigger(hour=5, minute=0),
+        id="import_careers",
+        name="Import carrieres Transfermarkt (lot nocturne)",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
