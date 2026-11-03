@@ -106,6 +106,13 @@ function CelluleTaux({
  *  placeholder neutre (initiales) plutôt que de retomber sur ce dictionnaire. */
 function PlayerTeamCrest({ apiFootballId, teamName }: { apiFootballId: number | null; teamName: string | null }) {
   const [failed, setFailed] = useState(false)
+  // Reinitialise l'echec quand l'id change : sinon une instance montee qui a
+  // deja echoue (ancien joueur/club) reste bloquee sur le placeholder meme
+  // apres que `apiFootballId` change pour un id valide (ex. tri/filtre qui
+  // reutilise le composant sans le remonter).
+  useEffect(() => {
+    setFailed(false)
+  }, [apiFootballId])
   if (!apiFootballId || failed) {
     const initials = (teamName ?? '')
       .split(/[\s-]+/).filter(Boolean).map((w) => w[0]).join('').toUpperCase().slice(0, 2)

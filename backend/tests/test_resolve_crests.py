@@ -13,6 +13,10 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.pool import StaticPool
 
 from app.ingestion.apifootball.resolve_crests import (
     ApiFootballClient,
@@ -22,6 +26,11 @@ from app.ingestion.apifootball.resolve_crests import (
     resolve_crests,
 )
 from app.models.canonical_teams import CanonicalTeam
+
+
+@compiles(ARRAY, "sqlite")
+def _compile_array_as_json_for_sqlite(element, compiler, **kw):  # noqa: ARG001
+    return "JSON"
 
 
 def _team(id_: int, name_fr: str, country: str | None = None, league_api_id: int | None = 1) -> CanonicalTeam:
@@ -79,7 +88,9 @@ async def test_match_univoque_pose_api_football_id():
     psg = _team(1, "Paris Saint-Germain", country="France")
     session = _make_session([psg])
     client = _FakeApiFootballClient({
-        "Paris Saint-Germain": [TeamCandidate(api_football_id=85, name="Paris Saint Germain")],
+        "Paris Saint-Germain": [
+            TeamCandidate(api_football_id=85, name="Paris Saint Germain", country="France")
+        ],
     })
 
     report = await resolve_crests(session, client)
@@ -107,6 +118,87 @@ async def test_club_sans_pays_connu_cherche_sans_filtre_pays():
     await resolve_crests(session, client)
 
     assert client.calls == [("Club Inconnu", None)]
+
+
+# ---------------------------------------------------------------------------
+# Coherence pays sur le candidat unique — coeur du fix anti-faux-ecusson :
+# un candidat unique ne suffit pas seul si le pays canonique est connu et
+# ne correspond pas, et le cas "pays canonique inconnu" doit etre trace a
+# part (resolved_unverified), pas noye dans resolved.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_pays_connu_et_candidat_unique_bon_pays_pose_dans_resolved():
+    team = _team(1, "Rangers", country="Scotland")
+    session = _make_session([team])
+    client = _FakeApiFootballClient({
+        "Rangers": [TeamCandidate(api_football_id=257, name="Rangers", country="Scotland")],
+    })
+
+    report = await resolve_crests(session, client)
+
+    assert team.api_football_id == 257
+    assert report.resolved == ["Rangers"]
+    assert report.resolved_unverified == []
+    assert report.rejected == []
+
+
+@pytest.mark.asyncio
+async def test_b_pays_connu_et_candidat_unique_mauvais_pays_rejete_sans_faux_ecusson():
+    team = _team(1, "Rangers", country="Scotland")
+    session = _make_session([team])
+    # Homonyme reel : Rangers FC (Talca, Chili) partage le nom mais pas le pays.
+    client = _FakeApiFootballClient({
+        "Rangers": [TeamCandidate(api_football_id=1234, name="Rangers", country="Chile")],
+    })
+
+    report = await resolve_crests(session, client)
+
+    # Jamais un faux ecusson : NULL plutot qu'un id incoherent avec le pays.
+    assert team.api_football_id is None
+    assert report.resolved == []
+    assert report.resolved_unverified == []
+    assert len(report.rejected) == 1
+    assert report.rejected[0].name == "Rangers"
+    assert report.rejected[0].canonical_id == 1
+    assert "Chile" in report.rejected[0].candidates[0]
+
+
+@pytest.mark.asyncio
+async def test_c_pays_canonique_inconnu_et_candidat_unique_pose_mais_non_verifie():
+    team = _team(1, "Club Sans Pays Connu", country=None)
+    session = _make_session([team])
+    client = _FakeApiFootballClient({
+        "Club Sans Pays Connu": [TeamCandidate(api_football_id=999, name="Club Sans Pays Connu")],
+    })
+
+    report = await resolve_crests(session, client)
+
+    # L'id est pose (candidat unique) mais range a part de `resolved` :
+    # aucune verification pays n'a pu etre faite, la revue manuelle doit
+    # pouvoir cibler precisement ce cas.
+    assert team.api_football_id == 999
+    assert report.resolved == []
+    assert report.resolved_unverified == ["Club Sans Pays Connu"]
+    assert report.rejected == []
+
+
+@pytest.mark.asyncio
+async def test_coherence_pays_tolere_variantes_de_libelle():
+    team = _team(1, "Manchester United", country="England")
+    session = _make_session([team])
+    client = _FakeApiFootballClient({
+        "Manchester United": [
+            TeamCandidate(api_football_id=33, name="Manchester United", country="Angleterre")
+        ],
+    })
+
+    report = await resolve_crests(session, client)
+
+    assert team.api_football_id == 33
+    assert report.resolved == ["Manchester United"]
+    assert report.rejected == []
 
 
 # ---------------------------------------------------------------------------
@@ -161,10 +253,10 @@ async def test_plusieurs_candidats_laisse_null_et_consigne_ambigu():
 
 @pytest.mark.asyncio
 async def test_dry_run_ne_commit_pas():
-    psg = _team(1, "Paris Saint-Germain")
+    psg = _team(1, "Paris Saint-Germain", country="France")
     session = _make_session([psg])
     client = _FakeApiFootballClient({
-        "Paris Saint-Germain": [TeamCandidate(api_football_id=85, name="PSG")],
+        "Paris Saint-Germain": [TeamCandidate(api_football_id=85, name="PSG", country="France")],
     })
 
     report = await resolve_crests(session, client, dry_run=True)
@@ -184,14 +276,14 @@ async def test_dry_run_ne_commit_pas():
 @pytest.mark.asyncio
 async def test_echec_reseau_consigne_sans_bloquer_les_autres_clubs():
     boiteux = _team(1, "Club Boiteux")
-    ok = _team(2, "Club Ok")
+    ok = _team(2, "Club Ok", country="France")
     session = _make_session([boiteux, ok])
 
     class _MixteClient:
         async def search_teams(self, name: str, country: str | None = None) -> list[TeamCandidate]:
             if name == "Club Boiteux":
                 raise RuntimeError("timeout")
-            return [TeamCandidate(api_football_id=42, name=name)]
+            return [TeamCandidate(api_football_id=42, name=name, country="France")]
 
     report = await resolve_crests(session, _MixteClient())
 
@@ -205,19 +297,62 @@ async def test_echec_reseau_consigne_sans_bloquer_les_autres_clubs():
 
 # ---------------------------------------------------------------------------
 # La requete filtre sur les clubs engages sans ecusson — jamais les autres
+#
+# SQLite EN MEMOIRE REEL (pas de mock sur session.execute) : le test
+# precedent ne verifiait que la presence de sous-chaines dans `str(query)`,
+# ce qui passerait meme avec des conditions inversees (p.ex.
+# `api_football_id IS NOT NULL`). Ici on prouve le comportement reel avec
+# quatre clubs couvrant les 4 combinaisons NULL/non-NULL des deux colonnes,
+# et on verifie que SEUL le club "engage + sans ecusson" est selectionne.
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+async def _sqlite_session_factory():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(lambda sync_conn: CanonicalTeam.__table__.create(sync_conn))
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        yield factory
+    finally:
+        await engine.dispose()
+
+
 @pytest.mark.asyncio
-async def test_la_requete_filtre_sur_league_api_id_et_api_football_id_null():
-    session = _make_session([])
+async def test_la_requete_ne_selectionne_que_les_clubs_engages_sans_ecusson(
+    _sqlite_session_factory,
+):
+    engage_sans_ecusson = CanonicalTeam(
+        id=1, name_fr="Engage Sans Ecusson", league_api_id=1, api_football_id=None,
+    )
+    engage_avec_ecusson = CanonicalTeam(
+        id=2, name_fr="Engage Avec Ecusson", league_api_id=1, api_football_id=85,
+    )
+    non_engage_sans_ecusson = CanonicalTeam(
+        id=3, name_fr="Non Engage Sans Ecusson", league_api_id=None, api_football_id=None,
+    )
+    non_engage_avec_ecusson = CanonicalTeam(
+        id=4, name_fr="Non Engage Avec Ecusson", league_api_id=None, api_football_id=42,
+    )
 
-    await resolve_crests(session, _FakeApiFootballClient({}))
+    async with _sqlite_session_factory() as session:
+        session.add_all(
+            [engage_sans_ecusson, engage_avec_ecusson, non_engage_sans_ecusson, non_engage_avec_ecusson]
+        )
+        await session.commit()
 
-    requete = str(session.execute.call_args.args[0])
-    assert "canonical_teams" in requete
-    assert "league_api_id" in requete
-    assert "api_football_id" in requete
+        client = _FakeApiFootballClient({})  # 0 candidat pour tous -> pas de mutation
+        report = await resolve_crests(session, client, dry_run=True)
+
+        # Seul le club engage + sans ecusson a ete interroge et consigne.
+        assert client.calls == [("Engage Sans Ecusson", None)]
+        assert len(report.not_found) == 1
+        assert report.not_found[0].name == "Engage Sans Ecusson"
 
 
 # ---------------------------------------------------------------------------

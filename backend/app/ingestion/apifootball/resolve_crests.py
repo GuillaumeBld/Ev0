@@ -16,6 +16,19 @@ recherche rend un candidat UNIQUE. Zero ou plusieurs candidats -> le club
 reste NULL et la raison est consignee dans le rapport. Mieux vaut aucun
 ecusson qu'un faux, c'est tout le point de cette tache.
 
+Un candidat UNIQUE ne suffit pas a lui seul : c'est aussi le scenario exact
+d'une fausse homonymie (deux clubs du meme nom dans deux pays differents).
+Quand le pays canonique du club (`CanonicalTeam.country`) est connu, le
+pays du candidat rendu par l'API (`team.country`) DOIT correspondre (apres
+normalisation — casse/accents/quelques variantes de libelle courantes) ;
+sinon le candidat est REJETE (consigne dans `rejected`, `api_football_id`
+reste NULL) — jamais pose sur la foi du seul nom. Quand le pays canonique
+est inconnu (`None`), on ne peut pas faire cette verification : l'id est
+tout de meme pose (mieux que rien, et c'est deja le filtre "candidat
+unique" qui protege), mais range a part dans `resolved_unverified` plutot
+que `resolved`, pour que la revue manuelle (Tache 7, `dry_run`) cible
+precisement ces cas non verifies.
+
 Execution reelle differee a la Tache 7 : `settings.api_football_key` est vide
 en .env a ce jour. Ce module est complet et teste (mocks, aucun reseau) mais
 n'est cable dans aucun worker/script planifie — voir `ApiFootballClient`
@@ -24,6 +37,7 @@ pour l'erreur claire levee en l'absence de cle.
 from __future__ import annotations
 
 import logging
+import unicodedata
 from dataclasses import dataclass, field
 
 import httpx
@@ -37,6 +51,39 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://v3.football.api-sports.io"
 DEFAULT_TIMEOUT = 20.0
+
+# Variantes de libelle de pays rencontrees en pratique (registre interne en
+# anglais, cf. `app.ingestion.bzzoiro.league_registry`, vs libelles parfois
+# differents rendus par API-Football). Cle et valeur deja normalisees
+# (minuscules, sans accent) par `_normalize_country`. Volontairement court :
+# n'ajouter une entree que si un cas reel l'exige, pas par anticipation.
+_COUNTRY_ALIASES: dict[str, str] = {
+    "czechia": "czech republic",
+    "angleterre": "england",
+    "ecosse": "scotland",
+    "pays de galles": "wales",
+    "irlande du nord": "northern ireland",
+    "etats-unis": "united states",
+    "usa": "united states",
+    "coree du sud": "south korea",
+    "korea republic": "south korea",
+}
+
+
+def _normalize_country(value: str | None) -> str | None:
+    """Normalise un libelle de pays pour comparaison tolerante.
+
+    Minuscules, accents retires, espaces superflus retires, puis repli sur
+    `_COUNTRY_ALIASES` pour les quelques variantes connues. `None` reste
+    `None` (pas de pays = pas de comparaison possible, gere par l'appelant).
+    """
+    if not value:
+        return None
+    sans_accents = "".join(
+        c for c in unicodedata.normalize("NFKD", value) if not unicodedata.combining(c)
+    )
+    normalise = " ".join(sans_accents.strip().lower().split())
+    return _COUNTRY_ALIASES.get(normalise, normalise)
 
 
 class ApiFootballKeyMissingError(RuntimeError):
@@ -139,9 +186,25 @@ class UnresolvedTeam:
 
 @dataclass
 class CrestReport:
-    """Bilan d'un passage de resolution d'ecussons."""
+    """Bilan d'un passage de resolution d'ecussons.
+
+    `resolved` : candidat unique ET pays verifie (soit candidat et pays
+    canonique concordent, soit pas de verification necessaire). Seul ce
+    bucket est "sur" au sens plein.
+
+    `resolved_unverified` : candidat unique pose MAIS pays canonique
+    inconnu (`CanonicalTeam.country is None`) — pas de verification pays
+    possible. L'id est quand meme pose (voir docstring du module), mais
+    range a part pour cibler la revue manuelle (Tache 7, `dry_run`).
+
+    `rejected` : candidat unique dont le pays NE correspond PAS au pays
+    canonique connu — l'homonymie inter-pays exacte que cette tache existe
+    pour eviter. `api_football_id` reste NULL, jamais pose sur ce candidat.
+    """
 
     resolved: list[str] = field(default_factory=list)
+    resolved_unverified: list[str] = field(default_factory=list)
+    rejected: list[UnresolvedTeam] = field(default_factory=list)
     ambiguous: list[UnresolvedTeam] = field(default_factory=list)
     not_found: list[UnresolvedTeam] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -165,10 +228,14 @@ async def resolve_crests(
     idempotent, ne retouche jamais une valeur existante, meme fausse : la
     correction manuelle reste la voie, voir la page admin des clubs).
 
-    Pour chaque club : recherche par `name_fr` (+ `country` si connu). Un
-    candidat unique -> l'id est pose sur l'objet (commit a la fin, sauf
-    `dry_run`). Zero ou plusieurs candidats -> laisse NULL, consigne dans le
-    rapport (`not_found` / `ambiguous`) — jamais un ecusson devine.
+    Pour chaque club : recherche par `name_fr` (+ `country` si connu). Zero
+    ou plusieurs candidats -> laisse NULL, consigne dans le rapport
+    (`not_found` / `ambiguous`) — jamais un ecusson devine. Un candidat
+    UNIQUE : si le pays canonique est connu, le pays du candidat doit
+    correspondre (normalise) pour que l'id soit pose (`resolved`) ; sinon
+    rejete (`rejected`, NULL) — jamais un faux ecusson par homonymie
+    inter-pays. Si le pays canonique est inconnu, l'id est pose mais range
+    a part (`resolved_unverified`), voir `CrestReport`.
 
     Un echec reseau sur un club ne bloque pas les suivants : consigne dans
     `errors` et continue, pour ne pas perdre tout le lot sur une seule
@@ -197,9 +264,38 @@ async def resolve_crests(
             continue
 
         if len(candidates) == 1:
-            team.api_football_id = candidates[0].api_football_id
-            report.resolved.append(name)
-            logger.info("API-Football: %r -> %d", name, candidates[0].api_football_id)
+            candidate = candidates[0]
+            if country is None:
+                # Pays canonique inconnu : impossible de verifier. Pose
+                # quand meme (candidat unique), mais trace a part.
+                team.api_football_id = candidate.api_football_id
+                report.resolved_unverified.append(name)
+                logger.info(
+                    "API-Football: %r -> %d (pays canonique inconnu, non verifie)",
+                    name,
+                    candidate.api_football_id,
+                )
+            elif _normalize_country(candidate.country) == _normalize_country(country):
+                team.api_football_id = candidate.api_football_id
+                report.resolved.append(name)
+                logger.info("API-Football: %r -> %d", name, candidate.api_football_id)
+            else:
+                # Candidat unique mais pays incoherent : homonymie
+                # inter-pays. Jamais un faux ecusson -> rejete, pas pose.
+                logger.warning(
+                    "API-Football: candidat rejete pour %r - pays incoherent "
+                    "(canonique=%r, candidat=%r)",
+                    name,
+                    country,
+                    candidate.country,
+                )
+                report.rejected.append(
+                    UnresolvedTeam(
+                        canonical_id=team.id,
+                        name=name,
+                        candidates=[f"{candidate.name} ({candidate.country})"],
+                    )
+                )
         elif len(candidates) == 0:
             logger.warning("API-Football: aucun candidat pour %r (pays=%r)", name, country)
             report.not_found.append(UnresolvedTeam(canonical_id=team.id, name=name))
