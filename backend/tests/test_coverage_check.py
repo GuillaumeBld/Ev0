@@ -422,9 +422,10 @@ async def test_league_enumeration_failure_is_isolated_and_never_raises(session_f
     monkeypatch.setattr(coverage_check_module, "_check_league_coverage", _boom)
 
     async with session_factory() as session:
-        # LID_OTHER n'a aucun club engage -> traite normalement (trivial ok),
-        # ce qui prouve que la ligue en echec n'a pas bloque le traitement
-        # des ligues suivantes.
+        # LID_OTHER n'a aucun club engage -> traite normalement (statut
+        # "empty", honnete sur le fait que rien n'a pu etre verifie), ce qui
+        # prouve que la ligue en echec n'a pas bloque le traitement des
+        # ligues suivantes.
         reports = await check_coverage(session, season=SEASON, league_ids=[LID, LID_OTHER])
 
         assert len(reports) == 2
@@ -433,14 +434,42 @@ async def test_league_enumeration_failure_is_isolated_and_never_raises(session_f
         assert failed_report.status == "failed"
         assert "error" in failed_report.detail
 
-        ok_report = next(r for r in reports if r.league_api_id == LID_OTHER)
-        assert ok_report.status == "ok"
-        assert ok_report.clubs_total == 0
+        empty_report = next(r for r in reports if r.league_api_id == LID_OTHER)
+        assert empty_report.status == "empty"
+        assert empty_report.clubs_total == 0
 
         failed_runs = await _runs_for(session, LID)
         assert len(failed_runs) == 1
         assert failed_runs[0].status == "failed"
 
-        ok_runs = await _runs_for(session, LID_OTHER)
-        assert len(ok_runs) == 1
-        assert ok_runs[0].status == "ok"
+        empty_runs = await _runs_for(session, LID_OTHER)
+        assert len(empty_runs) == 1
+        assert empty_runs[0].status == "empty"
+
+
+# ---------------------------------------------------------------------------
+# Ligue sans aucun club rattache -> "empty", jamais un faux "ok"
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_league_without_any_club_is_empty_not_ok(session_factory):
+    """Les ligues Tier-4 "world" (Bresil, Saudi, Liga MX, J1, K-League,
+    Chinese, Botola, Tunisie, A-League) et les selections ont leurs
+    events/stats synchronises mais aucun club rattache (le rattachement
+    n'existe que pour les domestiques EFFECTIFS_STRICTS). `clubs_total == 0`
+    ne doit JAMAIS persister "ok" (faux "tout couvert") : le statut distinct
+    "empty" doit etre expose, avec une raison explicite dans `detail`."""
+    async with session_factory() as session:
+        reports = await check_coverage(session, season=SEASON, league_ids=[LID])
+
+        assert len(reports) == 1
+        report = reports[0]
+        assert report.clubs_total == 0
+        assert report.status == "empty"
+        assert report.status != "ok"
+        assert "reason" in report.detail
+
+        runs = await _runs_for(session, LID)
+        assert len(runs) == 1
+        assert runs[0].status == "empty"

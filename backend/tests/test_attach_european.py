@@ -128,14 +128,18 @@ async def test_club_qualif_uefa_seulement_est_enregistre_sans_championnat(
     assert "Qualif Only FC" in caplog.text
 
 
-async def test_club_qualif_existant_sans_domestique_est_corrige_sans_pays(
+async def test_club_domestique_saison_perimee_nest_jamais_desengage(
     session_factory, caplog
 ):
-    """(d) Une ligne canonique preexistante (appariee par bzz_team_id), sans
-    engagement domestique dans le perimetre, ne doit jamais se voir attribuer
-    un pays ou un league_api_id devine — MEME SI elle portait des valeurs
-    fautives, stagnantes d'un ancien run bogue (ce n'est pas un no-op : la
-    passe doit activement les remettre a NULL)."""
+    """(d, reecrit le 03/11 — l'ancienne version de ce test affirmait
+    qu'`attach_european` remettait a NULL un league_api_id domestique
+    perime ; c'etait la cause de la regression de bascule de saison :
+    aucun job quotidien ne reconstruit le big-5, donc un club big-5 encore
+    sur l'ancienne saison se faisait DESENGAGER par ce job. Invariant
+    correct : `attach_european` ne touche JAMAIS a un club qui porte deja
+    un league_api_id domestique, quelle que soit la saison inscrite — seul
+    `rebuild()` (remplacement en bloc par ligue) a le droit de nettoyer un
+    engagement perime."""
 
     async def _get_all(path, params=None):
         if params["league"] == 83:
@@ -150,8 +154,9 @@ async def test_club_qualif_existant_sans_domestique_est_corrige_sans_pays(
             name_fr="Qualif Only FC",
             name_en="Qualif Only FC",
             bzz_team_id=999,
-            # Valeurs REELLEMENT fautives (ancien run bogue) — pas des NULL
-            # deja corrects. La passe doit les corriger, pas les laisser.
+            # Engagement domestique d'une saison PERIMEE (ancien run, pas
+            # encore reconstruit par `rebuild` pour la nouvelle saison) —
+            # pas un NULL deja correct : un vrai league_api_id domestique.
             league_api_id=4,
             season="2024-2025",
             country="France",
@@ -166,11 +171,13 @@ async def test_club_qualif_existant_sans_domestique_est_corrige_sans_pays(
                 select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == 999)
             )
         ).scalar_one()
-        assert ligne.league_api_id is None
-        assert ligne.season is None
-        assert ligne.country is None
+        # Rien ne change : ni league_api_id, ni season, ni country.
+        assert ligne.league_api_id == 4
+        assert ligne.season == "2024-2025"
+        assert ligne.country == "France"
 
-    assert "sans championnat" in caplog.text
+    # Ce club n'est jamais traite comme "sans championnat" : il en a un.
+    assert "Qualif Only FC" not in caplog.text
 
 
 async def test_qualif_only_adopte_ligne_libre_par_nom_replie(

@@ -320,16 +320,17 @@ async def attach_european(
                 # (bzz_team_id different) n'est jamais adoptee par nom.
                 existant = candidat
 
-        if (
-            existant is not None
-            and existant.league_api_id is not None
-            and existant.season == season
-        ):
-            # Deja engage dans un championnat domestique CETTE saison
-            # (Task 2) : on ne touche a rien — ni league_api_id, ni
-            # country, ni season. Un league_api_id non-NULL d'une AUTRE
-            # saison (ancien run, club depuis sorti du perimetre) n'est pas
-            # un engagement courant : il est corrige comme un qualif-only.
+        if existant is not None and existant.league_api_id is not None:
+            # Deja engage dans un championnat domestique (quelle que soit la
+            # saison inscrite) : on ne touche a rien — ni league_api_id, ni
+            # country, ni season. Aucun job quotidien ne reconstruit le
+            # big-5 : a la bascule de saison, un club big-5 encore sur
+            # l'ancienne saison serait sinon desengage par ce job
+            # (regression corrigee le 03/11). Le nettoyage des engagements
+            # perimes est le role de `rebuild()` (remplacement en bloc par
+            # ligue), pas celui d'`attach_european`, dont le seul role est
+            # d'enregistrer les clubs qualif-UEFA sans championnat
+            # (league_api_id IS NULL).
             continue
 
         logger.info("club sans championnat domestique : %s (id %s)", nom, club_id)

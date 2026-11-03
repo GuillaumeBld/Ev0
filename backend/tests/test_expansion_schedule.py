@@ -16,7 +16,7 @@ Trois garanties testees :
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -261,6 +261,73 @@ def test_job_sync_referentiel_expansion_is_scheduled():
     # id distinct du job paris sync_bzzoiro_events (perimetre different).
     assert scheduler.get_job("sync_bzzoiro_events") is not None
     assert scheduler.get_job("sync_bzzoiro_events").id != job.id
+
+
+# ---------------------------------------------------------------------------
+# (d) job_sync_bzzoiro_events — le controle de coherence du calendrier
+#     (alerte Telegram "incidents") doit rester scope aux ligues paris, et
+#     ne JAMAIS deverser les ~45 ligues d'expansion (ex : Europa League=8,
+#     Conference League=83) qu'ecrit desormais job_sync_referentiel_expansion.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_job_sync_bzzoiro_events_coherence_check_scoped_to_paris_leagues():
+    """Inspecte la VRAIE requete SQL executee par le controle de coherence :
+    elle doit filtrer `BzzEvent.league_api_id` sur exactement
+    TARGET_LEAGUE_INTERNAL_ID_LIST + INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST —
+    ni plus (pas d'expansion), ni moins (pas de regression du perimetre
+    paris historique)."""
+    mock_session = MagicMock()
+    mock_result = MagicMock()
+    mock_result.all = MagicMock(return_value=[])
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    mock_client = AsyncMock()
+
+    with patch("app.worker.settings") as mock_settings, patch(
+        "app.worker.async_session", return_value=_session_ctx(mock_session)
+    ), patch(
+        "app.worker.BzzoiroClient", return_value=_client_ctx(mock_client)
+    ), patch(
+        "app.worker.sync_events", new_callable=AsyncMock, return_value={}
+    ), patch(
+        "app.ingestion.bzzoiro.sync_fixture_status.sync_fixture_status_from_bzz",
+        new_callable=AsyncMock,
+        return_value=0,
+    ), patch(
+        "app.alerts.send_alert", new_callable=AsyncMock
+    ) as mock_send_alert:
+        mock_settings.bzzoiro_api_key = "cle-test"
+        from app.worker import job_sync_bzzoiro_events
+
+        await job_sync_bzzoiro_events()
+
+    # sync_events et sync_fixture_status_from_bzz sont mockes : la SEULE
+    # requete reelle executee contre la session mockee est celle du controle
+    # de coherence.
+    assert mock_session.execute.await_count == 1
+    stmt = mock_session.execute.await_args.args[0]
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+
+    assert "league_api_id IN" in compiled
+    ids_in_clause = {
+        int(x)
+        for x in compiled.split("league_api_id IN ")[1]
+        .split(")")[0]
+        .lstrip("(")
+        .split(",")
+    }
+
+    expected = set(TARGET_LEAGUE_INTERNAL_ID_LIST) | set(INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST)
+    assert ids_in_clause == expected
+    # Les identifiants d'expansion cites dans le correctif (Europa League=8,
+    # Conference League=83) ne doivent jamais apparaitre.
+    assert 8 not in ids_in_clause
+    assert 83 not in ids_in_clause
+
+    # Aucune violation trouvee (lignes vides) -> pas d'alerte envoyee.
+    mock_send_alert.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -25,10 +25,16 @@ Pour chaque ligue du perimetre, pour chaque club engage (`CanonicalTeam` avec
 
 Un club est compte "incomplet" s'il a au moins un trou de type (2) ou (3).
 Rien n'est jamais affiche a moitie sans etre signale : chaque ligue produit
-une ligne `DataCoverageRun` (ok/partial/failed) avec le detail structure des
-clubs incomplets, et un log WARNING resume chaque ligue non "ok". C'est
-l'alerte elle-meme — aucun cablage Telegram ici (planification/branchement :
-Tache 6).
+une ligne `DataCoverageRun` (ok/partial/failed/empty) avec le detail
+structure des clubs incomplets, et un log WARNING resume chaque ligue non
+"ok". C'est l'alerte elle-meme — aucun cablage Telegram ici
+(planification/branchement : Tache 6).
+
+Une ligue sans AUCUN club rattache (`clubs_total == 0` — typiquement les
+ligues Tier-4 "world" et les selections, dont le rattachement club n'est pas
+implemente) n'est PAS comptee "ok" : ce serait un faux "tout couvert". Elle
+recoit le statut distinct "empty", honnete sur le fait que rien n'a pu etre
+verifie (pas une decision de rattacher ces clubs — differee).
 
 Garde-fou de robustesse : l'enumeration d'une ligue qui leve une exception
 (bug, requete invalide, contrainte DB...) ne doit JAMAIS faire remonter
@@ -68,7 +74,7 @@ class CoverageReport:
     clubs_ok: int
     clubs_incomplets: int
     joueurs_sans_stats: int
-    status: str  # "ok" | "partial" | "failed"
+    status: str  # "ok" | "partial" | "failed" | "empty" (0 club rattache, honnetete seulement)
     detail: dict
     run_id: int | None
 
@@ -199,14 +205,33 @@ async def _check_league_coverage(
     clubs_total = len(clubs)
 
     if clubs_total == 0:
-        # Rien d'engage pour cette ligue/saison : trivialement complet, mais
-        # on persiste quand meme la ligne (une ligue sans club engage doit
-        # etre visible dans l'historique des runs, pas absente silencieusement).
-        detail = {"season": season, "events_synced": None, "incomplete_clubs": []}
+        # Rien d'engage pour cette ligue/saison : PAS un "ok" honnete. Les
+        # ligues Tier-4 "world" (Bresil, Saudi, Liga MX, J1, K-League,
+        # Chinese, Botola, Tunisie, A-League) et les selections ont leurs
+        # events/stats synchronises mais aucun club rattache — le
+        # rattachement n'existe que pour les domestiques EFFECTIFS_STRICTS.
+        # status="ok" ici mentirait ("tout couvert") pour une ligue qui n'est
+        # en realite pas segmentee : on persiste un statut distinct
+        # "empty" pour que le garde-fou ne pretende jamais couvrir ce qu'il
+        # n'a pas les moyens de verifier. Decision produit de rattacher ces
+        # clubs differee — ce correctif est honnetete seulement, n'essaie
+        # pas de les rattacher.
+        reason = "aucun club rattache (ligue non segmentee)"
+        detail = {
+            "season": season,
+            "events_synced": None,
+            "incomplete_clubs": [],
+            "reason": reason,
+        }
+        logger.info(
+            "coverage_check: ligue %d (saison %s) sans aucun club rattache — "
+            "statut 'empty' (%s).",
+            league_api_id, season, reason,
+        )
         return await _persist_ok_or_partial_run(
             session, league_api_id, started_at,
             clubs_total=0, clubs_ok=0, clubs_incomplets=0, joueurs_sans_stats=0,
-            status="ok", detail=detail,
+            status="empty", detail=detail,
         )
 
     season_start_date = season_start_of(season)

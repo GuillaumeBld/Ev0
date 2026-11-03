@@ -41,7 +41,10 @@ from app.ingestion.bzzoiro.resolve_lineup_slots import resoudre_compos
 from app.ingestion.bzzoiro.sync_match_detail import sync_apres_match, sync_avant_match
 from app.ingestion.bzzoiro.sync_incidents import sync_incidents
 from app.ingestion.bzzoiro.sync_wc_squads import sync_wc_squads
-from app.ingestion.bzzoiro.constants import INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST
+from app.ingestion.bzzoiro.constants import (
+    INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST,
+    TARGET_LEAGUE_INTERNAL_ID_LIST,
+)
 from app.scripts.rebuild_team_registry import EFFECTIFS_STRICTS, attach_european, rebuild
 from app.ingestion.storage import (
     store_match_events,
@@ -1352,7 +1355,12 @@ async def job_sync_bzzoiro_events():
                     BzzEvent.home_team_api_id,
                     BzzEvent.away_team_api_id,
                     BzzEvent.event_date,
-                ).where(BzzEvent.event_date >= datetime.now(UTC))
+                ).where(
+                    BzzEvent.event_date >= datetime.now(UTC),
+                    BzzEvent.league_api_id.in_(
+                        TARGET_LEAGUE_INTERNAL_ID_LIST + INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST
+                    ),
+                )
             )).all()
 
         violations = controler([
