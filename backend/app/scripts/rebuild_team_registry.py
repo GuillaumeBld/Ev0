@@ -215,6 +215,19 @@ async def attach_european(
     country=NULL. Jamais de pays ni de championnat devine : le cas est
     consigne explicitement.
 
+    Le repli par cle_club(nom) n'adopte JAMAIS une ligne qui porte deja un
+    bzz_team_id (donc un AUTRE club identifie) ni une ligne engagee en
+    domestique : des noms generiques ("Dynamo", "Union", "Victoria"...) sont
+    partages entre pays, et un faux match par nom fusionnerait deux clubs
+    distincts. Seule une ligne "libre" (sans bzz_team_id, non engagee) peut
+    etre adoptee par nom — c'est un vrai doublon de libelle du MEME club pas
+    encore identifie.
+
+    Une collision de name_fr entre deux clubs qualif-only reellement
+    distincts (bzz_team_id differents) decouverts dans la MEME passe est
+    desambiguisee a l'insertion plutot que de laisser la contrainte unique
+    faire echouer tout le commit.
+
     Ne relance pas la segmentation domestique. N'ecrit jamais league_api_id
     dans {7, 8, 83, 90} : ces identifiants ne designent qu'une competition
     UEFA, jamais un championnat engageant un club.
@@ -243,32 +256,68 @@ async def attach_european(
             if cle:
                 par_cle.setdefault(cle, ligne)
 
+    # Index par bzz_team_id et par name_fr pris, mis a jour au fil des
+    # creations de cette passe. Sans cela, deux clubs qualif-only distincts
+    # au meme nom replie prendraient tous deux la branche creation et une
+    # collision de name_fr (contrainte unique) ferait echouer tout le
+    # commit — perte de TOUTE la passe, pas seulement du second club.
+    par_bzz_id: dict[int, CanonicalTeam] = {
+        ligne.bzz_team_id: ligne for ligne in toutes if ligne.bzz_team_id is not None
+    }
+    noms_pris: set[str] = {ligne.name_fr for ligne in toutes if ligne.name_fr}
+
     sans_championnat = 0
     for club_id, nom in engages.items():
-        existant = (await session.execute(
-            select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == club_id)
-        )).scalar_one_or_none()
+        existant = par_bzz_id.get(club_id)
 
         if existant is None:
-            existant = par_cle.get(cle_club(nom))
+            candidat = par_cle.get(cle_club(nom))
+            if (
+                candidat is not None
+                and candidat.bzz_team_id is None
+                and candidat.league_api_id is None
+            ):
+                # Ligne "libre" : vrai doublon de libelle du MEME club pas
+                # encore identifie par bzz_team_id. Une ligne deja engagee
+                # (league_api_id pose) ou deja appariee a un AUTRE club
+                # (bzz_team_id different) n'est jamais adoptee par nom.
+                existant = candidat
 
-        if existant is not None and existant.league_api_id is not None:
-            # Deja engage dans un championnat domestique (Task 2) : on ne
-            # touche a rien — ni league_api_id, ni country, ni season.
+        if (
+            existant is not None
+            and existant.league_api_id is not None
+            and existant.season == season
+        ):
+            # Deja engage dans un championnat domestique CETTE saison
+            # (Task 2) : on ne touche a rien — ni league_api_id, ni
+            # country, ni season. Un league_api_id non-NULL d'une AUTRE
+            # saison (ancien run, club depuis sorti du perimetre) n'est pas
+            # un engagement courant : il est corrige comme un qualif-only.
             continue
 
         logger.info("club sans championnat domestique : %s (id %s)", nom, club_id)
         sans_championnat += 1
 
         if existant is None:
-            session.add(CanonicalTeam(
-                name_fr=nom,
+            nom_fr = nom
+            if nom_fr in noms_pris:
+                nom_fr = f"{nom} (id {club_id})"
+                logger.info(
+                    "name_fr desambigue pour eviter une collision "
+                    "entre deux clubs distincts : %s -> %s (id %s)",
+                    nom, nom_fr, club_id,
+                )
+            noms_pris.add(nom_fr)
+            nouvelle = CanonicalTeam(
+                name_fr=nom_fr,
                 name_en=nom,
                 bzz_team_id=club_id,
                 league_api_id=None,
                 season=None,
                 country=None,
-            ))
+            )
+            session.add(nouvelle)
+            par_bzz_id[club_id] = nouvelle
         else:
             existant.bzz_team_id = club_id
             existant.league_api_id = None

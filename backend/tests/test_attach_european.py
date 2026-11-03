@@ -131,10 +131,11 @@ async def test_club_qualif_uefa_seulement_est_enregistre_sans_championnat(
 async def test_club_qualif_existant_sans_domestique_est_corrige_sans_pays(
     session_factory, caplog
 ):
-    """Une ligne canonique preexistante (appariee par bzz_team_id), sans
+    """(d) Une ligne canonique preexistante (appariee par bzz_team_id), sans
     engagement domestique dans le perimetre, ne doit jamais se voir attribuer
-    un pays ou un league_api_id devine — meme si elle portait des valeurs
-    stagnantes d'un ancien run."""
+    un pays ou un league_api_id devine — MEME SI elle portait des valeurs
+    fautives, stagnantes d'un ancien run bogue (ce n'est pas un no-op : la
+    passe doit activement les remettre a NULL)."""
 
     async def _get_all(path, params=None):
         if params["league"] == 83:
@@ -149,9 +150,11 @@ async def test_club_qualif_existant_sans_domestique_est_corrige_sans_pays(
             name_fr="Qualif Only FC",
             name_en="Qualif Only FC",
             bzz_team_id=999,
-            league_api_id=None,
-            season=None,
-            country=None,
+            # Valeurs REELLEMENT fautives (ancien run bogue) — pas des NULL
+            # deja corrects. La passe doit les corriger, pas les laisser.
+            league_api_id=4,
+            season="2024-2025",
+            country="France",
         ))
         await session.commit()
 
@@ -164,9 +167,159 @@ async def test_club_qualif_existant_sans_domestique_est_corrige_sans_pays(
             )
         ).scalar_one()
         assert ligne.league_api_id is None
+        assert ligne.season is None
         assert ligne.country is None
 
     assert "sans championnat" in caplog.text
+
+
+async def test_qualif_only_adopte_ligne_libre_par_nom_replie(
+    session_factory, caplog
+):
+    """(a) Une ligne canonique PREEXISTANTE mais LIBRE (sans bzz_team_id,
+    non engagee) partage le nom replie d'un club vu seulement en UEFA : la
+    passe doit l'ADOPTER (pas de doublon cree), league/season/country restent
+    NULL, et le cas est consigne."""
+
+    async def _get_all(path, params=None):
+        if params["league"] == 90:
+            return [_event(501, "Victoria SC", 502, "Other Side")]
+        return []
+
+    client = MagicMock()
+    client.get_all = AsyncMock(side_effect=_get_all)
+
+    async with session_factory() as session:
+        session.add(CanonicalTeam(
+            name_fr="Victoria SC",
+            name_en="Victoria SC",
+            bzz_team_id=None,
+            league_api_id=None,
+            season=None,
+            country=None,
+        ))
+        await session.commit()
+
+        with caplog.at_level(logging.INFO):
+            await attach_european(session, client, season=SEASON)
+
+        toutes = (await session.execute(select(CanonicalTeam))).scalars().all()
+        lignes_victoria = [l for l in toutes if l.name_fr == "Victoria SC"]
+        # Adoptee, pas doublonnee.
+        assert len(lignes_victoria) == 1
+        ligne = lignes_victoria[0]
+        assert ligne.bzz_team_id == 501
+        assert ligne.league_api_id is None
+        assert ligne.season is None
+        assert ligne.country is None
+
+    assert "sans championnat" in caplog.text
+    assert "Victoria SC" in caplog.text
+
+
+async def test_qualif_only_meme_nom_replie_qu_un_domestique_nest_jamais_fusionne(
+    session_factory, caplog
+):
+    """(b) Un club qualif-only dont le nom replie collisionne avec un club
+    DEJA ENGAGE en domestique (bzz_team_id different, pays different — nom
+    generique partage entre pays, ex. "Dynamo") ne doit JAMAIS fusionner avec
+    la ligne domestique. Il doit obtenir sa propre ligne (NULL/NULL/NULL), le
+    club domestique reste intact, et un log "sans championnat" est emis pour
+    le qualif-only."""
+
+    async def _get_all(path, params=None):
+        if params["league"] == 7:
+            return [_event(777, "Dynamo", 778, "Qualif Partner")]
+        return []
+
+    client = MagicMock()
+    client.get_all = AsyncMock(side_effect=_get_all)
+
+    async with session_factory() as session:
+        session.add(CanonicalTeam(
+            name_fr="Dynamo",
+            name_en="Dynamo",
+            bzz_team_id=50,
+            league_api_id=10,
+            season=SEASON,
+            country="Ukraine",
+        ))
+        await session.commit()
+
+        with caplog.at_level(logging.INFO):
+            await attach_european(session, client, season=SEASON)
+
+        # Le club domestique reste parfaitement intact.
+        domestique = (
+            await session.execute(
+                select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == 50)
+            )
+        ).scalar_one()
+        assert domestique.league_api_id == 10
+        assert domestique.country == "Ukraine"
+        assert domestique.season == SEASON
+        assert domestique.name_fr == "Dynamo"
+
+        # Le qualif-only obtient sa PROPRE ligne, jamais fusionnee.
+        qualif = (
+            await session.execute(
+                select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == 777)
+            )
+        ).scalar_one()
+        assert qualif.league_api_id is None
+        assert qualif.season is None
+        assert qualif.country is None
+        # Desambiguise car "Dynamo" est deja pris par le club domestique.
+        assert qualif.name_fr != "Dynamo"
+
+        toutes = (await session.execute(select(CanonicalTeam))).scalars().all()
+        assert len(toutes) == 3  # domestique + 777 + 778, rien d'autre
+
+    assert "sans championnat" in caplog.text
+    assert "Dynamo" in caplog.text
+
+
+async def test_deux_qualif_only_distincts_meme_nom_sont_tous_deux_enregistres(
+    session_factory, caplog
+):
+    """(c) Deux clubs qualif-only DISTINCTS (bzz_team_id differents) au MEME
+    name_fr replie, decouverts dans la MEME passe : les DEUX doivent etre
+    enregistres (pas d'IntegrityError sur la contrainte unique, pas de perte
+    silencieuse), chacun consigne."""
+
+    async def _get_all(path, params=None):
+        if params["league"] == 7:
+            return [_event(901, "Phoenix FC", 902, "Other One")]
+        if params["league"] == 8:
+            return [_event(903, "Phoenix FC", 904, "Other Two")]
+        return []
+
+    client = MagicMock()
+    client.get_all = AsyncMock(side_effect=_get_all)
+
+    async with session_factory() as session:
+        with caplog.at_level(logging.INFO):
+            # Ne doit pas lever IntegrityError au commit.
+            await attach_european(session, client, season=SEASON)
+
+        premier = (
+            await session.execute(
+                select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == 901)
+            )
+        ).scalar_one()
+        second = (
+            await session.execute(
+                select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == 903)
+            )
+        ).scalar_one()
+
+        assert premier.league_api_id is None
+        assert second.league_api_id is None
+        # Les deux ont bien ete enregistres, sous des name_fr distincts.
+        assert premier.name_fr != second.name_fr
+
+    assert caplog.text.count("sans championnat") >= 2
+    assert "Phoenix FC" in caplog.text
 
 
 async def test_aucun_club_ne_finit_avec_un_league_api_id_uefa(session_factory):
