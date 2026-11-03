@@ -27,6 +27,8 @@ from app.db import DATABASE_URL, async_session, engine
 from app.ingestion.auto_settle import settle_approved_recommendations
 from app.ingestion.bzzoiro.aggregate import aggregate_all_leagues
 from app.ingestion.bzzoiro.client import BzzoiroClient
+from app.ingestion.bzzoiro.coverage_check import check_coverage
+from app.ingestion.bzzoiro.expansion_scope import expansion_league_ids
 from app.ingestion.bzzoiro.sync_events import sync_events
 from app.ingestion.bzzoiro.sync_player_stats import sync_player_stats
 from app.ingestion.bzzoiro.sync_players import sync_players
@@ -40,6 +42,7 @@ from app.ingestion.bzzoiro.sync_match_detail import sync_apres_match, sync_avant
 from app.ingestion.bzzoiro.sync_incidents import sync_incidents
 from app.ingestion.bzzoiro.sync_wc_squads import sync_wc_squads
 from app.ingestion.bzzoiro.constants import INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST
+from app.scripts.rebuild_team_registry import attach_european, rebuild
 from app.ingestion.storage import (
     store_match_events,
     store_recommendation,
@@ -1420,6 +1423,78 @@ async def job_sync_bzzoiro_player_stats_full_season():
     logger.info("=== Bzzoiro full-season player stats sync complete ===")
 
 
+async def job_sync_referentiel_expansion():
+    """Daily at 05:15 UTC: etend le referentiel Joueurs (bzz_events,
+    canonical_teams) aux ligues d'expansion du registre — celles que
+    `job_sync_bzzoiro_events` ne couvre pas deja (big-5 + Champions League
+    via `TARGET_LEAGUE_INTERNAL_ID_LIST`, international via
+    `INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST`). Voir `expansion_league_ids()`
+    pour le calcul exact du perimetre (45 competitions au moment ou ceci est
+    ecrit).
+
+    Volontairement un job SEPARE de `job_sync_bzzoiro_events`, jamais fusionne
+    avec lui : ce dernier lance aussi le controle de coherence du calendrier,
+    qui envoie des alertes Telegram "incidents" sur le calendrier PARIS
+    (big-5 + international, celui du calculateur). Faire passer les 45 ligues
+    d'expansion par ce controle inonderait ces alertes avec des competitions
+    que le calculateur ne tarife jamais — ce job n'appelle donc que
+    `sync_events()` directement, jamais ce controle ni `send_alert`.
+
+    Ordre : `sync_events()` d'abord (les bzz_events de ces ligues doivent
+    exister en base avant tout le reste), puis `rebuild()`/`attach_european()`
+    (relisent ces memes bzz_events pour resegmenter canonical_teams), puis
+    `check_coverage()` en dernier pour qu'il voie ce que `rebuild` vient
+    d'ecrire. `job_sync_bzzoiro_player_stats` (6h) et
+    `job_aggregate_season_stats` (04:00 UTC) couvrent deja ces ligues via
+    `PLAYER_STATS_LEAGUE_IDS` (sur-ensemble du perimetre d'expansion) a leur
+    propre cadence — on ne les rappelle pas ici, leur PROCHAIN passage suffit
+    a transformer les evenements fraichement synchronises en stats/agregats :
+    tout est idempotent (upsert on-conflict / resegmentation complete), donc
+    un passage partiel un jour est simplement rattrape le lendemain.
+    """
+    logger.info("=== Starting expansion referentiel sync ===")
+    if not settings.bzzoiro_api_key:
+        logger.warning("BZZOIRO_API_KEY not configured, skipping expansion referentiel sync")
+        return
+    try:
+        league_ids = expansion_league_ids()
+        async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
+            events_count = await sync_events(
+                session,
+                client,
+                days_back=3,
+                days_forward=30,
+                league_internal_ids=league_ids,
+            )
+            logger.info(
+                "Expansion events synced: %s (%d ligues)", events_count, len(league_ids)
+            )
+
+            comptes = await rebuild(session, client)
+            logger.info("Referentiel reconstruit (expansion): %s", comptes)
+
+            rattaches = await attach_european(session, client)
+            logger.info("Rattachement UEFA (expansion): %s", rattaches)
+
+            reports = await check_coverage(session)
+            resume = {
+                statut: sum(1 for r in reports if r.status == statut)
+                for statut in ("ok", "partial", "failed")
+            }
+            logger.info("Controle de completude (expansion): %s", resume)
+            for report in reports:
+                if report.status != "ok":
+                    logger.warning(
+                        "coverage ligue %d (%s, statut=%s): clubs_total=%s "
+                        "clubs_incomplets=%s joueurs_sans_stats=%s",
+                        report.league_api_id, report.season, report.status,
+                        report.clubs_total, report.clubs_incomplets,
+                        report.joueurs_sans_stats,
+                    )
+    except Exception as exc:
+        logger.error("Error in expansion referentiel sync: %s", exc, exc_info=True)
+    logger.info("=== Expansion referentiel sync complete ===")
+
 
 async def job_sync_bzzoiro_predictions():
     """Daily at 07:00 UTC: sync Bzzoiro match predictions."""
@@ -2531,6 +2606,19 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
         max_instances=1,
         coalesce=True,
+    )
+
+    # Referentiel d'expansion (45 ligues hors big-5/C1/international) :
+    # quotidien, 05:15 UTC — apres players (03:00), aggregate (04:00), squads
+    # (04:30) et l'import carriere (05:00). N'appelle jamais le controle de
+    # coherence du calendrier paris (voir docstring du job) : volontairement
+    # un job distinct de sync_bzzoiro_events.
+    scheduler.add_job(
+        job_sync_referentiel_expansion,
+        CronTrigger(hour=5, minute=15),
+        id="sync_referentiel_expansion",
+        name="Sync referentiel Joueurs — ligues d'expansion (hors pipeline paris)",
+        replace_existing=True,
     )
 
     # Bzzoiro predictions: daily at 07:45 UTC
