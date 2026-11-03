@@ -5,8 +5,18 @@ evenements remontant a 1930. Seul league + date_from + date_to filtre.
 """
 from unittest.mock import AsyncMock, MagicMock
 
-from app.ingestion.bzzoiro.constants import BACKFILL_SEASONS
-from app.scripts.backfill_player_stats import backfill, season_window
+from app.ingestion.bzzoiro.constants import (
+    BACKFILL_SEASONS,
+    TARGET_LEAGUE_INTERNAL_ID_LIST,
+)
+from app.ingestion.bzzoiro.league_registry import PLAYER_STATS_LEAGUE_IDS
+from app.scripts.backfill_player_stats import (
+    _parse_args,
+    _select_leagues,
+    _select_seasons,
+    backfill,
+    season_window,
+)
 
 
 def _event(event_id: int, status: str = "finished"):
@@ -179,3 +189,45 @@ async def test_parcourt_toutes_les_saisons_et_competitions():
         c for c in client.get_all.call_args_list if c.args[0] == "/api/events/"
     ]
     assert len(appels_events) == 4
+
+
+def test_defaut_backfill_est_big_5_c1_pas_le_registre():
+    """Un lancement nu de backfill() ne doit jamais faire le fan-out vers les
+    ~55 competitions du registre (voir revue Tache 3 : defaut accidentel a
+    PLAYER_STATS_LEAGUE_IDS -> x9 d'appels a l'API Bzzoiro externe).
+    """
+    import inspect
+
+    defaut = inspect.signature(backfill).parameters["leagues"].default
+    assert defaut is None  # resolu a l'interieur de backfill(), pas ici
+    assert TARGET_LEAGUE_INTERNAL_ID_LIST == [1, 6, 5, 3, 4, 7]
+    assert len(TARGET_LEAGUE_INTERNAL_ID_LIST) < len(PLAYER_STATS_LEAGUE_IDS)
+
+
+def test_cli_sans_option_selectionne_big_5_c1():
+    """Un lancement nu (`python -m ... backfill_player_stats`, sans option)
+    doit rester sur le petit perimetre historique, pas le registre complet.
+    """
+    args = _parse_args([])
+    assert _select_leagues(args) == TARGET_LEAGUE_INTERNAL_ID_LIST
+    assert _select_seasons(args) == BACKFILL_SEASONS
+
+
+def test_cli_all_leagues_selectionne_le_registre_complet():
+    """--all-leagues (ou son alias --registry) est l'opt-in explicite pour
+    le fan-out vers tout le registre."""
+    args = _parse_args(["--all-leagues"])
+    assert _select_leagues(args) == PLAYER_STATS_LEAGUE_IDS
+
+    args_alias = _parse_args(["--registry"])
+    assert _select_leagues(args_alias) == PLAYER_STATS_LEAGUE_IDS
+
+
+def test_cli_leagues_explicite_remplace_le_defaut():
+    args = _parse_args(["--leagues", "1,3,10"])
+    assert _select_leagues(args) == [1, 3, 10]
+
+
+def test_cli_seasons_explicite_remplace_le_defaut():
+    args = _parse_args(["--seasons", "2024-2025,2025-2026"])
+    assert _select_seasons(args) == ["2024-2025", "2025-2026"]

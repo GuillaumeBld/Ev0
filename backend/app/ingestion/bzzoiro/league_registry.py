@@ -231,9 +231,12 @@ HISTORICAL_SELECTION_LEAGUE_IDS: frozenset[int] = frozenset({66, 67})
 # Default scope for the player-stats ingestion chain (events -> per-match
 # stats -> season aggregation): every registry competition except the
 # historical one-off tournaments reserved for Task 6's dedicated backfill.
-# Callers that need the full 57 (or a one-off subset, e.g. the Task 6
-# backfill for 66/67) still can — every function taking a league list keeps
-# accepting an explicit override.
+# sync_player_stats() has no explicit league-list parameter at all — it
+# filters locally-synced bzz_events against this module-level constant
+# directly (see sync_player_stats.py's _ALL_LEAGUE_IDS). aggregate_all_leagues()
+# and backfill_player_stats.backfill() DO take an explicit `league_ids` /
+# `leagues` override, for callers that need a different scope than their own
+# default (e.g. the Task 6 backfill for 66/67, or an opt-in full-registry run).
 PLAYER_STATS_LEAGUE_IDS: list[int] = [
     league_id for league_id in ALL_LEAGUE_IDS
     if league_id not in HISTORICAL_SELECTION_LEAGUE_IDS
