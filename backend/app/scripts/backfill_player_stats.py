@@ -35,10 +35,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.bzzoiro.constants import (
-    BACKFILL_SEASONS,
-    TARGET_LEAGUE_INTERNAL_ID_LIST,
-)
+from app.ingestion.bzzoiro.constants import BACKFILL_SEASONS
+from app.ingestion.bzzoiro.league_registry import PLAYER_STATS_LEAGUE_IDS
 from app.ingestion.bzzoiro.sync_player_stats import sync_player_stats_for_event
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -87,7 +85,7 @@ async def backfill(
     Retourne (matchs traites, matchs ignores).
     """
     seasons = seasons or BACKFILL_SEASONS
-    leagues = leagues or TARGET_LEAGUE_INTERNAL_ID_LIST
+    leagues = leagues or PLAYER_STATS_LEAGUE_IDS
 
     complets = await _events_complets(session)
     logger.info("%d matchs deja complets, ils seront ignores", len(complets))

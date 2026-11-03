@@ -29,12 +29,15 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_INTERNAL_ID_LIST
+from app.ingestion.bzzoiro.league_registry import PLAYER_STATS_LEAGUE_IDS
 from app.models.bzzoiro import BzzEvent
 
 # Identifiants internes Bzzoiro — c'est la valeur stockee dans
-# bzz_events.league_api_id pour les six competitions du perimetre.
-_ALL_LEAGUE_IDS = TARGET_LEAGUE_INTERNAL_ID_LIST  # [1,3,4,5,6,7]
+# bzz_events.league_api_id. Tache 3 (expansion ~57 competitions) : couvre
+# tout le LEAGUE_REGISTRY, hors tournois historiques (Euro 2024, Copa America
+# 2024 — rattrapage dedie, Tache 6). Les six competitions big-5+C1 restent
+# un sous-ensemble de cette liste, elles ne sont plus la liste elle-meme.
+_ALL_LEAGUE_IDS = PLAYER_STATS_LEAGUE_IDS
 
 logger = logging.getLogger(__name__)
 

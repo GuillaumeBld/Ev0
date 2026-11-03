@@ -209,6 +209,37 @@ def _validate_registry(registry: dict[int, LeagueMeta]) -> None:
 _validate_registry(LEAGUE_REGISTRY)
 
 
+# ---------------------------------------------------------------------------
+# Derived id lists — Task 3 (ingestion stats joueurs sur tout le perimetre).
+#
+# Computed once here so every ingestion module (sync_player_stats, aggregate,
+# backfill_player_stats, ...) shares the exact same list instead of each
+# rebuilding its own subset of LEAGUE_REGISTRY and silently drifting apart.
+# ---------------------------------------------------------------------------
+
+# Every competition tracked by the registry, in insertion order (Tier 1 ->
+# Tier 2 -> Tier 3 -> Tier 4 -> Selections). 57 ids.
+ALL_LEAGUE_IDS: list[int] = list(LEAGUE_REGISTRY)
+
+# Euro 2024 (66) and Copa America 2024 (67) are *past* national-team
+# tournaments: there is nothing left to sync recurringly, only a one-shot
+# historical backfill — which Task 6 owns explicitly. Keeping them out of the
+# default player-stats scope means no module in this task ever tries to
+# "keep up to date" a tournament that ended over a year ago.
+HISTORICAL_SELECTION_LEAGUE_IDS: frozenset[int] = frozenset({66, 67})
+
+# Default scope for the player-stats ingestion chain (events -> per-match
+# stats -> season aggregation): every registry competition except the
+# historical one-off tournaments reserved for Task 6's dedicated backfill.
+# Callers that need the full 57 (or a one-off subset, e.g. the Task 6
+# backfill for 66/67) still can — every function taking a league list keeps
+# accepting an explicit override.
+PLAYER_STATS_LEAGUE_IDS: list[int] = [
+    league_id for league_id in ALL_LEAGUE_IDS
+    if league_id not in HISTORICAL_SELECTION_LEAGUE_IDS
+]
+
+
 def seed_rows() -> list[dict]:
     """Return LEAGUE_REGISTRY as plain row dicts, ready for a bulk insert into
     the `leagues` table (see app/models/leagues.py and the Task 1 migration).
