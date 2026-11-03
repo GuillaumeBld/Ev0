@@ -24,9 +24,20 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.bzzoiro.constants import EFFECTIFS_REGLEMENTAIRES
+from app.ingestion.bzzoiro.league_registry import LEAGUE_REGISTRY
 from app.ingestion.ps3838.anchor import _fold
 from app.services.season_service import current_season, season_end, season_start
+
+# Championnats a segmentation stricte : chaque championnat round_robin de 1re
+# ou 2e division doit rendre son effectif reglementaire exact. Derive du
+# registre (Task 1) plutot que code en dur — l'UEFA, les selections et les
+# formats groups/knockout n'engagent pas un club dans un championnat et
+# restent hors de cette boucle (traites en Task 4).
+EFFECTIFS_STRICTS: dict[int, int] = {
+    league_id: meta.expected_count
+    for league_id, meta in LEAGUE_REGISTRY.items()
+    if meta.kind in ("domestic_1", "domestic_2") and meta.format == "round_robin"
+}
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -97,7 +108,7 @@ async def rebuild(
 
     # --- Phase 1 : enumerer et CONTROLER, sans rien ecrire ---
     par_championnat: dict[int, dict[int, str]] = {}
-    for league_api_id, attendu in EFFECTIFS_REGLEMENTAIRES.items():
+    for league_api_id, attendu in EFFECTIFS_STRICTS.items():
         engages = await enumerer_engages(client, league_api_id, season)
         if len(engages) != attendu:
             raise SegmentationError(
@@ -126,7 +137,7 @@ async def rebuild(
     await session.execute(
         update(CanonicalTeam)
         .where(CanonicalTeam.season == season)
-        .values(league_api_id=None, season=None)
+        .values(league_api_id=None, season=None, country=None)
     )
 
     # Index des lignes existantes par cle d'appariement : une ligne canonique
@@ -144,6 +155,7 @@ async def rebuild(
 
     comptes: dict[int, int] = {}
     for league_api_id, engages in par_championnat.items():
+        pays = LEAGUE_REGISTRY[league_api_id].country
         for club_id, nom in engages.items():
             existant = (await session.execute(
                 select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == club_id)
@@ -160,11 +172,13 @@ async def rebuild(
                     bzz_team_id=club_id,
                     league_api_id=league_api_id,
                     season=season,
+                    country=pays,
                 ))
             else:
                 existant.bzz_team_id = club_id
                 existant.league_api_id = league_api_id
                 existant.season = season
+                existant.country = pays
         comptes[league_api_id] = len(engages)
 
     await session.commit()
