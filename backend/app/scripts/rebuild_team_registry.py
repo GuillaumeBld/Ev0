@@ -64,6 +64,19 @@ def cle_club(nom: str | None) -> str:
     return " ".join(garde or tokens)
 
 
+# Les 4 competitions UEFA clubs (groups/knockout, country=None dans le
+# registre) : elles ne segmentent jamais un championnat (Task 2 les exclut
+# volontairement d'EFFECTIFS_STRICTS). Elles fournissent des matchs a un club
+# qui a par ailleurs un championnat domestique, ou revelent un club qui n'en
+# a aucun dans le perimetre (qualif UEFA seulement) — c'est tout l'objet
+# d'attach_european ci-dessous.
+UEFA_CLUB_COMPETITIONS: tuple[int, ...] = tuple(
+    league_id
+    for league_id, meta in LEAGUE_REGISTRY.items()
+    if meta.kind == "uefa_club"
+)
+
+
 class SegmentationError(RuntimeError):
     """L'effectif d'un championnat ne correspond pas a son format."""
 
@@ -186,6 +199,90 @@ async def rebuild(
     return comptes
 
 
+async def attach_european(
+    session: AsyncSession, client: Any, season: str | None = None
+) -> dict[str, int]:
+    """Rattache les clubs engages en UEFA (7/8/83/90) — passe additive,
+    APRES la segmentation domestique de `rebuild`.
+
+    Un club deja segmente dans un championnat domestique (league_api_id pose
+    par `rebuild`) n'est pas touche : la competition UEFA lui fournit des
+    matchs supplementaires, pas un engagement championnat.
+
+    Un club vu UNIQUEMENT via l'UEFA (qualif, pas de championnat domestique
+    dans le perimetre) est enregistre pour exister au referentiel — apparie
+    par bzz_team_id, puis par cle_club(nom) — avec league_api_id=NULL et
+    country=NULL. Jamais de pays ni de championnat devine : le cas est
+    consigne explicitement.
+
+    Ne relance pas la segmentation domestique. N'ecrit jamais league_api_id
+    dans {7, 8, 83, 90} : ces identifiants ne designent qu'une competition
+    UEFA, jamais un championnat engageant un club.
+    """
+    from app.models.canonical_teams import CanonicalTeam
+
+    if season is None:
+        season = await current_season(session)
+
+    # Union des clubs engages sur les 4 competitions UEFA (espace A).
+    engages: dict[int, str] = {}
+    for league_api_id in UEFA_CLUB_COMPETITIONS:
+        for club_id, nom in (
+            await enumerer_engages(client, league_api_id, season)
+        ).items():
+            engages.setdefault(club_id, nom)
+
+    # Meme index d'appariement par nom replie que `rebuild`, pour reconnaitre
+    # une ligne canonique existante sous un libelle different de celui rendu
+    # par l'API plutot que d'en creer un doublon.
+    toutes = (await session.execute(select(CanonicalTeam))).scalars().all()
+    par_cle: dict[str, CanonicalTeam] = {}
+    for ligne in toutes:
+        for libelle in (ligne.name_fr, ligne.name_en, *(ligne.aliases or [])):
+            cle = cle_club(libelle)
+            if cle:
+                par_cle.setdefault(cle, ligne)
+
+    sans_championnat = 0
+    for club_id, nom in engages.items():
+        existant = (await session.execute(
+            select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == club_id)
+        )).scalar_one_or_none()
+
+        if existant is None:
+            existant = par_cle.get(cle_club(nom))
+
+        if existant is not None and existant.league_api_id is not None:
+            # Deja engage dans un championnat domestique (Task 2) : on ne
+            # touche a rien — ni league_api_id, ni country, ni season.
+            continue
+
+        logger.info("club sans championnat domestique : %s (id %s)", nom, club_id)
+        sans_championnat += 1
+
+        if existant is None:
+            session.add(CanonicalTeam(
+                name_fr=nom,
+                name_en=nom,
+                bzz_team_id=club_id,
+                league_api_id=None,
+                season=None,
+                country=None,
+            ))
+        else:
+            existant.bzz_team_id = club_id
+            existant.league_api_id = None
+            existant.season = None
+            existant.country = None
+
+    await session.commit()
+    logger.info(
+        "Rattachement UEFA : %d clubs engages, %d sans championnat domestique",
+        len(engages), sans_championnat,
+    )
+    return {"engages": len(engages), "sans_championnat": sans_championnat}
+
+
 async def _main() -> None:
     from app.config import settings
     from app.db import async_session
@@ -195,6 +292,7 @@ async def _main() -> None:
         settings.bzzoiro_api_key
     ) as client:
         await rebuild(session, client)
+        await attach_european(session, client)
 
 
 if __name__ == "__main__":
