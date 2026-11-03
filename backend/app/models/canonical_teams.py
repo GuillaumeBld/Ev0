@@ -25,3 +25,8 @@ class CanonicalTeam(Base):
     # eux, d'ou des clubs andorrans dans le filtre Ligue des champions.
     league_api_id = Column(Integer, nullable=True)
     season = Column(String(10), nullable=True)
+
+    # Pays du club. Nullable : renseigne par la Task 1 de l'expansion
+    # ~57-competitions (leagues.country via LEAGUE_REGISTRY) mais pas encore
+    # retro-rempli pour les clubs existants au moment de la migration.
+    country = Column(String(100), nullable=True)

@@ -6,7 +6,9 @@ from app.models.base import Base
 from app.models.bzz_lineup_slots import BzzLineupSlot  # noqa: F401
 from app.models.canonical_teams import CanonicalTeam
 from app.models.career_import import CareerImportAttempt
+from app.models.data_coverage import DataCoverageRun
 from app.models.fixtures import Fixture
+from app.models.leagues import League
 from app.models.lineups import TeamLineup, TeamLineupPlayer  # noqa: F401
 from app.models.match_events import MatchEvent
 from app.models.match_odds import MatchOddsSnapshot
@@ -33,7 +35,9 @@ __all__ = [
     "BzzLineupSlot",
     "CanonicalTeam",
     "CareerImportAttempt",
+    "DataCoverageRun",
     "Fixture",
+    "League",
     "MatchEvent",
     "MatchOddsSnapshot",
     "ModelPricingSnapshot",
