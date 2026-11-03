@@ -631,6 +631,11 @@ export interface PlayerSummary {
   /** Saison précédente, affichée sous la valeur courante. Null si le joueur
    *  n'a pas joué cette saison-là ou si la comparaison n'est pas demandée. */
   previous: PreviousSeason | null
+  /** Identifiant API-Football du club (résolu via canonical_teams côté
+   *  backend), pour l'écusson `media.api-sports.io/football/teams/{id}.png`.
+   *  Null si le club n'a pas (encore) de club canonique rattaché avec un
+   *  identifiant API-Football — jamais un écusson approximatif. */
+  api_football_id: number | null
 }
 
 /** Valeurs de la saison précédente servant de repère sous la saison en cours. */

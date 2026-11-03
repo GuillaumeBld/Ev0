@@ -218,8 +218,10 @@ async def test_list_players_basic():
     players_res.scalars.return_value.all.return_value = [p1, p2]
     stats_res = MagicMock()
     stats_res.scalars.return_value.all.return_value = [s1, s2]
+    crest_res = MagicMock()
+    crest_res.all.return_value = []  # aucun club canonique dans ce test
     mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(side_effect=[players_res, stats_res])
+    mock_db.execute = AsyncMock(side_effect=[players_res, stats_res, crest_res])
 
     response = await list_players(
         session=mock_db,
@@ -246,10 +248,85 @@ async def test_list_players_basic():
     assert item0["matches_played"] == 20
     assert item0["minutes_played"] == 1800
     assert item0["season"] == "2025-2026"
+    assert item0["api_football_id"] is None
 
     item1 = response[1]
     assert item1["player_api_id"] == 2
     assert item1["xg_per_90"] == pytest.approx(0.18)
+
+
+# ---------------------------------------------------------------------------
+# Test: list players — api_football_id resolu via canonical_teams (Volet A,
+# expansion ecussons). Lookup en un seul lot, jamais un ecusson invente.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_players_includes_api_football_id_when_canonical_match():
+    from app.api.players import list_players
+
+    p1 = _player(api_id=1, name="Alpha Player", team="Real Madrid")  # current_team_api_id=100
+    s1 = _season_stat(player_api_id=1)
+
+    players_res = MagicMock()
+    players_res.scalars.return_value.all.return_value = [p1]
+    stats_res = MagicMock()
+    stats_res.scalars.return_value.all.return_value = [s1]
+    crest_res = MagicMock()
+    # canonical_teams.bzz_team_id=100 (= p1.current_team_api_id) -> api_football_id=541
+    crest_res.all.return_value = [(100, 541)]
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(side_effect=[players_res, stats_res, crest_res])
+
+    response = await list_players(
+        session=mock_db,
+        league_api_id=None,
+        team_api_id=None,
+        position=None,
+        min_minutes=0,
+        season="2025-2026",
+        sort_by="xg_per_90",
+        sort_order="desc",
+        limit=50,
+        offset=0,
+    )
+
+    assert response[0]["api_football_id"] == 541
+
+
+@pytest.mark.asyncio
+async def test_list_players_api_football_id_none_sans_club_canonique():
+    """Aucun club canonique rattache -> None, jamais un ecusson invente."""
+    from app.api.players import list_players
+
+    p1 = _player(api_id=1, name="Alpha Player")
+    s1 = _season_stat(player_api_id=1)
+
+    players_res = MagicMock()
+    players_res.scalars.return_value.all.return_value = [p1]
+    stats_res = MagicMock()
+    stats_res.scalars.return_value.all.return_value = [s1]
+    crest_res = MagicMock()
+    crest_res.all.return_value = []  # pas de ligne canonical_teams pour ce club
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(side_effect=[players_res, stats_res, crest_res])
+
+    response = await list_players(
+        session=mock_db,
+        league_api_id=None,
+        team_api_id=None,
+        position=None,
+        min_minutes=0,
+        season="2025-2026",
+        sort_by="xg_per_90",
+        sort_order="desc",
+        limit=50,
+        offset=0,
+    )
+
+    assert response[0]["api_football_id"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -303,10 +380,12 @@ async def test_get_player_detail():
         (ms1, dt1, 100, 200, "Real Madrid", "Barcelona"),
         (ms2, dt2, 200, 100, "Atletico", "Real Madrid"),
     ]
+    crest_result = MagicMock()
+    crest_result.all.return_value = []  # aucun club canonique dans ce test
 
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(
-        side_effect=[player_result, season_result, recent_result]
+        side_effect=[player_result, season_result, recent_result, crest_result]
     )
 
     response = await get_player(player_api_id=1, session=mock_db, season="2025-2026")
@@ -316,6 +395,7 @@ async def test_get_player_detail():
     assert response["team_name"] == "Real Madrid"
     assert response["nationality"] == "French"
     assert response["height"] == 180
+    assert response["api_football_id"] is None
 
     # Season stats — per-90 recalculés depuis les totaux, forme depuis les matchs récents
     ss = response["season_stats"]
@@ -367,10 +447,12 @@ async def test_get_player_detail_full_match_stats():
     recent_result.all.return_value = [
         (ms, dt, 100, 200, "Arsenal", "Chelsea"),
     ]
+    crest_result = MagicMock()
+    crest_result.all.return_value = []
 
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(
-        side_effect=[player_result, season_result, recent_result]
+        side_effect=[player_result, season_result, recent_result, crest_result]
     )
 
     response = await get_player(player_api_id=1, session=mock_db, season="2025-2026")
@@ -399,6 +481,42 @@ async def test_get_player_detail_full_match_stats():
     assert m.duel_win_rate == pytest.approx(0.625)
     assert m.aerial_win_rate == pytest.approx(0.67)
     assert m.tackle_success_rate == pytest.approx(0.75)
+
+
+# ---------------------------------------------------------------------------
+# Test: get_player — api_football_id resolu via canonical_teams, join sur
+# bzz_team_id = current_team_api_id (Volet A, expansion ecussons).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_player_includes_api_football_id_when_canonical_match():
+    from app.api.players import get_player
+
+    player = _player(api_id=1, name="Kylian Mbappe")  # current_team_api_id=100
+    season_stat = _season_stat(player_api_id=1)
+
+    player_result = MagicMock()
+    player_result.scalars.return_value.first.return_value = player
+
+    season_result = MagicMock()
+    season_result.scalars.return_value.all.return_value = [season_stat]
+
+    recent_result = MagicMock()
+    recent_result.all.return_value = []
+
+    crest_result = MagicMock()
+    # canonical_teams.bzz_team_id=100 (= player.current_team_api_id) -> 541
+    crest_result.all.return_value = [(100, 541)]
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(
+        side_effect=[player_result, season_result, recent_result, crest_result]
+    )
+
+    response = await get_player(player_api_id=1, session=mock_db, season="2025-2026")
+
+    assert response["api_football_id"] == 541
 
 
 # ---------------------------------------------------------------------------
@@ -523,8 +641,10 @@ async def test_list_players_sort_by_avg_rating():
     players_res.scalars.return_value.all.return_value = [p1, p2]
     stats_res = MagicMock()
     stats_res.scalars.return_value.all.return_value = [s1, s2]
+    crest_res = MagicMock()
+    crest_res.all.return_value = []
     mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(side_effect=[players_res, stats_res])
+    mock_db.execute = AsyncMock(side_effect=[players_res, stats_res, crest_res])
 
     response = await list_players(
         session=mock_db,
