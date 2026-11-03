@@ -75,6 +75,24 @@ Test `tests/test_attach_european.py`.
 - [ ] Tests : club C1 déjà en Serie A garde league=4 ; club qualif-only → NULL + signalé.
 - [ ] Implémenter. Vert. Commit.
 
+### Task 4b — Écussons corrects pour tous les clubs (api_football_id)
+**Files :** Create `app/ingestion/apifootball/resolve_crests.py` ; Modify
+`frontend/src/lib/teamLogos.ts` + `frontend/src/app/dashboard/players/page.tsx` ;
+Test `tests/test_resolve_crests.py`.
+- **Racine** : les écussons viennent du front qui mappe **nom → id API-Football** en dur
+  (big-5/UCL seulement) → écussons faux (noms erronés) et **absents** pour tous les nouveaux
+  clubs. Bzzoiro ne fournit pas d'écusson.
+- **Fix** : peupler `canonical_teams.api_football_id` pour **chaque club engagé** en matchant
+  sur API-Football par **nom + pays (+ ligue)** (clé `API_FOOTBALL_KEY` déjà dans l'env worker).
+  Le front lit l'écusson depuis `api_football_id` de la base (URL `media.api-sports.io/.../{id}.png`),
+  **plus** par le dictionnaire de noms.
+- **Garde-fou** : club non résolu de façon univoque → `api_football_id=NULL` + écusson
+  placeholder + **signalé** (jamais de faux écusson). Revue des écussons big-5/UCL actuels
+  (correction des mauvais au passage).
+- [ ] Tests : match nom+pays univoque → id posé ; ambiguïté → NULL+signalé ; le front tombe
+  sur le placeholder si NULL.
+- [ ] Implémenter. Vert. Commit.
+
 ### Task 5 — Contrôle de complétude (garde-fou « zéro joueur à moitié »)
 **Files :** Create `app/ingestion/bzzoiro/coverage_check.py` ; Test `tests/test_coverage_check.py`.
 - `async def check_coverage(session) -> CoverageReport` : par club engagé → events saison
