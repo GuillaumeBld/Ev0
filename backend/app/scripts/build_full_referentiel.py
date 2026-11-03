@@ -64,11 +64,17 @@ async def run(
     """Enchaine rebuild -> attach_european -> events -> stats -> aggregate ->
     coverage sur `PLAYER_STATS_LEAGUE_IDS`, pour la saison courante.
 
-    L'ordre est fixe et teste (`tests/test_expansion_schedule.py`) : chaque
-    etape lit ce que la precedente vient d'ecrire (sync_events alimente
-    bzz_events que rebuild/attach_european relisent ; backfill peuple les
-    match-stats qu'aggregate_all_leagues consomme ; check_coverage doit voir
-    le resultat final des deux).
+    L'ordre est fixe et teste (`tests/test_expansion_schedule.py`), mais
+    n'est PAS une chaine de lectures locales bout en bout : `rebuild()` et
+    `attach_european()` interrogent l'API Bzzoiro directement (via
+    `enumerer_engages()`), jamais la table `bzz_events` — c'est pourquoi ils
+    peuvent tourner en tete, avant toute ecriture de `sync_events()`.
+    `sync_events()` alimente ensuite `bzz_events`, que `check_coverage()`
+    relit (`events_synced`, matchs `finished`). `backfill_player_stats.
+    backfill()` interroge lui aussi l'API Bzzoiro directement (pas
+    `bzz_events`) mais peuple les match-stats locales qu'`aggregate_all_
+    leagues()` consomme ensuite. `check_coverage()` ferme la chaine pour
+    voir le resultat final de ces deux dernieres etapes locales.
 
     `include_historical=True` insere, avant ces six etapes, le rattrapage
     one-shot des tournois historiques (66, 67) — jamais recurrent.

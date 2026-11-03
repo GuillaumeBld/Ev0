@@ -276,3 +276,124 @@ async def test_club_engage_dans_deux_championnats_interrompt_sans_rien_ecrire(se
 
         total = (await session.execute(select(CanonicalTeam))).scalars().all()
         assert total == []
+
+
+# ---------------------------------------------------------------------------
+# Correctif revue Tache 6 : `league_ids` isole le rebuild quotidien
+# d'expansion de la fiabilite du referentiel big-5/C1 (constat CRITIQUE).
+# ---------------------------------------------------------------------------
+
+
+async def test_rebuild_scope_league_ids_segments_only_subset(session_factory):
+    """`league_ids` fourni : seules les ligues du subset sont interrogees et
+    segmentees — le compte rendu ne porte que sur elles."""
+    client = _client_nominal()
+    leagues = list(EFFECTIFS_STRICTS)
+    subset = leagues[:2]
+    hors_subset = leagues[2]
+
+    async with session_factory() as session:
+        comptes = await rebuild(session, client, season=SEASON, league_ids=subset)
+
+        assert comptes == {lid: EFFECTIFS_STRICTS[lid] for lid in subset}
+
+        # Le client n'a jamais ete interroge pour une ligue hors subset.
+        appels = [c.args[1]["league"] for c in client.get_all.await_args_list]
+        assert set(appels) == set(subset)
+        assert hors_subset not in appels
+
+        # Aucun club n'a ete cree pour la ligue hors subset.
+        lignes_hors = (
+            await session.execute(
+                select(CanonicalTeam).where(CanonicalTeam.league_api_id == hors_subset)
+            )
+        ).scalars().all()
+        assert lignes_hors == []
+
+
+async def test_rebuild_scope_league_ids_preserves_engagement_hors_subset(session_factory):
+    """Un club deja engage dans une ligue HORS du subset scope (ex : un club
+    big-5 pendant un rebuild scope aux seules ligues d'expansion) garde son
+    engagement intact — le reset en bloc ne doit JAMAIS deborder du scope."""
+    client = _client_nominal()
+    leagues = list(EFFECTIFS_STRICTS)
+    subset = leagues[:2]
+    hors_subset = leagues[2]
+    pays_hors_subset = LEAGUE_REGISTRY[hors_subset].country
+
+    async with session_factory() as session:
+        session.add(CanonicalTeam(
+            name_fr="Club big-5 engage",
+            name_en="Club big-5 engage",
+            bzz_team_id=999999,
+            league_api_id=hors_subset,
+            season=SEASON,
+            country=pays_hors_subset,
+        ))
+        await session.commit()
+
+        await rebuild(session, client, season=SEASON, league_ids=subset)
+
+        ligne = (
+            await session.execute(
+                select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == 999999)
+            )
+        ).scalar_one()
+        # Engagement hors scope intact : ni desengage, ni son country efface.
+        assert ligne.league_api_id == hors_subset
+        assert ligne.season == SEASON
+        assert ligne.country == pays_hors_subset
+
+
+async def test_rebuild_scope_league_ids_ecart_affecte_seulement_le_subset(session_factory):
+    """Un ecart d'effectif sur UNE ligue DU subset interrompt la reconstruction
+    (rien ecrit pour le subset), mais une ligue engagee hors subset n'est ni
+    inspectee ni affectee par cet echec."""
+    decalages = {lid: i * 1000 for i, lid in enumerate(EFFECTIFS_STRICTS)}
+    leagues = list(EFFECTIFS_STRICTS)
+    subset = leagues[:2]
+    ligue_en_defaut = subset[0]
+    hors_subset = leagues[2]
+    pays_hors_subset = LEAGUE_REGISTRY[hors_subset].country
+
+    async def _get_all(path, params=None):
+        lid = params["league"]
+        n = EFFECTIFS_STRICTS[lid]
+        if lid == ligue_en_defaut:
+            n -= 1  # un club manquant, uniquement sur cette ligue du subset.
+        return _events_pour(n, decalages[lid])
+
+    client = MagicMock()
+    client.get_all = AsyncMock(side_effect=_get_all)
+
+    async with session_factory() as session:
+        session.add(CanonicalTeam(
+            name_fr="Club big-5 engage",
+            name_en="Club big-5 engage",
+            bzz_team_id=999999,
+            league_api_id=hors_subset,
+            season=SEASON,
+            country=pays_hors_subset,
+        ))
+        await session.commit()
+
+        with pytest.raises(SegmentationError):
+            await rebuild(session, client, season=SEASON, league_ids=subset)
+
+        # Le client n'a jamais ete interroge pour la ligue hors subset : un
+        # ecart dans le subset n'a pas declenche d'enumeration hors scope.
+        appels = [c.args[1]["league"] for c in client.get_all.await_args_list]
+        assert hors_subset not in appels
+
+        # Rien n'a ete ecrit : l'engagement hors subset reste intact.
+        ligne = (
+            await session.execute(
+                select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == 999999)
+            )
+        ).scalar_one()
+        assert ligne.league_api_id == hors_subset
+        assert ligne.season == SEASON
+        assert ligne.country == pays_hors_subset
+
+        total = (await session.execute(select(CanonicalTeam))).scalars().all()
+        assert len(total) == 1

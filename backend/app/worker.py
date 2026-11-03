@@ -42,7 +42,7 @@ from app.ingestion.bzzoiro.sync_match_detail import sync_apres_match, sync_avant
 from app.ingestion.bzzoiro.sync_incidents import sync_incidents
 from app.ingestion.bzzoiro.sync_wc_squads import sync_wc_squads
 from app.ingestion.bzzoiro.constants import INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST
-from app.scripts.rebuild_team_registry import attach_european, rebuild
+from app.scripts.rebuild_team_registry import EFFECTIFS_STRICTS, attach_european, rebuild
 from app.ingestion.storage import (
     store_match_events,
     store_recommendation,
@@ -1440,17 +1440,40 @@ async def job_sync_referentiel_expansion():
     que le calculateur ne tarife jamais — ce job n'appelle donc que
     `sync_events()` directement, jamais ce controle ni `send_alert`.
 
-    Ordre : `sync_events()` d'abord (les bzz_events de ces ligues doivent
-    exister en base avant tout le reste), puis `rebuild()`/`attach_european()`
-    (relisent ces memes bzz_events pour resegmenter canonical_teams), puis
-    `check_coverage()` en dernier pour qu'il voie ce que `rebuild` vient
-    d'ecrire. `job_sync_bzzoiro_player_stats` (6h) et
-    `job_aggregate_season_stats` (04:00 UTC) couvrent deja ces ligues via
-    `PLAYER_STATS_LEAGUE_IDS` (sur-ensemble du perimetre d'expansion) a leur
-    propre cadence — on ne les rappelle pas ici, leur PROCHAIN passage suffit
-    a transformer les evenements fraichement synchronises en stats/agregats :
-    tout est idempotent (upsert on-conflict / resegmentation complete), donc
-    un passage partiel un jour est simplement rattrape le lendemain.
+    Ordre : `sync_events()` d'abord — interroge l'API Bzzoiro et ecrit les
+    `bzz_events` de ces ligues en base, ceux dont `check_coverage()` a besoin
+    en dernier (`events_synced`, matchs `finished`). `rebuild()` et
+    `attach_european()` n'interrogent PAS `bzz_events` : ils rappellent
+    l'API Bzzoiro directement via `enumerer_engages()` (meme source que
+    `sync_events()`, mais jamais la table locale) pour resegmenter
+    `canonical_teams`. L'ordre sync_events -> rebuild est donc une
+    convention de coherence (les deux passes voient la meme fenetre de
+    matchs), pas une dependance de lecture. `check_coverage()` ferme la
+    chaine pour voir a la fois ce que `rebuild`/`attach_european` viennent
+    d'ecrire dans `canonical_teams` et ce que `sync_events` vient d'ecrire
+    dans `bzz_events`.
+
+    Scope CRITIQUE : `rebuild()` est appele avec `league_ids` restreint a
+    l'intersection de `expansion_league_ids()` et des championnats
+    domestiques stricts (`EFFECTIFS_STRICTS`) — jamais `league_ids=None`.
+    Un appel non scope reconstruirait TOUT `EFFECTIFS_STRICTS` (29
+    championnats, big-5 inclus) en tout-ou-rien : un seul hoquet d'API sur
+    une quelconque des ~45 ligues d'expansion ferait alors echouer aussi la
+    resegmentation big-5/C1 — le referentiel que consulte le pipeline paris.
+    Avec le scope, big-5/C1 ne sont JAMAIS retouches par ce job quotidien
+    (ils restent segmentes par leur propre passage, non planifie ici — voir
+    l'orchestrateur one-shot `build_full_referentiel.py` pour un rebuild
+    complet). `check_coverage()` est de meme scope a `expansion_league_ids()`
+    pour que le perimetre controle corresponde au perimetre annonce (45),
+    pas aux ~55 de `PLAYER_STATS_LEAGUE_IDS`.
+
+    `job_sync_bzzoiro_player_stats` (6h) et `job_aggregate_season_stats`
+    (04:00 UTC) couvrent deja ces ligues via `PLAYER_STATS_LEAGUE_IDS`
+    (sur-ensemble du perimetre d'expansion) a leur propre cadence — on ne
+    les rappelle pas ici, leur PROCHAIN passage suffit a transformer les
+    evenements fraichement synchronises en stats/agregats : tout est
+    idempotent (upsert on-conflict / resegmentation complete), donc un
+    passage partiel un jour est simplement rattrape le lendemain.
     """
     logger.info("=== Starting expansion referentiel sync ===")
     if not settings.bzzoiro_api_key:
@@ -1458,6 +1481,12 @@ async def job_sync_referentiel_expansion():
         return
     try:
         league_ids = expansion_league_ids()
+        # Intersection avec EFFECTIFS_STRICTS : seuls les championnats
+        # domestiques round_robin de l'expansion segmentent un championnat.
+        # Passer ce sous-ensemble a `rebuild()` (jamais `league_ids=None`)
+        # isole la resegmentation big-5/C1 de la fiabilite des ligues
+        # d'expansion — voir la docstring ci-dessus.
+        domestic_scope = [lid for lid in league_ids if lid in EFFECTIFS_STRICTS]
         async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
             events_count = await sync_events(
                 session,
@@ -1470,13 +1499,13 @@ async def job_sync_referentiel_expansion():
                 "Expansion events synced: %s (%d ligues)", events_count, len(league_ids)
             )
 
-            comptes = await rebuild(session, client)
+            comptes = await rebuild(session, client, league_ids=domestic_scope)
             logger.info("Referentiel reconstruit (expansion): %s", comptes)
 
             rattaches = await attach_european(session, client)
             logger.info("Rattachement UEFA (expansion): %s", rattaches)
 
-            reports = await check_coverage(session)
+            reports = await check_coverage(session, league_ids=league_ids)
             resume = {
                 statut: sum(1 for r in reports if r.status == statut)
                 for statut in ("ok", "partial", "failed")

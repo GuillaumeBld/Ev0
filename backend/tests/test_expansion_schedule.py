@@ -118,12 +118,21 @@ async def test_job_sync_referentiel_expansion_no_key():
 
 @pytest.mark.asyncio
 async def test_job_sync_referentiel_expansion_calls_expected_chain():
-    """Le job appelle sync_events avec le perimetre d'expansion, puis rebuild,
-    attach_european, check_coverage — jamais le controle de coherence du
-    calendrier paris ni send_alert (canal 'incidents')."""
+    """Le job appelle sync_events avec le perimetre d'expansion, puis rebuild
+    (SCOPE aux seuls championnats domestiques stricts de l'expansion, jamais
+    `league_ids=None`), attach_european, check_coverage (SCOPE au perimetre
+    d'expansion complet) — jamais le controle de coherence du calendrier
+    paris ni send_alert (canal 'incidents')."""
     from app.ingestion.bzzoiro.expansion_scope import expansion_league_ids
+    from app.scripts.rebuild_team_registry import EFFECTIFS_STRICTS
 
     expected_ids = expansion_league_ids()
+    expected_domestic_scope = [lid for lid in expected_ids if lid in EFFECTIFS_STRICTS]
+    # Le perimetre domestique strict de l'expansion est un sous-ensemble
+    # STRICT du perimetre d'expansion complet (les 4 competitions UEFA
+    # n'engagent jamais un championnat) : sinon le test ne prouve rien.
+    assert expected_domestic_scope
+    assert len(expected_domestic_scope) < len(expected_ids)
 
     mock_session = AsyncMock()
     mock_client = AsyncMock()
@@ -153,9 +162,14 @@ async def test_job_sync_referentiel_expansion_calls_expected_chain():
     assert call.args[:2] == (mock_session, mock_client)
     assert call.kwargs["league_internal_ids"] == expected_ids
 
-    mock_rebuild.assert_awaited_once_with(mock_session, mock_client)
+    # CRITIQUE : rebuild() ne doit JAMAIS etre appele sans scope ici — un
+    # appel league_ids=None resegmenterait big-5/C1 au meme rythme que les
+    # 45 ligues d'expansion, recouplant leur fiabilite au pipeline paris.
+    mock_rebuild.assert_awaited_once_with(
+        mock_session, mock_client, league_ids=expected_domestic_scope
+    )
     mock_attach.assert_awaited_once_with(mock_session, mock_client)
-    mock_coverage.assert_awaited_once()
+    mock_coverage.assert_awaited_once_with(mock_session, league_ids=expected_ids)
 
     # Jamais l'alerte Telegram "incidents" du controle de coherence paris.
     mock_send_alert.assert_not_called()
@@ -230,15 +244,23 @@ async def test_job_sync_referentiel_expansion_catches_step_exception():
 
 
 def test_job_sync_referentiel_expansion_is_scheduled():
-    """Le job est bien enregistre auprès du scheduler, sous un id distinct de
-    `sync_bzzoiro_events`."""
-    import inspect
+    """Le job est bien enregistre auprès du VRAI scheduler (pas un grep de
+    source) : instancie `create_scheduler()` et verifie qu'un job d'id
+    `sync_referentiel_expansion` existe, avec un trigger quotidien (cron),
+    sous un id distinct de `sync_bzzoiro_events`."""
+    from apscheduler.triggers.cron import CronTrigger
 
-    import app.worker as w
+    from app.worker import create_scheduler, job_sync_referentiel_expansion
 
-    src = inspect.getsource(w)
-    assert 'id="sync_referentiel_expansion"' in src
-    assert "job_sync_referentiel_expansion" in src
+    scheduler = create_scheduler()
+    job = scheduler.get_job("sync_referentiel_expansion")
+
+    assert job is not None
+    assert job.func is job_sync_referentiel_expansion
+    assert isinstance(job.trigger, CronTrigger)
+    # id distinct du job paris sync_bzzoiro_events (perimetre different).
+    assert scheduler.get_job("sync_bzzoiro_events") is not None
+    assert scheduler.get_job("sync_bzzoiro_events").id != job.id
 
 
 # ---------------------------------------------------------------------------

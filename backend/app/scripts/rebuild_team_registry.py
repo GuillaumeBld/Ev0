@@ -107,21 +107,54 @@ async def enumerer_engages(
 
 
 async def rebuild(
-    session: AsyncSession, client: Any, season: str | None = None
+    session: AsyncSession,
+    client: Any,
+    season: str | None = None,
+    league_ids: list[int] | None = None,
 ) -> dict[int, int]:
     """Reconstruit le referentiel. Rend {championnat: nombre d'engages}.
 
-    Leve SegmentationError avant toute ecriture si un effectif est hors format
-    ou si un club est engage dans deux championnats.
+    `league_ids` : restreint la segmentation stricte a ce sous-ensemble de
+    `EFFECTIFS_STRICTS` (intersection — un id hors `EFFECTIFS_STRICTS`, par
+    exemple une competition UEFA, est silencieusement ignore). `None` (par
+    defaut) = comportement HISTORIQUE INCHANGE : toute la boucle porte sur
+    `EFFECTIFS_STRICTS` dans son integralite (big-5 inclus) — c'est ce
+    qu'utilisent l'orchestrateur one-shot `build_full_referentiel.run()` et
+    un run manuel (`python -m app.scripts.rebuild_team_registry`).
+
+    Avec `league_ids` fourni, le reset en bloc (Phase 2) et la detection
+    "club engage dans deux championnats" (Phase 1) sont eux aussi restreints
+    a ce sous-ensemble : un club deja engage dans une ligue HORS scope n'est
+    touche ni par le reset, ni par la detection de double engagement — sinon
+    un rebuild scope (ex : les seules ligues d'expansion) desengagerait les
+    clubs big-5 que cet appel ne retraite pas.
+
+    LIMITE CONNUE (scope partiel) : la detection de double-engagement ne
+    recoupe que les ligues DANS le scope. Un club engage a la fois dans une
+    ligue scopee et une ligue non-scopee (par ex. un club big-5 egalement
+    engage dans une ligue d'expansion) n'est pas detecte comme double
+    engagement par un appel scope — seul `rebuild(league_ids=None)` verifie
+    l'ensemble complet. Risque juge faible en pratique : les pays couverts
+    par big-5/C1 et par les ligues d'expansion sont disjoints.
+
+    Leve SegmentationError avant toute ecriture si un effectif (du scope) est
+    hors format ou si un club est engage dans deux championnats (du scope).
     """
     from app.models.canonical_teams import CanonicalTeam
 
     if season is None:
         season = await current_season(session)
 
+    effectifs = EFFECTIFS_STRICTS
+    if league_ids is not None:
+        scope = set(league_ids)
+        effectifs = {
+            lid: attendu for lid, attendu in EFFECTIFS_STRICTS.items() if lid in scope
+        }
+
     # --- Phase 1 : enumerer et CONTROLER, sans rien ecrire ---
     par_championnat: dict[int, dict[int, str]] = {}
-    for league_api_id, attendu in EFFECTIFS_STRICTS.items():
+    for league_api_id, attendu in effectifs.items():
         engages = await enumerer_engages(client, league_api_id, season)
         if len(engages) != attendu:
             raise SegmentationError(
@@ -147,10 +180,14 @@ async def rebuild(
     # Remplacement en bloc : un club absent de la nouvelle liste perd son
     # engagement du seul fait de son absence. Sans cela un relegue resterait
     # engage indefiniment et polluerait le filtre de son ancien championnat.
+    # Scope restreint a `effectifs` (donc a `league_ids` si fourni) : un
+    # rebuild partiel ne doit jamais desengager un club d'une ligue qu'il ne
+    # retraite pas (big-5 lors d'un rebuild scope expansion, par exemple).
+    reset_stmt = update(CanonicalTeam).where(CanonicalTeam.season == season)
+    if league_ids is not None:
+        reset_stmt = reset_stmt.where(CanonicalTeam.league_api_id.in_(effectifs.keys()))
     await session.execute(
-        update(CanonicalTeam)
-        .where(CanonicalTeam.season == season)
-        .values(league_api_id=None, season=None, country=None)
+        reset_stmt.values(league_api_id=None, season=None, country=None)
     )
 
     # Index des lignes existantes par cle d'appariement : une ligne canonique
