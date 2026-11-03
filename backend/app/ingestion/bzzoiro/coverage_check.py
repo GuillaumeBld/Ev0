@@ -8,12 +8,20 @@ Pour chaque ligue du perimetre, pour chaque club engage (`CanonicalTeam` avec
      (presence d'au moins un `BzzEvent` pour `league_api_id` dans la fenetre
      de la saison — voir `app.services.season_service`) ;
   2. chaque match **termine** (`status == "finished"`) du club dans cette
-     fenetre a-t-il au moins une ligne `BzzPlayerMatchStat` ? Un match
-     termine sans aucune ligne est un trou ;
+     fenetre a-t-il au moins une ligne `BzzPlayerMatchStat` **rattachable a
+     ce club** ? Rattachement par club (et non globalement par evenement) :
+     signal primaire `BzzPlayerMatchStat.team_api_id == club.bzz_team_id` ;
+     repli (car `team_api_id` est parfois NULL a l'ingestion, cf.
+     `sync_player_stats.py`) un joueur de l'effectif du club possede une
+     ligne pour cet evenement (jointure par `player_api_id`). Un match
+     termine sans aucun des deux signaux est un trou **pour ce club** — un
+     adversaire bien couvert sur le meme evenement ne couvre pas ce club ;
   3. chaque joueur de l'effectif du club (`BzzPlayer` dont le club effectif —
      pret si present, sinon club courant — est ce club) a-t-il une ligne
      `BzzPlayerSeasonStat` pour `(league_api_id, season)` ? **0 minute est
      admis** si la ligne existe ; **l'absence de ligne est le trou**.
+     Un club engage sans aucun `BzzPlayer` dans son effectif est lui-meme un
+     trou (`reason="effectif vide"`) — jamais compte "ok" par vacuite.
 
 Un club est compte "incomplet" s'il a au moins un trou de type (2) ou (3).
 Rien n'est jamais affiche a moitie sans etre signale : chaque ligue produit
@@ -222,7 +230,7 @@ async def _check_league_coverage(
         )
     ).first() is not None
 
-    # -- 2. Matchs termines par club + quels ont au moins une match-stat. ---
+    # -- 2a. Matchs termines par club. ---------------------------------------
     finished_events = (
         await session.execute(
             select(BzzEvent.api_id, BzzEvent.home_team_api_id, BzzEvent.away_team_api_id).where(
@@ -243,18 +251,8 @@ async def _check_league_coverage(
         if away_team_api_id is not None and away_team_api_id in club_bzz_ids_set:
             finished_events_by_club[away_team_api_id].append(event_api_id)
 
-    events_with_match_stats: set[int] = set()
-    if all_finished_event_ids:
-        rows = (
-            await session.execute(
-                select(BzzPlayerMatchStat.event_api_id)
-                .where(BzzPlayerMatchStat.event_api_id.in_(all_finished_event_ids))
-                .distinct()
-            )
-        ).scalars().all()
-        events_with_match_stats = set(rows)
-
-    # -- 3. Effectif par club + quels joueurs ont une season-stat row. ------
+    # -- 2b. Effectif par club (utilise pour le repli match-stats ET pour
+    #        le controle season-stats). ---------------------------------
     roster_by_club: dict[int, list[int]] = defaultdict(list)
     if club_bzz_ids:
         player_rows = (
@@ -277,6 +275,28 @@ async def _check_league_coverage(
             )
             if effective_club in club_bzz_ids_set:
                 roster_by_club[effective_club].append(player_api_id)
+
+    # -- 2c. Rattachement des match-stats par club : signal primaire
+    #        team_api_id, repli par effectif (player_api_id) quand
+    #        team_api_id est NULL a l'ingestion. Un seul aller-retour DB,
+    #        recoupe en memoire par club (pas de N+1). -----------------
+    events_team_stats: dict[int, set[int]] = defaultdict(set)
+    events_player_stats: dict[int, set[int]] = defaultdict(set)
+    if all_finished_event_ids:
+        stat_rows = (
+            await session.execute(
+                select(
+                    BzzPlayerMatchStat.event_api_id,
+                    BzzPlayerMatchStat.team_api_id,
+                    BzzPlayerMatchStat.player_api_id,
+                ).where(BzzPlayerMatchStat.event_api_id.in_(all_finished_event_ids))
+            )
+        ).all()
+        for event_api_id, team_api_id, player_api_id in stat_rows:
+            if team_api_id is not None:
+                events_team_stats[event_api_id].add(team_api_id)
+            if player_api_id is not None:
+                events_player_stats[event_api_id].add(player_api_id)
 
     players_with_season_stats: set[int] = set(
         (
@@ -312,10 +332,31 @@ async def _check_league_coverage(
 
     for club in clubs_with_bzz_id:
         bzz_id = club.bzz_team_id
-        missing_match_events = sorted(
-            eid for eid in finished_events_by_club.get(bzz_id, []) if eid not in events_with_match_stats
-        )
         roster = roster_by_club.get(bzz_id, [])
+
+        if not roster:
+            # Club engage mais aucun BzzPlayer ne lui pointe : "a moitie"
+            # typique — ne jamais compter "ok" par vacuite (ni (2) ni (3)
+            # ne peuvent etre verifies sans effectif).
+            incomplete_clubs.append(
+                {
+                    "canonical_team_id": club.id,
+                    "bzz_team_id": bzz_id,
+                    "name_fr": club.name_fr,
+                    "reason": "effectif vide",
+                    "missing_match_stats_events": [],
+                    "players_without_season_stats": [],
+                }
+            )
+            continue
+
+        roster_set = set(roster)
+        missing_match_events = sorted(
+            eid
+            for eid in finished_events_by_club.get(bzz_id, [])
+            if bzz_id not in events_team_stats.get(eid, set())
+            and not (roster_set & events_player_stats.get(eid, set()))
+        )
         missing_players = sorted(pid for pid in roster if pid not in players_with_season_stats)
 
         if not missing_match_events and not missing_players:

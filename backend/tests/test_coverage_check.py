@@ -261,6 +261,149 @@ async def test_player_without_season_stat_row_counted_zero_minute_not_a_gap(sess
 
 
 # ---------------------------------------------------------------------------
+# Rattachement par club (le bug) : B a ses stats, A non -> A incomplet SEUL,
+# meme si A et B partagent le meme evenement termine.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_match_stats_attributed_per_club_not_globally_per_event(session_factory):
+    async with session_factory() as session:
+        club_a = CanonicalTeam(
+            name_fr="Club A (trou)", bzz_team_id=801, league_api_id=LID, season=SEASON,
+        )
+        club_b = CanonicalTeam(
+            name_fr="Club B (complet)", bzz_team_id=802, league_api_id=LID, season=SEASON,
+        )
+        session.add(club_a)
+        session.add(club_b)
+
+        # Un seul evenement termine, A domicile vs B exterieur.
+        session.add(
+            BzzEvent(
+                api_id=9301,
+                league_api_id=LID,
+                home_team_api_id=801,
+                away_team_api_id=802,
+                event_date=IN_SEASON_DATE,
+                status="finished",
+            )
+        )
+
+        # Joueur de A : a sa ligne season-stat, mais AUCUNE match-stat pour
+        # l'evenement 9301 -> trou "match sans stats" pour A specifiquement.
+        session.add(BzzPlayer(api_id=401, name="Joueur A", current_team_api_id=801))
+        session.add(
+            BzzPlayerSeasonStat(
+                player_api_id=401, league_api_id=LID, season=SEASON, minutes_played=90,
+            )
+        )
+
+        # Joueur de B : a sa match-stat (team_api_id=802) ET sa season-stat
+        # pour le meme evenement -> B doit etre "ok".
+        session.add(BzzPlayer(api_id=402, name="Joueur B", current_team_api_id=802))
+        session.add(
+            BzzPlayerMatchStat(player_api_id=402, event_api_id=9301, team_api_id=802, minutes_played=90)
+        )
+        session.add(
+            BzzPlayerSeasonStat(
+                player_api_id=402, league_api_id=LID, season=SEASON, minutes_played=90,
+            )
+        )
+
+        await session.commit()
+
+        reports = await check_coverage(session, season=SEASON, league_ids=[LID])
+
+        report = reports[0]
+        assert report.clubs_total == 2
+        assert report.clubs_ok == 1
+        assert report.clubs_incomplets == 1
+
+        incomplete = report.detail["incomplete_clubs"]
+        assert len(incomplete) == 1
+        assert incomplete[0]["canonical_team_id"] == club_a.id
+        assert incomplete[0]["missing_match_stats_events"] == [9301]
+        assert incomplete[0]["players_without_season_stats"] == []
+
+
+# ---------------------------------------------------------------------------
+# Repli sur l'effectif quand team_api_id est NULL sur la match-stat (cf.
+# sync_player_stats.py qui peut laisser team_api_id a NULL a l'ingestion).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_match_stat_without_team_api_id_covered_via_roster_fallback(session_factory):
+    async with session_factory() as session:
+        club = CanonicalTeam(
+            name_fr="Club team_api_id NULL", bzz_team_id=901, league_api_id=LID, season=SEASON,
+        )
+        session.add(club)
+
+        session.add(
+            BzzEvent(
+                api_id=9401,
+                league_api_id=LID,
+                home_team_api_id=901,
+                away_team_api_id=902,
+                event_date=IN_SEASON_DATE,
+                status="finished",
+            )
+        )
+
+        session.add(BzzPlayer(api_id=501, name="Joueur Repli", current_team_api_id=901))
+        # team_api_id NULL : signal primaire absent, le repli par effectif
+        # (player_api_id) doit suffire a couvrir le match pour ce club.
+        session.add(
+            BzzPlayerMatchStat(player_api_id=501, event_api_id=9401, team_api_id=None, minutes_played=90)
+        )
+        session.add(
+            BzzPlayerSeasonStat(
+                player_api_id=501, league_api_id=LID, season=SEASON, minutes_played=90,
+            )
+        )
+
+        await session.commit()
+
+        reports = await check_coverage(session, season=SEASON, league_ids=[LID])
+
+        report = reports[0]
+        assert report.clubs_total == 1
+        assert report.clubs_ok == 1
+        assert report.clubs_incomplets == 0
+        assert report.detail["incomplete_clubs"] == []
+
+
+# ---------------------------------------------------------------------------
+# Club engage sans aucun BzzPlayer -> "incomplet" (effectif vide), jamais
+# "ok" par vacuite.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_club_with_empty_roster_is_incomplete(session_factory):
+    async with session_factory() as session:
+        club = CanonicalTeam(
+            name_fr="Club Sans Effectif", bzz_team_id=1001, league_api_id=LID, season=SEASON,
+        )
+        session.add(club)
+        await session.commit()
+
+        reports = await check_coverage(session, season=SEASON, league_ids=[LID])
+
+        report = reports[0]
+        assert report.clubs_total == 1
+        assert report.clubs_ok == 0
+        assert report.clubs_incomplets == 1
+
+        incomplete = report.detail["incomplete_clubs"]
+        assert len(incomplete) == 1
+        assert incomplete[0]["canonical_team_id"] == club.id
+        assert incomplete[0]["reason"] == "effectif vide"
+
+
+# ---------------------------------------------------------------------------
 # Echec d'enumeration d'une ligue -> failed, isole, pas d'exception propagee
 # ---------------------------------------------------------------------------
 
