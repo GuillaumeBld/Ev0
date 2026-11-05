@@ -15,6 +15,10 @@ Enchaine, pour la saison courante, dans cet ordre fixe :
   6. `check_coverage()`     — garde-fou de completude (Tache 5), dont le
      rapport est imprime : engages vs `expected_count`, clubs incomplets,
      joueurs sans stats.
+  7. `seed_crests()`        — reapplique les ecussons ancres dans
+     `app/data/crests.json` (par `bzz_team_id`, jamais par nom) : une
+     reconstruction complete du referentiel ne doit jamais laisser le
+     moindre club sans l'ecusson deja resolu en production.
 
 C'est l'entree de la mise en service (Tache 7) — le point d'appel unique qui
 remplace l'enchainement manuel des scripts individuels.
@@ -48,6 +52,7 @@ from app.ingestion.bzzoiro.league_registry import (
 from app.ingestion.bzzoiro.sync_events import sync_events
 from app.scripts import backfill_player_stats
 from app.scripts.rebuild_team_registry import attach_european, rebuild
+from app.scripts.seed_crests import seed_crests
 from app.services.season_service import current_season
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -62,7 +67,8 @@ async def run(
     dry_run: bool = False,
 ) -> list[CoverageReport]:
     """Enchaine rebuild -> attach_european -> events -> stats -> aggregate ->
-    coverage sur `PLAYER_STATS_LEAGUE_IDS`, pour la saison courante.
+    coverage -> seed_crests sur `PLAYER_STATS_LEAGUE_IDS`, pour la saison
+    courante.
 
     L'ordre est fixe et teste (`tests/test_expansion_schedule.py`), mais
     n'est PAS une chaine de lectures locales bout en bout : `rebuild()` et
@@ -76,7 +82,12 @@ async def run(
     leagues()` consomme ensuite. `check_coverage()` ferme la chaine pour
     voir le resultat final de ces deux dernieres etapes locales.
 
-    `include_historical=True` insere, avant ces six etapes, le rattrapage
+    `seed_crests()` ferme la chaine : il reapplique les ecussons ancres dans
+    `app/data/crests.json` par `bzz_team_id`, pour qu'une reconstruction
+    complete du referentiel ne laisse jamais un club sans son ecusson deja
+    resolu en production (ni, a fortiori, n'en melange un entre deux clubs).
+
+    `include_historical=True` insere, avant ces etapes, le rattrapage
     one-shot des tournois historiques (66, 67) — jamais recurrent.
 
     `dry_run=True` n'appelle aucune des etapes ecrivantes : affiche juste le
@@ -100,25 +111,32 @@ async def run(
     season = await current_season(session)
     logger.info("Saison courante : %s", season)
 
-    logger.info("1/6 rebuild()")
+    logger.info("1/7 rebuild()")
     await rebuild(session, client)
 
-    logger.info("2/6 attach_european()")
+    logger.info("2/7 attach_european()")
     await attach_european(session, client)
 
-    logger.info("3/6 sync_events() — %d ligues", len(league_ids))
+    logger.info("3/7 sync_events() — %d ligues", len(league_ids))
     await sync_events(session, client, full_season=True, league_internal_ids=league_ids)
 
-    logger.info("4/6 backfill_player_stats.backfill() — saison %s", season)
+    logger.info("4/7 backfill_player_stats.backfill() — saison %s", season)
     await backfill_player_stats.backfill(
         session, client, seasons=[season], leagues=league_ids
     )
 
-    logger.info("5/6 aggregate_all_leagues()")
+    logger.info("5/7 aggregate_all_leagues()")
     await aggregate_all_leagues(session, season=season, league_ids=league_ids)
 
-    logger.info("6/6 check_coverage()")
+    logger.info("6/7 check_coverage()")
     reports = await check_coverage(session, season=season, league_ids=league_ids)
+
+    logger.info("7/7 seed_crests()")
+    rapport_crests = await seed_crests(session)
+    logger.info(
+        "Ecussons reappliques : %d appliques, %d bzz_team_id absents en base",
+        rapport_crests["appliques"], len(rapport_crests["bzz_ids_absents_en_base"]),
+    )
 
     _print_report(reports)
     return reports

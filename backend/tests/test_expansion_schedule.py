@@ -365,6 +365,10 @@ async def test_build_full_referentiel_runs_steps_in_order():
         mod, "aggregate_all_leagues", _tracker("aggregate_all_leagues", 0)
     ), patch.object(
         mod, "check_coverage", _tracker("check_coverage", [])
+    ), patch.object(
+        mod,
+        "seed_crests",
+        _tracker("seed_crests", {"appliques": 0, "bzz_ids_absents_en_base": []}),
     ):
         reports = await mod.run(mock_session, mock_client)
 
@@ -377,6 +381,7 @@ async def test_build_full_referentiel_runs_steps_in_order():
         "backfill",
         "aggregate_all_leagues",
         "check_coverage",
+        "seed_crests",
     ]
 
 
@@ -413,6 +418,10 @@ async def test_build_full_referentiel_include_historical_adds_backfill_first():
         mod, "aggregate_all_leagues", _tracker("aggregate_all_leagues", 0)
     ), patch.object(
         mod, "check_coverage", _tracker("check_coverage", [])
+    ), patch.object(
+        mod,
+        "seed_crests",
+        _tracker("seed_crests", {"appliques": 0, "bzz_ids_absents_en_base": []}),
     ):
         await mod.run(mock_session, mock_client, include_historical=True)
 
