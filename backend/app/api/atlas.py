@@ -68,6 +68,17 @@ _DISPLAY_NAME_OVERRIDES: dict[str, str] = {"GB": "Royaume-Uni"}
 
 _DOMESTIC_KINDS = ("domestic_1", "domestic_2")
 _INTL_KINDS = ("uefa_club", "selection")
+_KIND_WORLD = "world"
+# Tous les kinds que /atlas/geo considère. "world" (grands championnats
+# mondiaux hors UEFA — Brésil, Arabie S., MLS, etc. — voir
+# app/ingestion/bzzoiro/league_registry.py) était absent ici : ces ligues
+# disparaissaient silencieusement de la carte alors que _COUNTRY_MAP les
+# connaît déjà. L'aiguillage countries/international se fait ensuite par
+# présence d'un `country` mappé, pas par kind (voir boucle plus bas) — donc
+# ajouter "world" ici suffit à faire réapparaître ces pays sans toucher au
+# routage des deux cas particuliers "world" sans country (Copa Libertadores
+# / Copa Sudamericana, continentales et non nationales).
+_ALL_KINDS = _DOMESTIC_KINDS + _INTL_KINDS + (_KIND_WORLD,)
 
 
 class LeagueOut(BaseModel):
@@ -109,15 +120,17 @@ def _tier_out(tier: str) -> int | str:
         return tier
 
 
-def _coverage(status: str | None, tier: str) -> str:
+def _coverage(status: str | None, tier: str, kind: str) -> str:
     """'ok' -> full, 'partial' -> part. Tout le reste (aucun run, 'empty',
-    'failed') retombe sur le même défaut basé sur le tier : on ne sait pas
+    'failed') retombe sur un défaut : tier 1 (1res divisions européennes) ou
+    kind=='world' (1res divisions mondiales hors UEFA, qui ont elles aussi
+    des stats complètes côté ingestion) -> full ; sinon on ne sait pas
     vraiment, donc on ne prétend pas 'full' pour une ligue secondaire."""
     if status == "ok":
         return "full"
     if status == "partial":
         return "part"
-    return "full" if tier == "1" else "part"
+    return "full" if (tier == "1" or kind == _KIND_WORLD) else "part"
 
 
 async def _latest_coverage_status(
@@ -149,11 +162,7 @@ async def _latest_coverage_status(
 @router.get("/atlas/geo", response_model=GeoOut)
 async def atlas_geo(db: AsyncSession = Depends(get_db)) -> GeoOut:
     leagues = (
-        (
-            await db.execute(
-                select(League).where(League.kind.in_(_DOMESTIC_KINDS + _INTL_KINDS))
-            )
-        )
+        (await db.execute(select(League).where(League.kind.in_(_ALL_KINDS))))
         .scalars()
         .all()
     )
@@ -180,17 +189,25 @@ async def atlas_geo(db: AsyncSession = Depends(get_db)) -> GeoOut:
 
     for league in leagues:
         club_count = club_counts.get(league.id, 0)
-        coverage = _coverage(latest_status.get(league.id), league.tier)
+        coverage = _coverage(latest_status.get(league.id), league.tier, league.kind)
 
-        if league.kind in _DOMESTIC_KINDS:
-            mapped = _COUNTRY_MAP.get(league.country or "")
-            if mapped is None:
-                logger.warning(
-                    "Atlas: pays sans mapping ignoré: %r (league_id=%s)",
-                    league.country,
-                    league.id,
-                )
-                continue
+        # Aiguillage par présence de pays, pas par kind : un "world" avec un
+        # country connu (Brasileirão, MLS, ...) rejoint les ligues
+        # domestiques sous son pays ; un "world"/"uefa_club"/"selection" sans
+        # country (Copa Libertadores/Sudamericana, UEFA, sélections) va dans
+        # international. Un country renseigné mais absent de _COUNTRY_MAP
+        # est ignoré (log, pas de plantage) — inchangé depuis avant ce fix.
+        mapped = _COUNTRY_MAP.get(league.country) if league.country else None
+
+        if league.country and mapped is None:
+            logger.warning(
+                "Atlas: pays sans mapping ignoré: %r (league_id=%s)",
+                league.country,
+                league.id,
+            )
+            continue
+
+        if mapped is not None:
             code, continent = mapped
             league_out = LeagueOut(
                 league_api_id=league.id,
@@ -204,7 +221,12 @@ async def atlas_geo(db: AsyncSession = Depends(get_db)) -> GeoOut:
             country_meta.setdefault(code, (continent, league.country or code))
             country_min_rank[code] = min(country_min_rank.get(code, league.rank), league.rank)
         else:
-            org = "FIFA" if league.kind == "selection" else "UEFA"
+            if league.kind == "selection":
+                org = "FIFA"
+            elif league.kind == _KIND_WORLD:
+                org = "CONMEBOL"
+            else:
+                org = "UEFA"
             intl_raw.append(
                 (
                     league.rank,

@@ -144,13 +144,13 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set(['fin', 'cre']))
   const [careerOpen, setCareerOpen] = useState(false)
 
-  const { data: player, isLoading } = useQuery({
+  const { data: player, isLoading, isError, refetch } = useQuery({
     queryKey: ['atlas-player', playerApiId],
     queryFn: () => fetchPlayer(playerApiId as number),
     enabled: playerApiId != null,
   })
 
-  const { data: career, isLoading: careerLoading } = useQuery({
+  const { data: career, isLoading: careerLoading, isError: careerIsError } = useQuery({
     queryKey: ['atlas-career', playerApiId],
     queryFn: () => fetchCareer(playerApiId as number),
     enabled: playerApiId != null && careerOpen,
@@ -172,7 +172,13 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
       <div className={clsx(styles.scrim, open && styles.on)} onClick={onClose} />
       <aside className={clsx(styles.pdet, open && styles.on)}>
         {open && (
-          isLoading || !player ? (
+          isError ? (
+            <div className={styles.phd}>
+              <div className={styles.x} onClick={onClose}><X size={16} /></div>
+              <p style={{ color: 'var(--t2)' }}>Impossible de charger ce joueur.</p>
+              <button className={styles.chip} onClick={() => refetch()}>Réessayer</button>
+            </div>
+          ) : isLoading || !player ? (
             <div className={styles.phd}>
               <div className={styles.x} onClick={onClose}><X size={16} /></div>
               <p style={{ color: 'var(--t2)' }}>Chargement…</p>
@@ -224,8 +230,11 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                     <ChevronDown className={styles.chev} width={16} height={16} />
                   </summary>
                   <div className={styles.bd}>
-                    {careerLoading && <p style={{ color: 'var(--t2)', fontSize: 12.5, padding: '10px 0' }}>Chargement…</p>}
-                    {career && career.career.length === 0 && (
+                    {careerIsError && (
+                      <div className={styles.nainfo}>Erreur de chargement de l’historique de carrière.</div>
+                    )}
+                    {!careerIsError && careerLoading && <p style={{ color: 'var(--t2)', fontSize: 12.5, padding: '10px 0' }}>Chargement…</p>}
+                    {!careerIsError && career && career.career.length === 0 && (
                       <div className={styles.nainfo}>Historique de carrière non disponible pour ce joueur.</div>
                     )}
                     {career?.career.map((s) => (

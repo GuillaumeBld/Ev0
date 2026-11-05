@@ -189,3 +189,43 @@ async def test_pays_sans_mapping_est_ignore_sans_planter(client, caplog):
     data = resp.json()
     assert data["countries"] == []
     assert data["international"] == []
+
+
+async def test_kind_world_avec_pays_va_dans_countries_sans_pays_va_dans_international(client):
+    """Les championnats `kind="world"` (Brésil, Arabie S., MLS, etc. — voir
+    league_registry.py) disparaissaient de la carte car le filtre atlas.py
+    ne connaissait que domestic_1|domestic_2|uefa_club|selection. L'aiguillage
+    doit se faire par présence de pays, pas par kind : un `world` avec un
+    country mappé (Brasileirão) va dans `countries`, un `world` sans country
+    (Copa Libertadores, club continental) va dans `international`."""
+    ac, factory = client
+    await _seed(
+        factory,
+        leagues=[
+            League(
+                id=9, name="Brasileirão Série A", country="Brazil", tier="4",
+                kind="world", format="round_robin", expected_count=20, rank=34,
+            ),
+            League(
+                id=32, name="Copa Libertadores", country=None, tier="4",
+                kind="world", format="groups", expected_count=None, rank=46,
+            ),
+        ],
+    )
+
+    resp = await ac.get("/api/v1/atlas/geo")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    by_code = {c["code"]: c for c in data["countries"]}
+    assert "BR" in by_code
+    br = by_code["BR"]
+    assert br["continent"] == "SAM"
+    assert [l["league_api_id"] for l in br["leagues"]] == [9]
+    # Pas de DataCoverageRun, mais kind=='world' -> coverage par défaut 'full'.
+    assert br["leagues"][0]["coverage"] == "full"
+
+    intl_by_id = {i["league_api_id"]: i for i in data["international"]}
+    assert 32 in intl_by_id
+    assert intl_by_id[32]["org"] == "CONMEBOL"
+    assert intl_by_id[32]["kind"] == "world"
