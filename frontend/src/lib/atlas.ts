@@ -7,9 +7,9 @@
  * shapes, no fixed `limit=500` — every list call takes real limit/offset.
  */
 
-import type { PlayerSummary, PlayerDetail, PlayerCareerOut } from './api'
+import type { PlayerSummary, PlayerDetail, PlayerCareerOut, SeasonStatsOut, RecentMatch, CareerSeasonOut } from './api'
 
-export type { PlayerSummary, PlayerDetail, PlayerCareerOut }
+export type { PlayerSummary, PlayerDetail, PlayerCareerOut, SeasonStatsOut, RecentMatch, CareerSeasonOut }
 
 // ── Atlas geo tree (GET /atlas/geo) ─────────────────────────────────────────
 
