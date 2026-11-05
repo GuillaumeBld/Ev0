@@ -26,11 +26,19 @@ def _event(home_id, home_nom, away_id, away_nom):
 
 
 def _events_pour(n_clubs: int, decalage: int = 0):
-    """Fabrique des matchs couvrant exactement n_clubs clubs distincts."""
+    """Fabrique des matchs couvrant exactement n_clubs clubs distincts.
+
+    Supporte un effectif impair (p.ex. Finlande = 13) : le club surnuméraire
+    joue un match supplémentaire contre le premier, si bien que les n clubs
+    apparaissent tous comme objets home/away distincts.
+    """
     clubs = [(decalage + i, f"Club {decalage + i}") for i in range(1, n_clubs + 1)]
     evs = []
-    for i in range(0, n_clubs, 2):
+    for i in range(0, n_clubs - 1, 2):
         (hid, hn), (aid, an) = clubs[i], clubs[i + 1]
+        evs.append(_event(hid, hn, aid, an))
+    if n_clubs % 2:
+        (hid, hn), (aid, an) = clubs[-1], clubs[0]
         evs.append(_event(hid, hn, aid, an))
     return evs
 
