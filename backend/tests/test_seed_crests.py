@@ -247,7 +247,10 @@ async def test_rebuild_preserve_crest_url_preexistant(session_factory):
             name_en="AC Milan",
             bzz_team_id=63,
             league_api_id=4,
-            season="2024-2025",
+            # Saison == SEASON pour que le reset en bloc de rebuild()
+            # (WHERE season == SEASON) capture bien cette ligne : c'est le
+            # chemin SQL a risque qu'on veut garder (jamais crest_url=NULL).
+            season=SEASON,
             country="Italy",
             crest_url=(
                 "https://assets.footylogos.com/previews/ac-milan/"
