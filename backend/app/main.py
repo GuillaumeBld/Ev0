@@ -10,6 +10,9 @@ from slowapi.errors import RateLimitExceeded
 
 from app.api import matches as matches_api  # noqa: F401
 from app.api import (
+    atlas as atlas_api,
+)
+from app.api import (
     autopilot,
     backtest,
     bankroll,
@@ -74,6 +77,7 @@ app.add_middleware(
 # Routers
 app.include_router(health.router, tags=["health"])
 app.include_router(canonical_teams_api.router, prefix="/api/v1", tags=["canonical-teams"])
+app.include_router(atlas_api.router, prefix="/api/v1", tags=["atlas"])
 app.include_router(players.router, prefix="/api/v1", tags=["players"])
 app.include_router(matches_api.router, prefix="/api/v1", tags=["matches"])
 app.include_router(pricing.router, prefix="/api/v1", tags=["pricing"])

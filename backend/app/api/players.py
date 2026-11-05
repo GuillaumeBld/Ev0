@@ -959,6 +959,7 @@ async def list_players(
     league_api_id: int | None = Query(None, description="Filter by league API id"),
     team_api_id: int | None = Query(None, description="Filter by team API id"),
     position: str | None = Query(None, description="Filter by position: G/D/M/F"),
+    q: str | None = Query(None, description="Filter by player name (case-insensitive substring)"),
     min_minutes: int = Query(0, description="Minimum minutes played"),
     season: str | None = Query(None),
     compare_previous: bool = Query(
@@ -1001,6 +1002,10 @@ async def list_players(
         )
     if position is not None:
         player_id_subq = player_id_subq.where(BzzPlayer.position == position.upper())
+    if q:
+        # Atlas Explorer search box: server-side so it composes with real
+        # limit/offset pagination instead of only matching the current page.
+        player_id_subq = player_id_subq.where(BzzPlayer.name.ilike(f"%{q}%"))
 
     players = (await session.execute(
         select(BzzPlayer).where(BzzPlayer.api_id.in_(player_id_subq))

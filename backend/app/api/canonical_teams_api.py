@@ -19,6 +19,16 @@ class CanonicalTeamOut(BaseModel):
     bzz_team_id: int | None
     sofascore_team_id: int | None
     aliases: list[str]
+    # Engagement courant (ligue) et pays du club — voir
+    # app/models/canonical_teams.py pour la justification des nullable.
+    # Consommés par l'Atlas (rail clubs filtré par league_api_id).
+    league_api_id: int | None = None
+    country: str | None = None
+    # Écusson footylogos.com déjà vérifié 200 côté backend — voir
+    # app/ingestion/footylogos/resolve_crests.py. None si non résolu,
+    # jamais une URL devinée ; le front retombe alors sur api_football_id
+    # puis un placeholder.
+    crest_url: str | None = None
 
 
 class CanonicalTeamUpdate(BaseModel):
@@ -44,6 +54,9 @@ async def list_canonical_teams(db: AsyncSession = Depends(get_db)):
             bzz_team_id=ct.bzz_team_id,
             sofascore_team_id=ct.sofascore_team_id,
             aliases=ct.aliases or [],
+            league_api_id=ct.league_api_id,
+            country=ct.country,
+            crest_url=ct.crest_url,
         )
         for ct in rows
     ]
@@ -84,4 +97,7 @@ async def update_canonical_team(
         bzz_team_id=ct.bzz_team_id,
         sofascore_team_id=ct.sofascore_team_id,
         aliases=ct.aliases or [],
+        league_api_id=ct.league_api_id,
+        country=ct.country,
+        crest_url=ct.crest_url,
     )
