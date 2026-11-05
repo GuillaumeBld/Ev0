@@ -136,6 +136,11 @@ class PlayerSummary(BaseModel):
     # ou si ce club canonique n'a pas encore d'api_football_id — jamais un
     # ecusson invente.
     api_football_id: int | None = None
+    # Ecusson footylogos.com (URL image complete, deja verifiee 200 par
+    # app.ingestion.footylogos.resolve_crests) — meme club canonique que
+    # api_football_id ci-dessus. None si non resolu, jamais une URL devinee.
+    # Priorite cote front : crest_url -> api_football_id -> placeholder.
+    crest_url: str | None = None
 
 
 class RecentMatch(BaseModel):
@@ -301,6 +306,8 @@ class PlayerDetail(BaseModel):
     recent_matches: list[RecentMatch]
     # Voir PlayerSummary.api_football_id — meme resolution, meme garantie.
     api_football_id: int | None = None
+    # Voir PlayerSummary.crest_url — meme resolution, meme garantie.
+    crest_url: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -600,15 +607,17 @@ def bloc_precedent(merged: dict[str, Any] | None) -> dict[str, Any] | None:
 
 async def _team_crest_map(
     session: AsyncSession, team_ids: list[int | None]
-) -> dict[int, int | None]:
-    """Resout les ecussons (api_football_id) d'un lot de clubs en un seul SELECT.
+) -> dict[int, tuple[int | None, str | None]]:
+    """Resout les ecussons (api_football_id + crest_url) d'un lot de clubs en
+    un seul SELECT.
 
     canonical_teams.bzz_team_id partage le meme espace d'identifiants que
     BzzPlayer.current_team_api_id / loan_team_api_id. Un lookup par lot evite
     le N+1 (un SELECT par joueur) que ferait une resolution joueur par joueur.
 
-    Un club absent de canonical_teams, ou present mais sans api_football_id,
-    rend None via .get(id) cote appelant : jamais d'ecusson invente.
+    Rend `{bzz_team_id: (api_football_id, crest_url)}`. Un club absent de
+    canonical_teams, ou present mais sans l'un ou l'autre champ, rend ce
+    champ None via le tuple cote appelant : jamais un ecusson invente.
     """
     from app.models.canonical_teams import CanonicalTeam
 
@@ -617,11 +626,14 @@ async def _team_crest_map(
         return {}
 
     rows = (await session.execute(
-        select(CanonicalTeam.bzz_team_id, CanonicalTeam.api_football_id).where(
-            CanonicalTeam.bzz_team_id.in_(ids)
-        )
+        select(
+            CanonicalTeam.bzz_team_id, CanonicalTeam.api_football_id, CanonicalTeam.crest_url
+        ).where(CanonicalTeam.bzz_team_id.in_(ids))
     )).all()
-    return {bzz_team_id: api_football_id for bzz_team_id, api_football_id in rows}
+    return {
+        bzz_team_id: (api_football_id, crest_url)
+        for bzz_team_id, api_football_id, crest_url in rows
+    }
 
 
 async def team_ids_for_league(
@@ -1078,6 +1090,7 @@ async def list_players(
             continue
 
         eff_team_id = player.loan_team_api_id or player.current_team_api_id
+        eff_api_football_id, eff_crest_url = crest_map.get(eff_team_id) or (None, None)
 
         results.append({
             "player_api_id": player.api_id,
@@ -1085,7 +1098,8 @@ async def list_players(
             "short_name": player.short_name,
             "position": player.position,
             "team_name": player.loan_team_name or player.current_team_name,
-            "api_football_id": crest_map.get(eff_team_id),
+            "api_football_id": eff_api_football_id,
+            "crest_url": eff_crest_url,
             "nationality": player.nationality,
             "goals": merged["goals"],
             "goal_assist": merged["goal_assist"],
@@ -1280,6 +1294,7 @@ async def get_player(
     # (current_team_name, sans le pret : le detail n'affiche pas le club de
     # pret contrairement au resume de liste).
     crest_map = await _team_crest_map(session, [player.current_team_api_id])
+    api_football_id, crest_url = crest_map.get(player.current_team_api_id) or (None, None)
 
     return {
         "player_api_id": player.api_id,
@@ -1292,7 +1307,8 @@ async def get_player(
         "jersey_number": player.jersey_number,
         "market_value": player.market_value,
         "team_name": player.current_team_name,
-        "api_football_id": crest_map.get(player.current_team_api_id),
+        "api_football_id": api_football_id,
+        "crest_url": crest_url,
         "season_stats": season_stats_out,
         "recent_matches": recent_matches,
     }

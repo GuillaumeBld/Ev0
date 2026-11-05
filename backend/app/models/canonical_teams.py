@@ -30,3 +30,10 @@ class CanonicalTeam(Base):
     # ~57-competitions (leagues.country via LEAGUE_REGISTRY) mais pas encore
     # retro-rempli pour les clubs existants au moment de la migration.
     country = Column(String(100), nullable=True)
+
+    # Ecusson footylogos.com (URL image complete, deja verifiee 200 avant
+    # d'etre posee — voir app/ingestion/footylogos/resolve_crests.py).
+    # Nullable : resolution manuelle, non exhaustive ; un club sans ecusson
+    # resolu garde cette colonne a NULL plutot qu'une URL devinee — le
+    # front retombe alors sur api_football_id puis un placeholder.
+    crest_url = Column(String(500), nullable=True)
