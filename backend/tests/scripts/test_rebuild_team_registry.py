@@ -10,6 +10,7 @@ import pytest
 
 from app.ingestion.bzzoiro.constants import EFFECTIFS_REGLEMENTAIRES
 from app.scripts.rebuild_team_registry import (
+    EFFECTIFS_STRICTS,
     SegmentationError,
     enumerer_engages,
     rebuild,
@@ -92,7 +93,7 @@ async def test_ecart_d_effectif_interrompt_sans_rien_ecrire():
 async def test_un_club_engage_dans_deux_championnats_est_refuse():
     """L'invariant : un club appartient a exactement un championnat."""
     async def _get_all(path, params=None):
-        n = EFFECTIFS_REGLEMENTAIRES[params["league"]]
+        n = EFFECTIFS_STRICTS[params["league"]]
         evs = _events_pour(n)
         # Le club 1 apparait dans toutes les competitions.
         evs[0]["home_team_obj"] = {"id": 1, "name": "Club 1"}
@@ -113,13 +114,13 @@ async def test_reconstruction_nominale():
     """Effectifs conformes : le referentiel est ecrit."""
     decalages = {}
     base = 0
-    for lid in EFFECTIFS_REGLEMENTAIRES:
+    for lid in EFFECTIFS_STRICTS:
         decalages[lid] = base
         base += 100
 
     async def _get_all(path, params=None):
         lid = params["league"]
-        return _events_pour(EFFECTIFS_REGLEMENTAIRES[lid], decalages[lid])
+        return _events_pour(EFFECTIFS_STRICTS[lid], decalages[lid])
 
     client = MagicMock()
     client.get_all = AsyncMock(side_effect=_get_all)
@@ -131,6 +132,6 @@ async def test_reconstruction_nominale():
 
     comptes = await rebuild(session, client, season="2026-2027")
 
-    assert comptes == EFFECTIFS_REGLEMENTAIRES
-    assert session.add.call_count == 96
+    assert comptes == EFFECTIFS_STRICTS
+    assert session.add.call_count == sum(EFFECTIFS_STRICTS.values())
     session.commit.assert_awaited_once()

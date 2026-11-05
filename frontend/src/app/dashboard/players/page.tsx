@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { RefreshCw, Search, ChevronDown, ChevronUp, User, AlertCircle } from 'lucide-react'
 import { clsx } from 'clsx'
 import { PlayerSummary, BzzTeam, WCNation, WCSquad } from '@/lib/api'
-import { getTeamId } from '@/lib/teamLogos'
 import { WC2026View } from '@/components/players/WC2026View'
 import { WC2026TableView } from '@/components/players/WC2026TableView'
 
@@ -98,6 +97,38 @@ function CelluleTaux({
         <span className="text-[11px] font-mono text-gray-500">{fmt(precedent, decimals)}</span>
       )}
     </span>
+  )
+}
+
+/** Écusson du club, résolu depuis `canonical_teams.api_football_id` (via
+ *  l'API /players — jamais via le dictionnaire nom→id `teamLogos.ts`, limité
+ *  au big-5/UCL et source de collisions). Sans identifiant, affiche un
+ *  placeholder neutre (initiales) plutôt que de retomber sur ce dictionnaire. */
+function PlayerTeamCrest({ apiFootballId, teamName }: { apiFootballId: number | null; teamName: string | null }) {
+  const [failed, setFailed] = useState(false)
+  // Reinitialise l'echec quand l'id change : sinon une instance montee qui a
+  // deja echoue (ancien joueur/club) reste bloquee sur le placeholder meme
+  // apres que `apiFootballId` change pour un id valide (ex. tri/filtre qui
+  // reutilise le composant sans le remonter).
+  useEffect(() => {
+    setFailed(false)
+  }, [apiFootballId])
+  if (!apiFootballId || failed) {
+    const initials = (teamName ?? '')
+      .split(/[\s-]+/).filter(Boolean).map((w) => w[0]).join('').toUpperCase().slice(0, 2)
+    return (
+      <div className="w-5 h-5 rounded-full bg-gray-700 border border-gray-600 flex items-center justify-center text-[9px] font-bold text-gray-400 shrink-0">
+        {initials || '?'}
+      </div>
+    )
+  }
+  return (
+    <img
+      src={`https://media.api-sports.io/football/teams/${apiFootballId}.png`}
+      alt=""
+      className="w-5 h-5 object-contain shrink-0"
+      onError={() => setFailed(true)}
+    />
   )
 }
 
@@ -530,17 +561,7 @@ export default function PlayersPage() {
                         </td>
                         <td className="px-3 py-3">
                           <div className="flex items-center gap-1.5 max-w-[140px]">
-                            {(() => {
-                              const lid = player.team_name ? getTeamId(player.team_name) : null
-                              return lid ? (
-                                <img
-                                  src={`https://media.api-sports.io/football/teams/${lid}.png`}
-                                  alt=""
-                                  className="w-5 h-5 object-contain shrink-0"
-                                  onError={(e) => { e.currentTarget.style.display = 'none' }}
-                                />
-                              ) : null
-                            })()}
+                            <PlayerTeamCrest apiFootballId={player.api_football_id} teamName={player.team_name} />
                             <span className="text-sm text-gray-300 truncate">{player.team_name ?? '—'}</span>
                           </div>
                         </td>

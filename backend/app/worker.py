@@ -27,6 +27,8 @@ from app.db import DATABASE_URL, async_session, engine
 from app.ingestion.auto_settle import settle_approved_recommendations
 from app.ingestion.bzzoiro.aggregate import aggregate_all_leagues
 from app.ingestion.bzzoiro.client import BzzoiroClient
+from app.ingestion.bzzoiro.coverage_check import check_coverage
+from app.ingestion.bzzoiro.expansion_scope import expansion_league_ids
 from app.ingestion.bzzoiro.sync_events import sync_events
 from app.ingestion.bzzoiro.sync_player_stats import sync_player_stats
 from app.ingestion.bzzoiro.sync_players import sync_players
@@ -39,7 +41,11 @@ from app.ingestion.bzzoiro.resolve_lineup_slots import resoudre_compos
 from app.ingestion.bzzoiro.sync_match_detail import sync_apres_match, sync_avant_match
 from app.ingestion.bzzoiro.sync_incidents import sync_incidents
 from app.ingestion.bzzoiro.sync_wc_squads import sync_wc_squads
-from app.ingestion.bzzoiro.constants import INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST
+from app.ingestion.bzzoiro.constants import (
+    INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST,
+    TARGET_LEAGUE_INTERNAL_ID_LIST,
+)
+from app.scripts.rebuild_team_registry import EFFECTIFS_STRICTS, attach_european, rebuild
 from app.ingestion.storage import (
     store_match_events,
     store_recommendation,
@@ -1349,7 +1355,12 @@ async def job_sync_bzzoiro_events():
                     BzzEvent.home_team_api_id,
                     BzzEvent.away_team_api_id,
                     BzzEvent.event_date,
-                ).where(BzzEvent.event_date >= datetime.now(UTC))
+                ).where(
+                    BzzEvent.event_date >= datetime.now(UTC),
+                    BzzEvent.league_api_id.in_(
+                        TARGET_LEAGUE_INTERNAL_ID_LIST + INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST
+                    ),
+                )
             )).all()
 
         violations = controler([
@@ -1419,6 +1430,107 @@ async def job_sync_bzzoiro_player_stats_full_season():
         logger.error("Error in Bzzoiro full-season player stats sync: %s", exc, exc_info=True)
     logger.info("=== Bzzoiro full-season player stats sync complete ===")
 
+
+async def job_sync_referentiel_expansion():
+    """Daily at 05:15 UTC: etend le referentiel Joueurs (bzz_events,
+    canonical_teams) aux ligues d'expansion du registre — celles que
+    `job_sync_bzzoiro_events` ne couvre pas deja (big-5 + Champions League
+    via `TARGET_LEAGUE_INTERNAL_ID_LIST`, international via
+    `INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST`). Voir `expansion_league_ids()`
+    pour le calcul exact du perimetre (45 competitions au moment ou ceci est
+    ecrit).
+
+    Volontairement un job SEPARE de `job_sync_bzzoiro_events`, jamais fusionne
+    avec lui : ce dernier lance aussi le controle de coherence du calendrier,
+    qui envoie des alertes Telegram "incidents" sur le calendrier PARIS
+    (big-5 + international, celui du calculateur). Faire passer les 45 ligues
+    d'expansion par ce controle inonderait ces alertes avec des competitions
+    que le calculateur ne tarife jamais — ce job n'appelle donc que
+    `sync_events()` directement, jamais ce controle ni `send_alert`.
+
+    Ordre : `sync_events()` d'abord — interroge l'API Bzzoiro et ecrit les
+    `bzz_events` de ces ligues en base, ceux dont `check_coverage()` a besoin
+    en dernier (`events_synced`, matchs `finished`). `rebuild()` et
+    `attach_european()` n'interrogent PAS `bzz_events` : ils rappellent
+    l'API Bzzoiro directement via `enumerer_engages()` (meme source que
+    `sync_events()`, mais jamais la table locale) pour resegmenter
+    `canonical_teams`. L'ordre sync_events -> rebuild est donc une
+    convention de coherence (les deux passes voient la meme fenetre de
+    matchs), pas une dependance de lecture. `check_coverage()` ferme la
+    chaine pour voir a la fois ce que `rebuild`/`attach_european` viennent
+    d'ecrire dans `canonical_teams` et ce que `sync_events` vient d'ecrire
+    dans `bzz_events`.
+
+    Scope CRITIQUE : `rebuild()` est appele avec `league_ids` restreint a
+    l'intersection de `expansion_league_ids()` et des championnats
+    domestiques stricts (`EFFECTIFS_STRICTS`) — jamais `league_ids=None`.
+    Un appel non scope reconstruirait TOUT `EFFECTIFS_STRICTS` (29
+    championnats, big-5 inclus) en tout-ou-rien : un seul hoquet d'API sur
+    une quelconque des ~45 ligues d'expansion ferait alors echouer aussi la
+    resegmentation big-5/C1 — le referentiel que consulte le pipeline paris.
+    Avec le scope, big-5/C1 ne sont JAMAIS retouches par ce job quotidien
+    (ils restent segmentes par leur propre passage, non planifie ici — voir
+    l'orchestrateur one-shot `build_full_referentiel.py` pour un rebuild
+    complet). `check_coverage()` est de meme scope a `expansion_league_ids()`
+    pour que le perimetre controle corresponde au perimetre annonce (45),
+    pas aux ~55 de `PLAYER_STATS_LEAGUE_IDS`.
+
+    `job_sync_bzzoiro_player_stats` (6h) et `job_aggregate_season_stats`
+    (04:00 UTC) couvrent deja ces ligues via `PLAYER_STATS_LEAGUE_IDS`
+    (sur-ensemble du perimetre d'expansion) a leur propre cadence — on ne
+    les rappelle pas ici, leur PROCHAIN passage suffit a transformer les
+    evenements fraichement synchronises en stats/agregats : tout est
+    idempotent (upsert on-conflict / resegmentation complete), donc un
+    passage partiel un jour est simplement rattrape le lendemain.
+    """
+    logger.info("=== Starting expansion referentiel sync ===")
+    if not settings.bzzoiro_api_key:
+        logger.warning("BZZOIRO_API_KEY not configured, skipping expansion referentiel sync")
+        return
+    try:
+        league_ids = expansion_league_ids()
+        # Intersection avec EFFECTIFS_STRICTS : seuls les championnats
+        # domestiques round_robin de l'expansion segmentent un championnat.
+        # Passer ce sous-ensemble a `rebuild()` (jamais `league_ids=None`)
+        # isole la resegmentation big-5/C1 de la fiabilite des ligues
+        # d'expansion — voir la docstring ci-dessus.
+        domestic_scope = [lid for lid in league_ids if lid in EFFECTIFS_STRICTS]
+        async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
+            events_count = await sync_events(
+                session,
+                client,
+                days_back=3,
+                days_forward=30,
+                league_internal_ids=league_ids,
+            )
+            logger.info(
+                "Expansion events synced: %s (%d ligues)", events_count, len(league_ids)
+            )
+
+            comptes = await rebuild(session, client, league_ids=domestic_scope)
+            logger.info("Referentiel reconstruit (expansion): %s", comptes)
+
+            rattaches = await attach_european(session, client)
+            logger.info("Rattachement UEFA (expansion): %s", rattaches)
+
+            reports = await check_coverage(session, league_ids=league_ids)
+            resume = {
+                statut: sum(1 for r in reports if r.status == statut)
+                for statut in ("ok", "partial", "failed")
+            }
+            logger.info("Controle de completude (expansion): %s", resume)
+            for report in reports:
+                if report.status != "ok":
+                    logger.warning(
+                        "coverage ligue %d (%s, statut=%s): clubs_total=%s "
+                        "clubs_incomplets=%s joueurs_sans_stats=%s",
+                        report.league_api_id, report.season, report.status,
+                        report.clubs_total, report.clubs_incomplets,
+                        report.joueurs_sans_stats,
+                    )
+    except Exception as exc:
+        logger.error("Error in expansion referentiel sync: %s", exc, exc_info=True)
+    logger.info("=== Expansion referentiel sync complete ===")
 
 
 async def job_sync_bzzoiro_predictions():
@@ -2531,6 +2643,19 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
         max_instances=1,
         coalesce=True,
+    )
+
+    # Referentiel d'expansion (45 ligues hors big-5/C1/international) :
+    # quotidien, 05:15 UTC — apres players (03:00), aggregate (04:00), squads
+    # (04:30) et l'import carriere (05:00). N'appelle jamais le controle de
+    # coherence du calendrier paris (voir docstring du job) : volontairement
+    # un job distinct de sync_bzzoiro_events.
+    scheduler.add_job(
+        job_sync_referentiel_expansion,
+        CronTrigger(hour=5, minute=15),
+        id="sync_referentiel_expansion",
+        name="Sync referentiel Joueurs — ligues d'expansion (hors pipeline paris)",
+        replace_existing=True,
     )
 
     # Bzzoiro predictions: daily at 07:45 UTC

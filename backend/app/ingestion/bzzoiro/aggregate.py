@@ -284,12 +284,19 @@ async def aggregate_season_stats(
     return count
 
 
-async def aggregate_all_leagues(session: AsyncSession, season: str | None = None) -> int:
-    """Aggregate season stats for all 6 target leagues with finished matches.
+async def aggregate_all_leagues(
+    session: AsyncSession,
+    season: str | None = None,
+    league_ids: list[int] | None = None,
+) -> int:
+    """Aggregate season stats for every registry league with finished matches.
 
-    Only canonical Bzzoiro internal IDs [1,3,4,5,6,7] are used. The old SofaScore
-    api_ids (8,17,23,34,35) now belong to completely different competitions in Bzzoiro
-    (Saudi Pro League, Europa League, etc.) and must not be merged with target leagues.
+    league_ids: defaults to PLAYER_STATS_LEAGUE_IDS (Task 3, ~57-competition
+    expansion) — the full LEAGUE_REGISTRY minus the historical one-off
+    tournaments (Euro 2024, Copa America 2024) reserved for Task 6's dedicated
+    backfill. Only leagues that actually have finished matches in bzz_events
+    produce rows, so leagues not yet synced (recurring sync for the extra
+    competitions is wired by Task 6) are simply no-ops here, not errors.
 
     season: defaults to None, which resolves to the current season via
     season_service.current_season(session). Callers (e.g. the worker) never need
@@ -297,7 +304,10 @@ async def aggregate_all_leagues(session: AsyncSession, season: str | None = None
 
     Returns total count of rows upserted across all leagues.
     """
-    from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_INTERNAL_ID_LIST
+    from app.ingestion.bzzoiro.league_registry import PLAYER_STATS_LEAGUE_IDS
+
+    if league_ids is None:
+        league_ids = PLAYER_STATS_LEAGUE_IDS
 
     if season is None:
         season = await current_season(session)
@@ -305,7 +315,7 @@ async def aggregate_all_leagues(session: AsyncSession, season: str | None = None
 
     result = await session.execute(
         select(BzzEvent.league_api_id.distinct()).where(
-            BzzEvent.league_api_id.in_(TARGET_LEAGUE_INTERNAL_ID_LIST),
+            BzzEvent.league_api_id.in_(league_ids),
             BzzEvent.status == "finished",
         )
     )
