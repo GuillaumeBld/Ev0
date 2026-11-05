@@ -211,23 +211,54 @@ svg.map .geo{transition:transform .7s cubic-bezier(.22,1,.36,1)}
 /* player detail */
 .scrim{position:fixed;inset:0;background:rgba(5,4,2,.6);backdrop-filter:blur(3px);opacity:0;pointer-events:none;transition:.25s;z-index:70}
 .scrim.on{opacity:1;pointer-events:auto}
-.pdet{position:fixed;top:0;right:0;height:100vh;width:min(560px,96vw);background:var(--bg2);border-left:1px solid var(--bd);transform:translateX(100%);transition:transform .34s cubic-bezier(.22,1,.36,1);z-index:80;overflow-y:auto}
-.pdet.on{transform:none}
-.phd{position:relative;padding:26px 24px 20px;background:linear-gradient(150deg,var(--a-soft),transparent 55%),var(--surface);border-bottom:1px solid var(--bd)}
-.phd .x{position:absolute;right:18px;top:18px;cursor:pointer;color:var(--t2);border:1px solid var(--bd);border-radius:9px;width:34px;height:34px;display:grid;place-items:center;background:var(--glass)}
-.phd .top{display:flex;gap:16px;align-items:center}
-.phd h2{margin:0;font-size:24px;letter-spacing:-.02em}
-.phd .meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:12.5px;color:var(--t2);align-items:center}
-.ring{position:relative;width:70px;height:70px;flex:none}
-.ring .rv{position:absolute;inset:0;display:grid;place-items:center;font-weight:850;font-size:19px}
-.pbody{padding:18px 22px 50px}
-.seg2{margin-bottom:14px;background:var(--surface);border:1px solid var(--bd);border-radius:16px;overflow:hidden}
-.seg2 .sh{display:flex;align-items:center;gap:10px;padding:14px 16px;cursor:pointer}
-.seg2 .sh .ico{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;flex:none;font-size:15px}
-.seg2 .sh h3{margin:0;font-size:14px;font-weight:750;flex:1}
-.seg2 .sh .k{font-size:12px;color:var(--t2);font-weight:650}
-.seg2 .sh .chev{color:var(--t3);transition:.2s} .seg2.open .sh .chev{transform:rotate(180deg)}
-.seg2 .bd{display:none;padding:2px 16px 14px} .seg2.open .bd{display:block}
+.pdet{position:fixed;inset:0;z-index:80;background:var(--bg);overflow-y:auto;opacity:0;transform:translateY(14px);pointer-events:none;transition:opacity .28s,transform .28s}
+.pdet.on{opacity:1;transform:none;pointer-events:auto}
+.pdtop{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:13px;padding:11px 22px;background:var(--surface);border-bottom:1px solid var(--bd)}
+.pdtop .nm{font-weight:750;font-size:14.5px;color:var(--t1)}
+.phero{position:relative;padding:24px 28px 20px;background:linear-gradient(160deg,var(--a-soft),transparent 52%),var(--surface2);border-bottom:1px solid var(--bd);display:flex;gap:20px;align-items:center;flex-wrap:wrap}
+.phero .id{display:flex;gap:18px;align-items:center}
+.phero h2{margin:0;font-size:30px;letter-spacing:-.02em;color:var(--t1)}
+.phero .meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:13px;color:var(--t2);align-items:center}
+.ring{position:relative;flex:none} .ring .rv{position:absolute;inset:0;display:grid;place-items:center;font-weight:850}
+.ptiles{margin-left:auto;display:flex;gap:9px;flex-wrap:wrap}
+.ptile{background:var(--surface);border:1px solid var(--bd);border-radius:12px;padding:10px 14px;min-width:78px}
+.ptile .v{font-size:23px;font-weight:850;color:var(--t1);letter-spacing:-.01em} .ptile .l{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--t3);font-weight:700;margin-top:2px}
+.pdwrap{padding:20px 28px 70px;max-width:1560px;margin:0 auto}
+.sect{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--t2);font-weight:800;margin:24px 2px 13px;display:flex;align-items:center;gap:12px}
+.sect::after{content:"";flex:1;height:1px;background:var(--bd)}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(296px,1fr));gap:13px}
+.ppanel{background:var(--surface);border:1px solid var(--bd);border-radius:14px;overflow:hidden}
+.ppanel .ph{display:flex;align-items:center;gap:10px;padding:12px 15px;border-bottom:1px solid var(--bd)}
+.ppanel .ph .ico{width:27px;height:27px;border-radius:8px;display:grid;place-items:center;font-size:14px;flex:none}
+.ppanel .ph h3{margin:0;font-size:14px;font-weight:800;color:var(--t1)}
+.ppanel .pb{padding:5px 15px 11px}
+.prow{display:flex;align-items:center;gap:11px;padding:7px 0;border-top:1px solid var(--bd)}
+.prow:first-child{border-top:0}
+.prow .pl{flex:1;font-size:12.5px;color:var(--t1);font-weight:600}
+.prow .track{width:78px;height:6px;border-radius:5px;background:var(--bd2);overflow:hidden;flex:none}
+.prow .track i{display:block;height:100%;border-radius:5px}
+.prow .pv{min-width:50px;text-align:right;font-weight:850;font-size:13.5px;color:var(--t1)}
+.prow .pv.na{color:var(--t3);font-weight:600}
+.gcards{display:grid;grid-template-columns:1.7fr 1fr;gap:13px}
+.gcard{background:var(--surface);border:1px solid var(--bd);border-radius:14px;padding:16px 18px}
+.gcard .gt{font-size:13.5px;font-weight:800;color:var(--t1)} .gcard .gsub{font-size:11.5px;color:var(--t2);margin:2px 0 13px}
+.chart{width:100%;height:170px;display:block}
+.radar{width:100%;max-width:300px;height:260px;display:block;margin:0 auto}
+.lgnd{display:flex;gap:16px;margin-top:10px;font-size:11.5px;color:var(--t2)}
+.lgnd span{display:flex;align-items:center;gap:6px} .lgnd i{width:10px;height:10px;border-radius:3px}
+.logwrap{overflow-x:auto;border:1px solid var(--bd);border-radius:14px;background:var(--surface)}
+.mlog{width:100%;border-collapse:collapse;font-size:12.5px;min-width:920px}
+.mlog thead th{position:sticky;top:0;background:var(--surface2);text-align:right;font-size:10px;letter-spacing:.03em;text-transform:uppercase;color:var(--t3);font-weight:800;padding:9px 10px;border-bottom:1px solid var(--bd);white-space:nowrap}
+.mlog thead th:first-child,.mlog thead th:nth-child(2),.mlog tbody td:first-child,.mlog tbody td:nth-child(2){text-align:left}
+.mlog tbody td{text-align:right;padding:9px 10px;border-bottom:1px solid var(--bd);color:var(--t1);font-weight:600;white-space:nowrap}
+.mlog tbody tr:hover{background:var(--surface2)} .mlog tbody tr:last-child td{border-bottom:0}
+.mlog .adv{display:flex;align-items:center;gap:7px;font-weight:650} .mlog .rt{font-weight:850;padding:2px 8px;border-radius:7px}
+.pcar{width:100%;border-collapse:collapse;font-size:13px;background:var(--surface);border:1px solid var(--bd);border-radius:14px;overflow:hidden}
+.pcar th{text-align:right;font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--t3);font-weight:800;padding:11px 14px;border-bottom:1px solid var(--bd)}
+.pcar th:first-child,.pcar td:first-child,.pcar th:nth-child(2),.pcar td:nth-child(2){text-align:left}
+.pcar td{text-align:right;padding:11px 14px;border-bottom:1px solid var(--bd);color:var(--t1);font-weight:650} .pcar tbody tr:last-child td{border-bottom:0}
+.napill{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;padding:3px 10px;border-radius:20px;background:var(--warn-s);color:var(--warn)}
+@media(max-width:900px){.gcards{grid-template-columns:1fr}.ptiles{margin-left:0;width:100%}.phero h2{font-size:24px}}
 .metric{display:flex;align-items:center;gap:12px;padding:9px 0;border-top:1px solid var(--bd)}
 .metric:first-child{border-top:0} .metric .ml{flex:1;min-width:0}
 .metric .mn{font-size:13.5px;font-weight:650;color:var(--t1)} .metric .md{font-size:11px;color:var(--t2)}
@@ -679,17 +710,90 @@ const GROUPS=[
  {k:'dsc',t:'Discipline',ico:'🟨',col:'var(--warn)',rows:[['Fautes / 90',0,'',3],['Cartons jaunes',1,'',12],['Cartons rouges',2,'',2]]},
  {k:'jeu',t:'Temps de jeu',ico:'⏱️',col:'var(--t2)',rows:[['Minutes jouées',0,'',3000],['Matchs',1,'',34],['Titularisations',2,'',34]]},
 ];
-function openPlayer(p){if(!p)return;const c=CL[p.club];const note=p.note;const adv=p.adv;
- const C=2*Math.PI*30,off=C*(1-Math.min(note/10,1));
- const ring=`<svg class="ring" viewBox="0 0 70 70"><circle cx="35" cy="35" r="30" fill="none" stroke="var(--bd)" stroke-width="6"/><circle cx="35" cy="35" r="30" fill="none" stroke="${rcol(note)}" stroke-width="6" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${off}" transform="rotate(-90 35 35)"/></svg><div class="rv" style="color:${rcol(note)}">${note.toFixed(1)}</div>`;
- const groups=GROUPS.map((g,gi)=>{const vals=p[g.k];const has=['jeu','dsc','dis'].includes(g.k)||adv;
-   const kpi=g.k==='fin'?`${vals[0]} buts`:g.k==='cre'?`${vals[0]} passes d.`:g.k==='jeu'?`${vals[0]} min`:'';
-   const body=has?g.rows.map(r=>{const v=vals[r[1]];if(v==null)return '';const max=r[3],pct=max?Math.min(v/max*100,100):0;
-     return `<div class="metric"><div class="ml"><div class="mn">${r[0]}</div>${r[2]?`<div class="md">${r[2]}</div>`:''}</div>${max?`<div class="track"><i style="width:${pct}%;background:${g.col}"></i></div>`:''}<div class="mv">${v}</div></div>`}).join('')
-    :`<div class="nainfo">Données avancées non disponibles pour ce championnat.</div>`;
-   return `<div class="seg2 ${gi<2?'open':''} ${has?'':'na'}"><div class="sh" onclick="this.parentNode.classList.toggle('open')"><div class="ico" style="background:${g.col}22">${g.ico}</div><h3>${g.t}</h3><span class="k">${kpi}</span><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div><div class="bd">${body}</div></div>`}).join('');
- $('#pdet').innerHTML=`<div class="phd"><div class="x" onclick="closePlayer()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></div><div class="top">${crest(c,52)}<div><h2>${p.name}</h2><div class="meta"><span class="pos ${p.pos}">${p.pos}</span>${c.n} · 2026-27 ${adv?'':'· <b>couverture partielle</b>'}</div></div>${ring}</div></div><div class="pbody">${groups}<details class="seg2"><summary class="sh" style="list-style:none;cursor:pointer"><div class="ico" style="background:var(--bd)">📅</div><h3>Historique de carrière</h3><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></summary><div class="bd"><div class="metric"><div class="ml"><div class="mn">2025-26 · ${c.n}</div></div><div class="mv">${p.g+3} B</div></div><div class="metric"><div class="ml"><div class="mn">2024-25 · ${c.n}</div></div><div class="mv">${Math.max(0,p.g-2)} B</div></div></div></details></div>`;
- $('#pdet').classList.add('on');$('#scrim').classList.add('on');
+function miniChart(vals){
+ const W=640,H=170,pad=18,n=vals.length;
+ const mn=Math.min(...vals)-0.4,mx=Math.max(...vals)+0.4;
+ const X=i=>pad+i*(W-2*pad)/(n-1),Y=v=>H-pad-(v-mn)/(mx-mn)*(H-2*pad);
+ const pts=vals.map((v,i)=>[X(i),Y(v)]);
+ const line=pts.map((q,i)=>(i?'L':'M')+q[0].toFixed(1)+' '+q[1].toFixed(1)).join(' ');
+ const area=line+` L${X(n-1).toFixed(1)} ${H-pad} L${pad} ${H-pad} Z`;
+ const grid=[0,.5,1].map(f=>{const yy=(pad+f*(H-2*pad)).toFixed(1);return `<line x1="${pad}" x2="${W-pad}" y1="${yy}" y2="${yy}" stroke="var(--bd)"/>`}).join('');
+ const dots=pts.map((q,i)=>`<circle cx="${q[0].toFixed(1)}" cy="${q[1].toFixed(1)}" r="${i===n-1?4.5:2.5}" fill="${i===n-1?'var(--a)':rcol(vals[i])}"/>`).join('');
+ return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><defs><linearGradient id="ag" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--a);stop-opacity:.3"/><stop offset="1" style="stop-color:var(--a);stop-opacity:0"/></linearGradient></defs>${grid}<path d="${area}" fill="url(#ag)"/><path d="${line}" fill="none" stroke="var(--a)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>${dots}</svg>`;
+}
+function barsGX(data){
+ const W=640,H=170,pad=22,bw=(W-2*pad)/data.length,mx=Math.max(...data.flatMap(d=>[d.g,d.xg]),2);
+ const Y=v=>H-pad-(v/mx)*(H-2*pad);
+ const b=data.map((d,i)=>{const x=pad+i*bw;return `<rect x="${(x+bw*.16).toFixed(1)}" y="${Y(d.g).toFixed(1)}" width="${(bw*.3).toFixed(1)}" height="${Math.max(0,H-pad-Y(d.g)).toFixed(1)}" fill="var(--a)" rx="2"/><rect x="${(x+bw*.52).toFixed(1)}" y="${Y(d.xg).toFixed(1)}" width="${(bw*.3).toFixed(1)}" height="${Math.max(0,H-pad-Y(d.xg)).toFixed(1)}" fill="var(--a2)" opacity=".75" rx="2"/><text x="${(x+bw/2).toFixed(1)}" y="${H-7}" font-size="10" fill="var(--t3)" text-anchor="middle">${d.m}</text>`}).join('');
+ return `<svg class="chart" viewBox="0 0 ${W} ${H}">${b}</svg>`;
+}
+function radar(axes){
+ const cx=150,cy=130,R=92,n=axes.length;
+ const pt=(i,r)=>{const a=-Math.PI/2+i*2*Math.PI/n;return [cx+Math.cos(a)*r,cy+Math.sin(a)*r]};
+ const rings=[.25,.5,.75,1].map(f=>`<polygon points="${axes.map((a,i)=>pt(i,R*f).map(v=>v.toFixed(1)).join(',')).join(' ')}" fill="none" stroke="var(--bd)"/>`).join('');
+ const spokes=axes.map((a,i)=>{const[x,y]=pt(i,R);return `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="var(--bd)"/>`}).join('');
+ const poly=`<polygon points="${axes.map((a,i)=>pt(i,R*a[1]/100).map(v=>v.toFixed(1)).join(',')).join(' ')}" fill="var(--a)" fill-opacity=".25" stroke="var(--a)" stroke-width="2"/>`;
+ const lab=axes.map((a,i)=>{const[x,y]=pt(i,R+15);return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-size="10" fill="var(--t2)" text-anchor="middle" dominant-baseline="middle">${a[0]}</text>`}).join('');
+ return `<svg class="radar" viewBox="0 0 300 260">${rings}${spokes}${poly}${lab}</svg>`;
+}
+function openPlayer(p){if(!p)return;const c=CL[p.club];const note=p.note,adv=p.adv,m=p.jeu[0],m90=Math.max(m/90,.5),G=p.g,A=p.a,pos=p.pos;
+ const rnd=x=>Math.round(x),f1=x=>+x.toFixed(1),f2=x=>+x.toFixed(2);
+ const C=2*Math.PI*34,off=C*(1-Math.min(note/10,1));
+ const ring=`<svg class="ring" width="84" height="84" viewBox="0 0 84 84"><circle cx="42" cy="42" r="34" fill="none" stroke="var(--bd)" stroke-width="7"/><circle cx="42" cy="42" r="34" fill="none" stroke="${rcol(note)}" stroke-width="7" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${off}" transform="rotate(-90 42 42)"/></svg><div class="rv" style="color:${rcol(note)};font-size:23px">${note.toFixed(1)}</div>`;
+ const tirs=rnd(G*2.5+m90+4),cadres=rnd(tirs*.42),xg=adv?f1(G*.82+Math.random()*2):null;
+ const pkey=rnd(A*2.1+m90*.7+3),xa=adv?f1(A*.8+Math.random()*1.4):null;
+ const passT=rnd(m90*(pos==='D'?58:pos==='M'?66:38)+10),passR=rnd(passT*(0.8+Math.random()*.12)),prog=rnd(m90*(pos==='M'?5:3)+4);
+ const drib=rnd(m90*(pos==='F'?2.2:1)+2),tac=f1(m90*(pos==='D'?2.4:pos==='M'?2:0.8)+2)/m90,intc=f1(m90*(pos==='D'?1.8:1)+1)/m90;
+ const tacT=rnd((pos==='D'?2.4:pos==='M'?2:0.8)*m90+2),intT=rnd((pos==='D'?1.8:1)*m90+1);
+ const duelsW=rnd(m90*5+6),recov=rnd(m90*5+5),fautes=rnd(m90*1.1+2);
+ const P=(lbl,v,max,suf='',na=false)=>({lbl,v,max,suf,na});
+ const CATS=[
+  {t:'Finition',ico:'⚽',col:'var(--crit)',rows:[P('Buts',G,30),P('Buts / 90',f2(G/m90),1),P('xG',xg,20,'',adv&&xg==null),P('xG / 90',adv&&xg!=null?f2(xg/m90):null,1,'',!adv),P('Tirs',tirs,80),P('Tirs / 90',f1(tirs/m90),5),P('Tirs cadrés',cadres,40),P('% cadrés',rnd(cadres/Math.max(tirs,1)*100),100,'%'),P('Conversion',rnd(G/Math.max(tirs,1)*100),40,'%'),P('Buts − xG',adv&&xg!=null?f1(G-xg):null,null,'',!adv)]},
+  {t:'Création',ico:'🎯',col:'var(--a2)',rows:[P('Passes décisives',A,20),P('PD / 90',f2(A/m90),.8),P('xA',xa,15,'',!adv),P('xA / 90',adv&&xa!=null?f2(xa/m90):null,.6,'',!adv),P('Passes clés',pkey,70),P('Passes clés / 90',f1(pkey/m90),3),P('Grosses occ. créées',rnd(A*.7+2),15),P('Centres réussis',rnd(m90*1.2+3),40),P('% centres',rnd(24+Math.random()*16),100,'%')]},
+  {t:'Distribution',ico:'🔀',col:'var(--a)',rows:[P('Passes tentées',passT,2200),P('Passes réussies',passR,2000),P('% réussite',rnd(passR/Math.max(passT,1)*100),100,'%'),P('Passes progressives',rnd(prog*m90),300),P('Passes / 90',f1(passT/m90),85),P('Longues réussies',rnd(m90*2.5+8),120),P('% longues',rnd(48+Math.random()*22),100,'%'),P('Ballons touchés',rnd(passT*1.35),3000)]},
+  {t:'Dribbles & possession',ico:'🌀',col:'#c9a24a',rows:[P('Dribbles réussis',rnd(drib*m90),120),P('% dribbles',rnd(48+Math.random()*24),100,'%'),P('Ballons perdus / 90',f1(1+Math.random()*2),4),P('Fautes subies',rnd(m90*1.2+4),60)]},
+  {t:'Défense',ico:'🛡️',col:'#8aa0ff',rows:[P('Tacles',tacT,100),P('Tacles / 90',tac,4),P('% tacles gagnés',rnd(55+Math.random()*25),100,'%'),P('Interceptions',intT,80),P('Interceptions / 90',intc,3),P('Dégagements',rnd(m90*(pos==='D'?3:0.8)+2),120),P('Récupérations',recov,200),P('Récup. / 90',f1(recov/m90),9)]},
+  {t:'Duels & aérien',ico:'💪',col:'#6fb0a0',rows:[P('Duels gagnés',duelsW,220),P('% duels',rnd(46+Math.random()*20),100,'%'),P('Duels aériens gagnés',rnd(m90*1.6+3),90),P('% aériens',rnd(42+Math.random()*28),100,'%')]},
+  {t:'Discipline',ico:'🟨',col:'var(--warn)',rows:[P('Fautes',fautes,70),P('Fautes / 90',f1(fautes/m90),3),P('Cartons jaunes',p.dsc[1],14),P('Cartons rouges',p.dsc[2],3),P('Hors-jeu',rnd(pos==='F'?m90*0.8+4:1),40)]},
+  {t:'Temps de jeu',ico:'⏱️',col:'var(--t2)',rows:[P('Matchs',p.jeu[1],38),P('Titularisations',p.jeu[2],38),P('% titularisé',rnd(p.jeu[2]/Math.max(p.jeu[1],1)*100),100,'%'),P('Minutes',m,3200),P('Min / match',rnd(m/Math.max(p.jeu[1],1)),90),P('Remplacé',rnd(p.jeu[2]*.4),30),P('Entré en jeu',Math.max(0,p.jeu[1]-p.jeu[2]),20)]},
+ ];
+ const panel=cat=>`<div class="ppanel"><div class="ph"><div class="ico" style="background:${cat.col}22">${cat.ico}</div><h3>${cat.t}</h3></div><div class="pb">${cat.rows.map(r=>{
+   const na=r.na||r.v==null;const pct=(!na&&r.max)?Math.min(r.v/r.max*100,100):0;
+   return `<div class="prow"><div class="pl">${r.lbl}</div>${(!na&&r.max)?`<div class="track"><i style="width:${pct}%;background:${cat.col}"></i></div>`:''}<div class="pv ${na?'na':''}">${na?'n/d':r.v+r.suf}</div></div>`}).join('')}</div></div>`;
+ const OPP=['Reims','Nice','Lens','Monaco','Lille','Brest','Rennes','Nantes','Toulouse','Strasbourg','Auxerre','Angers','Metz','Le Havre','Lorient'];
+ const RES=['V','N','D'],ratings=[],log=[];
+ for(let i=0;i<15;i++){const r=f1(Math.max(5.1,Math.min(9.4,note+(Math.random()-.5)*1.8)));ratings.push(r);
+   log.push({j:i+1,adv:OPP[i],dom:i%2===0,res:RES[Math.min(2,(Math.random()*(r>=7?1.4:3))|0)],min:58+rnd(Math.random()*33),b:Math.random()<G/22?1:0,pd:Math.random()<A/24?1:0,tirs:rnd(Math.random()*4),xg:adv?f1(Math.random()*.9):null,xa:adv?f1(Math.random()*.5):null,passp:rnd(74+Math.random()*20),duels:rnd(Math.random()*8),r});}
+ const bars=['Aoû','Sep','Oct','Nov','Déc'].map(mo=>({m:mo,g:rnd(G/5+Math.random()*1.5),xg:adv?f1(G/5*.9+Math.random()):0}));
+ const logRows=log.slice().reverse().map(x=>`<tr><td>${x.j}</td><td><div class="adv">${x.dom?'🏠':'✈️'} ${x.adv}</div></td><td><b style="color:${x.res==='V'?'var(--good)':x.res==='D'?'var(--crit)':'var(--t2)'}">${x.res}</b></td><td>${x.min}'</td><td>${x.b||'·'}</td><td>${x.pd||'·'}</td><td>${x.tirs}</td><td>${x.xg==null?'—':x.xg}</td><td>${x.xa==null?'—':x.xa}</td><td>${x.passp}%</td><td>${x.duels}</td><td><span class="rt" style="background:${rbg(x.r)};color:${rcol(x.r)}">${x.r}</span></td></tr>`).join('');
+ const rad=radar([['Finition',Math.min(G*6+20,100)],['Création',Math.min(A*6+22,100)],['Passes',rnd(passR/Math.max(passT,1)*100)],['Défense',Math.min(tacT*2+intT*3,100)],['Duels',rnd(46+Math.random()*30)],['Activité',Math.min(m90*5+20,100)]]);
+ const forme=f1(ratings.slice(-5).reduce((a,b)=>a+b,0)/5);
+ const tile=(v,l)=>`<div class="ptile"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+ $('#pdet').innerHTML=`
+  <div class="pdtop"><button class="back" onclick="closePlayer()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>Retour</button><span class="nm">${p.name}</span></div>
+  <div class="phero"><div class="id">${crest(c,68)}<div><h2>${p.name}</h2><div class="meta"><span class="pos ${pos}">${pos}</span>${c.n} · 2026-27 ${adv?'':'<span class="napill">couverture partielle</span>'}</div></div>${ring}</div>
+    <div class="ptiles">${tile(G,'Buts')}${tile(A,'Passes d.')}${tile(xg==null?'—':xg,'xG')}${tile(p.jeu[1],'Matchs')}${tile(m.toLocaleString('fr'),'Minutes')}${tile(note.toFixed(1),'Note')}</div>
+  </div>
+  <div class="pdwrap">
+    <div class="sect">Statistiques détaillées</div>
+    <div class="pgrid">${CATS.map(panel).join('')}</div>
+    <div class="sect">Graphiques</div>
+    <div class="gcards">
+      <div class="gcard"><div class="gt">Évolution de la note</div><div class="gsub">15 derniers matchs</div>${miniChart(ratings)}</div>
+      <div class="gcard"><div class="gt">Profil du joueur</div><div class="gsub">radar de performance</div>${rad}</div>
+    </div>
+    <div class="gcards" style="margin-top:13px">
+      <div class="gcard"><div class="gt">Buts vs xG par mois</div><div class="gsub">rendement offensif</div>${barsGX(bars)}<div class="lgnd"><span><i style="background:var(--a)"></i>Buts</span><span><i style="background:var(--a2)"></i>xG</span></div></div>
+      <div class="gcard"><div class="gt">Forme récente</div><div class="gsub">note moyenne · 5 matchs</div><div style="font-size:42px;font-weight:850;color:${rcol(forme)};margin-top:6px">${forme}</div><div style="color:var(--t2);font-size:12.5px;margin-top:4px">${note>=7.3?'En forme ▲':'Irrégulier ▬'}</div></div>
+    </div>
+    <div class="sect">Historique match par match</div>
+    <div class="logwrap"><table class="mlog"><thead><tr><th>J</th><th>Adversaire</th><th>Rés.</th><th>Min</th><th>B</th><th>PD</th><th>Tirs</th><th>xG</th><th>xA</th><th>Pass%</th><th>Duels</th><th>Note</th></tr></thead><tbody>${logRows}</tbody></table></div>
+    <div class="sect">Carrière</div>
+    <table class="pcar"><thead><tr><th>Saison</th><th>Club</th><th>Compétition</th><th>M</th><th>Titu</th><th>Min</th><th>B</th><th>PD</th><th>Note</th></tr></thead><tbody>
+      ${[['2026-27',m,G,A,note],['2025-26',2600,G+3,A+2,note-0.1],['2024-25',2400,Math.max(0,G-2),Math.max(0,A-1),note-0.2],['2023-24',2100,Math.max(0,G-5),Math.max(0,A-3),note-0.3],['2022-23',1800,Math.max(0,G-8),Math.max(0,A-4),note-0.4]].map(s=>`<tr><td>${s[0]}</td><td>${c.n}</td><td>Championnat</td><td>${s[1]/90|0}</td><td>${(s[1]/90*0.85)|0}</td><td>${s[1].toLocaleString('fr')}</td><td>${s[2]}</td><td>${s[3]}</td><td><span class="rt" style="background:${rbg(s[4])};color:${rcol(s[4])}">${f1(s[4])}</span></td></tr>`).join('')}
+    </tbody></table>
+  </div>`;
+ $('#pdet').classList.add('on');$('#scrim').classList.remove('on');
 }
 function closePlayer(){$('#pdet').classList.remove('on');$('#scrim').classList.remove('on');}
 $('#scrim').onclick=closePlayer;
