@@ -636,6 +636,11 @@ export interface PlayerSummary {
    *  Null si le club n'a pas (encore) de club canonique rattaché avec un
    *  identifiant API-Football — jamais un écusson approximatif. */
   api_football_id: number | null
+  /** URL complète de l'écusson footylogos.com (résolue via
+   *  `canonical_teams.crest_url` côté backend, déjà vérifiée 200 avant
+   *  d'être posée). Prioritaire sur `api_football_id` côté front. Null si
+   *  non résolu — jamais une URL devinée. */
+  crest_url: string | null
 }
 
 /** Valeurs de la saison précédente servant de repère sous la saison en cours. */
@@ -772,6 +777,10 @@ export interface PlayerDetail {
   team_name: string | null
   season_stats: SeasonStatsOut | null
   recent_matches: RecentMatch[]
+  /** Voir PlayerSummary.api_football_id — même résolution, même garantie. */
+  api_football_id: number | null
+  /** Voir PlayerSummary.crest_url — même résolution, même garantie. */
+  crest_url: string | null
 }
 
 // ── Player career (Transfermarkt) ───────────────────────────────

@@ -100,20 +100,45 @@ function CelluleTaux({
   )
 }
 
-/** Écusson du club, résolu depuis `canonical_teams.api_football_id` (via
- *  l'API /players — jamais via le dictionnaire nom→id `teamLogos.ts`, limité
- *  au big-5/UCL et source de collisions). Sans identifiant, affiche un
- *  placeholder neutre (initiales) plutôt que de retomber sur ce dictionnaire. */
-function PlayerTeamCrest({ apiFootballId, teamName }: { apiFootballId: number | null; teamName: string | null }) {
-  const [failed, setFailed] = useState(false)
-  // Reinitialise l'echec quand l'id change : sinon une instance montee qui a
-  // deja echoue (ancien joueur/club) reste bloquee sur le placeholder meme
-  // apres que `apiFootballId` change pour un id valide (ex. tri/filtre qui
-  // reutilise le composant sans le remonter).
+/** Écusson du club. Priorité de résolution, jamais une image devinée :
+ *  1. `crest_url` (footylogos.com, résolu via `canonical_teams.crest_url`
+ *     — déjà vérifié 200 côté backend, voir
+ *     `app.ingestion.footylogos.resolve_crests`) ;
+ *  2. à défaut, `api_football_id` (`canonical_teams.api_football_id`, URL
+ *     `media.api-sports.io` — comportement historique) ;
+ *  3. à défaut, placeholder neutre (initiales) — jamais le dictionnaire
+ *     nom→id `teamLogos.ts`, limité au big-5/UCL et source de collisions. */
+function PlayerTeamCrest({
+  crestUrl,
+  apiFootballId,
+  teamName,
+}: {
+  crestUrl: string | null
+  apiFootballId: number | null
+  teamName: string | null
+}) {
+  // Chaine de secours ordonnee : crest_url (footylogos) -> api_football_id
+  // (media.api-sports.io) -> placeholder. Chaque echec de chargement passe
+  // a la source suivante plutot que de sauter direct au placeholder.
+  const sources = useMemo(() => {
+    const list: string[] = []
+    if (crestUrl) list.push(crestUrl)
+    if (apiFootballId) list.push(`https://media.api-sports.io/football/teams/${apiFootballId}.png`)
+    return list
+  }, [crestUrl, apiFootballId])
+
+  const [sourceIndex, setSourceIndex] = useState(0)
+  // Reinitialise la position dans la chaine quand les sources changent :
+  // sinon une instance montee qui a deja echoue (ancien joueur/club) reste
+  // bloquee sur le placeholder meme apres que crestUrl/apiFootballId
+  // changent pour une source valide (ex. tri/filtre qui reutilise le
+  // composant sans le remonter).
   useEffect(() => {
-    setFailed(false)
-  }, [apiFootballId])
-  if (!apiFootballId || failed) {
+    setSourceIndex(0)
+  }, [crestUrl, apiFootballId])
+
+  const src = sources[sourceIndex]
+  if (!src) {
     const initials = (teamName ?? '')
       .split(/[\s-]+/).filter(Boolean).map((w) => w[0]).join('').toUpperCase().slice(0, 2)
     return (
@@ -124,10 +149,10 @@ function PlayerTeamCrest({ apiFootballId, teamName }: { apiFootballId: number | 
   }
   return (
     <img
-      src={`https://media.api-sports.io/football/teams/${apiFootballId}.png`}
+      src={src}
       alt=""
       className="w-5 h-5 object-contain shrink-0"
-      onError={() => setFailed(true)}
+      onError={() => setSourceIndex((i) => i + 1)}
     />
   )
 }
@@ -561,7 +586,7 @@ export default function PlayersPage() {
                         </td>
                         <td className="px-3 py-3">
                           <div className="flex items-center gap-1.5 max-w-[140px]">
-                            <PlayerTeamCrest apiFootballId={player.api_football_id} teamName={player.team_name} />
+                            <PlayerTeamCrest crestUrl={player.crest_url} apiFootballId={player.api_football_id} teamName={player.team_name} />
                             <span className="text-sm text-gray-300 truncate">{player.team_name ?? '—'}</span>
                           </div>
                         </td>
