@@ -89,7 +89,7 @@ _TIER_1: dict[int, LeagueMeta] = {
     2: LeagueMeta("Liga Portugal", "Portugal", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 18, 6),
     10: LeagueMeta("Eredivisie", "Netherlands", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 18, 7),
     11: LeagueMeta("Süper Lig", "Turkey", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 18, 8),
-    14: LeagueMeta("Pro League", "Belgium", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 16, 9),
+    14: LeagueMeta("Pro League", "Belgium", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 18, 9),
     15: LeagueMeta("Super League", "Switzerland", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 12, 10),
     13: LeagueMeta("Scottish Premiership", "Scotland", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 12, 11),
     24: LeagueMeta("Super League Greece", "Greece", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 14, 12),
@@ -99,8 +99,8 @@ _TIER_1: dict[int, LeagueMeta] = {
     26: LeagueMeta("Allsvenskan", "Sweden", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 16, 16),
     84: LeagueMeta("Superliga", "Denmark", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 12, 17),
     99: LeagueMeta("Czech First League", "Czechia", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 16, 18),
-    22: LeagueMeta("Parva Liga", "Bulgaria", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 16, 19),
-    55: LeagueMeta("Veikkausliiga", "Finland", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 12, 20),
+    22: LeagueMeta("Parva Liga", "Bulgaria", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 14, 19),
+    55: LeagueMeta("Veikkausliiga", "Finland", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 13, 20),
 }
 
 # ---------------------------------------------------------------------------
