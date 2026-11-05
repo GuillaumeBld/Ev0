@@ -210,6 +210,136 @@ def test_extract_country_slugs_matche_les_deux_formats_de_lien():
 
 
 # ---------------------------------------------------------------------------
+# Repli page pays + homonyme INTRA-pays -> le bon club, jamais l'autre.
+#
+# "Manchester City FC" ne matche aucun slug/variante direct (le vrai slug
+# footylogos est "manchester-city", sans le "FC" final) -> repli page pays.
+# La page liste DEUX clubs du MEME pays dont les slugs sont proches
+# ("manchester-city" et "manchester-united", ratio mesure 0.81 avec un nom
+# cible qui contient le suffixe "fc") : avant le correctif, le seuil 0.6
+# les laissait passer sans distinction fiable. Le correctif doit choisir le
+# bon via score+marge, jamais le second par coincidence d'ordre.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_repli_page_pays_quasi_homonyme_intra_pays_resout_le_bon_club():
+    country_page_html = """
+    <html><body>
+      <a href="/fr/logos/manchester-city">Manchester City</a>
+      <a href="/fr/logos/manchester-united">Manchester United</a>
+    </body></html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fr/country/england":
+            return httpx.Response(200, text=country_page_html)
+        if request.url.path == "/previews/manchester-city/manchester-city-logo-footylogos-320.webp":
+            return httpx.Response(200, content=b"fake-webp")
+        # manchester-united existe aussi (image 200) mais ne doit JAMAIS
+        # etre choisi pour ce club -> si le code se trompait, ce 200
+        # masquerait le faux ecusson, donc on le pose quand meme ici pour
+        # verifier que le garde-fou "200 obligatoire" n'est pas ce qui
+        # protege : c'est le score+marge qui doivent trancher.
+        if request.url.path == "/previews/manchester-united/manchester-united-logo-footylogos-320.webp":
+            return httpx.Response(200, content=b"fake-webp")
+        # Tous les candidats slug directs/variantes de "Manchester City FC"
+        # echouent (le vrai slug n'a pas le suffixe fc) -> force le repli.
+        return httpx.Response(404)
+
+    team = _team(1, "Manchester City FC", country="England")
+    session = _make_session([team])
+    client = _client_from_handler(handler)
+
+    report = await resolve_crests(session, client)
+
+    assert team.crest_url == crest_preview_url("manchester-city")
+    assert report.resolved_country_page == ["Manchester City FC"]
+    assert report.not_found == []
+
+
+@pytest.mark.asyncio
+async def test_repli_page_pays_ambigu_sans_marge_laisse_null():
+    """Deux candidats tres proches l'un de l'autre (score quasi identique,
+    marge insuffisante) sans que l'un ne soit clairement le bon -> rejet,
+    `crest_url` reste NULL plutot que de poser un ecusson au hasard."""
+    country_page_html = """
+    <html><body>
+      <a href="/fr/logos/fc-ambiguousa">A</a>
+      <a href="/fr/logos/fc-ambiguousb">B</a>
+    </body></html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fr/country/england":
+            return httpx.Response(200, text=country_page_html)
+        if request.url.path in (
+            "/previews/fc-ambiguousa/fc-ambiguousa-logo-footylogos-320.webp",
+            "/previews/fc-ambiguousb/fc-ambiguousb-logo-footylogos-320.webp",
+        ):
+            # Les deux images existent reellement (200) -> le garde-fou
+            # "200 obligatoire" seul ne suffirait pas a eviter le faux
+            # ecusson ici ; c'est le rejet sur marge qui doit intervenir
+            # AVANT meme de verifier l'image.
+            return httpx.Response(200, content=b"fake-webp")
+        return httpx.Response(404)
+
+    team = _team(1, "Fc Ambiguous", country="England")
+    session = _make_session([team])
+    client = _client_from_handler(handler)
+
+    report = await resolve_crests(session, client)
+
+    assert team.crest_url is None
+    assert report.resolved == []
+    assert report.resolved_country_page == []
+    assert len(report.not_found) == 1
+    assert report.not_found[0].name == "Fc Ambiguous"
+
+
+# ---------------------------------------------------------------------------
+# Cache page pays par run : deux clubs du meme pays tombant sur le repli ne
+# declenchent qu'un seul GET de la page pays.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_repli_page_pays_cache_un_seul_fetch_pour_deux_clubs_meme_pays():
+    country_page_html = """
+    <html><body>
+      <a href="/fr/logos/manchester-city">Manchester City</a>
+      <a href="/fr/logos/liverpool">Liverpool</a>
+    </body></html>
+    """
+    country_page_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fr/country/england":
+            country_page_calls.append(request.url.path)
+            return httpx.Response(200, text=country_page_html)
+        if request.url.path == "/previews/manchester-city/manchester-city-logo-footylogos-320.webp":
+            return httpx.Response(200, content=b"fake-webp")
+        if request.url.path == "/previews/liverpool/liverpool-logo-footylogos-320.webp":
+            return httpx.Response(200, content=b"fake-webp")
+        return httpx.Response(404)
+
+    # Les deux noms portent un suffixe qui fait echouer tous les
+    # candidats slug directs/variantes -> les deux tombent sur le repli.
+    team_city = _team(1, "Manchester City FC", country="England")
+    team_pool = _team(2, "Liverpool FC", country="England")
+    session = _make_session([team_city, team_pool])
+    client = _client_from_handler(handler)
+
+    report = await resolve_crests(session, client)
+
+    assert team_city.crest_url == crest_preview_url("manchester-city")
+    assert team_pool.crest_url == crest_preview_url("liverpool")
+    assert sorted(report.resolved_country_page) == ["Liverpool FC", "Manchester City FC"]
+    # Un seul GET de la page pays malgre deux clubs passant par le repli.
+    assert len(country_page_calls) == 1
+
+
+# ---------------------------------------------------------------------------
 # Aucun candidat 200 -> crest_url reste NULL, consigne dans not_found —
 # jamais un faux ecusson.
 # ---------------------------------------------------------------------------

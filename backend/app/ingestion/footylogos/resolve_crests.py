@@ -18,8 +18,15 @@ Algorithme, dans l'ordre, pour chaque club canonique engage sans ecusson :
   4. Repli : page pays footylogos (`/fr/country/{country_slug}`), qui liste
      tous les clubs du pays via des liens `/fr/logos/{slug}`. Le club est
      matche au slug du pays le plus proche par similarite de chaine
-     (`difflib.SequenceMatcher`, seuil 0.6) — restreindre au pays rend ce
-     match fiable (evite les homonymes inter-pays).
+     (`difflib.SequenceMatcher` sur formes normalisees, seuil 0.82 ET marge
+     >= 0.08 avec le 2e candidat — restreindre au pays seul ne suffit PAS a
+     ecarter les homonymes INTRA-pays, ex. "manchester-city" vs
+     "manchester-united" : 0.81 de similarite, tous les deux dans le meme
+     pays. En cas de doute (score insuffisant ou trop proche du 2e), le
+     repli ne pose RIEN plutot que de risquer un mauvais ecusson). La page
+     pays elle-meme est mise en cache en memoire pour la duree du run
+     (`resolve_crests`), un seul GET par pays meme si plusieurs clubs y
+     tombent.
 
 GARDE-FOU ABSOLU, identique au reste de l'ingestion (Transfermarkt,
 API-Football) : `crest_url` n'est POSE que si l'URL image candidate rend
@@ -310,19 +317,111 @@ def extract_country_slugs(html: str) -> list[str]:
     return sorted({m.group(1) for m in _LOGO_LINK_RE.finditer(html)})
 
 
-def _best_match(target_slug: str, available: list[str], threshold: float = 0.6) -> str | None:
-    best_slug: str | None = None
-    best_ratio = 0.0
-    for candidate in available:
-        ratio = SequenceMatcher(None, target_slug, candidate).ratio()
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best_slug = candidate
-    return best_slug if best_ratio >= threshold else None
+# Seuil et marge du repli page-pays : des homonymes INTRA-pays (meme
+# registre "pays" donc non ecartes par la restriction au pays) peuvent
+# depasser un seuil permissif — ex. mesure reelle :
+#   manchester-city vs manchester-united = 0.81
+#   real-madrid     vs atletico-madrid   = 0.62
+#   ac-milan        vs inter-milan       = 0.63
+#   sporting        vs sporting-gijon    = 0.73
+# Un seuil haut (0.82) ecarte deja la plupart ; la marge (0.08) ecarte en
+# plus les cas ambigus ou deux candidats sont proches sans vrai gagnant.
+# En cas de doute : on ne pose rien (None), jamais un mauvais ecusson.
+_MATCH_THRESHOLD = 0.82
+_MATCH_MIN_MARGIN = 0.08
+
+
+def _normalize_for_match(slug: str) -> str:
+    """Forme normalisee pour la comparaison floue : NFKD -> ASCII,
+    minuscules, tirets/underscores -> espace simple. Appliquee aux DEUX
+    cotes (slug cible et slug candidat) avant `SequenceMatcher`, pour que
+    la similarite ne depende pas d'une difference de ponctuation plutot
+    que de nom."""
+    nfkd = unicodedata.normalize("NFKD", slug)
+    ascii_only = "".join(c for c in nfkd if not unicodedata.combining(c))
+    return re.sub(r"[-_]+", " ", ascii_only.lower()).strip()
+
+
+def _best_match(
+    target_slug: str,
+    available: list[str],
+    *,
+    threshold: float = _MATCH_THRESHOLD,
+    min_margin: float = _MATCH_MIN_MARGIN,
+) -> str | None:
+    """Meilleur candidat de `available` pour `target_slug`, ou `None` si le
+    doute n'est pas leve. Conservateur par construction :
+
+    - le meilleur score doit atteindre `threshold` (0.82) — un slug "assez
+      proche" ne suffit pas, il doit etre TRES proche ;
+    - il doit aussi depasser le 2e meilleur score d'au moins `min_margin`
+      (0.08) — deux candidats proches sans vrai gagnant (homonymes
+      intra-pays type manchester-city/manchester-united) sont rejetes
+      meme si le meilleur depasse le seuil.
+
+    Les deux cotes sont normalises de la meme facon (`_normalize_for_match`)
+    avant `SequenceMatcher`, qui reste la mesure de similarite."""
+    if not available:
+        return None
+
+    target_norm = _normalize_for_match(target_slug)
+    scored = sorted(
+        (
+            (SequenceMatcher(None, target_norm, _normalize_for_match(candidate)).ratio(), candidate)
+            for candidate in available
+        ),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+
+    best_ratio, best_slug = scored[0]
+    if best_ratio < threshold:
+        return None
+
+    second_ratio = scored[1][0] if len(scored) > 1 else 0.0
+    if best_ratio - second_ratio < min_margin:
+        return None
+
+    return best_slug
+
+
+async def _fetch_country_available_slugs(country: str, client: FootyLogosClient) -> list[str] | None:
+    """Slugs de club disponibles pour `country`, en essayant le slug pays
+    primaire puis ses eventuels repli (`_COUNTRY_SLUG_FALLBACKS`). Pas de
+    cache ici — cf. `_get_country_available_slugs` pour le cache par run."""
+    for country_slug in _country_slug_candidates(country):
+        html = await client.fetch_country_page(country_slug)
+        if html is None:
+            continue
+        available = extract_country_slugs(html)
+        if available:
+            return available
+    return None
+
+
+async def _get_country_available_slugs(
+    country: str,
+    client: FootyLogosClient,
+    cache: dict[str, asyncio.Task[list[str] | None]],
+) -> list[str] | None:
+    """Comme `_fetch_country_available_slugs`, mais memoise par pays dans
+    `cache` pour la duree d'un run de `resolve_crests` : plusieurs clubs du
+    meme pays tombant sur le repli ne (re)telechargent la page pays qu'une
+    seule fois. `cache` stocke des `Task` (pas des valeurs) pour que des
+    appels concurrents (le run traite les clubs via `asyncio.gather`) sur
+    le meme pays attendent la meme requete en vol plutot que d'en lancer
+    une deuxieme."""
+    task = cache.get(country)
+    if task is None:
+        task = asyncio.ensure_future(_fetch_country_available_slugs(country, client))
+        cache[country] = task
+    return await task
 
 
 async def _resolve_team_slug(
-    team: CanonicalTeam, client: FootyLogosClient
+    team: CanonicalTeam,
+    client: FootyLogosClient,
+    country_cache: dict[str, asyncio.Task[list[str] | None]],
 ) -> tuple[str | None, str | None]:
     """Rend `(slug, methode)` ou `(None, None)` si aucun candidat ne rend
     une image 200. `methode` in {"slug", "country_page"} — jamais autre
@@ -333,28 +432,22 @@ async def _resolve_team_slug(
 
     if team.country:
         target_slug = slugify(team.name_en or team.name_fr)
-        for country_slug in _country_slug_candidates(team.country):
-            html = await client.fetch_country_page(country_slug)
-            if html is None:
-                continue
-            available = extract_country_slugs(html)
-            if not available:
-                continue
+        available = await _get_country_available_slugs(team.country, client, country_cache)
+        if available:
             best = _best_match(target_slug, available)
             if best and await client.image_exists(best):
                 return best, "country_page"
-            # La page pays existe mais aucun match suffisant : le pays
-            # etait le bon slug, pas la peine d'essayer un alias pays.
-            break
 
     return None, None
 
 
 async def _resolve_one_team(
-    team: CanonicalTeam, client: FootyLogosClient
+    team: CanonicalTeam,
+    client: FootyLogosClient,
+    country_cache: dict[str, asyncio.Task[list[str] | None]],
 ) -> tuple[str | None, str | None]:
     try:
-        return await _resolve_team_slug(team, client)
+        return await _resolve_team_slug(team, client, country_cache)
     except Exception as exc:  # jamais un bug/echec sur un club ne bloque les autres
         logger.error("footylogos: erreur inattendue pour %r: %s", team.name_fr, exc)
         return None, None
@@ -443,7 +536,10 @@ async def resolve_crests(
         await client.__aenter__()
 
     try:
-        results = await asyncio.gather(*[_resolve_one_team(team, client) for team in teams])
+        country_cache: dict[str, asyncio.Task[list[str] | None]] = {}
+        results = await asyncio.gather(
+            *[_resolve_one_team(team, client, country_cache) for team in teams]
+        )
         for team, (slug, method) in zip(teams, results, strict=True):
             if slug:
                 team.crest_url = crest_preview_url(slug)
