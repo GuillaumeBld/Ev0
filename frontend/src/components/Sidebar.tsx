@@ -44,7 +44,7 @@ const navGroups = [
   {
     label: 'Analyse',
     items: [
-      { name: 'Joueurs', href: '/dashboard/players', icon: Users },
+      { name: 'Joueurs', href: '/dashboard/atlas', icon: Users },
       { name: 'Calendrier', href: '/dashboard/calendrier', icon: Calendar },
       { name: 'Sanctuaire', href: '/dashboard/sanctuaire', icon: Library },
       { name: 'Équipes', href: '/dashboard/teams', icon: Shield },

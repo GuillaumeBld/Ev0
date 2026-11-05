@@ -63,29 +63,39 @@ export function PlayerCard({ player: p, selected, compareMode, onClick }: Player
   )
 }
 
-export function PlayerRow({ player: p, selected, compareMode, onClick }: PlayerTileProps) {
+/**
+ * Une ligne du tableau triable de la vue liste de l'Explorer. Les cellules
+ * sont dans le même ordre que les en-têtes `<th>` rendus par `Explorer.tsx`
+ * (voir `COLUMNS`) : Joueur, Buts, PD, xG/90, xA/90, Min, Matchs, Note.
+ */
+export function PlayerTableRow({ player: p, selected, compareMode, onClick }: PlayerTileProps) {
   return (
-    <div className={clsx(styles.prow, selected && styles.on)} onClick={onClick}>
-      {compareMode ? <Tick on={selected} /> : (
-        <ClubCrest crestUrl={p.crest_url} apiFootballId={p.api_football_id} name={p.team_name ?? ''} size={34} />
-      )}
-      <div className={styles.who}>
-        <div className={styles.nm}>{p.name}</div>
-        <div className={styles.sub}>
-          {p.position && <span className={clsx(styles.pos, styles[p.position])}>{p.position}</span>}
-          {p.team_name ?? '—'}
+    <tr className={clsx(styles.ptr, selected && styles.on)} onClick={onClick}>
+      <td className={styles.ptdcheck}>
+        {compareMode ? <Tick on={selected} /> : (
+          <ClubCrest crestUrl={p.crest_url} apiFootballId={p.api_football_id} name={p.team_name ?? ''} size={30} />
+        )}
+      </td>
+      <td className={styles.ptdname}>
+        <div className={styles.who}>
+          <div className={styles.nm}>{p.name}</div>
+          <div className={styles.sub}>
+            {p.position && <span className={clsx(styles.pos, styles[p.position])}>{p.position}</span>}
+            {p.team_name ?? '—'}
+          </div>
         </div>
-      </div>
-      <span className={styles.rt} style={{ background: ratingBg(p.avg_rating), color: ratingColor(p.avg_rating) }}>
-        {fmt(p.avg_rating)}
-      </span>
-      <div className={styles.stats}>
-        <div className={styles.s}><div className={styles.v}>{p.goals ?? '—'}</div><div className={styles.l}>Buts</div></div>
-        <div className={styles.s}><div className={styles.v}>{p.goal_assist ?? '—'}</div><div className={styles.l}>PD</div></div>
-        <div className={styles.s}><div className={styles.v}>{fmt(p.xg_per_90, 2)}</div><div className={styles.l}>xG/90</div></div>
-        <div className={styles.s}><div className={styles.v}>{fmt(p.xa_per_90, 2)}</div><div className={styles.l}>xA/90</div></div>
-        <div className={styles.s}><div className={styles.v}>{p.matches_played ?? '—'}</div><div className={styles.l}>Matchs</div></div>
-      </div>
-    </div>
+      </td>
+      <td className={styles.ptdnum}>{p.goals ?? '—'}</td>
+      <td className={styles.ptdnum}>{p.goal_assist ?? '—'}</td>
+      <td className={styles.ptdnum}>{fmt(p.xg_per_90, 2)}</td>
+      <td className={styles.ptdnum}>{fmt(p.xa_per_90, 2)}</td>
+      <td className={styles.ptdnum}>{p.minutes_played ?? '—'}</td>
+      <td className={styles.ptdnum}>{p.matches_played ?? '—'}</td>
+      <td className={styles.ptdnum}>
+        <span className={styles.rt} style={{ background: ratingBg(p.avg_rating), color: ratingColor(p.avg_rating) }}>
+          {fmt(p.avg_rating)}
+        </span>
+      </td>
+    </tr>
   )
 }

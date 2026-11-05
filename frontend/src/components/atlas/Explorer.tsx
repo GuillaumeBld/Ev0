@@ -3,10 +3,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { clsx } from 'clsx'
-import { ArrowLeft, Search, LayoutGrid, Columns3, ChevronLeft, ChevronRight } from 'lucide-react'
+import { ArrowLeft, Search, LayoutGrid, Columns3, ChevronLeft, ChevronRight, ChevronUp, ChevronDown } from 'lucide-react'
 import styles from './atlas.module.css'
 import { ClubCrest } from './ClubCrest'
-import { PlayerCard, PlayerRow } from './PlayerCard'
+import { PlayerCard, PlayerTableRow } from './PlayerCard'
 import {
   fetchPlayers, fetchCanonicalTeams,
   type GeoCountry, type GeoLeague, type GeoIntl,
@@ -30,6 +30,21 @@ const SORT_OPTIONS: { value: PlayerSortField; label: string }[] = [
   { value: 'goal_assist', label: 'Passes déc.' },
   { value: 'minutes_played', label: 'Minutes' },
   { value: 'name', label: 'Nom' },
+]
+
+/** Colonnes du tableau triable de la vue liste, dans l'ordre d'affichage.
+ *  `key` est la clé de tri serveur (`sort_by`, `_SORT_FIELD_MAP` côté backend).
+ *  `defaultOrder` est le sens appliqué au premier clic sur une colonne inactive —
+ *  croissant pour le nom (alphabétique), décroissant pour les stats (meilleur en premier). */
+const COLUMNS: { key: PlayerSortField; label: string; defaultOrder: 'asc' | 'desc' }[] = [
+  { key: 'name', label: 'Joueur', defaultOrder: 'asc' },
+  { key: 'goals', label: 'Buts', defaultOrder: 'desc' },
+  { key: 'goal_assist', label: 'PD', defaultOrder: 'desc' },
+  { key: 'xg_per_90', label: 'xG/90', defaultOrder: 'desc' },
+  { key: 'xa_per_90', label: 'xA/90', defaultOrder: 'desc' },
+  { key: 'minutes_played', label: 'Min', defaultOrder: 'desc' },
+  { key: 'matches_played', label: 'Matchs', defaultOrder: 'desc' },
+  { key: 'avg_rating', label: 'Note', defaultOrder: 'desc' },
 ]
 
 const POSITIONS: { value: '' | 'G' | 'D' | 'M' | 'F'; label: string }[] = [
@@ -118,6 +133,18 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
       if (cur.length >= 3) return cur
       return [...cur, p]
     })
+  }
+
+  // Tri serveur (sortBy/sortOrder) déclenché par un clic sur une colonne du
+  // tableau — le useEffect sur [position, debouncedQuery, sortBy, sortOrder, selectedClub]
+  // ci-dessus relance déjà le fetch, donc pas de tri client ici.
+  function handleSort(field: PlayerSortField) {
+    if (sortBy === field) {
+      setSortOrder((o) => (o === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortBy(field)
+      setSortOrder(COLUMNS.find((c) => c.key === field)?.defaultOrder ?? 'desc')
+    }
   }
 
   const title = context.kind === 'league' ? context.country.name : context.intl.name
@@ -223,14 +250,45 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
             <div className={styles.empty}>Erreur de chargement des joueurs.</div>
           ) : !playersQuery.isLoading && displayed.length === 0 ? (
             <div className={styles.empty}>Aucun joueur pour ces filtres.</div>
+          ) : view === 'list' ? (
+            <div className={styles.ptablewrap}>
+              <table className={styles.ptable}>
+                <thead>
+                  <tr>
+                    <th className={styles.ptdcheck} />
+                    {COLUMNS.map((c) => {
+                      const active = sortBy === c.key
+                      return (
+                        <th
+                          key={c.key}
+                          className={clsx(styles.sortable, active && styles.on, c.key !== 'name' && styles.num)}
+                          onClick={() => handleSort(c.key)}
+                          aria-sort={active ? (sortOrder === 'asc' ? 'ascending' : 'descending') : undefined}
+                        >
+                          <span className={styles.thlabel}>
+                            {c.label}
+                            {active ? (sortOrder === 'asc' ? <ChevronUp size={13} /> : <ChevronDown size={13} />) : null}
+                          </span>
+                        </th>
+                      )
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayed.map((p) => {
+                    const isSel = selected.some((x) => x.player_api_id === p.player_api_id)
+                    const onClick = () => (compareMode ? toggleSelect(p) : onOpenPlayer(p.player_api_id))
+                    return <PlayerTableRow key={p.player_api_id} player={p} selected={isSel} compareMode={compareMode} onClick={onClick} />
+                  })}
+                </tbody>
+              </table>
+            </div>
           ) : (
-            <div className={clsx(styles.players, view === 'list' && styles.list)}>
+            <div className={styles.players}>
               {displayed.map((p) => {
                 const isSel = selected.some((x) => x.player_api_id === p.player_api_id)
                 const onClick = () => (compareMode ? toggleSelect(p) : onOpenPlayer(p.player_api_id))
-                return view === 'list'
-                  ? <PlayerRow key={p.player_api_id} player={p} selected={isSel} compareMode={compareMode} onClick={onClick} />
-                  : <PlayerCard key={p.player_api_id} player={p} selected={isSel} compareMode={compareMode} onClick={onClick} />
+                return <PlayerCard key={p.player_api_id} player={p} selected={isSel} compareMode={compareMode} onClick={onClick} />
               })}
             </div>
           )}
