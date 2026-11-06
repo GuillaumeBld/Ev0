@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.ingestion.bzzoiro.constants import INTL_CLUB_COMP_LEAGUE_IDS
 from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzPlayerSeasonStat, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
 from app.models.data_coverage import DataCoverageRun
@@ -112,7 +113,9 @@ _SELECTION_TEAMS_LEAGUE_ID = 27
 # _EUROPEAN_CUP_LEAGUE_IDS plus bas, répétés ici car ce module-level dict est
 # évalué avant cette définition) + 32/33=Copa Libertadores/Sudamericana
 # (tous les participants, pas de phase de ligue).
-_CLUB_CUP_LEAGUE_IDS: frozenset[int] = frozenset({7, 8, 83, 32, 33})
+# Source unique (évite la divergence) : {7,8,83,90,32,33}. Les coupes d'Europe
+# 7/8/83 sont filtrées à la phase de ligue ; 90/32/33 = tous les participants.
+_CLUB_CUP_LEAGUE_IDS: frozenset[int] = INTL_CLUB_COMP_LEAGUE_IDS
 
 _DOMESTIC_KINDS = ("domestic_1", "domestic_2")
 _INTL_KINDS = ("uefa_club", "selection")

@@ -251,3 +251,14 @@ def test_every_nation_iso2_has_a_continent():
 
     manquants = sorted(set(_NATION_ISO2.values()) - set(_NATION_CONTINENT))
     assert manquants == [], f"ISO2 sans continent: {manquants}"
+
+
+def test_club_cup_league_ids_no_divergence():
+    """Garde-fou : _CLUB_CUP_LEAGUE_IDS (pays "coupe" qui s'allument côté Clubs)
+    doit rester identique à la source unique INTL_CLUB_COMP_LEAGUE_IDS
+    (incluait 90/Super Coupe, autrefois oubliée). Évite une 3e définition qui
+    dérive silencieusement."""
+    from app.api.atlas import _CLUB_CUP_LEAGUE_IDS
+    from app.ingestion.bzzoiro.constants import INTL_CLUB_COMP_LEAGUE_IDS
+
+    assert _CLUB_CUP_LEAGUE_IDS == INTL_CLUB_COMP_LEAGUE_IDS == frozenset({7, 8, 83, 90, 32, 33})
