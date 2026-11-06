@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.ingestion.bzzoiro.constants import (
     EFFECTIFS_REGLEMENTAIRES,
+    INTL_CLUB_COMP_LEAGUE_IDS,
     TARGET_LEAGUE_API_ID_LIST,
     TARGET_LEAGUE_INTERNAL_ID_LIST,
 )
@@ -980,17 +981,37 @@ async def list_players(
     # when the unfiltered player set is large.
     player_id_subq = select(BzzPlayer.api_id).where(BzzPlayer.internal_id.is_not(None))
 
+    restrict_stats_league: int | None = None
     if league_api_id is not None:
-        # Effectifs de la saison en cours, quelle que soit la saison des stats.
-        team_ids = await team_ids_for_league(
-            session, league_api_id, await current_season(session)
-        )
-        if not team_ids:
-            return []
-        eff_team = func.coalesce(
-            BzzPlayer.loan_team_api_id, BzzPlayer.current_team_api_id
-        )
-        player_id_subq = player_id_subq.where(eff_team.in_(team_ids))
+        if league_api_id in INTL_CLUB_COMP_LEAGUE_IDS:
+            # Compétition internationale de clubs (LdC, Europa, Conference,
+            # Super Coupe, Libertadores/Sudamericana) : aucun club n'a cet
+            # identifiant comme league_api_id dans le référentiel, donc
+            # team_ids_for_league rend toujours []. On résout les joueurs par
+            # présence d'une ligne de stats DANS cette compétition, puis on
+            # restreint les stats affichées à cette seule compétition (pas
+            # l'agrégat toutes-compétitions).
+            restrict_stats_league = league_api_id
+            player_id_subq = player_id_subq.where(
+                BzzPlayer.api_id.in_(
+                    select(BzzPlayerSeasonStat.player_api_id).where(
+                        BzzPlayerSeasonStat.league_api_id == league_api_id,
+                        BzzPlayerSeasonStat.season == season,
+                    )
+                )
+            )
+        else:
+            # Championnat domestique : effectif de la saison en cours, quelle
+            # que soit la saison des stats.
+            team_ids = await team_ids_for_league(
+                session, league_api_id, await current_season(session)
+            )
+            if not team_ids:
+                return []
+            eff_team = func.coalesce(
+                BzzPlayer.loan_team_api_id, BzzPlayer.current_team_api_id
+            )
+            player_id_subq = player_id_subq.where(eff_team.in_(team_ids))
     if team_api_id is not None:
         # Un joueur appartient a UN club : celui que porte l'effectif
         # Transfermarkt (`sync_squads`), seule autorite sur la composition.
@@ -1014,12 +1035,16 @@ async def list_players(
         return []
 
     # Step 2: fetch ALL season stat rows using the same subquery (no parameter list)
+    stats_filter = [
+        BzzPlayerSeasonStat.player_api_id.in_(player_id_subq),
+        BzzPlayerSeasonStat.season == season,
+    ]
+    if restrict_stats_league is not None:
+        # Compétition internationale de clubs : n'afficher que les stats de
+        # cette compétition, pas l'agrégat toutes-compétitions.
+        stats_filter.append(BzzPlayerSeasonStat.league_api_id == restrict_stats_league)
     all_stats = (await session.execute(
-        select(BzzPlayerSeasonStat)
-        .where(
-            BzzPlayerSeasonStat.player_api_id.in_(player_id_subq),
-            BzzPlayerSeasonStat.season == season,
-        )
+        select(BzzPlayerSeasonStat).where(*stats_filter)
     )).scalars().all()
 
     # Appele directement (tests), compare_previous porte l'objet Query, qui est
@@ -1028,11 +1053,16 @@ async def list_players(
     saison_prec = saison_precedente(season) if comparer else None
     stats_prec_by_player: dict[int, list] = defaultdict(list)
     if saison_prec:
-        for row in (await session.execute(
-            select(BzzPlayerSeasonStat).where(
-                BzzPlayerSeasonStat.player_api_id.in_(player_id_subq),
-                BzzPlayerSeasonStat.season == saison_prec,
+        stats_prec_filter = [
+            BzzPlayerSeasonStat.player_api_id.in_(player_id_subq),
+            BzzPlayerSeasonStat.season == saison_prec,
+        ]
+        if restrict_stats_league is not None:
+            stats_prec_filter.append(
+                BzzPlayerSeasonStat.league_api_id == restrict_stats_league
             )
+        for row in (await session.execute(
+            select(BzzPlayerSeasonStat).where(*stats_prec_filter)
         )).scalars().all():
             stats_prec_by_player[row.player_api_id].append(row)
 
