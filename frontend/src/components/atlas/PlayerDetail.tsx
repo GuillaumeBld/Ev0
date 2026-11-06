@@ -607,7 +607,6 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
   // ── Bannières : totaux toute-carrière (somme de TOUTES les lignes
   // breakdown du périmètre, indépendamment du sélecteur saison/compétition
   // affiché plus bas) ──────────────────────────────────────────────────────
-  const clubCareerAgg = useMemo(() => sumAgg(clubRowsNorm.map((r) => r.agg)), [clubRowsNorm])
   const selCareerAgg = useMemo(() => sumAgg(selRowsNorm.map((r) => r.agg)), [selRowsNorm])
 
   /** Parcours en sélection par compétition (table `.tbl` en bas de l'onglet
@@ -806,10 +805,10 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                         <div className={styles.bs}>{player.team_name ?? 'Club actuel'} · toutes compétitions de club</div>
                       </div>
                       <div className={styles.ptiles}>
-                        <Tile value={clubCareerAgg.m} label="Matchs" />
-                        <Tile value={clubCareerAgg.g} label="Buts" />
-                        <Tile value={clubCareerAgg.a} label="Passes d." />
-                        <Tile value={clubCareerAgg.min} label="Minutes" thousands />
+                        <Tile value={careerTotals.appearances} label="Matchs" />
+                        <Tile value={careerTotals.goals} label="Buts" />
+                        <Tile value={careerTotals.assists} label="Passes d." />
+                        <Tile value={careerTotals.minutes} label="Minutes" thousands />
                       </div>
                     </div>
 
