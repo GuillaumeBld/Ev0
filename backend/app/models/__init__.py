@@ -19,6 +19,7 @@ from app.models.player_match_minutes import PlayerMatchMinutes
 from app.models.player_odds_snapshot import PlayerOddsSnapshot
 from app.models.poll_state import OddsPortalPollState
 from app.models.recommendations import Recommendation
+from app.models.selection_stats import PlayerSelectionSeasonStat
 from app.models.settings import UserSettings
 from app.models.squad_sync import SquadSyncRun
 from app.models.team_xg import TeamXgEstimate
@@ -46,6 +47,7 @@ __all__ = [
     "PlayerCareerSeason",
     "PlayerMatchMinutes",
     "PlayerOddsSnapshot",
+    "PlayerSelectionSeasonStat",
     "Recommendation",
     "SquadSyncRun",
     "TeamLineup",
