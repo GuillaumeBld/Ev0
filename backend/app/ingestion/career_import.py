@@ -45,8 +45,8 @@ from app.models.career_import import (
 from app.models.player_career import PlayerCareerSeason
 from app.scripts.import_career import import_career_data
 from app.scripts.transfermarkt_career import (
-    TransfermarktError,
     build_player_report,
+    load_cache,
 )
 
 logger = logging.getLogger(__name__)
@@ -251,7 +251,13 @@ async def run_career_import(
     la boucle du worker. Voir `_run_career_import_blocking` cote worker.
     """
     now = now or dt.datetime.now(dt.timezone.utc)
-    cache = cache if cache is not None else {}
+    # `build_player_report` attend la structure de `load_cache` et indexe
+    # directement cache["resolved_players"]. Un dict vide levait un KeyError
+    # qui tuait le lot entier a chaque nuit depuis le 21/10/2026 : on
+    # reutilise l'initialiseur du scraper plutot que de recopier ses cles,
+    # pour qu'une cle ajoutee plus tard ne casse rien ici.
+    if cache is None:
+        cache = load_cache("")  # chemin inexistant -> structure vide correcte
 
     queue = await players_needing_career(session, limit=limit, now=now)
     run = CareerImportRun(candidates=len(queue))
@@ -274,13 +280,21 @@ async def run_career_import(
         run.attempted += 1
         try:
             report = build_player_report(client, player, cache)
-        except TransfermarktError as exc:
-            # Panne reseau ou HTTP : ce n'est pas un verdict sur le joueur.
-            # On la trace comme telle pour la retenter des le lendemain, et on
-            # continue le lot plutot que de le perdre entier.
+        except Exception as exc:
+            # Toute defaillance sur UN joueur : panne reseau, HTTP, ou reponse
+            # inattendue du scraper. On ne filtre pas sur TransfermarktError :
+            # le scraper ne garantit pas d'emballer toutes ses erreurs, et un
+            # KeyError non prevu a tue le lot entier chaque nuit du 21/10 au
+            # 06/11/2026. Un lot doit survivre a un joueur.
             run.errors += 1
-            logger.warning("Import carriere : echec reseau '%s' — %s", player["name"], exc)
-            await record_attempt(session, api_id, OUTCOME_ERROR, reason=str(exc), now=now)
+            logger.warning(
+                "Import carriere : echec sur '%s' — %s: %s",
+                player["name"], type(exc).__name__, exc,
+            )
+            await record_attempt(
+                session, api_id, OUTCOME_ERROR,
+                reason=f"{type(exc).__name__}: {exc}", now=now,
+            )
             continue
 
         outcome, reason = classify_report(report)
