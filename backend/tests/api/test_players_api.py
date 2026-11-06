@@ -377,8 +377,8 @@ async def test_get_player_detail():
 
     recent_result = MagicMock()
     recent_result.all.return_value = [
-        (ms1, dt1, 100, 200, "Real Madrid", "Barcelona"),
-        (ms2, dt2, 200, 100, "Atletico", "Real Madrid"),
+        (ms1, dt1, 100, 200, "Real Madrid", "Barcelona", 42),
+        (ms2, dt2, 200, 100, "Atletico", "Real Madrid", 42),
     ]
     crest_result = MagicMock()
     crest_result.all.return_value = []  # aucun club canonique dans ce test
@@ -418,6 +418,7 @@ async def test_get_player_detail():
     m0 = recent[0]
     assert m0.event_api_id == 100
     assert m0.event_date == dt1
+    assert m0.league_api_id == 42
     assert m0.is_home is True
     assert m0.opponent == "Barcelona"
     assert m0.goals == 1
@@ -450,7 +451,7 @@ async def test_get_player_detail_full_match_stats():
 
     recent_result = MagicMock()
     recent_result.all.return_value = [
-        (ms, dt, 100, 200, "Arsenal", "Chelsea"),
+        (ms, dt, 100, 200, "Arsenal", "Chelsea", 42),
     ]
     crest_result = MagicMock()
     crest_result.all.return_value = []
@@ -467,6 +468,7 @@ async def test_get_player_detail_full_match_stats():
 
     m = response["recent_matches"][0]
     assert m.event_api_id == 777
+    assert m.league_api_id == 42
     assert m.touches == 55
     assert m.total_shots == 4
     assert m.total_pass == 42

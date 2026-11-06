@@ -17,6 +17,7 @@ from app.db import get_db
 from app.ingestion.bzzoiro.constants import (
     EFFECTIFS_REGLEMENTAIRES,
     INTL_CLUB_COMP_LEAGUE_IDS,
+    SELECTION_STATS_LEAGUE_IDS,
     TARGET_LEAGUE_API_ID_LIST,
     TARGET_LEAGUE_INTERNAL_ID_LIST,
 )
@@ -45,6 +46,16 @@ TARGET_INTERNAL_IDS = [1, 3, 4, 5, 6, 7]  # PL=1, LaLiga=3, SerieA=4, BL=5, L1=6
 # Old SofaScore IDs kept for recent_matches query (old events still carry those IDs).
 TARGET_LEAGUE_IDS = TARGET_LEAGUE_INTERNAL_ID_LIST  # PL=1, LL=3, SA=4, BL=5, L1=6, UCL=7
 _ALL_LEAGUE_IDS = TARGET_LEAGUE_INTERNAL_ID_LIST  # canonical Bzzoiro IDs only: [1,3,4,5,6,7]
+
+# Ligues du journal match par match de la fiche joueur (recent_matches) :
+# les 6 championnats/UCL cibles, PLUS les autres competitions internationales
+# de clubs (Europa, Conference, Super Coupe, Libertadores/Sudamericana) et les
+# selections nationales ayant de vraies stats de match (Coupe du monde, Ligues
+# des Nations). Le journal doit couvrir club + coupes + selection, pas
+# seulement les 6 championnats domestiques.
+RECENT_MATCHES_LEAGUE_IDS: frozenset[int] = (
+    frozenset(_ALL_LEAGUE_IDS) | INTL_CLUB_COMP_LEAGUE_IDS | SELECTION_STATS_LEAGUE_IDS
+)
 
 CSV_FIELDS = [
     "name",
@@ -150,6 +161,11 @@ class RecentMatch(BaseModel):
 
     event_api_id: int
     event_date: datetime | None
+    # Identifiant de ligue (BzzEvent.league_api_id) : permet au front d'afficher
+    # la competition de chaque match du journal (club, coupe, selection). None
+    # si l'event n'a pas de ligue resolue (ne devrait pas arriver vu le filtre
+    # de la requete qui l'exige).
+    league_api_id: int | None = None
     opponent: str | None
     is_home: bool | None
     minutes_played: int | None
@@ -289,6 +305,73 @@ class PlayerCareerOut(BaseModel):
     player: PlayerCareerIdentityOut
     career: list[CareerSeasonOut]
     blended_rhythm: BlendedRhythmOut | None
+
+
+class BreakdownRow(BaseModel):
+    """One (season, competition) row aggregated from bzz_player_match_stats.
+
+    Exists alongside SeasonStatsOut (which reads bzz_player_season_stats)
+    because the maquette's Saison/Competition selectors need fields the
+    season table doesn't carry: dispossessed, possession_lost, was_fouled,
+    total_clearance, aerial_lost.
+    """
+
+    season: str
+    league_api_id: int
+    league_name: str
+    kind: str
+    matches_played: int | None
+    minutes_played: int | None
+    starts: int | None
+    goals: int | None
+    goal_assist: int | None
+    expected_goals: float | None
+    expected_assists: float | None
+    total_shots: int | None
+    shots_on_target: int | None
+    key_pass: int | None
+    total_pass: int | None
+    accurate_pass: int | None
+    total_cross: int | None
+    accurate_cross: int | None
+    total_long_balls: int | None
+    accurate_long_balls: int | None
+    duel_won: int | None
+    duel_lost: int | None
+    aerial_won: int | None
+    aerial_lost: int | None
+    total_tackle: int | None
+    won_tackle: int | None
+    interception: int | None
+    ball_recovery: int | None
+    total_clearance: int | None
+    dispossessed: int | None
+    possession_lost: int | None
+    was_fouled: int | None
+    fouls: int | None
+    yellow_card: int | None
+    red_card: int | None
+    avg_rating: float | None
+
+
+class PlayerBreakdownOut(BaseModel):
+    """Response of GET /players/{player_api_id}/breakdown."""
+
+    rows: list[BreakdownRow]
+
+
+class MatchOddsRow(BaseModel):
+    """Closing Betclic odds (buteur/passeur) for a single event."""
+
+    event_api_id: int
+    buteur: float | None
+    passeur: float | None
+
+
+class PlayerMatchOddsOut(BaseModel):
+    """Response of GET /players/{player_api_id}/match-odds."""
+
+    odds: list[MatchOddsRow]
 
 
 class PlayerDetail(BaseModel):
@@ -1321,6 +1404,250 @@ async def list_selection_players(
 
 
 # ---------------------------------------------------------------------------
+# GET /players/{player_api_id}/breakdown  — stats par (saison x competition)
+# ---------------------------------------------------------------------------
+# Doit rester declare AVANT la route /{player_api_id} : sinon FastAPI
+# matche "breakdown" comme une valeur de player_api_id (meme convention que
+# /selection ci-dessus).
+#
+# Agrege bzz_player_match_stats (pas bzz_player_season_stats) : la maquette a
+# besoin de champs absents de la table saison (dispossessed, possession_lost,
+# was_fouled, total_clearance, aerial_lost). La saison est calculee en SQL
+# depuis e.event_date (bascule au 1er aout, meme regle que season_service) et
+# fait partie du GROUP BY : une ligne par (saison, ligue).
+
+
+_BREAKDOWN_SQL = text("""
+    SELECT
+        CASE WHEN EXTRACT(MONTH FROM e.event_date) >= 8
+             THEN EXTRACT(YEAR FROM e.event_date)::int
+             ELSE EXTRACT(YEAR FROM e.event_date)::int - 1
+        END AS season_start_year,
+        e.league_api_id AS league_api_id,
+        l.name AS league_name,
+        l.kind AS kind,
+        COUNT(DISTINCT ms.event_api_id) AS matches_played,
+        SUM(ms.minutes_played) AS minutes_played,
+        COUNT(DISTINCT ms.event_api_id) FILTER (WHERE ms.minutes_played >= 60) AS starts,
+        SUM(ms.goals) AS goals,
+        SUM(ms.goal_assist) AS goal_assist,
+        SUM(ms.expected_goals) AS expected_goals,
+        SUM(ms.expected_assists) AS expected_assists,
+        SUM(ms.total_shots) AS total_shots,
+        SUM(ms.shots_on_target) AS shots_on_target,
+        SUM(ms.key_pass) AS key_pass,
+        SUM(ms.total_pass) AS total_pass,
+        SUM(ms.accurate_pass) AS accurate_pass,
+        SUM(ms.total_cross) AS total_cross,
+        SUM(ms.accurate_cross) AS accurate_cross,
+        SUM(ms.total_long_balls) AS total_long_balls,
+        SUM(ms.accurate_long_balls) AS accurate_long_balls,
+        SUM(ms.duel_won) AS duel_won,
+        SUM(ms.duel_lost) AS duel_lost,
+        SUM(ms.aerial_won) AS aerial_won,
+        SUM(ms.aerial_lost) AS aerial_lost,
+        SUM(ms.total_tackle) AS total_tackle,
+        SUM(ms.won_tackle) AS won_tackle,
+        SUM(ms.interception) AS interception,
+        SUM(ms.ball_recovery) AS ball_recovery,
+        SUM(ms.total_clearance) AS total_clearance,
+        SUM(ms.dispossessed) AS dispossessed,
+        SUM(ms.possession_lost) AS possession_lost,
+        SUM(ms.was_fouled) AS was_fouled,
+        SUM(ms.fouls) AS fouls,
+        SUM(ms.yellow_card) AS yellow_card,
+        SUM(ms.red_card) AS red_card,
+        AVG(ms.rating) AS avg_rating
+    FROM bzz_player_match_stats ms
+    JOIN bzz_events e ON e.api_id = ms.event_api_id
+    JOIN leagues l ON l.id = e.league_api_id
+    WHERE ms.player_api_id = :player_api_id
+      AND e.status = 'finished'
+    GROUP BY
+        CASE WHEN EXTRACT(MONTH FROM e.event_date) >= 8
+             THEN EXTRACT(YEAR FROM e.event_date)::int
+             ELSE EXTRACT(YEAR FROM e.event_date)::int - 1
+        END,
+        e.league_api_id, l.name, l.kind
+    ORDER BY season_start_year DESC, l.name
+""")
+
+
+@router.get("/{player_api_id}/breakdown", response_model=PlayerBreakdownOut)
+async def get_player_breakdown(
+    player_api_id: int,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Totaux agreges par (saison, competition), pour les selecteurs de la fiche joueur.
+
+    Pas de 404 sur joueur inconnu : un player_api_id sans aucune ligne de
+    match rend simplement rows=[], comme pour une question qui porte sur des
+    stats plutot que sur l'identite du joueur.
+    """
+    result = await session.execute(_BREAKDOWN_SQL, {"player_api_id": player_api_id})
+    rows = result.mappings().all()
+
+    out_rows: list[BreakdownRow] = []
+    for row in rows:
+        start_year = int(row["season_start_year"])
+        out_rows.append(BreakdownRow(
+            season=f"{start_year}-{start_year + 1}",
+            league_api_id=row["league_api_id"],
+            league_name=row["league_name"],
+            kind=row["kind"],
+            matches_played=row["matches_played"],
+            minutes_played=row["minutes_played"],
+            starts=row["starts"],
+            goals=row["goals"],
+            goal_assist=row["goal_assist"],
+            expected_goals=row["expected_goals"],
+            expected_assists=row["expected_assists"],
+            total_shots=row["total_shots"],
+            shots_on_target=row["shots_on_target"],
+            key_pass=row["key_pass"],
+            total_pass=row["total_pass"],
+            accurate_pass=row["accurate_pass"],
+            total_cross=row["total_cross"],
+            accurate_cross=row["accurate_cross"],
+            total_long_balls=row["total_long_balls"],
+            accurate_long_balls=row["accurate_long_balls"],
+            duel_won=row["duel_won"],
+            duel_lost=row["duel_lost"],
+            aerial_won=row["aerial_won"],
+            aerial_lost=row["aerial_lost"],
+            total_tackle=row["total_tackle"],
+            won_tackle=row["won_tackle"],
+            interception=row["interception"],
+            ball_recovery=row["ball_recovery"],
+            total_clearance=row["total_clearance"],
+            dispossessed=row["dispossessed"],
+            possession_lost=row["possession_lost"],
+            was_fouled=row["was_fouled"],
+            fouls=row["fouls"],
+            yellow_card=row["yellow_card"],
+            red_card=row["red_card"],
+            avg_rating=row["avg_rating"],
+        ))
+
+    return {"rows": out_rows}
+
+
+# ---------------------------------------------------------------------------
+# GET /players/{player_api_id}/match-odds — cotes closing Betclic (buteur/passeur)
+# ---------------------------------------------------------------------------
+# Doit rester declare AVANT la route /{player_api_id} : sinon FastAPI
+# matche "match-odds" comme une valeur de player_api_id (meme convention que
+# /selection et /breakdown ci-dessus).
+#
+# Jointure verifiee : bzz_events -> fixtures (equipes + date de kickoff) ->
+# player_odds_snapshots (bookmaker betclic, nom du joueur) -> bzz_player_match_stats
+# (ne garder que les events ou ce joueur a effectivement une ligne de stats).
+#
+# Voulu : la fiche affiche un journal RETROSPECTIF (matchs joues), pas du
+# pre-match. On ne rattache donc les cotes qu'aux events pour lesquels ce
+# joueur a deja une ligne dans bzz_player_match_stats — ces lignes n'existent
+# que pour les events "finished". Un match a venir n'a pas encore de stats et
+# n'apparait donc jamais ici, ce qui est l'effet recherche.
+#
+# Le "closing" est la cote Betclic au scraped_at le plus recent par
+# (fixture, market_type, player_name) : DISTINCT ON fait ce choix cote SQL.
+# ATTENTION matching de nom : player_odds_snapshots.player_name vient du
+# scraping Betclic et peut differer de BzzPlayer.name par un accent, un tiret
+# ou une apostrophe ("Mbappe" vs "Mbappé") — un ILIKE exact sur le nom brut
+# echoue alors SILENCIEUSEMENT (cotes absentes, pas d'erreur). On ne filtre
+# donc plus par nom en SQL : le SQL ne fait que borner la recherche aux
+# fixtures des matchs DEJA JOUES par ce joueur (sous-requete sur
+# bzz_player_match_stats) pour garder une volumetrie raisonnable, puis le
+# rattachement par nom se fait en Python via _names_match (meme fonction que
+# l'auto-settlement des recommandations, qui gere deja ces cas).
+# Un event sans fixture ou sans cote Betclic au nom correspondant est absent
+# de la liste — le front affiche alors un tiret.
+
+_MATCH_ODDS_SQL = text("""
+    WITH closing AS (
+        SELECT DISTINCT ON (o.fixture_id, o.market_type, o.player_name)
+            o.fixture_id, o.market_type, o.player_name, o.odds
+        FROM player_odds_snapshots o
+        WHERE o.bookmaker = 'betclic'
+          AND o.fixture_id IN (
+              SELECT f.id
+              FROM bzz_events e
+              JOIN fixtures f
+                  ON f.home_bzz_team_id = e.home_team_api_id
+                 AND f.away_bzz_team_id = e.away_team_api_id
+                 AND f.kickoff_utc::date = e.event_date::date
+              JOIN bzz_player_match_stats ms
+                  ON ms.event_api_id = e.api_id AND ms.player_api_id = :player_api_id
+          )
+        ORDER BY o.fixture_id, o.market_type, o.player_name, o.scraped_at DESC
+    )
+    SELECT
+        e.api_id AS event_api_id,
+        c.market_type,
+        c.player_name,
+        c.odds
+    FROM bzz_events e
+    JOIN fixtures f
+        ON f.home_bzz_team_id = e.home_team_api_id
+       AND f.away_bzz_team_id = e.away_team_api_id
+       AND f.kickoff_utc::date = e.event_date::date
+    JOIN closing c ON c.fixture_id = f.id
+    JOIN bzz_player_match_stats ms
+        ON ms.event_api_id = e.api_id AND ms.player_api_id = :player_api_id
+    ORDER BY e.api_id
+""")
+
+
+@router.get("/{player_api_id}/match-odds", response_model=PlayerMatchOddsOut)
+async def get_player_match_odds(
+    player_api_id: int,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Cotes de closing Betclic (buteur/passeur) par match pour la fiche joueur.
+
+    Pas de 404 sur joueur inconnu, meme convention que /breakdown : rend
+    simplement odds=[].
+    """
+    from app.ingestion.auto_settle import _names_match
+
+    nom = (await session.execute(
+        select(BzzPlayer.name).where(BzzPlayer.api_id == player_api_id)
+    )).scalar_one_or_none()
+    if not nom:
+        return {"odds": []}
+
+    result = await session.execute(
+        _MATCH_ODDS_SQL, {"player_api_id": player_api_id}
+    )
+    rows = result.mappings().all()
+
+    # Pivot buteur/passeur par event_api_id, en ne gardant que les lignes de
+    # cote dont le nom scrape correspond reellement a ce joueur (accents,
+    # tirets, apostrophes neutralises par _names_match) — voir commentaire
+    # ci-dessus sur pourquoi le filtre de nom se fait ici et pas en SQL.
+    pivot: dict[int, dict[str, float | None]] = {}
+    for row in rows:
+        if not _names_match(row["player_name"], nom):
+            continue
+        entry = pivot.setdefault(row["event_api_id"], {"buteur": None, "passeur": None})
+        if row["market_type"] == "goalscorer":
+            entry["buteur"] = row["odds"]
+        elif row["market_type"] == "assist":
+            entry["passeur"] = row["odds"]
+
+    return {
+        "odds": [
+            {
+                "event_api_id": event_api_id,
+                "buteur": entry["buteur"],
+                "passeur": entry["passeur"],
+            }
+            for event_api_id, entry in sorted(pivot.items())
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
 # GET /players/{player_api_id}  — detail
 # ---------------------------------------------------------------------------
 
@@ -1365,20 +1692,21 @@ async def get_player(
             BzzEvent.away_team_api_id,
             home_team_alias.c.name.label("home_team_name"),
             away_team_alias.c.name.label("away_team_name"),
+            BzzEvent.league_api_id,
         )
         .join(BzzEvent, BzzEvent.api_id == BzzPlayerMatchStat.event_api_id)
         .outerjoin(home_team_alias, home_team_alias.c.api_id == BzzEvent.home_team_api_id)
         .outerjoin(away_team_alias, away_team_alias.c.api_id == BzzEvent.away_team_api_id)
         .where(
             BzzPlayerMatchStat.player_api_id == player_api_id,
-            BzzEvent.league_api_id.in_(_ALL_LEAGUE_IDS),
+            BzzEvent.league_api_id.in_(RECENT_MATCHES_LEAGUE_IDS),
         )
         .order_by(desc(BzzEvent.event_date))
     )
     recent_rows = recent_result.all()
 
     recent_matches: list[RecentMatch] = []
-    for ms, event_date, home_api_id, away_api_id, home_name, away_name in recent_rows:
+    for ms, event_date, home_api_id, away_api_id, home_name, away_name, league_api_id in recent_rows:
         # Use team_api_id from the stat row; fall back to the player's current team
         player_team_id = ms.team_api_id or player.current_team_api_id
         if player_team_id is not None:
@@ -1403,6 +1731,7 @@ async def get_player(
             RecentMatch(
                 event_api_id=ms.event_api_id,
                 event_date=event_date,
+                league_api_id=league_api_id,
                 opponent=opponent,
                 is_home=is_home,
                 minutes_played=ms.minutes_played,
