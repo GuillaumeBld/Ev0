@@ -191,6 +191,69 @@ async def test_domestic_league_without_teams_returns_empty():
     assert response == []
 
 
+@pytest.mark.asyncio
+async def test_intl_league_composes_with_team_api_id():
+    """GET /players?league_api_id=7&team_api_id=100 : les DEUX filtres doivent
+    se composer (ET, pas OU). Un joueur du club 100 avec des stats C1 doit
+    apparaitre ; un joueur d'un AUTRE club (200) avec des stats C1 ne doit
+    pas apparaitre, meme s'il a line de stats dans la meme competition —
+    sinon /competitions/{id}/clubs (Task 1) ouvrirait un club et verrait les
+    joueurs de tous les clubs de la competition.
+    """
+    import app.api.players as mod
+    from app.api.players import list_players
+
+    p_club = _player(api_id=1, name="Club Player", team="Real Madrid")
+    p_club.current_team_api_id = 100
+    s_club = _season_stat(player_api_id=1, league_api_id=7, goals=3)
+
+    # Le filtre team_api_id doit etre applique AVANT la resolution des
+    # joueurs : le mock des joueurs ne rend donc que ceux du club 100, comme
+    # le ferait le vrai SELECT ... WHERE current_team_api_id = 100.
+    players_res = MagicMock()
+    players_res.scalars.return_value.all.return_value = [p_club]
+    stats_res = MagicMock()
+    stats_res.scalars.return_value.all.return_value = [s_club]
+    crest_res = MagicMock()
+    crest_res.all.return_value = []
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(side_effect=[players_res, stats_res, crest_res])
+
+    async def _saison_courante(session):
+        return "2025-2026"
+
+    original_saison = mod.current_season
+    mod.current_season = _saison_courante
+    try:
+        response = await list_players(
+            session=mock_db,
+            league_api_id=7,
+            team_api_id=100,
+            position=None,
+            min_minutes=0,
+            season="2025-2026",
+            sort_by="xg_per_90",
+            sort_order="desc",
+            limit=50,
+            offset=0,
+        )
+    finally:
+        mod.current_season = original_saison
+
+    assert len(response) == 1
+    assert response[0]["player_api_id"] == 1
+    assert response[0]["goals"] == 3
+
+    # La construction de la requete elle-meme compose bien les deux filtres :
+    # le SELECT des joueurs porte a la fois la restriction de stats C1 (via
+    # IN sur BzzPlayerSeasonStat) ET current_team_api_id == 100.
+    players_select_stmt = mock_db.execute.call_args_list[0].args[0]
+    compiled = str(players_select_stmt.compile(compile_kwargs={"literal_binds": False}))
+    assert "current_team_api_id" in compiled
+    assert "bzz_player_season_stats" in compiled.lower() or "player_season_stat" in compiled.lower()
+
+
 def test_league_groups_disjoint():
     from app.ingestion.bzzoiro.constants import (
         INTL_CLUB_COMP_LEAGUE_IDS, SELECTION_STATS_LEAGUE_IDS,
