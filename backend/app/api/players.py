@@ -1542,24 +1542,50 @@ async def get_player_breakdown(
 # Jointure verifiee : bzz_events -> fixtures (equipes + date de kickoff) ->
 # player_odds_snapshots (bookmaker betclic, nom du joueur) -> bzz_player_match_stats
 # (ne garder que les events ou ce joueur a effectivement une ligne de stats).
+#
+# Voulu : la fiche affiche un journal RETROSPECTIF (matchs joues), pas du
+# pre-match. On ne rattache donc les cotes qu'aux events pour lesquels ce
+# joueur a deja une ligne dans bzz_player_match_stats — ces lignes n'existent
+# que pour les events "finished". Un match a venir n'a pas encore de stats et
+# n'apparait donc jamais ici, ce qui est l'effet recherche.
+#
 # Le "closing" est la cote Betclic au scraped_at le plus recent par
-# (fixture, market_type) : DISTINCT ON fait ce choix cote SQL, le pivot
-# buteur/passeur (goalscorer/assist) se fait ensuite avec deux FILTER.
-# Un event sans fixture ou sans cote Betclic est absent de la liste (les deux
-# JOIN sont des INNER JOIN) — le front affiche alors un tiret.
+# (fixture, market_type, player_name) : DISTINCT ON fait ce choix cote SQL.
+# ATTENTION matching de nom : player_odds_snapshots.player_name vient du
+# scraping Betclic et peut differer de BzzPlayer.name par un accent, un tiret
+# ou une apostrophe ("Mbappe" vs "Mbappé") — un ILIKE exact sur le nom brut
+# echoue alors SILENCIEUSEMENT (cotes absentes, pas d'erreur). On ne filtre
+# donc plus par nom en SQL : le SQL ne fait que borner la recherche aux
+# fixtures des matchs DEJA JOUES par ce joueur (sous-requete sur
+# bzz_player_match_stats) pour garder une volumetrie raisonnable, puis le
+# rattachement par nom se fait en Python via _names_match (meme fonction que
+# l'auto-settlement des recommandations, qui gere deja ces cas).
+# Un event sans fixture ou sans cote Betclic au nom correspondant est absent
+# de la liste — le front affiche alors un tiret.
 
 _MATCH_ODDS_SQL = text("""
     WITH closing AS (
-        SELECT DISTINCT ON (o.fixture_id, o.market_type)
-            o.fixture_id, o.market_type, o.odds
+        SELECT DISTINCT ON (o.fixture_id, o.market_type, o.player_name)
+            o.fixture_id, o.market_type, o.player_name, o.odds
         FROM player_odds_snapshots o
-        WHERE o.bookmaker = 'betclic' AND o.player_name ILIKE :nom
-        ORDER BY o.fixture_id, o.market_type, o.scraped_at DESC
+        WHERE o.bookmaker = 'betclic'
+          AND o.fixture_id IN (
+              SELECT f.id
+              FROM bzz_events e
+              JOIN fixtures f
+                  ON f.home_bzz_team_id = e.home_team_api_id
+                 AND f.away_bzz_team_id = e.away_team_api_id
+                 AND f.kickoff_utc::date = e.event_date::date
+              JOIN bzz_player_match_stats ms
+                  ON ms.event_api_id = e.api_id AND ms.player_api_id = :player_api_id
+          )
+        ORDER BY o.fixture_id, o.market_type, o.player_name, o.scraped_at DESC
     )
     SELECT
         e.api_id AS event_api_id,
-        MAX(c.odds) FILTER (WHERE c.market_type = 'goalscorer') AS buteur,
-        MAX(c.odds) FILTER (WHERE c.market_type = 'assist') AS passeur
+        c.market_type,
+        c.player_name,
+        c.odds
     FROM bzz_events e
     JOIN fixtures f
         ON f.home_bzz_team_id = e.home_team_api_id
@@ -1568,7 +1594,6 @@ _MATCH_ODDS_SQL = text("""
     JOIN closing c ON c.fixture_id = f.id
     JOIN bzz_player_match_stats ms
         ON ms.event_api_id = e.api_id AND ms.player_api_id = :player_api_id
-    GROUP BY e.api_id
     ORDER BY e.api_id
 """)
 
@@ -1583,6 +1608,8 @@ async def get_player_match_odds(
     Pas de 404 sur joueur inconnu, meme convention que /breakdown : rend
     simplement odds=[].
     """
+    from app.ingestion.auto_settle import _names_match
+
     nom = (await session.execute(
         select(BzzPlayer.name).where(BzzPlayer.api_id == player_api_id)
     )).scalar_one_or_none()
@@ -1590,17 +1617,32 @@ async def get_player_match_odds(
         return {"odds": []}
 
     result = await session.execute(
-        _MATCH_ODDS_SQL, {"player_api_id": player_api_id, "nom": nom}
+        _MATCH_ODDS_SQL, {"player_api_id": player_api_id}
     )
     rows = result.mappings().all()
+
+    # Pivot buteur/passeur par event_api_id, en ne gardant que les lignes de
+    # cote dont le nom scrape correspond reellement a ce joueur (accents,
+    # tirets, apostrophes neutralises par _names_match) — voir commentaire
+    # ci-dessus sur pourquoi le filtre de nom se fait ici et pas en SQL.
+    pivot: dict[int, dict[str, float | None]] = {}
+    for row in rows:
+        if not _names_match(row["player_name"], nom):
+            continue
+        entry = pivot.setdefault(row["event_api_id"], {"buteur": None, "passeur": None})
+        if row["market_type"] == "goalscorer":
+            entry["buteur"] = row["odds"]
+        elif row["market_type"] == "assist":
+            entry["passeur"] = row["odds"]
+
     return {
         "odds": [
             {
-                "event_api_id": row["event_api_id"],
-                "buteur": row["buteur"],
-                "passeur": row["passeur"],
+                "event_api_id": event_api_id,
+                "buteur": entry["buteur"],
+                "passeur": entry["passeur"],
             }
-            for row in rows
+            for event_api_id, entry in sorted(pivot.items())
         ]
     }
 
