@@ -781,6 +781,10 @@ export interface PlayerDetail {
   api_football_id: number | null
   /** Voir PlayerSummary.crest_url — même résolution, même garantie. */
   crest_url: string | null
+  /** Stats du joueur en sélection nationale (hors club) — absent/null si non pertinent. */
+  selection_stats?: SeasonStatsOut | null
+  /** Nom de la sélection nationale du joueur — absent/null si non pertinent. */
+  national_team_name?: string | null
 }
 
 // ── Player career (Transfermarkt) ───────────────────────────────
