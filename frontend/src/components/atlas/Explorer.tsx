@@ -8,7 +8,7 @@ import styles from './atlas.module.css'
 import { ClubCrest } from './ClubCrest'
 import { PlayerCard, PlayerTableRow } from './PlayerCard'
 import {
-  fetchPlayers, fetchCanonicalTeams,
+  fetchPlayers, fetchSelectionPlayers, fetchCanonicalTeams,
   type GeoCountry, type GeoLeague, type GeoIntl,
   type CanonicalTeam, type PlayerSummary, type PlayerSortField,
 } from '@/lib/atlas'
@@ -65,6 +65,11 @@ interface ExplorerProps {
 
 export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpenCompare }: ExplorerProps) {
   const leagueApiId = context.kind === 'league' ? context.league.league_api_id : context.intl.league_api_id
+  // Compétitions "sélection" (Coupe du monde, Nations League) : barre latérale
+  // = équipes nationales, liste des joueurs = stats sélection (endpoint dédié).
+  // Les compétitions de clubs internationales (C1/C2/C3, Libertadores) gardent
+  // le flux `fetchPlayers` existant (déjà résolu côté backend, Task 4).
+  const isSelection = context.kind === 'intl' && context.intl.kind === 'selection'
 
   const [position, setPosition] = useState<'' | 'G' | 'D' | 'M' | 'F'>('')
   const [query, setQuery] = useState('')
@@ -102,16 +107,28 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
   // Displayed list — real server pagination for the whole division, a single
   // bounded request for "one club's squad" (SQUAD_LIMIT, not a pagination dodge).
   const playersQuery = useQuery({
-    queryKey: ['atlas-players', leagueApiId, selectedClub?.bzz_team_id, position, debouncedQuery, sortBy, sortOrder, selectedClub ? 0 : offset],
-    queryFn: () => selectedClub
-      ? fetchPlayers({
-        team_api_id: selectedClub.bzz_team_id ?? undefined, position: position || undefined,
-        q: debouncedQuery || undefined, sort_by: sortBy, sort_order: sortOrder, limit: SQUAD_LIMIT, offset: 0,
-      })
-      : fetchPlayers({
-        league_api_id: leagueApiId, position: position || undefined, q: debouncedQuery || undefined,
-        sort_by: sortBy, sort_order: sortOrder, limit: PAGE_SIZE + 1, offset,
-      }),
+    queryKey: ['atlas-players', isSelection, leagueApiId, selectedClub?.bzz_team_id, position, debouncedQuery, sortBy, sortOrder, selectedClub ? 0 : offset],
+    queryFn: () => {
+      if (isSelection) {
+        return fetchSelectionPlayers({
+          national_team_api_id: selectedClub?.bzz_team_id ?? undefined,
+          league_api_id: leagueApiId,
+          position: position || undefined, q: debouncedQuery || undefined,
+          sort_by: sortBy, sort_order: sortOrder,
+          limit: selectedClub ? SQUAD_LIMIT : PAGE_SIZE + 1,
+          offset: selectedClub ? 0 : offset,
+        })
+      }
+      return selectedClub
+        ? fetchPlayers({
+          team_api_id: selectedClub.bzz_team_id ?? undefined, position: position || undefined,
+          q: debouncedQuery || undefined, sort_by: sortBy, sort_order: sortOrder, limit: SQUAD_LIMIT, offset: 0,
+        })
+        : fetchPlayers({
+          league_api_id: leagueApiId, position: position || undefined, q: debouncedQuery || undefined,
+          sort_by: sortBy, sort_order: sortOrder, limit: PAGE_SIZE + 1, offset,
+        })
+    },
     enabled: leagueApiId != null && (!selectedClub || !!selectedClub.bzz_team_id),
   })
 
@@ -121,8 +138,13 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
   // Effectif complet du club sélectionné (sans filtres), pour la bannière —
   // requête séparée de la liste affichée, qui elle peut être filtrée par poste/recherche.
   const squadStatsQuery = useQuery({
-    queryKey: ['atlas-squad-stats', selectedClub?.bzz_team_id],
-    queryFn: () => fetchPlayers({ team_api_id: selectedClub!.bzz_team_id ?? undefined, limit: SQUAD_LIMIT, offset: 0, sort_by: 'goals', sort_order: 'desc' }),
+    queryKey: ['atlas-squad-stats', isSelection, selectedClub?.bzz_team_id],
+    queryFn: () => isSelection
+      ? fetchSelectionPlayers({
+        national_team_api_id: selectedClub!.bzz_team_id ?? undefined, league_api_id: leagueApiId,
+        limit: SQUAD_LIMIT, offset: 0, sort_by: 'goals', sort_order: 'desc',
+      })
+      : fetchPlayers({ team_api_id: selectedClub!.bzz_team_id ?? undefined, limit: SQUAD_LIMIT, offset: 0, sort_by: 'goals', sort_order: 'desc' }),
     enabled: !!selectedClub?.bzz_team_id,
   })
 
@@ -213,9 +235,9 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
       <div className={styles.exbody} style={clubs.length === 0 ? { gridTemplateColumns: '1fr' } : undefined}>
         {clubs.length > 0 && (
           <aside className={styles.clubs}>
-            <div className={styles.ch}>Clubs · {clubs.length}</div>
+            <div className={styles.ch}>{isSelection ? 'Sélections' : 'Clubs'} · {clubs.length}</div>
             <div className={clsx(styles.clubitem, !selectedClub && styles.on)} onClick={() => setSelectedClub(null)}>
-              <div className={styles.who}><div className={styles.cn}>Tous les clubs</div></div>
+              <div className={styles.who}><div className={styles.cn}>{isSelection ? 'Toutes les sélections' : 'Tous les clubs'}</div></div>
             </div>
             {clubs.map((c) => (
               <div key={c.id} className={clsx(styles.clubitem, selectedClub?.id === c.id && styles.on)} onClick={() => setSelectedClub(c)}>
