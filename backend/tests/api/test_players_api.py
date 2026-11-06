@@ -383,15 +383,20 @@ async def test_get_player_detail():
     crest_result = MagicMock()
     crest_result.all.return_value = []  # aucun club canonique dans ce test
 
+    sel_result = MagicMock()
+    sel_result.scalars.return_value.all.return_value = []  # pas de stats de selection
+
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(
-        side_effect=[player_result, season_result, recent_result, crest_result]
+        side_effect=[player_result, season_result, recent_result, crest_result, sel_result]
     )
 
     response = await get_player(player_api_id=1, session=mock_db, season="2025-2026")
 
     assert response["player_api_id"] == 1
     assert response["name"] == "Kylian Mbappe"
+    assert response["selection_stats"] is None
+    assert response["national_team_name"] is None
     assert response["team_name"] == "Real Madrid"
     assert response["nationality"] == "French"
     assert response["height"] == 180
@@ -450,9 +455,12 @@ async def test_get_player_detail_full_match_stats():
     crest_result = MagicMock()
     crest_result.all.return_value = []
 
+    sel_result = MagicMock()
+    sel_result.scalars.return_value.all.return_value = []  # pas de stats de selection
+
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(
-        side_effect=[player_result, season_result, recent_result, crest_result]
+        side_effect=[player_result, season_result, recent_result, crest_result, sel_result]
     )
 
     response = await get_player(player_api_id=1, session=mock_db, season="2025-2026")
@@ -509,9 +517,12 @@ async def test_get_player_includes_api_football_id_when_canonical_match():
     # canonical_teams.bzz_team_id=100 (= player.current_team_api_id) -> 541
     crest_result.all.return_value = [(100, 541, None)]
 
+    sel_result = MagicMock()
+    sel_result.scalars.return_value.all.return_value = []  # pas de stats de selection
+
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(
-        side_effect=[player_result, season_result, recent_result, crest_result]
+        side_effect=[player_result, season_result, recent_result, crest_result, sel_result]
     )
 
     response = await get_player(player_api_id=1, session=mock_db, season="2025-2026")
