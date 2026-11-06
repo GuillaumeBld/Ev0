@@ -1,22 +1,32 @@
-"""auto_settle.py — automatic settlement of approved recommendations via MatchEvents.
+"""Reglement automatique des recommandations approuvees.
 
-For each approved recommendation with result=None:
-  1. Check if the fixture is finished
-  2. If MatchEvents exist for the fixture:
-     - Check PMM if available: player absent or 0 minutes → VOID
-     - Otherwise: player has matching goal/assist event → WON, else → LOST
-  3. If no MatchEvents but PMM exists:
-     - Player absent or 0 minutes → VOID
-     - Player played but no events → stuck (events not synced yet)
-  4. If neither MatchEvents nor PMM → skip (leave running)
-  5. Update recommendation: result, pnl, settled_utc
+LES MINUTES GOUVERNENT. Pour chaque recommandation d'un match termine :
+
+  1. minutes jouees == 0, ou joueur absent du groupe  -> ANNULE
+  2. minutes > 0 et buts du match complets            -> GAGNE ou PERDU
+  3. minutes > 0 mais buts pas encore ingeres          -> en attente
+  4. aucune donnee de minutes                          -> en attente
+
+L'ordre compte : un remplacant jamais entre est ANNULE, jamais PERDU. Sa
+mise est rendue. Trancher sur les buts avant de regarder les minutes
+inscrivait au registre des pertes qui n'avaient pas eu lieu.
+
+Les minutes viennent de `bzz_player_match_stats` (1 441 029 lignes, 99 % des
+matchs termines) complete par `player_match_minutes` (470 lignes, prioritaire
+la ou il existe). Les incidents de match ne peuvent pas les remplacer : un
+joueur absent des incidents est soit un titulaire reste 90 minutes sans rien
+faire, soit un remplacant non utilise -- deux verdicts opposes.
+
+La couverture des buts doit etre EXACTE (nb d'events but == score) avant de
+trancher gagne/perdu : regler sur des buts partiels marque PERDU des paris
+gagnants, constate le 09/07/2026 sur 151 matchs a 40 % de couverture.
 """
 
 import logging
 import unicodedata
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.bzzoiro.sync_incidents import SENTINEL_UNAVAILABLE_TYPE
@@ -67,12 +77,73 @@ def _names_match(a: str, b: str) -> bool:
     return False
 
 
-def _find_pmm_by_name(pmm_list: list, player_name: str):
-    """Find a PlayerMatchMinutes object by normalized player name."""
-    for pmm in pmm_list:
-        if _names_match(pmm.player_name, player_name):
-            return pmm
-    return None
+async def _minutes_du_match(db: AsyncSession, fixture) -> dict[str, float] | None:
+    """Minutes jouees par joueur sur ce match : {nom -> minutes}.
+
+    Rend None quand AUCUNE donnee de minutes n'existe : on ne peut alors rien
+    trancher, et surtout pas supposer qu'un joueur a joue.
+
+    POURQUOI. Le reglement lisait `player_match_minutes`, qui compte 470
+    lignes. `bzz_player_match_stats` en compte 1 441 029, couvre 1 718 des
+    1 728 matchs termines des 30 derniers jours (99 %), et distingue
+    explicitement 461 402 lignes a zero minute -- les joueurs du groupe qui ne
+    sont jamais entres.
+
+    Sans cette distinction, un remplacant jamais entre est marque PERDU au
+    lieu d'ANNULE : une perte inscrite au registre alors que la mise aurait du
+    etre rendue. Les incidents de match ne peuvent pas la fournir -- un joueur
+    absent des incidents est soit un titulaire reste 90 minutes sans rien
+    faire, soit un remplacant non utilise, deux verdicts opposes que rien ne
+    separe.
+
+    `player_match_minutes` est applique par-dessus : la ou il existe, il fait
+    autorite.
+    """
+    minutes: dict[str, float] = {}
+
+    ext = getattr(fixture, "external_id", None) or ""
+    if ext.startswith("bzz_"):
+        try:
+            bzz_event_id = int(ext[len("bzz_"):])
+        except ValueError:
+            bzz_event_id = None
+        if bzz_event_id is not None:
+            rows = (await db.execute(
+                sa_text("""
+                    SELECT p.name, m.minutes_played
+                    FROM bzz_player_match_stats m
+                    JOIN bzz_players p ON p.api_id = m.player_api_id
+                    WHERE m.event_api_id = :ev
+                """),
+                {"ev": bzz_event_id},
+            )).all()
+            for nom, mn in rows:
+                if nom:
+                    minutes[nom] = float(mn or 0)
+
+    pmm_rows = (await db.execute(
+        select(PlayerMatchMinutes).where(PlayerMatchMinutes.fixture_id == fixture.id)
+    )).scalars().all()
+    for pmm in pmm_rows:
+        if pmm.player_name:
+            minutes[pmm.player_name] = float(pmm.minutes_played or 0)
+
+    return minutes or None
+
+
+def _minutes_du_joueur(minutes: dict[str, float] | None, player_name: str) -> float | None:
+    """Minutes d'un joueur, ou None si le match n'en dit rien.
+
+    Rend 0.0 quand le match a des donnees mais que le joueur n'y figure pas :
+    il n'etait pas dans le groupe, donc il n'a pas joue -- un ANNULE, pas un
+    perdu.
+    """
+    if minutes is None:
+        return None
+    for nom, mn in minutes.items():
+        if _names_match(nom, player_name):
+            return mn
+    return 0.0
 
 
 # Un 1N2 se regle sur le temps reglementaire. Le soir d'un match prolonge, la
@@ -98,11 +169,10 @@ _BET_TYPE_TO_EVENTS: dict[str, list[str]] = {
 
 
 async def settle_approved_recommendations(db: AsyncSession) -> dict:
-    """Settle all unsettled approved recommendations for finished fixtures.
+    """Regle les recommandations approuvees des matchs termines.
 
-    Uses PlayerMatchMinutes for VOID detection when available.
-    Uses MatchEvents (goals/assists) for WON/LOST.
-    Returns a dict with keys: settled, won, lost, void, stuck_fixture_ids.
+    Les minutes jouees decident ANNULE ; les buts decident GAGNE/PERDU.
+    Rend un dict : settled, won, lost, void, stuck_fixture_ids.
     """
     # 1. Find all approved recs with result=None + finished fixture
     stmt = (
@@ -122,8 +192,8 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
 
     logger.info("auto_settle: %d recs to settle", len(rows))
 
-    # Cache all PMM rows per fixture_id (None = not loaded yet, [] = loaded but empty)
-    _pmm_cache: dict[int, list] = {}
+    # fixture_id -> {nom: minutes}, ou None si le match n'a aucune donnee
+    _minutes_cache: dict[int, dict[str, float] | None] = {}
     # event_types distincts par fixture (set vide = aucun event synchronisé)
     _events_cache: dict[int, set] = {}
 
@@ -197,15 +267,15 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
             logger.warning("auto_settle: unknown market_type '%s' for rec %d", rec.market_type, rec.id)
             continue
 
-        # --- Load PMM (optional, used for VOID detection) ---
-        if fixture.id not in _pmm_cache:
-            all_pmm = await db.execute(
-                select(PlayerMatchMinutes)
-                .where(PlayerMatchMinutes.fixture_id == fixture.id)
-            )
-            _pmm_cache[fixture.id] = list(all_pmm.scalars().all())
+        # --- Minutes jouees : qui a joue, qui n'a pas joue ---
+        # C'est la donnee qui separe un PERDU d'un ANNULE. Elle gouverne le
+        # reglement avant toute lecture des buts : un joueur qui n'est pas
+        # entre n'a pas perdu son pari, sa mise est rendue.
+        if fixture.id not in _minutes_cache:
+            _minutes_cache[fixture.id] = await _minutes_du_match(db, fixture)
 
-        pmm_rows = _pmm_cache[fixture.id]
+        minutes_du_match = _minutes_cache[fixture.id]
+        minutes_joueur = _minutes_du_joueur(minutes_du_match, rec.player_name)
 
         # --- Load MatchEvents (types + nb d'events "but") ---
         if fixture.id not in _events_cache:
@@ -251,23 +321,32 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
 
         has_events = events_complete
 
-        if has_events:
-            # MatchEvents available: check PMM for VOID first (if available)
-            if pmm_rows:
-                pmm = _find_pmm_by_name(pmm_rows, rec.player_name)
-                if pmm is not None and pmm.minutes_played <= 0:
-                    rec.result = "void"
-                    rec.pnl = 0.0
-                    rec.settled_utc = datetime.now(UTC)
-                    settled += 1
-                    void_count += 1
-                    logger.info(
-                        "auto_settle: rec %d (%s %s) → VOID (minutes=0, PMM available)",
-                        rec.id, rec.player_name, rec.market_type,
-                    )
-                    continue
+        # LES MINUTES GOUVERNENT, AVANT TOUTE LECTURE DES BUTS.
+        #
+        # Un joueur qui n'est pas entre n'a pas perdu son pari : sa mise est
+        # rendue. Marquer PERDU un remplacant non utilise inscrit une perte
+        # qui n'a jamais eu lieu.
+        #
+        # Le cas s'applique aussi quand le joueur ne figure pas du tout dans
+        # les minutes du match alors que le match en a : il n'etait pas dans
+        # le groupe (`_minutes_du_joueur` rend 0.0 dans ce cas).
+        #
+        # Minutes inconnues (le match n'a aucune donnee) : on ne tranche pas
+        # ici, les branches suivantes laissent la reco en attente plutot que
+        # de supposer qu'il a joue.
+        if minutes_joueur is not None and minutes_joueur <= 0:
+            rec.result = "void"
+            rec.pnl = 0.0
+            rec.settled_utc = datetime.now(UTC)
+            settled += 1
+            void_count += 1
+            logger.info(
+                "auto_settle: rec %d (%s %s) → VOID (%.0f minute jouee)",
+                rec.id, rec.player_name, rec.market_type, minutes_joueur,
+            )
+            continue
 
-            # Settle WON/LOST from MatchEvents
+        if has_events:
             all_events_result = await db.execute(
                 select(MatchEvent).where(
                     MatchEvent.fixture_id == fixture.id,
@@ -276,6 +355,19 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
             )
             fixture_events = all_events_result.scalars().all()
             won = any(_names_match(ev.player_name, rec.player_name) for ev in fixture_events)
+
+            # Un but prouve la participation : GAGNE se tranche sans les
+            # minutes. PERDU, non -- il faut avoir etabli que le joueur a
+            # joue, sinon on inscrit une perte pour un joueur peut-etre
+            # jamais entre. Minutes inconnues et pas de but : on attend.
+            if not won and minutes_joueur is None:
+                logger.debug(
+                    "auto_settle: reco %d (%s) sans but et minutes inconnues — "
+                    "laissee en attente plutot que marquee PERDU",
+                    rec.id, rec.player_name,
+                )
+                stuck_fixture_ids.add(fixture.id)
+                continue
 
             result = "won" if won else "lost"
             pnl = round(10.0 * (rec.best_odds - 1), 2) if won else -10.0
@@ -294,32 +386,22 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
                 rec.id, rec.player_name, rec.market_type, result, pnl,
             )
 
-        elif pmm_rows:
-            # No events but PMM exists: VOID if player didn't play, else stuck
-            pmm = _find_pmm_by_name(pmm_rows, rec.player_name)
-            if pmm is None or pmm.minutes_played <= 0:
-                rec.result = "void"
-                rec.pnl = 0.0
-                rec.settled_utc = datetime.now(UTC)
-                settled += 1
-                void_count += 1
-                logger.info(
-                    "auto_settle: rec %d (%s %s) → VOID (minutes=%s, no events)",
-                    rec.id, rec.player_name, rec.market_type,
-                    pmm.minutes_played if pmm else "absent",
-                )
-            else:
-                # Player played but no events yet — wait for event sync
-                logger.debug(
-                    "auto_settle: fixture %d has PMM but no events yet — skipping rec %d",
-                    fixture.id, rec.id,
-                )
-                stuck_fixture_ids.add(fixture.id)
+        elif minutes_joueur is not None:
+            # Le joueur a joue (le cas 0 minute a deja ete tranche plus haut)
+            # mais les buts ne sont pas encore la : on attend la synchro des
+            # incidents plutot que de marquer PERDU un pari peut-etre gagnant.
+            logger.debug(
+                "auto_settle: fixture %d a les minutes mais pas les buts — "
+                "reco %d laissee en attente",
+                fixture.id, rec.id,
+            )
+            stuck_fixture_ids.add(fixture.id)
 
         else:
-            # Neither events nor PMM — leave running
+            # Ni buts ni minutes : rien ne permet de trancher, on laisse
+            # courir. Supposer qu'il a joue marquerait PERDU a tort.
             logger.debug(
-                "auto_settle: no data for fixture %d (%s vs %s) — skipping",
+                "auto_settle: aucune donnee pour fixture %d (%s vs %s) — ignoree",
                 fixture.id, fixture.home_team, fixture.away_team,
             )
             stuck_fixture_ids.add(fixture.id)
