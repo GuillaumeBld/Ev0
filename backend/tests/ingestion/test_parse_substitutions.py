@@ -18,6 +18,9 @@ def test_parse_substitution_nominale():
     rows = _parse_incidents(raw)
     assert rows == [{
         "player_name": "Gonçalo Ramos",
+        # Absent de l'ancien format : Bzzoiro ne donnait pas l'identifiant du
+        # joueur sur l'incident avant juin 2026.
+        "player_id": None,
         "event_type": "substitution",
         "minute": 63,
         "related_player_name": "Ousmane Dembélé",
