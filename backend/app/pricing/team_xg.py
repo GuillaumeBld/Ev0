@@ -227,6 +227,11 @@ class PlayerAllocation:
     matches_played: int = 0
     has_form_goal: bool = False
     has_form_assist: bool = False
+    # Y a-t-il de la matiere pour coter ce joueur ? Faux quand sa part du xG
+    # d'equipe est nulle : aucune statistique exploitable. Dans ce cas les
+    # probabilites et les cotes valent 0 — une absence, pas un prix.
+    has_signal_goal: bool = True
+    has_signal_assist: bool = True
     # Supersub fields
     p_goal_supersub: float = 0.0
     fair_odds_goal_supersub: float = 99.0
@@ -461,9 +466,23 @@ def allocate_player(
     finishing_mult = calculate_finishing_multiplier(goal_stats, share.position)
     lambda_open_play = share.npxg_share * team_match_xg * finishing_mult
     lambda_penalty = PEN_CONVERSION * PENS_PER_MATCH * mins_ratio if is_pen_taker else 0.0
+
+    # Part nulle du xG d'equipe = aucune statistique exploitable. Le plancher
+    # qui suit (0.001) protege d'une division par zero ; il ne doit JAMAIS
+    # servir de prix. Normalise a 90 minutes il produisait une cote d'allure
+    # serieuse sortie de nulle part : 11.62 buteur, 362 recommandations sur
+    # les 30 jours au 06/11/2026 — toutes avec lambda au plancher.
+    has_signal_goal = share.npxg_share > 0.0 or is_pen_taker
+
     lambda_total = max(0.001, min(lambda_open_play + lambda_penalty, 3.0))
-    prob_goal = 1 - math.exp(-lambda_total)
-    fair_odds_goal = round(1 / prob_goal, 2) if prob_goal > 0 else 9999.0
+    if has_signal_goal:
+        prob_goal = 1 - math.exp(-lambda_total)
+        fair_odds_goal = round(1 / prob_goal, 2) if prob_goal > 0 else 9999.0
+    else:
+        # Zero, pas 9999 : les garde-fous avals ecartent une probabilite nulle
+        # ou une cote vide, donc ni recommandation ni alerte sur ce joueur.
+        prob_goal = 0.0
+        fair_odds_goal = 0.0
 
     # ── Assist ────────────────────────────────────────────────────
     assist_stats = {
@@ -478,19 +497,43 @@ def allocate_player(
     creation_mult = calculate_creation_multiplier_v2(assist_stats, share.position)
     xa_conversion = calculate_xa_conversion(assist_stats, share.position)
     lambda_assist = calculate_assist_lambda(share.xa_share, budget_assists, creation_mult, xa_conversion)
-    prob_assist = 1 - math.exp(-lambda_assist)
-    fair_odds_assist = round(1 / prob_assist, 2) if prob_assist > 0 else 9999.0
+
+    # Meme raison que pour le buteur. Plancher passeur = 0.01, qui donnait
+    # 1.69 passeur : 867 recommandations sur 30 jours, toutes sans matiere.
+    has_signal_assist = share.xa_share > 0.0
+
+    if has_signal_assist:
+        prob_assist = 1 - math.exp(-lambda_assist)
+        fair_odds_assist = round(1 / prob_assist, 2) if prob_assist > 0 else 9999.0
+    else:
+        prob_assist = 0.0
+        fair_odds_assist = 0.0
 
     # ── Supersub (qualité 90 min) ─────────────────────────────────
     # C.But+Sub = cote si le joueur jouait 90 minutes à son rythme actuel.
     # Signal de qualité pure, indépendant du rôle (titulaire / entrant).
     # Toujours ≤ C.But (meilleures cotes) car 90 min ≥ expected_minutes.
+    #
+    # C'est cette normalisation qui transformait un plancher en prix : diviser
+    # par mins_ratio multiplie par 90 quand une seule minute est attendue.
+    # Elle reste juste tant que lambda porte un vrai signal — sans signal, on
+    # ne normalise rien.
     lambda_total_90 = lambda_total / mins_ratio if mins_ratio > 0 else lambda_total
     lambda_assist_90 = lambda_assist / mins_ratio if mins_ratio > 0 else lambda_assist
-    p_goal_ss = 1.0 - math.exp(-lambda_total_90)
-    fair_odds_goal_ss = round(1.0 / p_goal_ss, 2) if p_goal_ss > 0 else 99.0
-    p_assist_ss = 1.0 - math.exp(-lambda_assist_90)
-    fair_odds_assist_ss = round(1.0 / p_assist_ss, 2) if p_assist_ss > 0 else 99.0
+
+    if has_signal_goal:
+        p_goal_ss = 1.0 - math.exp(-lambda_total_90)
+        fair_odds_goal_ss = round(1.0 / p_goal_ss, 2) if p_goal_ss > 0 else 99.0
+    else:
+        p_goal_ss = 0.0
+        fair_odds_goal_ss = 0.0
+
+    if has_signal_assist:
+        p_assist_ss = 1.0 - math.exp(-lambda_assist_90)
+        fair_odds_assist_ss = round(1.0 / p_assist_ss, 2) if p_assist_ss > 0 else 99.0
+    else:
+        p_assist_ss = 0.0
+        fair_odds_assist_ss = 0.0
 
     sub_premium_goal   = round(p_goal_ss   - prob_goal,   4)
     sub_premium_assist = round(p_assist_ss - prob_assist, 4)
@@ -517,6 +560,8 @@ def allocate_player(
         matches_played=share.matches_played,
         has_form_goal=share.form_xg_5 is not None,
         has_form_assist=share.form_assists_5 is not None,
+        has_signal_goal=has_signal_goal,
+        has_signal_assist=has_signal_assist,
         p_goal_supersub=round(p_goal_ss, 4),
         fair_odds_goal_supersub=fair_odds_goal_ss,
         p_assist_supersub=round(p_assist_ss, 4),
