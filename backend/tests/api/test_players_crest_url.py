@@ -144,9 +144,12 @@ async def test_get_player_includes_crest_url_when_present_in_canonical_teams():
     crest_result = MagicMock()
     crest_result.all.return_value = [(100, 541, _CREST_URL)]
 
+    sel_result = MagicMock()
+    sel_result.scalars.return_value.all.return_value = []  # pas de stats de selection
+
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(
-        side_effect=[player_result, season_result, recent_result, crest_result]
+        side_effect=[player_result, season_result, recent_result, crest_result, sel_result]
     )
 
     response = await get_player(player_api_id=1, session=mock_db, season="2025-2026")
@@ -174,9 +177,12 @@ async def test_get_player_crest_url_none_sans_club_canonique():
     crest_result = MagicMock()
     crest_result.all.return_value = []
 
+    sel_result = MagicMock()
+    sel_result.scalars.return_value.all.return_value = []  # pas de stats de selection
+
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(
-        side_effect=[player_result, season_result, recent_result, crest_result]
+        side_effect=[player_result, season_result, recent_result, crest_result, sel_result]
     )
 
     response = await get_player(player_api_id=1, session=mock_db, season="2025-2026")

@@ -377,21 +377,26 @@ async def test_get_player_detail():
 
     recent_result = MagicMock()
     recent_result.all.return_value = [
-        (ms1, dt1, 100, 200, "Real Madrid", "Barcelona"),
-        (ms2, dt2, 200, 100, "Atletico", "Real Madrid"),
+        (ms1, dt1, 100, 200, "Real Madrid", "Barcelona", 42),
+        (ms2, dt2, 200, 100, "Atletico", "Real Madrid", 42),
     ]
     crest_result = MagicMock()
     crest_result.all.return_value = []  # aucun club canonique dans ce test
 
+    sel_result = MagicMock()
+    sel_result.scalars.return_value.all.return_value = []  # pas de stats de selection
+
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(
-        side_effect=[player_result, season_result, recent_result, crest_result]
+        side_effect=[player_result, season_result, recent_result, crest_result, sel_result]
     )
 
     response = await get_player(player_api_id=1, session=mock_db, season="2025-2026")
 
     assert response["player_api_id"] == 1
     assert response["name"] == "Kylian Mbappe"
+    assert response["selection_stats"] is None
+    assert response["national_team_name"] is None
     assert response["team_name"] == "Real Madrid"
     assert response["nationality"] == "French"
     assert response["height"] == 180
@@ -413,6 +418,7 @@ async def test_get_player_detail():
     m0 = recent[0]
     assert m0.event_api_id == 100
     assert m0.event_date == dt1
+    assert m0.league_api_id == 42
     assert m0.is_home is True
     assert m0.opponent == "Barcelona"
     assert m0.goals == 1
@@ -445,20 +451,24 @@ async def test_get_player_detail_full_match_stats():
 
     recent_result = MagicMock()
     recent_result.all.return_value = [
-        (ms, dt, 100, 200, "Arsenal", "Chelsea"),
+        (ms, dt, 100, 200, "Arsenal", "Chelsea", 42),
     ]
     crest_result = MagicMock()
     crest_result.all.return_value = []
 
+    sel_result = MagicMock()
+    sel_result.scalars.return_value.all.return_value = []  # pas de stats de selection
+
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(
-        side_effect=[player_result, season_result, recent_result, crest_result]
+        side_effect=[player_result, season_result, recent_result, crest_result, sel_result]
     )
 
     response = await get_player(player_api_id=1, session=mock_db, season="2025-2026")
 
     m = response["recent_matches"][0]
     assert m.event_api_id == 777
+    assert m.league_api_id == 42
     assert m.touches == 55
     assert m.total_shots == 4
     assert m.total_pass == 42
@@ -509,9 +519,12 @@ async def test_get_player_includes_api_football_id_when_canonical_match():
     # canonical_teams.bzz_team_id=100 (= player.current_team_api_id) -> 541
     crest_result.all.return_value = [(100, 541, None)]
 
+    sel_result = MagicMock()
+    sel_result.scalars.return_value.all.return_value = []  # pas de stats de selection
+
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(
-        side_effect=[player_result, season_result, recent_result, crest_result]
+        side_effect=[player_result, season_result, recent_result, crest_result, sel_result]
     )
 
     response = await get_player(player_api_id=1, session=mock_db, season="2025-2026")
