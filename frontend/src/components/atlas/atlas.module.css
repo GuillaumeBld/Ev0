@@ -241,13 +241,20 @@ svg.map .geo{transition:transform .7s cubic-bezier(.22,1,.36,1)}
 .ptile{background:var(--surface);border:1px solid var(--bd);border-radius:12px;padding:10px 14px;min-width:78px}
 .ptile .v{font-size:23px;font-weight:850;color:var(--t1);letter-spacing:-.01em}
 .ptile .l{font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--t3);font-weight:700;margin-top:2px}
-.ptabs{display:flex;gap:6px;padding:0 20px;margin:4px 0 2px;border-bottom:1px solid var(--bd)}
-.ptab{background:none;border:none;padding:10px 14px;color:var(--t2);font-weight:650;font-size:14px;cursor:pointer;border-bottom:2px solid transparent}
-.ptab.on{color:var(--a);border-bottom-color:var(--a)}
+.ptabs{display:flex;gap:4px;padding:0 20px;background:var(--surface2);border-bottom:1px solid var(--bd);position:sticky;top:56px;z-index:4}
+.ptab{background:none;border:none;padding:13px 16px;color:var(--t2);font-weight:700;font-size:14.5px;cursor:pointer;border-bottom:2px solid transparent;transition:color .14s}
+.ptab:hover:not(:disabled){color:var(--t1)}
+.ptab.on{color:var(--a);border-bottom-color:var(--a);font-weight:800}
 .ptab:disabled{opacity:.4;cursor:default}
 .pdwrap{padding:20px 28px 70px;max-width:1560px;margin:0 auto}
-.sect{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--t2);font-weight:800;margin:24px 2px 13px;display:flex;align-items:center;gap:12px}
-.sect::after{content:"";flex:1;height:1px;background:var(--bd)}
+.sect{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--t2);font-weight:800;margin:24px 2px 13px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.sect::after{content:"";flex:1;height:1px;background:var(--bd);order:9;min-width:30px}
+.seg{display:inline-flex;background:var(--surface);border:1px solid var(--bd2);border-radius:11px;padding:3px;gap:3px;flex-wrap:wrap}
+.seg button{border:none;background:none;color:var(--t2);font-weight:700;font-size:12.5px;padding:7px 13px;border-radius:8px;cursor:pointer;transition:.14s}
+.seg button:hover{color:var(--t1)}
+.seg button.on{background:var(--a);color:var(--a-ink);box-shadow:0 1px 4px rgba(0,0,0,.2)}
+.wlbl{font-size:10.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--t3);margin-right:2px}
+.selsum{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:14px}
 .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(296px,1fr));gap:13px}
 .ppanel{background:var(--surface);border:1px solid var(--bd);border-radius:14px;overflow:hidden}
 .ppanel .ph{display:flex;align-items:center;gap:10px;padding:12px 15px;border-bottom:1px solid var(--bd)}

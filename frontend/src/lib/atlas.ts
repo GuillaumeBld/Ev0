@@ -7,9 +7,27 @@
  * shapes, no fixed `limit=500` — every list call takes real limit/offset.
  */
 
-import type { PlayerSummary, PlayerDetail, PlayerCareerOut, SeasonStatsOut, RecentMatch, CareerSeasonOut } from './api'
+import type {
+  PlayerSummary,
+  PlayerDetail,
+  PlayerCareerOut,
+  SeasonStatsOut,
+  RecentMatch as ApiRecentMatch,
+  CareerSeasonOut,
+} from './api'
 
-export type { PlayerSummary, PlayerDetail, PlayerCareerOut, SeasonStatsOut, RecentMatch, CareerSeasonOut }
+export type { PlayerSummary, PlayerDetail, PlayerCareerOut, SeasonStatsOut, CareerSeasonOut }
+
+/**
+ * `RecentMatch` étendu avec `league_api_id` — déjà renvoyé par le backend
+ * (voir `RecentMatch.league_api_id` dans `backend/app/api/players.py`, livré
+ * par la Task 2 du plan de refonte) mais pas encore typé dans `api.ts`. On
+ * l'étend ici plutôt que d'y toucher : `api.ts` est hors scope de cette tâche
+ * (commits limités à atlas.ts / PlayerDetail.tsx / atlas.module.css).
+ */
+export interface RecentMatch extends ApiRecentMatch {
+  league_api_id: number | null
+}
 
 // ── Atlas geo tree (GET /atlas/geo) ─────────────────────────────────────────
 
@@ -165,5 +183,88 @@ export async function fetchPlayer(playerApiId: number): Promise<PlayerDetail> {
 export async function fetchCareer(playerApiId: number): Promise<PlayerCareerOut> {
   const res = await fetch(`/api/v1/players/${playerApiId}/career`)
   if (!res.ok) throw new Error(`fetchCareer: HTTP ${res.status}`)
+  return res.json()
+}
+
+// ── Player breakdown — stats par (saison × compétition) ────────────────────
+// Consommé par les sélecteurs Saison/Compétition de la fiche joueur (voir
+// `PlayerDetail.tsx`) : `bzz_player_match_stats` groupé par (saison, ligue),
+// avec les champs absents de `SeasonStatsOut` (dispossessed, possession_lost,
+// was_fouled, total_clearance, aerial_lost) nécessaires aux 8 catégories de
+// la maquette `docs/superpowers/fiche-joueur-reference-mockup.html`.
+
+/** Une ligne (saison, compétition) agrégée depuis `bzz_player_match_stats`.
+ *  `kind` ∈ domestic_1 | domestic_2 | world | uefa_club | selection — sert à
+ *  distinguer club de sélection côté front (la fiche n'a pas de notion de
+ *  "kind" ailleurs, c'est l'unique endpoint qui l'expose). */
+export interface PlayerBreakdownRow {
+  season: string
+  league_api_id: number
+  league_name: string
+  kind: 'domestic_1' | 'domestic_2' | 'world' | 'uefa_club' | 'selection' | string
+  matches_played: number | null
+  minutes_played: number | null
+  starts: number | null
+  goals: number | null
+  goal_assist: number | null
+  expected_goals: number | null
+  expected_assists: number | null
+  total_shots: number | null
+  shots_on_target: number | null
+  key_pass: number | null
+  total_pass: number | null
+  accurate_pass: number | null
+  total_cross: number | null
+  accurate_cross: number | null
+  total_long_balls: number | null
+  accurate_long_balls: number | null
+  duel_won: number | null
+  duel_lost: number | null
+  aerial_won: number | null
+  aerial_lost: number | null
+  total_tackle: number | null
+  won_tackle: number | null
+  interception: number | null
+  ball_recovery: number | null
+  total_clearance: number | null
+  dispossessed: number | null
+  possession_lost: number | null
+  was_fouled: number | null
+  fouls: number | null
+  yellow_card: number | null
+  red_card: number | null
+  avg_rating: number | null
+}
+
+export interface PlayerBreakdownOut {
+  rows: PlayerBreakdownRow[]
+}
+
+export async function fetchPlayerBreakdown(playerApiId: number): Promise<PlayerBreakdownOut> {
+  const res = await fetch(`/api/v1/players/${playerApiId}/breakdown`)
+  if (!res.ok) throw new Error(`fetchPlayerBreakdown: HTTP ${res.status}`)
+  return res.json()
+}
+
+// ── Player match odds — cotes closing Betclic buteur/passeur ───────────────
+// Alimentera le journal match par match exhaustif (Task 5) ; typé ici pour
+// que la data layer soit prête, conformément à `task-4-brief.md`.
+
+export interface PlayerMatchOddsRow {
+  event_api_id: number
+  /** Cote de closing Betclic, marché buteur. `null` = non disponible (hors
+   *  période de collecte ou pas de cote trouvée pour ce joueur/fixture). */
+  buteur: number | null
+  /** Cote de closing Betclic, marché passeur décisif. */
+  passeur: number | null
+}
+
+export interface PlayerMatchOddsOut {
+  odds: PlayerMatchOddsRow[]
+}
+
+export async function fetchPlayerMatchOdds(playerApiId: number): Promise<PlayerMatchOddsOut> {
+  const res = await fetch(`/api/v1/players/${playerApiId}/match-odds`)
+  if (!res.ok) throw new Error(`fetchPlayerMatchOdds: HTTP ${res.status}`)
   return res.json()
 }

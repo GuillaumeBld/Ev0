@@ -8,22 +8,30 @@ import styles from './atlas.module.css'
 import { ClubCrest } from './ClubCrest'
 import { ratingColor, ratingBg } from './PlayerCard'
 import { MiniChart, BarsGX, Radar, type GxBar, type RadarAxis } from './charts'
-import { fetchPlayer, fetchCareer } from '@/lib/atlas'
-import type { SeasonStatsOut, RecentMatch, CareerSeasonOut } from '@/lib/atlas'
+import { fetchPlayer, fetchCareer, fetchPlayerBreakdown } from '@/lib/atlas'
+import type { SeasonStatsOut, RecentMatch, CareerSeasonOut, PlayerBreakdownRow } from '@/lib/atlas'
 
 /**
- * Fiche joueur plein écran ("grimoire") — portée depuis la fonction
- * `openPlayer(p)` de `docs/superpowers/atlas-reference-mockup.html` (même
- * structure/CSS : `.pdet` plein écran, `.phero`, `.ptiles`, `.pgrid` /
- * `.ppanel`, `.gcards`, `.mlog`, `.pcar`), mais câblée aux vraies données
- * `GET /players/{id}` et `GET /players/{id}/career` au lieu des valeurs
- * aléatoires de la maquette.
+ * Fiche joueur plein écran ("grimoire") — portée depuis la maquette VALIDÉE
+ * `docs/superpowers/fiche-joueur-reference-mockup.html` : **2 onglets**
+ * Club / Sélection (plus de 3e onglet « Carrière », illisible — son contenu
+ * est intégré en bas de l'onglet Club), avec des sélecteurs **Saison** +
+ * **Compétition** qui recalculent en direct tuiles, 8 catégories colorées et
+ * graphiques (fonctions `renderClub`/`renderSel`, `clubPanels`/`selPanels`,
+ * `distRows`, `metric`, `p90`, `clubRadarAxes` de la maquette).
+ *
+ * Câblée à `GET /players/{id}` (season_stats/recent_matches/selection_stats),
+ * `GET /players/{id}/career` et `GET /players/{id}/breakdown` (stats réelles
+ * par saison × compétition — remplace les valeurs aléatoires de la maquette).
+ *
+ * Le journal match par match exhaustif (21 colonnes + cotes Betclic) et les
+ * tables "Parcours" façon maquette restent à portée de la Task 5 du plan de
+ * refonte (`docs/superpowers/plans/2026-11-06-fiche-joueur-refonte-plan.md`) ;
+ * ici l'ancien journal (11 colonnes) est conservé mais filtré par la saison/
+ * compétition sélectionnée, comme les graphiques.
  */
 
-// ── Mapping season_stats → 7 catégories ─────────────────────────────────────
-// Chaque ligne est TOUJOURS rendue (jamais masquée) ; une valeur manquante
-// affiche "n/d", jamais un 0 trompeur. Les "/90" absents côté backend sont
-// recalculés à partir du total et de minutes_played/90 (voir `per90`).
+// ── Lignes de métrique génériques (réutilisées club + sélection) ───────────
 
 interface MetricRow {
   label: string
@@ -31,6 +39,9 @@ interface MetricRow {
   max?: number
   pct?: boolean
   decimals?: number
+  /** Préfixe "+" quand positif — pour les deltas (Buts − xG, etc.), comme
+   *  `o.sign` dans `fmt()` de la maquette. */
+  sign?: boolean
 }
 
 interface Category {
@@ -46,153 +57,18 @@ function per90(total: number | null | undefined, minutes: number | null | undefi
   return total / (minutes / 90)
 }
 
-function buildCategories(s: SeasonStatsOut): Category[] {
-  const goalsPer90 = per90(s.goals, s.minutes_played)
-  const assistsPer90 = per90(s.goal_assist, s.minutes_played)
-  const R = (
-    label: string,
-    value: number | null | undefined,
-    max?: number,
-    opts: { pct?: boolean; decimals?: number } = {},
-  ): MetricRow => ({ label, value: value ?? null, max, ...opts })
-
-  return [
-    {
-      key: 'fin', title: 'Finition', icon: '⚽', color: 'var(--crit)',
-      rows: [
-        R('Buts', s.goals, 30),
-        R('Buts / 90', goalsPer90, 1.2, { decimals: 2 }),
-        R('Buts (forme, 5 derniers)', s.form_goals_5, 6),
-        R('xG (buts attendus)', s.expected_goals, undefined, { decimals: 1 }),
-        R('xG / 90', s.xg_per_90, 1, { decimals: 2 }),
-        R('xG (forme, 5 derniers)', s.form_xg_5, undefined, { decimals: 1 }),
-        R('Buts − xG', s.finishing_delta, undefined, { decimals: 1 }),
-        R('Tirs', s.total_shots, 100),
-        R('Tirs / 90', s.shots_per_90, 6, { decimals: 1 }),
-        R('Tirs cadrés', s.shots_on_target, 50),
-        R('Tirs cadrés / 90', s.shots_on_target_per_90, 3, { decimals: 1 }),
-        R('Précision des tirs', s.shot_accuracy, 100, { pct: true }),
-        R('xG par tir', s.xg_per_shot, undefined, { decimals: 2 }),
-      ],
-    },
-    {
-      key: 'cre', title: 'Création', icon: '🎯', color: 'var(--a2)',
-      rows: [
-        R('Passes décisives', s.goal_assist, 20),
-        R('Passes déc. / 90', assistsPer90, 1, { decimals: 2 }),
-        R('Passes déc. (forme, 5 derniers)', s.form_assists_5, 5),
-        R('xA (passes attendues)', s.expected_assists, undefined, { decimals: 1 }),
-        R('xA / 90', s.xa_per_90, 0.6, { decimals: 2 }),
-        R('xA − passes décisives', s.xa_delta, undefined, { decimals: 1 }),
-        R('Passes clés', s.key_pass, 80),
-        R('Passes clés / 90', s.key_pass_per_90, 4, { decimals: 1 }),
-      ],
-    },
-    {
-      key: 'dis', title: 'Distribution', icon: '🔀', color: 'var(--a)',
-      rows: [
-        R('Passes tentées', s.total_pass, 3000),
-        R('Passes réussies', s.accurate_pass, 2800),
-        R('Précision des passes', s.pass_completion, 100, { pct: true }),
-        R('Longues passes tentées', s.total_long_balls, 300),
-        R('Longues passes réussies', s.accurate_long_balls, 250),
-        R('Précision longues passes', s.long_ball_accuracy, 100, { pct: true }),
-        R('Centres tentés', s.total_cross, 150),
-        R('Centres réussis', s.accurate_cross, 80),
-        R('Centres réussis / 90', s.accurate_cross_per_90, 2, { decimals: 2 }),
-        R('Précision des centres', s.cross_accuracy, 100, { pct: true }),
-      ],
-    },
-    {
-      key: 'def', title: 'Défense', icon: '🛡️', color: '#8aa0ff',
-      rows: [
-        R('Tacles', s.total_tackle, 150),
-        R('Tacles gagnés', s.won_tackle, 120),
-        R('Taux de réussite des tacles', s.tackle_success_rate, 100, { pct: true }),
-        R('Tacles / 90', s.tackles_per_90, 5, { decimals: 1 }),
-        R('Interceptions', s.interception, 100),
-        R('Interceptions / 90', s.interceptions_per_90, 4, { decimals: 1 }),
-        R('Récupérations', s.ball_recovery, 300),
-        R('Récupérations / 90', s.recoveries_per_90, 10, { decimals: 1 }),
-      ],
-    },
-    {
-      key: 'duel', title: 'Duels & aérien', icon: '💪', color: '#6fb0a0',
-      rows: [
-        R('Duels gagnés', s.duel_won, 300),
-        R('Duels perdus', s.duel_lost, 300),
-        R('Taux de réussite des duels', s.duel_win_rate, 100, { pct: true }),
-        R('Duels aériens gagnés', s.aerial_won, 150),
-        R('Duels aériens perdus', s.aerial_lost, 150),
-        R('Taux de réussite aérien', s.aerial_win_rate, 100, { pct: true }),
-      ],
-    },
-    {
-      key: 'dsc', title: 'Discipline', icon: '🟨', color: 'var(--warn)',
-      rows: [
-        R('Cartons jaunes', s.yellow_card, 12),
-        R('Cartons rouges', s.red_card, 3),
-      ],
-    },
-    {
-      key: 'jeu', title: 'Temps de jeu', icon: '⏱️', color: 'var(--t2)',
-      rows: [
-        R('Matchs joués', s.matches_played, 38),
-        R('Titularisations', s.starts, 38),
-        R('% de titularisation', s.starts_pct, 100, { pct: true }),
-        R('Minutes jouées', s.minutes_played, 3420),
-        R('Minutes / match', s.avg_minutes_per_match, 90),
-        R('Note moyenne', s.avg_rating, 10, { decimals: 1 }),
-        R('Note (forme, 5 derniers)', s.form_rating_5, 10, { decimals: 1 }),
-        R('Tendance de note', s.rating_trend, undefined, { decimals: 2 }),
-      ],
-    },
-  ]
+/** Division sûre — jamais de NaN/Infinity ; `null` si le dénominateur est
+ *  manquant ou nul. Reprend `sd()` de la maquette. */
+function sd(a: number | null | undefined, b: number | null | undefined): number | null {
+  if (a == null || b == null || b === 0) return null
+  return a / b
 }
 
-/**
- * Radar de profil (6 axes, 0-100). Calcul documenté — ce n'est pas un
- * percentile contre la ligue, juste une mise à l'échelle lisible à partir des
- * stats saison déjà chargées :
- *  - Finition : buts/90 (poids fort) + xG/90 (poids modéré)
- *  - Création : passes déc./90 (poids fort) + passes clés/90 (poids modéré)
- *  - Passes   : % de passes réussies, directement (ratio 0..1 -> 0..100)
- *  - Défense  : tacles/90 + interceptions/90
- *  - Duels    : % de duels gagnés, directement
- *  - Activité : minutes jouées rapportées à une saison pleine (38 x 90 min)
- * Champ manquant -> traité comme 0 sur cet axe (pas de n/d sur un radar).
- */
-function buildRadar(s: SeasonStatsOut): RadarAxis[] {
-  const clamp = (v: number) => Math.max(0, Math.min(100, v))
-  const goalsPer90 = per90(s.goals, s.minutes_played) ?? 0
-  const assistsPer90 = per90(s.goal_assist, s.minutes_played) ?? 0
-  return [
-    { label: 'Finition', value: clamp(goalsPer90 * 55 + (s.xg_per_90 ?? 0) * 25) },
-    { label: 'Création', value: clamp(assistsPer90 * 65 + (s.key_pass_per_90 ?? 0) * 7) },
-    { label: 'Passes', value: clamp((s.pass_completion ?? 0) * 100) },
-    { label: 'Défense', value: clamp((s.tackles_per_90 ?? 0) * 12 + (s.interceptions_per_90 ?? 0) * 12) },
-    { label: 'Duels', value: clamp((s.duel_win_rate ?? 0) * 100) },
-    { label: 'Activité', value: clamp(((s.minutes_played ?? 0) / (38 * 90)) * 100) },
-  ]
-}
-
-/** Champs "avancés" dont l'absence déclenche le badge "couverture partielle" —
- *  en-dessous des Big 5, ces métriques (xG/xA, tacles, duels…) manquent
- *  souvent alors que les stats basiques (buts, minutes) existent déjà. */
-const ADVANCED_FIELDS: (keyof SeasonStatsOut)[] = [
-  'expected_goals', 'expected_assists', 'key_pass_per_90',
-  'tackles_per_90', 'interceptions_per_90', 'duel_win_rate', 'aerial_win_rate',
-]
-
-function hasPartialCoverage(s: SeasonStatsOut | null): boolean {
-  if (!s) return true
-  return ADVANCED_FIELDS.some((f) => s[f] == null)
-}
-
-function fmt(value: number | null, opts: { pct?: boolean; decimals?: number } = {}): string {
+function fmt(value: number | null, opts: { pct?: boolean; decimals?: number; sign?: boolean } = {}): string {
   if (value == null) return 'n/d'
   if (opts.pct) return `${(value * 100).toFixed(opts.decimals ?? 0)}%`
-  return value.toFixed(opts.decimals ?? 0)
+  const sign = opts.sign && value > 0 ? '+' : ''
+  return `${sign}${value.toFixed(opts.decimals ?? 0)}`
 }
 
 function Metric({ row }: { row: MetricRow }) {
@@ -243,16 +119,271 @@ function Ring({ note, size = 84 }: { note: number | null; size?: number }) {
   )
 }
 
+// ── Agrégat (saison, compétition) — alimente tuiles / 8 catégories / radar ──
+// Mêmes noms de champs courts que la maquette (g/a/xg/xa/sh/sot/kp/tp/ap/…)
+// pour pouvoir comparer les formules 1:1 avec `clubPanels`/`selPanels`/
+// `distRows`/`clubRadarAxes` du fichier de référence.
+
+interface AggRow {
+  m: number | null; min: number | null
+  g: number | null; a: number | null
+  xg: number | null; xa: number | null
+  sh: number | null; sot: number | null; kp: number | null
+  tp: number | null; ap: number | null
+  tc: number | null; ac: number | null
+  tlb: number | null; alb: number | null
+  dw: number | null; dl: number | null
+  aw: number | null; al: number | null
+  disp: number | null; plost: number | null
+  cj: number | null; rj: number | null
+  fc: number | null; wf: number | null
+  note: number | null
+}
+
+const EMPTY_AGG: AggRow = {
+  m: null, min: null, g: null, a: null, xg: null, xa: null, sh: null, sot: null, kp: null,
+  tp: null, ap: null, tc: null, ac: null, tlb: null, alb: null, dw: null, dl: null, aw: null, al: null,
+  disp: null, plost: null, cj: null, rj: null, fc: null, wf: null, note: null,
+}
+
+function rowToAgg(r: PlayerBreakdownRow): AggRow {
+  return {
+    m: r.matches_played, min: r.minutes_played,
+    g: r.goals, a: r.goal_assist,
+    xg: r.expected_goals, xa: r.expected_assists,
+    sh: r.total_shots, sot: r.shots_on_target, kp: r.key_pass,
+    tp: r.total_pass, ap: r.accurate_pass,
+    tc: r.total_cross, ac: r.accurate_cross,
+    tlb: r.total_long_balls, alb: r.accurate_long_balls,
+    dw: r.duel_won, dl: r.duel_lost,
+    aw: r.aerial_won, al: r.aerial_lost,
+    disp: r.dispossessed, plost: r.possession_lost,
+    cj: r.yellow_card, rj: r.red_card,
+    fc: r.fouls, wf: r.was_fouled,
+    note: r.avg_rating,
+  }
+}
+
+/** Repli quand `/breakdown` ne renvoie aucune ligne pour ce joueur (ex.
+ *  championnat sans stats de match avancées indexées) : on reconstruit un
+ *  agrégat depuis `SeasonStatsOut`, qui n'a pas les 5 champs propres à
+ *  `/breakdown` (total_clearance/dispossessed/possession_lost/was_fouled/
+ *  fouls côté sélection) — ils restent `null` → "n/d", jamais une valeur
+ *  inventée. */
+function seasonStatsToAgg(s: SeasonStatsOut): AggRow {
+  return {
+    m: s.matches_played, min: s.minutes_played,
+    g: s.goals, a: s.goal_assist,
+    xg: s.expected_goals, xa: s.expected_assists,
+    sh: s.total_shots, sot: s.shots_on_target, kp: s.key_pass,
+    tp: s.total_pass, ap: s.accurate_pass,
+    tc: s.total_cross, ac: s.accurate_cross,
+    tlb: s.total_long_balls, alb: s.accurate_long_balls,
+    dw: s.duel_won, dl: s.duel_lost,
+    aw: s.aerial_won, al: s.aerial_lost,
+    disp: null, plost: null,
+    cj: s.yellow_card, rj: s.red_card,
+    fc: null, wf: null,
+    note: s.avg_rating,
+  }
+}
+
+const AGG_SUM_KEYS: (keyof AggRow)[] = [
+  'm', 'min', 'g', 'a', 'xg', 'xa', 'sh', 'sot', 'kp', 'tp', 'ap', 'tc', 'ac', 'tlb', 'alb',
+  'dw', 'dl', 'aw', 'al', 'disp', 'plost', 'cj', 'rj', 'fc', 'wf',
+]
+
+/** "Toutes" = somme des lignes de la saison (ou de la compétition), comme
+ *  `renderClub`/`renderSel` de la maquette. `note` est une moyenne pondérée
+ *  par `matches_played` (reconstituer une moyenne exacte à partir de moyennes
+ *  par ligue n'est possible qu'ainsi, faute d'avoir la somme brute des notes
+ *  par match ici — le détail match par match, lui, utilise la vraie note de
+ *  chaque match). */
+function sumAgg(rows: AggRow[]): AggRow {
+  if (rows.length === 0) return EMPTY_AGG
+  const out: AggRow = { ...EMPTY_AGG }
+  for (const key of AGG_SUM_KEYS) {
+    const values = rows.map((r) => r[key]).filter((v): v is number => v != null)
+    out[key] = values.length ? values.reduce((a, b) => a + b, 0) : null
+  }
+  const withNote = rows.filter((r) => r.note != null && r.m != null && r.m > 0)
+  const weight = withNote.reduce((s, r) => s + (r.m as number), 0)
+  out.note = weight > 0
+    ? withNote.reduce((s, r) => s + (r.note as number) * (r.m as number), 0) / weight
+    : null
+  return out
+}
+
+function R(label: string, value: number | null | undefined, max?: number, opts: { pct?: boolean; decimals?: number; sign?: boolean } = {}): MetricRow {
+  return { label, value: value ?? null, max, ...opts }
+}
+
+/** Distribution = passes / centres / longues passes, exactement `distRows()`
+ *  de la maquette. */
+function distRows(d: AggRow): MetricRow[] {
+  return [
+    R('Passes réussies', d.ap),
+    R('Passes tentées', d.tp),
+    R('Précision des passes', sd(d.ap, d.tp), 100, { pct: true }),
+    R('Centres réussis', d.ac),
+    R('Centres tentés', d.tc),
+    R('Précision des centres', sd(d.ac, d.tc), 100, { pct: true }),
+    R('Longues passes réussies', d.alb),
+    R('Longues passes tentées', d.tlb),
+    R('Précision longues passes', sd(d.alb, d.tlb), 100, { pct: true }),
+  ]
+}
+
+/**
+ * Les **8 catégories colorées** de la maquette (`clubPanels`/`selPanels`) :
+ * Finition (rouge), Création (bleu), Distribution (ambre), Duels au sol
+ * (teal), Jeu aérien (bleu clair), Pertes de balle (orange), Discipline (or,
+ * + fautes subies), Temps de jeu (vert). Les échelles des barres (`max`)
+ * diffèrent club/sélection, comme dans la maquette.
+ */
+function buildAggCategories(d: AggRow, scope: 'club' | 'selection'): Category[] {
+  const isClub = scope === 'club'
+  const goalsPer90 = per90(d.g, d.min)
+  const assistsPer90 = per90(d.a, d.min)
+  const kpPer90 = per90(d.kp, d.min)
+  const dr = sd(d.dw, (d.dw ?? 0) + (d.dl ?? 0))
+  const ar = sd(d.aw, (d.aw ?? 0) + (d.al ?? 0))
+  const goalsMinusXg = d.g != null && d.xg != null ? d.g - d.xg : null
+  const assistsMinusXa = d.a != null && d.xa != null ? d.a - d.xa : null
+
+  return [
+    {
+      key: 'fin', title: 'Finition', icon: '⚽', color: 'var(--crit)',
+      rows: [
+        R('Buts', d.g, isClub ? 56 : 22),
+        R('Buts / 90', goalsPer90, 1.4, { decimals: 2 }),
+        R('xG', d.xg, isClub ? 46 : 8, { decimals: 1 }),
+        R('Buts − xG', goalsMinusXg, undefined, { decimals: 1, sign: true }),
+        R('xG par tir', sd(d.xg, d.sh), 0.4, { decimals: 2 }),
+        R('Tirs', d.sh, isClub ? 250 : 45),
+        R('Tirs cadrés', d.sot, isClub ? 130 : 25),
+        R('Précision des tirs', sd(d.sot, d.sh), 100, { pct: true }),
+      ],
+    },
+    {
+      key: 'cre', title: 'Création', icon: '🎯', color: 'var(--a2)',
+      rows: [
+        R('Passes décisives', d.a, isClub ? 28 : 14),
+        R('Passes déc. / 90', assistsPer90, 1, { decimals: 2 }),
+        R('xA', d.xa, isClub ? 12 : 6, { decimals: 1 }),
+        R('Passes déc. − xA', assistsMinusXa, undefined, { decimals: 1, sign: true }),
+        R('Passes clés', d.kp, isClub ? 130 : 20),
+        R('Passes clés / 90', kpPer90, 4, { decimals: 1 }),
+      ],
+    },
+    { key: 'dis', title: 'Distribution', icon: '🔀', color: 'var(--a)', rows: distRows(d) },
+    {
+      key: 'duel', title: 'Duels au sol', icon: '💪', color: '#56a6a0',
+      rows: [
+        R('Duels gagnés', d.dw, isClub ? 300 : 40),
+        R('Taux de réussite des duels', dr, 100, { pct: true }),
+      ],
+    },
+    {
+      key: 'air', title: 'Jeu aérien', icon: '🔼', color: '#7e9bd4',
+      rows: [
+        R('Duels aériens gagnés', d.aw, isClub ? 80 : 10),
+        R('Duels aériens perdus', d.al, isClub ? 80 : 10),
+        R('Taux de réussite aérien', ar, 100, { pct: true }),
+      ],
+    },
+    {
+      key: 'pert', title: 'Pertes de balle', icon: '🔻', color: '#cf8a5a',
+      rows: [
+        R('Dépossédé', d.disp, isClub ? 80 : 20),
+        R('Ballons perdus', d.plost, isClub ? 600 : 130),
+      ],
+    },
+    {
+      key: 'dsc', title: 'Discipline', icon: '🟨', color: '#d7a93a',
+      rows: [
+        R('Cartons jaunes', d.cj, isClub ? 12 : 6),
+        R('Cartons rouges', d.rj, 3),
+        R('Fautes commises', d.fc, isClub ? 40 : 12),
+        R('Fautes subies', d.wf, isClub ? 60 : 12),
+      ],
+    },
+    {
+      key: 'jeu', title: 'Temps de jeu', icon: '⏱️', color: 'var(--good)',
+      rows: [
+        R(isClub ? 'Matchs joués' : 'Sélections (matchs)', d.m, isClub ? 60 : 22),
+        R('Minutes jouées', d.min, isClub ? 5000 : 2000),
+        R('Note moyenne', d.note, 10, { decimals: 1 }),
+      ],
+    },
+  ]
+}
+
+/** Radar 6 axes, exactement `clubRadarAxes`/`selRadarAxes` de la maquette :
+ *  Finition = buts/90 (poids fort) + xG/90 (poids modéré) ; Création =
+ *  passes déc./90 + passes clés/90 ; Passes = % de passes réussies ;
+ *  Volume = tirs/90 ; Duels = % de duels gagnés ; Activité = minutes jouées
+ *  rapportées aux minutes théoriques (matchs × 90). */
+function buildAggRadar(d: AggRow): RadarAxis[] {
+  const clamp = (v: number) => Math.max(0, Math.min(100, v))
+  const goalsPer90 = per90(d.g, d.min) ?? 0
+  const xgPer90 = per90(d.xg, d.min) ?? 0
+  const assistsPer90 = per90(d.a, d.min) ?? 0
+  const kpPer90 = per90(d.kp, d.min) ?? 0
+  const shPer90 = per90(d.sh, d.min) ?? 0
+  const passPct = sd(d.ap, d.tp) ?? 0
+  const dr = sd(d.dw, (d.dw ?? 0) + (d.dl ?? 0)) ?? 0
+  const activite = d.m && d.m > 0 ? ((d.min ?? 0) / (d.m * 90)) * 100 : 0
+  return [
+    { label: 'Finition', value: clamp(goalsPer90 * 55 + xgPer90 * 25) },
+    { label: 'Création', value: clamp(assistsPer90 * 65 + kpPer90 * 7) },
+    { label: 'Passes', value: clamp(passPct * 100) },
+    { label: 'Volume', value: clamp(shPer90 * 11) },
+    { label: 'Duels', value: clamp(dr * 100) },
+    { label: 'Activité', value: clamp(activite) },
+  ]
+}
+
+/** Champs "avancés" dont l'absence déclenche le badge "couverture partielle"
+ *  dans le hero — en-dessous des Big 5, ces métriques (xG/xA, duels…)
+ *  manquent souvent alors que les stats basiques (buts, minutes) existent. */
+const ADVANCED_FIELDS: (keyof SeasonStatsOut)[] = [
+  'expected_goals', 'expected_assists', 'key_pass_per_90',
+  'tackles_per_90', 'interceptions_per_90', 'duel_win_rate', 'aerial_win_rate',
+]
+
+function hasPartialCoverage(s: SeasonStatsOut | null): boolean {
+  if (!s) return true
+  return ADVANCED_FIELDS.some((f) => s[f] == null)
+}
+
+/** Saison sportive (1er août → 31 juillet) d'une date ISO, au même format
+ *  `"YYYY-YYYY+1"` que `BreakdownRow.season` / `SeasonStatsOut.season` (voir
+ *  `season_service.py`) — sert à filtrer `recent_matches` par la saison
+ *  sélectionnée dans l'onglet Club. */
+function seasonOfDate(iso: string): string | null {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  const y = d.getFullYear()
+  const m = d.getMonth() + 1
+  const start = m >= 8 ? y : y - 1
+  return `${start}-${start + 1}`
+}
+
+/** Une ligne `/breakdown` (ou son repli `SeasonStatsOut`) normalisée pour
+ *  les sélecteurs Saison/Compétition. */
+interface SelectorRow {
+  season: string
+  league_api_id: number
+  league_name: string
+  agg: AggRow
+}
+
 /**
  * Dérive, à partir de `recent_matches` :
- *  - `sortedDesc` : historique match par match, du plus récent au plus ancien
- *    (matches sans date rejetés en fin de liste, ils ne peuvent pas être
- *    replacés chronologiquement).
+ *  - `sortedDesc` : historique match par match, du plus récent au plus ancien.
  *  - `ratings` : notes en ordre chronologique croissant, pour la courbe.
  *  - `bars` : buts vs xG agrégés par mois calendaire (triés chronologiquement).
- *    Un mois n'a de xG "n/d" que si AUCUN de ses matchs n'a de expected_goals
- *    renseigné ; sinon on somme ce qui est connu (agrégat, pas une valeur
- *    isolée — ne tombe pas sous la règle "jamais de 0 trompeur").
  */
 function useMatchSeries(matches: RecentMatch[]) {
   return useMemo(() => {
@@ -282,6 +413,11 @@ function useMatchSeries(matches: RecentMatch[]) {
   }, [matches])
 }
 
+function formAverage(ratings: number[]): number | null {
+  const last5 = ratings.slice(-5)
+  return last5.length ? last5.reduce((a, b) => a + b, 0) / last5.length : null
+}
+
 export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | null; onClose: () => void }) {
   const open = playerApiId != null
 
@@ -297,17 +433,139 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
     enabled: open,
   })
 
-  const [tab, setTab] = useState<'club' | 'selection' | 'career'>('club')
-  const hasSelection = !!player?.selection_stats
+  const { data: breakdown } = useQuery({
+    queryKey: ['atlas-player-breakdown', playerApiId],
+    queryFn: () => fetchPlayerBreakdown(playerApiId as number),
+    enabled: open,
+  })
 
-  const matches = player?.recent_matches ?? []
-  const { sortedDesc, ratings, bars } = useMatchSeries(matches)
-  const categories = useMemo(() => (player?.season_stats ? buildCategories(player.season_stats) : []), [player?.season_stats])
-  const radarAxes = useMemo(() => (player?.season_stats ? buildRadar(player.season_stats) : []), [player?.season_stats])
+  const [tab, setTab] = useState<'club' | 'selection'>('club')
+  const [clubSeason, setClubSeason] = useState<string | null>(null)
+  const [clubComp, setClubComp] = useState<string>('all')
+  const [selComp, setSelComp] = useState<string>('all')
+
+  const hasSelection = !!player?.selection_stats
+  // `PlayerDetail.recent_matches` est typé depuis `api.ts` (sans
+  // `league_api_id`, voir le commentaire sur `RecentMatch` dans
+  // `lib/atlas.ts`) alors que le backend renvoie bien ce champ depuis la
+  // Task 2 du plan de refonte — cast documenté, pas une donnée inventée.
+  const matches = useMemo(() => (player?.recent_matches ?? []) as RecentMatch[], [player?.recent_matches])
+
+  // ── Normalisation /breakdown → lignes de sélecteur (avec repli season_stats) ──
+  const clubRowsNorm = useMemo<SelectorRow[]>(() => {
+    const rows = (breakdown?.rows ?? []).filter((r) => r.kind !== 'selection')
+    if (rows.length > 0) {
+      return rows.map((r) => ({ season: r.season, league_api_id: r.league_api_id, league_name: r.league_name, agg: rowToAgg(r) }))
+    }
+    if (player?.season_stats) {
+      const s = player.season_stats
+      return [{ season: s.season, league_api_id: s.league_api_id ?? -1, league_name: 'Toutes compétitions', agg: seasonStatsToAgg(s) }]
+    }
+    return []
+  }, [breakdown, player?.season_stats])
+
+  const selRowsNorm = useMemo<SelectorRow[]>(() => {
+    const rows = (breakdown?.rows ?? []).filter((r) => r.kind === 'selection')
+    if (rows.length > 0) {
+      return rows.map((r) => ({ season: r.season, league_api_id: r.league_api_id, league_name: r.league_name, agg: rowToAgg(r) }))
+    }
+    if (player?.selection_stats) {
+      const s = player.selection_stats
+      return [{ season: s.season, league_api_id: s.league_api_id ?? -1, league_name: 'Toutes compétitions', agg: seasonStatsToAgg(s) }]
+    }
+    return []
+  }, [breakdown, player?.selection_stats])
+
+  // ── Onglet Club : sélecteurs Saison + Compétition ───────────────────────
+  const seasons = useMemo(
+    () => Array.from(new Set(clubRowsNorm.map((r) => r.season))).sort().reverse(),
+    [clubRowsNorm],
+  )
+  const effectiveSeason = (clubSeason && seasons.includes(clubSeason) ? clubSeason : seasons[0]) ?? null
+
+  const rowsForSeason = useMemo(
+    () => clubRowsNorm.filter((r) => r.season === effectiveSeason),
+    [clubRowsNorm, effectiveSeason],
+  )
+  const leaguesForSeason = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const r of rowsForSeason) map.set(r.league_api_id, r.league_name)
+    return Array.from(map.entries()).map(([league_api_id, league_name]) => ({ league_api_id, league_name }))
+  }, [rowsForSeason])
+  // Pas de sélecteur de compétition pour une unique ligne de repli synthétique
+  // ("Toutes compétitions") : rien à choisir, un seul bouton "Toutes" ferait
+  // doublon avec son propre libellé.
+  const showClubCompSelector = leaguesForSeason.length > 0
+    && !(leaguesForSeason.length === 1 && leaguesForSeason[0].league_name === 'Toutes compétitions')
+
+  const effectiveClubComp = clubComp === 'all' || leaguesForSeason.some((l) => String(l.league_api_id) === clubComp)
+    ? clubComp
+    : 'all'
+
+  const clubAgg = useMemo(() => {
+    if (effectiveClubComp === 'all') return sumAgg(rowsForSeason.map((r) => r.agg))
+    const found = rowsForSeason.find((r) => String(r.league_api_id) === effectiveClubComp)
+    return found ? found.agg : sumAgg(rowsForSeason.map((r) => r.agg))
+  }, [rowsForSeason, effectiveClubComp])
+
+  const clubLeagueIdsForSeason = useMemo(() => new Set(leaguesForSeason.map((l) => l.league_api_id)), [leaguesForSeason])
+  const clubMatches = useMemo(() => {
+    if (!effectiveSeason) return []
+    return matches.filter((m) => {
+      if (!m.event_date || m.league_api_id == null) return false
+      if (seasonOfDate(m.event_date) !== effectiveSeason) return false
+      if (effectiveClubComp !== 'all') return String(m.league_api_id) === effectiveClubComp
+      return clubLeagueIdsForSeason.has(m.league_api_id)
+    })
+  }, [matches, effectiveSeason, effectiveClubComp, clubLeagueIdsForSeason])
+
+  // ── Onglet Sélection : sélecteur Compétition (pas de saison) ────────────
+  const selLeagues = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const r of selRowsNorm) map.set(r.league_api_id, r.league_name)
+    return Array.from(map.entries()).map(([league_api_id, league_name]) => ({ league_api_id, league_name }))
+  }, [selRowsNorm])
+  const showSelCompSelector = selLeagues.length > 0
+    && !(selLeagues.length === 1 && selLeagues[0].league_name === 'Toutes compétitions')
+
+  const effectiveSelComp = selComp === 'all' || selLeagues.some((l) => String(l.league_api_id) === selComp)
+    ? selComp
+    : 'all'
+
+  const selAgg = useMemo(() => {
+    const rows = effectiveSelComp === 'all' ? selRowsNorm : selRowsNorm.filter((r) => String(r.league_api_id) === effectiveSelComp)
+    return sumAgg(rows.map((r) => r.agg))
+  }, [selRowsNorm, effectiveSelComp])
+
+  const selLeagueIds = useMemo(() => new Set(selRowsNorm.map((r) => r.league_api_id)), [selRowsNorm])
+  const selMatches = useMemo(() => {
+    return matches.filter((m) => {
+      if (m.league_api_id == null) return false
+      if (effectiveSelComp !== 'all') return String(m.league_api_id) === effectiveSelComp
+      return selLeagueIds.has(m.league_api_id)
+    })
+  }, [matches, effectiveSelComp, selLeagueIds])
+
+  const clubSeries = useMatchSeries(clubMatches)
+  const selSeries = useMatchSeries(selMatches)
+
+  const clubCategories = useMemo(() => buildAggCategories(clubAgg, 'club'), [clubAgg])
+  const clubRadar = useMemo(() => buildAggRadar(clubAgg), [clubAgg])
+  const selCategories = useMemo(() => buildAggCategories(selAgg, 'selection'), [selAgg])
+  const selRadar = useMemo(() => buildAggRadar(selAgg), [selAgg])
+
+  const clubFormeAvg = formAverage(clubSeries.ratings)
+  const selFormeAvg = formAverage(selSeries.ratings)
+
   const partial = hasPartialCoverage(player?.season_stats ?? null)
   const seasonLabel = player?.season_stats?.season
-  const forme5 = ratings.slice(-5)
-  const formeAvg = forme5.length ? forme5.reduce((a, b) => a + b, 0) / forme5.length : null
+
+  const clubCompLabel = effectiveClubComp === 'all'
+    ? 'toutes compétitions'
+    : (leaguesForSeason.find((l) => String(l.league_api_id) === effectiveClubComp)?.league_name ?? 'toutes compétitions')
+  const selCompLabel = effectiveSelComp === 'all'
+    ? 'toutes compétitions'
+    : (selLeagues.find((l) => String(l.league_api_id) === effectiveSelComp)?.league_name ?? 'toutes compétitions')
 
   return (
     <>
@@ -370,168 +628,271 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                 >
                   Sélection{player?.national_team_name ? ` · ${player.national_team_name}` : ''}
                 </button>
-                <button className={clsx(styles.ptab, tab === 'career' && styles.on)} onClick={() => setTab('career')}>Carrière</button>
               </div>
 
               <div className={styles.pdwrap}>
-              {tab === 'club' && (
-                <>
-                <div className={styles.sect}>Statistiques détaillées</div>
-                {categories.length === 0 ? (
-                  <p style={{ color: 'var(--t2)', fontSize: 13 }}>Données avancées non disponibles pour ce championnat.</p>
-                ) : (
-                  <div className={styles.pgrid}>
-                    {categories.map((cat) => (
-                      <div className={styles.ppanel} key={cat.key}>
-                        <div className={styles.ph}>
-                          <div className={styles.ico} style={{ background: `${cat.color}22` }}>{cat.icon}</div>
-                          <h3>{cat.title}</h3>
-                        </div>
-                        <div className={styles.pb}>
-                          {cat.rows.map((row) => <Metric key={row.label} row={row} />)}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div className={styles.sect}>Graphiques</div>
-                <div className={styles.gcards}>
-                  <div className={styles.gcard}>
-                    <div className={styles.gt}>Évolution de la note</div>
-                    <div className={styles.gsub}>{ratings.length} derniers matchs avec note</div>
-                    <MiniChart values={ratings} />
-                  </div>
-                  <div className={styles.gcard}>
-                    <div className={styles.gt}>Profil du joueur</div>
-                    <div className={styles.gsub}>radar de performance (saison)</div>
-                    {radarAxes.length ? <Radar axes={radarAxes} /> : <div className={styles.pempty}>Profil non disponible.</div>}
-                  </div>
-                </div>
-                <div className={styles.gcards} style={{ marginTop: 13 }}>
-                  <div className={styles.gcard}>
-                    <div className={styles.gt}>Buts vs xG par mois</div>
-                    <div className={styles.gsub}>rendement offensif</div>
-                    <BarsGX data={bars} />
-                    <div className={styles.lgnd}>
-                      <span><i style={{ background: 'var(--a)' }} />Buts</span>
-                      <span><i style={{ background: 'var(--a2)' }} />xG</span>
+                {tab === 'club' && (
+                  <>
+                    <div className={styles.sect}>
+                      <span>Détail des stats</span>
+                      {seasons.length > 0 && (
+                        <>
+                          <span className={styles.wlbl}>Saison</span>
+                          <div className={styles.seg}>
+                            {seasons.map((s) => (
+                              <button
+                                key={s}
+                                className={clsx(s === effectiveSeason && styles.on)}
+                                onClick={() => { setClubSeason(s); setClubComp('all') }}
+                              >
+                                {s}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                      {showClubCompSelector && (
+                        <>
+                          <span className={styles.wlbl}>Compétition</span>
+                          <div className={styles.seg}>
+                            <button className={clsx(effectiveClubComp === 'all' && styles.on)} onClick={() => setClubComp('all')}>Toutes</button>
+                            {leaguesForSeason.map((l) => (
+                              <button
+                                key={l.league_api_id}
+                                className={clsx(String(l.league_api_id) === effectiveClubComp && styles.on)}
+                                onClick={() => setClubComp(String(l.league_api_id))}
+                              >
+                                {l.league_name}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
                     </div>
-                  </div>
-                  <div className={styles.gcard}>
-                    <div className={styles.gt}>Forme récente</div>
-                    <div className={styles.gsub}>note moyenne · 5 derniers matchs notés</div>
-                    {formeAvg != null ? (
+
+                    {clubRowsNorm.length === 0 ? (
+                      <p style={{ color: 'var(--t2)', fontSize: 13 }}>Données avancées non disponibles pour ce championnat.</p>
+                    ) : (
                       <>
-                        <div style={{ fontSize: 42, fontWeight: 850, color: ratingColor(formeAvg), marginTop: 6 }}>{formeAvg.toFixed(1)}</div>
-                        <div style={{ color: 'var(--t2)', fontSize: 12.5, marginTop: 4 }}>
-                          {formeAvg >= 7.3 ? 'En forme ▲' : 'Irrégulier ▬'}
+                        <div className={styles.selsum}>
+                          <Tile value={clubAgg.g} label="Buts" />
+                          <Tile value={clubAgg.a} label="Passes d." />
+                          <Tile value={clubAgg.xg} label="xG" decimals={1} />
+                          <Tile value={clubAgg.m} label="Matchs" />
+                          <Tile value={clubAgg.min} label="Minutes" thousands />
+                          <Tile value={clubAgg.note} label="Note" decimals={1} />
+                        </div>
+
+                        <div className={styles.pgrid}>
+                          {clubCategories.map((cat) => (
+                            <div className={styles.ppanel} key={cat.key}>
+                              <div className={styles.ph}>
+                                <div className={styles.ico} style={{ background: `color-mix(in srgb, ${cat.color} 18%, transparent)` }}>{cat.icon}</div>
+                                <h3>{cat.title}</h3>
+                              </div>
+                              <div className={styles.pb}>
+                                {cat.rows.map((row) => <Metric key={row.label} row={row} />)}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className={styles.sect}>
+                          <span>Graphiques</span>
+                          <span className={styles.wlbl}>{effectiveSeason} · {clubCompLabel}</span>
+                        </div>
+                        <div className={styles.gcards}>
+                          <div className={styles.gcard}>
+                            <div className={styles.gt}>Évolution de la note</div>
+                            <div className={styles.gsub}>{clubSeries.ratings.length} matchs notés</div>
+                            <MiniChart values={clubSeries.ratings} />
+                          </div>
+                          <div className={styles.gcard}>
+                            <div className={styles.gt}>Profil du joueur</div>
+                            <div className={styles.gsub}>radar de performance</div>
+                            <Radar axes={clubRadar} />
+                          </div>
+                        </div>
+                        <div className={styles.gcards} style={{ marginTop: 13 }}>
+                          <div className={styles.gcard}>
+                            <div className={styles.gt}>Buts vs xG par mois</div>
+                            <div className={styles.gsub}>rendement offensif</div>
+                            <BarsGX data={clubSeries.bars} />
+                            <div className={styles.lgnd}>
+                              <span><i style={{ background: 'var(--a)' }} />Buts</span>
+                              <span><i style={{ background: 'var(--a2)' }} />xG</span>
+                            </div>
+                          </div>
+                          <div className={styles.gcard}>
+                            <div className={styles.gt}>Forme récente</div>
+                            <div className={styles.gsub}>note moyenne · 5 derniers matchs</div>
+                            {clubFormeAvg != null ? (
+                              <>
+                                <div style={{ fontSize: 42, fontWeight: 850, color: ratingColor(clubFormeAvg), marginTop: 6 }}>{clubFormeAvg.toFixed(1)}</div>
+                                <div style={{ color: 'var(--t2)', fontSize: 12.5, marginTop: 4 }}>
+                                  {clubFormeAvg >= 7.3 ? 'En forme ▲' : 'Irrégulier ▬'}
+                                </div>
+                              </>
+                            ) : <div className={styles.pempty}>n/d</div>}
+                          </div>
                         </div>
                       </>
-                    ) : <div className={styles.pempty}>n/d</div>}
-                  </div>
-                </div>
+                    )}
 
-                <div className={styles.sect}>Historique match par match</div>
-                {sortedDesc.length === 0 ? (
-                  <p style={{ color: 'var(--t2)', fontSize: 13 }}>Aucun match récent disponible.</p>
-                ) : (
-                  <div className={styles.logwrap}>
-                    <table className={styles.mlog}>
-                      <thead>
-                        <tr>
-                          <th>Date</th><th>Adversaire</th><th>Min</th><th>B</th><th>PD</th><th>Tirs</th>
-                          <th>xG</th><th>xA</th><th>Pass%</th><th>Duels</th><th>Note</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sortedDesc.map((m) => {
-                          const passPct = m.total_pass ? (m.accurate_pass ?? 0) / m.total_pass : null
-                          return (
-                            <tr key={m.event_api_id}>
-                              <td>{m.event_date ? new Date(m.event_date).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) : 'n/d'}</td>
-                              <td><div className={styles.adv}>{m.is_home == null ? '' : m.is_home ? '🏠' : '✈️'} {m.opponent ?? 'n/d'}</div></td>
-                              <td>{m.minutes_played != null ? `${m.minutes_played}'` : 'n/d'}</td>
-                              <td>{m.goals ?? 0}</td>
-                              <td>{m.goal_assist ?? 0}</td>
-                              <td>{m.total_shots ?? 'n/d'}</td>
-                              <td>{m.expected_goals != null ? m.expected_goals.toFixed(2) : '—'}</td>
-                              <td>{m.expected_assists != null ? m.expected_assists.toFixed(2) : '—'}</td>
-                              <td>{passPct != null ? `${(passPct * 100).toFixed(0)}%` : 'n/d'}</td>
-                              <td>{m.duel_won ?? 'n/d'}</td>
-                              <td>
-                                {m.rating != null
-                                  ? <span className={styles.rt} style={{ background: ratingBg(m.rating), color: ratingColor(m.rating) }}>{m.rating.toFixed(1)}</span>
-                                  : 'n/d'}
-                              </td>
+                    <div className={styles.sect}>Historique match par match</div>
+                    {clubSeries.sortedDesc.length === 0 ? (
+                      <p style={{ color: 'var(--t2)', fontSize: 13 }}>Aucun match disponible pour cette sélection.</p>
+                    ) : (
+                      <div className={styles.logwrap}>
+                        <table className={styles.mlog}>
+                          <thead>
+                            <tr>
+                              <th>Date</th><th>Adversaire</th><th>Min</th><th>B</th><th>PD</th><th>Tirs</th>
+                              <th>xG</th><th>xA</th><th>Pass%</th><th>Duels</th><th>Note</th>
                             </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-                </>
-              )}
+                          </thead>
+                          <tbody>
+                            {clubSeries.sortedDesc.map((m) => {
+                              const passPct = m.total_pass ? (m.accurate_pass ?? 0) / m.total_pass : null
+                              return (
+                                <tr key={m.event_api_id}>
+                                  <td>{m.event_date ? new Date(m.event_date).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) : 'n/d'}</td>
+                                  <td><div className={styles.adv}>{m.is_home == null ? '' : m.is_home ? '🏠' : '✈️'} {m.opponent ?? 'n/d'}</div></td>
+                                  <td>{m.minutes_played != null ? `${m.minutes_played}'` : 'n/d'}</td>
+                                  <td>{m.goals ?? 0}</td>
+                                  <td>{m.goal_assist ?? 0}</td>
+                                  <td>{m.total_shots ?? 'n/d'}</td>
+                                  <td>{m.expected_goals != null ? m.expected_goals.toFixed(2) : '—'}</td>
+                                  <td>{m.expected_assists != null ? m.expected_assists.toFixed(2) : '—'}</td>
+                                  <td>{passPct != null ? `${(passPct * 100).toFixed(0)}%` : 'n/d'}</td>
+                                  <td>{m.duel_won ?? 'n/d'}</td>
+                                  <td>
+                                    {m.rating != null
+                                      ? <span className={styles.rt} style={{ background: ratingBg(m.rating), color: ratingColor(m.rating) }}>{m.rating.toFixed(1)}</span>
+                                      : 'n/d'}
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
 
-              {tab === 'career' && (
-                <>
-                <div className={styles.sect}>Carrière</div>
-                {careerIsError ? (
-                  <p style={{ color: 'var(--t2)', fontSize: 13 }}>Erreur de chargement de l’historique de carrière.</p>
-                ) : careerLoading ? (
-                  <p style={{ color: 'var(--t2)', fontSize: 13 }}>Chargement…</p>
-                ) : !career || career.career.length === 0 ? (
-                  <p style={{ color: 'var(--t2)', fontSize: 13 }}>Historique de carrière non disponible pour ce joueur.</p>
-                ) : (
-                  <table className={styles.pcar}>
-                    <thead>
-                      <tr><th>Saison</th><th>Compétitions</th><th>M</th><th>Min</th><th>B</th><th>PD</th></tr>
-                    </thead>
-                    <tbody>
-                      {career.career.map((s: CareerSeasonOut) => (
-                        <tr key={s.season}>
-                          <td>{s.season}</td>
-                          <td>{s.competitions.map((c) => c.competition).filter(Boolean).join(', ') || '—'}</td>
-                          <td>{s.appearances}</td>
-                          <td>{s.minutes.toLocaleString('fr-FR')}</td>
-                          <td>{s.goals}</td>
-                          <td>{s.assists}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                    <div className={styles.sect}>Carrière</div>
+                    {careerIsError ? (
+                      <p style={{ color: 'var(--t2)', fontSize: 13 }}>Erreur de chargement de l’historique de carrière.</p>
+                    ) : careerLoading ? (
+                      <p style={{ color: 'var(--t2)', fontSize: 13 }}>Chargement…</p>
+                    ) : !career || career.career.length === 0 ? (
+                      <p style={{ color: 'var(--t2)', fontSize: 13 }}>Historique de carrière non disponible pour ce joueur.</p>
+                    ) : (
+                      <table className={styles.pcar}>
+                        <thead>
+                          <tr><th>Saison</th><th>Compétitions</th><th>M</th><th>Min</th><th>B</th><th>PD</th></tr>
+                        </thead>
+                        <tbody>
+                          {career.career.map((s: CareerSeasonOut) => (
+                            <tr key={s.season}>
+                              <td>{s.season}</td>
+                              <td>{s.competitions.map((c) => c.competition).filter(Boolean).join(', ') || '—'}</td>
+                              <td>{s.appearances}</td>
+                              <td>{s.minutes.toLocaleString('fr-FR')}</td>
+                              <td>{s.goals}</td>
+                              <td>{s.assists}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </>
                 )}
-                </>
-              )}
 
-              {tab === 'selection' && player.selection_stats && (() => {
-                const selCats = buildCategories(player.selection_stats)
-                const s = player.selection_stats
-                return (
+                {tab === 'selection' && hasSelection && (
                   <>
-                    <div className={styles.sect}>Sélection · {player.national_team_name ?? 'Équipe nationale'}</div>
-                    <div className={styles.ptiles}>
-                      <Tile value={s.goals} label="Buts" />
-                      <Tile value={s.goal_assist} label="Passes d." />
-                      <Tile value={s.matches_played} label="Sélections" />
-                      <Tile value={s.minutes_played} label="Minutes" thousands />
-                      <Tile value={s.avg_rating} label="Note" decimals={1} />
+                    <div className={styles.sect}>
+                      <span>Détail des stats — {player.national_team_name ?? 'Équipe nationale'}</span>
+                      {showSelCompSelector && (
+                        <>
+                          <span className={styles.wlbl}>Compétition</span>
+                          <div className={styles.seg}>
+                            <button className={clsx(effectiveSelComp === 'all' && styles.on)} onClick={() => setSelComp('all')}>Toutes</button>
+                            {selLeagues.map((l) => (
+                              <button
+                                key={l.league_api_id}
+                                className={clsx(String(l.league_api_id) === effectiveSelComp && styles.on)}
+                                onClick={() => setSelComp(String(l.league_api_id))}
+                              >
+                                {l.league_name}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
                     </div>
+
+                    <div className={styles.selsum}>
+                      <Tile value={selAgg.g} label="Buts" />
+                      <Tile value={selAgg.a} label="Passes d." />
+                      <Tile value={selAgg.xg} label="xG" decimals={1} />
+                      <Tile value={selAgg.m} label="Sélections" />
+                      <Tile value={selAgg.min} label="Minutes" thousands />
+                      <Tile value={selAgg.note} label="Note" decimals={1} />
+                    </div>
+
                     <div className={styles.pgrid}>
-                      {selCats.map((cat) => (
+                      {selCategories.map((cat) => (
                         <div className={styles.ppanel} key={cat.key}>
                           <div className={styles.ph}>
-                            <div className={styles.ico} style={{ background: `${cat.color}22` }}>{cat.icon}</div>
+                            <div className={styles.ico} style={{ background: `color-mix(in srgb, ${cat.color} 18%, transparent)` }}>{cat.icon}</div>
                             <h3>{cat.title}</h3>
                           </div>
                           <div className={styles.pb}>{cat.rows.map((row) => <Metric key={row.label} row={row} />)}</div>
                         </div>
                       ))}
                     </div>
+
+                    <div className={styles.sect}>
+                      <span>Graphiques</span>
+                      <span className={styles.wlbl}>{selCompLabel}</span>
+                    </div>
+                    <div className={styles.gcards}>
+                      <div className={styles.gcard}>
+                        <div className={styles.gt}>Évolution de la note</div>
+                        <div className={styles.gsub}>{selSeries.ratings.length} matchs notés</div>
+                        <MiniChart values={selSeries.ratings} />
+                      </div>
+                      <div className={styles.gcard}>
+                        <div className={styles.gt}>Profil en sélection</div>
+                        <div className={styles.gsub}>radar de performance</div>
+                        <Radar axes={selRadar} />
+                      </div>
+                    </div>
+                    <div className={styles.gcards} style={{ marginTop: 13 }}>
+                      <div className={styles.gcard}>
+                        <div className={styles.gt}>Buts vs xG par mois</div>
+                        <div className={styles.gsub}>rendement offensif en sélection</div>
+                        <BarsGX data={selSeries.bars} />
+                        <div className={styles.lgnd}>
+                          <span><i style={{ background: 'var(--a)' }} />Buts</span>
+                          <span><i style={{ background: 'var(--a2)' }} />xG</span>
+                        </div>
+                      </div>
+                      <div className={styles.gcard}>
+                        <div className={styles.gt}>Forme récente</div>
+                        <div className={styles.gsub}>note moyenne · 5 derniers matchs</div>
+                        {selFormeAvg != null ? (
+                          <>
+                            <div style={{ fontSize: 42, fontWeight: 850, color: ratingColor(selFormeAvg), marginTop: 6 }}>{selFormeAvg.toFixed(1)}</div>
+                            <div style={{ color: 'var(--t2)', fontSize: 12.5, marginTop: 4 }}>
+                              {selFormeAvg >= 7.3 ? 'En forme ▲' : 'Irrégulier ▬'}
+                            </div>
+                          </>
+                        ) : <div className={styles.pempty}>n/d</div>}
+                      </div>
+                    </div>
                   </>
-                )
-              })()}
+                )}
               </div>
             </>
           )
