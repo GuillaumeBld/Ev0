@@ -360,6 +360,20 @@ class PlayerBreakdownOut(BaseModel):
     rows: list[BreakdownRow]
 
 
+class MatchOddsRow(BaseModel):
+    """Closing Betclic odds (buteur/passeur) for a single event."""
+
+    event_api_id: int
+    buteur: float | None
+    passeur: float | None
+
+
+class PlayerMatchOddsOut(BaseModel):
+    """Response of GET /players/{player_api_id}/match-odds."""
+
+    odds: list[MatchOddsRow]
+
+
 class PlayerDetail(BaseModel):
     """Full player detail."""
 
@@ -1516,6 +1530,79 @@ async def get_player_breakdown(
         ))
 
     return {"rows": out_rows}
+
+
+# ---------------------------------------------------------------------------
+# GET /players/{player_api_id}/match-odds — cotes closing Betclic (buteur/passeur)
+# ---------------------------------------------------------------------------
+# Doit rester declare AVANT la route /{player_api_id} : sinon FastAPI
+# matche "match-odds" comme une valeur de player_api_id (meme convention que
+# /selection et /breakdown ci-dessus).
+#
+# Jointure verifiee : bzz_events -> fixtures (equipes + date de kickoff) ->
+# player_odds_snapshots (bookmaker betclic, nom du joueur) -> bzz_player_match_stats
+# (ne garder que les events ou ce joueur a effectivement une ligne de stats).
+# Le "closing" est la cote Betclic au scraped_at le plus recent par
+# (fixture, market_type) : DISTINCT ON fait ce choix cote SQL, le pivot
+# buteur/passeur (goalscorer/assist) se fait ensuite avec deux FILTER.
+# Un event sans fixture ou sans cote Betclic est absent de la liste (les deux
+# JOIN sont des INNER JOIN) — le front affiche alors un tiret.
+
+_MATCH_ODDS_SQL = text("""
+    WITH closing AS (
+        SELECT DISTINCT ON (o.fixture_id, o.market_type)
+            o.fixture_id, o.market_type, o.odds
+        FROM player_odds_snapshots o
+        WHERE o.bookmaker = 'betclic' AND o.player_name ILIKE :nom
+        ORDER BY o.fixture_id, o.market_type, o.scraped_at DESC
+    )
+    SELECT
+        e.api_id AS event_api_id,
+        MAX(c.odds) FILTER (WHERE c.market_type = 'goalscorer') AS buteur,
+        MAX(c.odds) FILTER (WHERE c.market_type = 'assist') AS passeur
+    FROM bzz_events e
+    JOIN fixtures f
+        ON f.home_bzz_team_id = e.home_team_api_id
+       AND f.away_bzz_team_id = e.away_team_api_id
+       AND f.kickoff_utc::date = e.event_date::date
+    JOIN closing c ON c.fixture_id = f.id
+    JOIN bzz_player_match_stats ms
+        ON ms.event_api_id = e.api_id AND ms.player_api_id = :player_api_id
+    GROUP BY e.api_id
+    ORDER BY e.api_id
+""")
+
+
+@router.get("/{player_api_id}/match-odds", response_model=PlayerMatchOddsOut)
+async def get_player_match_odds(
+    player_api_id: int,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Cotes de closing Betclic (buteur/passeur) par match pour la fiche joueur.
+
+    Pas de 404 sur joueur inconnu, meme convention que /breakdown : rend
+    simplement odds=[].
+    """
+    nom = (await session.execute(
+        select(BzzPlayer.name).where(BzzPlayer.api_id == player_api_id)
+    )).scalar_one_or_none()
+    if not nom:
+        return {"odds": []}
+
+    result = await session.execute(
+        _MATCH_ODDS_SQL, {"player_api_id": player_api_id, "nom": nom}
+    )
+    rows = result.mappings().all()
+    return {
+        "odds": [
+            {
+                "event_api_id": row["event_api_id"],
+                "buteur": row["buteur"],
+                "passeur": row["passeur"],
+            }
+            for row in rows
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------
