@@ -96,12 +96,20 @@ jobs:
     name: Deploy to VPS
     runs-on: ubuntu-latest
     needs: lint
-    # Only deploy on pushes to main (not on PRs)
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
+      # Sur une PR (ou tout ce qui n'est pas un push sur main), le job tourne
+      # mais ne deploie pas : il reussit (statut "success", pas "skipped") afin
+      # de ne pas bloquer le merge quand ce check est requis par la protection
+      # de branche. Le deploiement reel reste reserve au push sur main (etape
+      # suivante, conditionnee a l'identique de l'ancien if de job).
+      - name: No-op hors push main (rend le check PR vert)
+        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+        run: echo "Pas un push sur main -> pas de deploiement (check PR vert)."
+
       # SSH into VPS: git pull latest main, docker cp into containers, restart
       - name: Deploy via SSH (git pull + docker cp)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VPS_HOST }}
