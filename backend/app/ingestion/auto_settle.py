@@ -48,7 +48,11 @@ def _normalize_name(name: str) -> str:
     """
     normalized = unicodedata.normalize("NFKD", name.lower().strip())
     normalized = "".join(c for c in normalized if not unicodedata.combining(c))
-    normalized = normalized.replace("-", "").replace("'", "").replace("\u2019", "").replace(" ", "")
+    # Le point est retire comme les autres separateurs : il ne porte aucune
+    # identite, et sans cela "H." faisait deux caracteres, donc n'etait pas
+    # reconnu comme un prenom abrege (voir _names_match).
+    for sep in ("-", "'", "\u2019", " ", "."):
+        normalized = normalized.replace(sep, "")
     return normalized
 
 
@@ -74,6 +78,29 @@ def _names_match(a: str, b: str) -> bool:
             and _normalize_name(a_words[-1]) == _normalize_name(b_words[-1])
         ):
             return True
+
+        # Prenom abrege d'un cote, complet de l'autre : "H. Kane" ≡ "Harry Kane".
+        #
+        # Bzzoiro nomme les joueurs en abrege dans les incidents ("O. Dembele",
+        # "L. Martinez") alors que les bookmakers donnent le nom complet.
+        # Sans cette regle, 599 paris sur 7 509 ont ete marques PERDU le
+        # 06/11/2026 alors que leur buteur figurait bien dans les evenements --
+        # Harry Kane, Mohamed Salah, Lautaro Martinez, Takefusa Kubo.
+        #
+        # On exige le nom de famille identique ET l'initiale du prenom
+        # identique. Deux joueurs d'un meme match partageant les deux est
+        # possible mais rare ; l'appelant travaille de toute facon dans le
+        # perimetre d'un seul match, ce qui borne le risque.
+        if _normalize_name(a_words[-1]) == _normalize_name(b_words[-1]):
+            initiale_a = _normalize_name(a_words[0])[:1]
+            initiale_b = _normalize_name(b_words[0])[:1]
+            abrege_a = len(_normalize_name(a_words[0])) == 1
+            abrege_b = len(_normalize_name(b_words[0])) == 1
+            # Au moins un cote doit etre abrege : sinon "Marco Silva" et
+            # "Mateo Silva" se confondraient.
+            if (abrege_a or abrege_b) and initiale_a == initiale_b:
+                return True
+
     return False
 
 
