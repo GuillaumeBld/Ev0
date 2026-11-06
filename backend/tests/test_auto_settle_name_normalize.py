@@ -1,6 +1,6 @@
 """Tests for player name normalization in auto_settle."""
 
-from app.ingestion.auto_settle import _normalize_name, _find_pmm_by_name
+from app.ingestion.auto_settle import _minutes_du_joueur, _normalize_name
 
 
 class TestNormalizeName:
@@ -24,47 +24,41 @@ class TestNormalizeName:
         assert _normalize_name("  Blas  ") == _normalize_name("Blas")
 
 
-class TestFindPmmByName:
-    """Tests that _find_pmm_by_name matches despite separator differences."""
+class TestMinutesDuJoueur:
+    """Le rapprochement par nom dans la table des minutes jouees.
 
-    def _make_pmm(self, name, minutes=90):
-        """Minimal fake PMM object."""
-        class FakePMM:
-            def __init__(self, n, m):
-                self.player_name = n
-                self.minutes_played = m
-        return FakePMM(name, minutes)
+    Remplace les tests de `_find_pmm_by_name` : le reglement lit desormais
+    `bzz_player_match_stats` (1,4 M de lignes) et non `player_match_minutes`
+    (470), via un dict {nom -> minutes}. Le rapprochement par nom reste le
+    meme, ce sont ces cas qui sont verifies ici.
+    """
 
-    def test_exact_match(self):
-        pmm_list = [self._make_pmm("Ludovic Blas")]
-        result = _find_pmm_by_name(pmm_list, "Ludovic Blas")
-        assert result is not None
-        assert result.player_name == "Ludovic Blas"
+    def test_correspondance_exacte(self):
+        assert _minutes_du_joueur({"Ludovic Blas": 90.0}, "Ludovic Blas") == 90.0
 
-    def test_hyphen_vs_space(self):
-        pmm_list = [self._make_pmm("Mousa Al Tamari")]
-        result = _find_pmm_by_name(pmm_list, "Mousa Al-Tamari")
-        assert result is not None
+    def test_tiret_contre_espace(self):
+        assert _minutes_du_joueur({"Mousa Al Tamari": 76.0}, "Mousa Al-Tamari") == 76.0
 
-    def test_apostrophe_vs_no_separator(self):
-        pmm_list = [self._make_pmm("Ndiaye")]
-        result = _find_pmm_by_name(pmm_list, "N'Diaye")
-        assert result is not None
+    def test_apostrophe_contre_rien(self):
+        assert _minutes_du_joueur({"Ndiaye": 45.0}, "N'Diaye") == 45.0
 
-    def test_apostrophe_vs_space(self):
-        pmm_list = [self._make_pmm("N Diaye")]
-        result = _find_pmm_by_name(pmm_list, "N'Diaye")
-        assert result is not None
+    def test_apostrophe_contre_espace(self):
+        assert _minutes_du_joueur({"N Diaye": 45.0}, "N'Diaye") == 45.0
 
-    def test_no_match_returns_none(self):
-        pmm_list = [self._make_pmm("Kylian Mbappe")]
-        result = _find_pmm_by_name(pmm_list, "Antoine Griezmann")
-        assert result is None
+    def test_joueur_absent_du_groupe_vaut_zero_minute(self):
+        """Absent de la feuille alors que le match a ses minutes : il n'etait
+        pas dans le groupe. C'est un ANNULE, pas un perdu."""
+        assert _minutes_du_joueur({"Kylian Mbappe": 90.0}, "Antoine Griezmann") == 0.0
 
-    def test_returns_first_match(self):
-        pmm_list = [self._make_pmm("Mousa Al Tamari", 76), self._make_pmm("Mousa Al-Tamari", 0)]
-        result = _find_pmm_by_name(pmm_list, "Mousa Al-Tamari")
-        assert result.minutes_played == 76
+    def test_match_sans_aucune_donnee_rend_none(self):
+        """None veut dire "on ne sait pas" : le reglement doit attendre, pas
+        supposer que le joueur a joue."""
+        assert _minutes_du_joueur(None, "Kylian Mbappe") is None
+
+    def test_zero_minute_distingue_de_absent(self):
+        """Les deux donnent 0.0 et donc le meme verdict, mais le premier est
+        une information explicite de Bzzoiro."""
+        assert _minutes_du_joueur({"Remplacant": 0.0}, "Remplacant") == 0.0
 
 
 # ── Accents (fix 09/07/2026 — aligne settle autopilot + historique + auto_settle) ──
