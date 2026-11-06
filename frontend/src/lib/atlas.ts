@@ -57,15 +57,52 @@ export interface GeoIntl {
   kind: string
 }
 
+/** Ensemble "mode Clubs" de la carte Atlas (switch Clubs/Sélections) :
+ *  `countries` (championnats suivis) PLUS les pays ayant au moins un club
+ *  en phase de ligue d'une coupe d'Europe / participant Libertadores, même
+ *  sans championnat domestique suivi (`leagues` alors vide). Voir
+ *  `GeoOut.countries_clubs` dans `backend/app/api/atlas.py`. */
+export interface ClubCountry extends GeoCountry {
+  has_cup_clubs: boolean
+}
+
+/** Ensemble "mode Sélections" de la carte Atlas : les nations ayant une
+ *  équipe nationale avec des stats de sélection (les 48 du Mondial — voir
+ *  `GeoOut.countries_selections`). `national_team_api_id` alimente
+ *  `fetchSelectionPlayers`. */
+export interface SelectionCountry {
+  /** ISO2 — matche les `id="c-XX"` du SVG monde et les clés de BBOX. */
+  code: string
+  name: string
+  /** EUR | SAM | NAM | ASI | AFR | OCE */
+  continent: string
+  national_team_api_id: number
+}
+
 export interface GeoResponse {
   countries: GeoCountry[]
   international: GeoIntl[]
+  countries_clubs: ClubCountry[]
+  countries_selections: SelectionCountry[]
 }
 
 export async function fetchGeo(): Promise<GeoResponse> {
   const res = await fetch('/api/v1/atlas/geo')
   if (!res.ok) throw new Error(`fetchGeo: HTTP ${res.status}`)
   return res.json()
+}
+
+// ── WorldMap — forme générique d'un pays allumé, indépendante du mode ──────
+// `WorldMap` ne connaît pas la différence Clubs/Sélections : la page lui
+// passe l'ensemble du mode courant déjà normalisé dans cette forme (code
+// correspond toujours à un `id="c-XX"` du SVG, `detail` est le texte
+// secondaire de l'infobulle — ex. "2 championnats" ou "Sélection nationale").
+
+export interface MapCountry {
+  code: string
+  name: string
+  continent: string
+  detail: string
 }
 
 // ── Canonical teams (GET /canonical-teams) ──────────────────────────────────

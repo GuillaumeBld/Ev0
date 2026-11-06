@@ -9,13 +9,18 @@ import { ClubCrest } from './ClubCrest'
 import { PlayerCard, PlayerTableRow } from './PlayerCard'
 import {
   fetchPlayers, fetchSelectionPlayers, fetchCanonicalTeams,
-  type GeoCountry, type GeoLeague, type GeoIntl,
+  type GeoCountry, type GeoLeague, type GeoIntl, type SelectionCountry,
   type CanonicalTeam, type PlayerSummary, type PlayerSortField,
 } from '@/lib/atlas'
 
 export type ExplorerContext =
   | { kind: 'league'; country: GeoCountry; league: GeoLeague }
   | { kind: 'intl'; intl: GeoIntl }
+  // Clic sur un pays depuis la carte en mode Sélections (Task 3) : ouvre
+  // directement la sélection nationale de ce pays (toutes compétitions de
+  // sélection confondues, pas de barre latérale — un seul pays, un seul
+  // effectif), via `national_team_api_id` -> `fetchSelectionPlayers`.
+  | { kind: 'nation'; country: SelectionCountry }
 
 const CONT: Record<string, string> = {
   EUR: '#e7ab4e', SAM: '#49ad73', NAM: '#dd8445', ASI: '#d35f54', AFR: '#c98a3e', OCE: '#3fa6ad',
@@ -64,12 +69,17 @@ interface ExplorerProps {
 }
 
 export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpenCompare }: ExplorerProps) {
-  const leagueApiId = context.kind === 'league' ? context.league.league_api_id : context.intl.league_api_id
+  const leagueApiId = context.kind === 'league' ? context.league.league_api_id
+    : context.kind === 'intl' ? context.intl.league_api_id
+    : null // 'nation' : pas de compétition précise, stats agrégées toutes compétitions de sélection
+  // Clic-pays en mode Sélections (Task 3) : une seule nation, résolue par
+  // son national_team_api_id — pas de leagueApiId associé.
+  const nationTeamId = context.kind === 'nation' ? context.country.national_team_api_id : null
   // Compétitions "sélection" (Coupe du monde, Nations League) : barre latérale
   // = équipes nationales, liste des joueurs = stats sélection (endpoint dédié).
   // Les compétitions de clubs internationales (C1/C2/C3, Libertadores) gardent
   // le flux `fetchPlayers` existant (déjà résolu côté backend, Task 4).
-  const isSelection = context.kind === 'intl' && context.intl.kind === 'selection'
+  const isSelection = nationTeamId != null || (context.kind === 'intl' && context.intl.kind === 'selection')
 
   const [position, setPosition] = useState<'' | 'G' | 'D' | 'M' | 'F'>('')
   const [query, setQuery] = useState('')
@@ -82,12 +92,13 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
   const [selectedClub, setSelectedClub] = useState<CanonicalTeam | null>(null)
   const [offset, setOffset] = useState(0)
 
-  // Reset the whole explorer-local state when the division (league) changes,
-  // same as switching championships in the reference mockup.
+  // Reset the whole explorer-local state when the division (league) — or,
+  // for a 'nation' context, the nation itself — changes, same as switching
+  // championships in the reference mockup.
   useEffect(() => {
     setPosition(''); setQuery(''); setDebouncedQuery(''); setSortBy('avg_rating'); setSortOrder('desc')
     setView('cards'); setCompareMode(false); setSelected([]); setSelectedClub(null); setOffset(0)
-  }, [leagueApiId])
+  }, [leagueApiId, nationTeamId])
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQuery(query), 300)
@@ -96,22 +107,27 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
 
   useEffect(() => { setOffset(0) }, [position, debouncedQuery, sortBy, sortOrder, selectedClub])
 
-  const accent = context.kind === 'league' ? (CONT[context.country.continent] ?? 'var(--a)') : 'var(--a)'
+  const accent = context.kind === 'league' ? (CONT[context.country.continent] ?? 'var(--a)')
+    : context.kind === 'nation' ? (CONT[context.country.continent] ?? 'var(--a)')
+    : 'var(--a)'
 
   const clubsQuery = useQuery({ queryKey: ['atlas-canonical-teams'], queryFn: fetchCanonicalTeams, staleTime: 10 * 60 * 1000 })
+  // Pas de barre latérale pour un 'nation' (pays unique, pas de leagueApiId) :
+  // le filtre `=== leagueApiId` sur `null` matcherait les clubs sans
+  // engagement renseigné (`league_api_id` nullable), d'où la garde explicite.
   const clubs = useMemo(
-    () => (clubsQuery.data ?? []).filter((t) => t.league_api_id === leagueApiId).sort((a, b) => a.name_fr.localeCompare(b.name_fr)),
+    () => leagueApiId == null ? [] : (clubsQuery.data ?? []).filter((t) => t.league_api_id === leagueApiId).sort((a, b) => a.name_fr.localeCompare(b.name_fr)),
     [clubsQuery.data, leagueApiId],
   )
 
   // Displayed list — real server pagination for the whole division, a single
   // bounded request for "one club's squad" (SQUAD_LIMIT, not a pagination dodge).
   const playersQuery = useQuery({
-    queryKey: ['atlas-players', isSelection, leagueApiId, selectedClub?.bzz_team_id, position, debouncedQuery, sortBy, sortOrder, selectedClub ? 0 : offset],
+    queryKey: ['atlas-players', isSelection, leagueApiId, nationTeamId, selectedClub?.bzz_team_id, position, debouncedQuery, sortBy, sortOrder, selectedClub ? 0 : offset],
     queryFn: () => {
       if (isSelection) {
         return fetchSelectionPlayers({
-          national_team_api_id: selectedClub?.bzz_team_id ?? undefined,
+          national_team_api_id: selectedClub?.bzz_team_id ?? nationTeamId ?? undefined,
           league_api_id: leagueApiId,
           position: position || undefined, q: debouncedQuery || undefined,
           sort_by: sortBy, sort_order: sortOrder,
@@ -129,7 +145,7 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
           sort_by: sortBy, sort_order: sortOrder, limit: PAGE_SIZE + 1, offset,
         })
     },
-    enabled: leagueApiId != null && (!selectedClub || !!selectedClub.bzz_team_id),
+    enabled: (leagueApiId != null || nationTeamId != null) && (!selectedClub || !!selectedClub.bzz_team_id),
   })
 
   const hasNext = !selectedClub && (playersQuery.data?.length ?? 0) > PAGE_SIZE
@@ -169,7 +185,9 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
     }
   }
 
-  const title = context.kind === 'league' ? context.country.name : context.intl.name
+  const title = context.kind === 'league' ? context.country.name
+    : context.kind === 'nation' ? context.country.name
+    : context.intl.name
   const subtitleLeague = context.kind === 'league' ? context.league : null
 
   return (
@@ -187,6 +205,8 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
                   <span className={styles.d} />{context.league.coverage === 'full' ? 'complet' : 'partiel'}
                 </span>
               </div>
+            ) : context.kind === 'nation' ? (
+              <div className={styles.sub}>Sélection nationale · 2026-27</div>
             ) : (
               <div className={styles.sub}>{context.intl.org} · {context.intl.kind === 'selection' ? 'sélections' : 'clubs'}</div>
             )}

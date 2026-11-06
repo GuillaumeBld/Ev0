@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import styles from './atlas.module.css'
 import { WORLD_PATHS, BBOX } from './worldGeo.data'
-import type { GeoCountry, GeoIntl } from '@/lib/atlas'
+import type { MapCountry } from '@/lib/atlas'
 
 /** Couleur par continent — palette ambre de la maquette. */
 const CONT: Record<string, string> = {
@@ -35,12 +35,17 @@ interface Tip {
   x: number
   y: number
   name: string
-  leagueCount: number
+  detail: string
 }
 
 interface WorldMapProps {
-  countries: GeoCountry[]
-  international: GeoIntl[]
+  /** Ensemble de pays du mode courant (Clubs ou Sélections) — déjà
+   *  normalisé par la page appelante, `WorldMap` est agnostique du mode. */
+  countries: MapCountry[]
+  /** Texte de l'eyebrow (ex. "63 championnats · 850 clubs · 5 compétitions
+   *  internationales" en mode Clubs, "48 sélections nationales · …" en mode
+   *  Sélections) — calculé par la page, dépend du mode. */
+  summary: string
   selectedIso: string | null
   onSelectCountry: (iso: string) => void
   onOpenInternational: () => void
@@ -48,7 +53,7 @@ interface WorldMapProps {
 
 export function WorldMap({
   countries,
-  international,
+  summary,
   selectedIso,
   onSelectCountry,
   onOpenInternational,
@@ -59,15 +64,10 @@ export function WorldMap({
   const dragRef = useRef<{ x0: number; y0: number; tx0: number; ty0: number } | null>(null)
 
   const byIso = useMemo(() => {
-    const m = new Map<string, GeoCountry>()
+    const m = new Map<string, MapCountry>()
     for (const c of countries) m.set(c.code, c)
     return m
   }, [countries])
-
-  const totalClubs = useMemo(
-    () => countries.reduce((sum, c) => sum + c.leagues.reduce((s, l) => s + l.club_count, 0), 0),
-    [countries],
-  )
 
   const focus = useCallback((iso: string) => {
     const b = BBOX[iso]
@@ -152,7 +152,7 @@ export function WorldMap({
                     x: Math.min(e.clientX + 14, window.innerWidth - 200),
                     y: e.clientY + 14,
                     name: country.name,
-                    leagueCount: country.leagues.length,
+                    detail: country.detail,
                   })
                 }}
               />
@@ -162,9 +162,7 @@ export function WorldMap({
       </svg>
 
       <div className={styles.hero}>
-        <div className={styles.eyebrow}>
-          {countries.reduce((s, c) => s + c.leagues.length, 0)} championnats · {totalClubs} clubs · {international.length} compétitions internationales
-        </div>
+        <div className={styles.eyebrow}>{summary}</div>
         <h1>Le foot mondial,<br />d&apos;un simple clic.</h1>
         <p>Clique un pays pour ouvrir son explorateur de joueurs. Ou passe par les compétitions internationales.</p>
         <span className={styles.chip} onClick={onOpenInternational}>
@@ -188,7 +186,7 @@ export function WorldMap({
       {tip && (
         <div className={clsx(styles.tip, styles.on)} style={{ left: tip.x, top: tip.y }}>
           <b>{tip.name}</b>
-          <small>{tip.leagueCount} championnat{tip.leagueCount > 1 ? 's' : ''} · clic pour ouvrir</small>
+          <small>{tip.detail} · clic pour ouvrir</small>
         </div>
       )}
     </div>
