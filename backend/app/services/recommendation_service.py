@@ -102,6 +102,7 @@ async def generate_recommendations(
     _matched = 0
     _unmatched = 0
     _skipped_position = 0
+    _skipped_no_signal = 0
 
     # Index ORM objects par external_id
     fixture_orm_map = {str(f.external_id): f for f in db_fixtures}
@@ -175,6 +176,14 @@ async def generate_recommendations(
                 lambda_val = alloc.lambda_assist
                 has_form = alloc.has_form_assist
 
+            # Pas de matiere, pas de prix : allocate_player rend 0 quand la part
+            # du xG d'equipe est nulle. Sans cette garde le joueur ressortait en
+            # NO_VALUE avec un edge de 0 — une ligne qui n'aurait jamais du
+            # exister, et un echec silencieux.
+            if not fair_odds or probability <= 0:
+                _skipped_no_signal += 1
+                continue
+
             edge = calculate_edge(fair_odds, market_odds)
             ev = round(ev_anytime(probability, market_odds), 4)
             ev_p00 = round(ev_anytime_p00_guarantee(probability, market_odds, match_p00), 4)
@@ -238,8 +247,8 @@ async def generate_recommendations(
             all_recommendations.append(recommendation)
 
     logger.info(
-        "Player matching: %d matched, %d unmatched, %d skipped (GK)",
-        _matched, _unmatched, _skipped_position,
+        "Player matching: %d matched, %d unmatched, %d skipped (GK), %d skipped (sans signal)",
+        _matched, _unmatched, _skipped_position, _skipped_no_signal,
     )
 
     selection = select_bets(all_recommendations, filter_config)

@@ -156,6 +156,61 @@ async def test_non_resolu_na_pas_besoin_decriture():
 
 
 @pytest.mark.asyncio
+async def test_nimporte_quelle_erreur_nenterre_pas_le_lot():
+    """Regression du 06/11/2026. Le lot nocturne a echoue chaque nuit depuis
+    le 21/10 sur un KeyError('resolved_players') : seul TransfermarktError
+    etait attrape, donc toute autre defaillance tuait le lot entier. Un lot
+    doit survivre a un joueur, quelle que soit l'erreur."""
+    session = _session_with_written([202])
+    rapport_b = {"matched": True, "tm_id": "777", "input_name": "Adam Aznou", "seasons": []}
+
+    def _report(client, player, cache):
+        if player["player_api_id"] == 101:
+            raise KeyError("resolved_players")   # ni TransfermarktError, ni reseau
+        return rapport_b
+
+    with patch("app.ingestion.career_import.players_needing_career", AsyncMock(return_value=[JOUEUR_A, JOUEUR_B])), \
+         patch("app.ingestion.career_import.build_player_report", side_effect=_report), \
+         patch("app.ingestion.career_import.import_career_data", AsyncMock(return_value=_stats())), \
+         patch("app.ingestion.career_import.record_attempt", AsyncMock()) as rec:
+        run = await run_career_import(session, client=MagicMock(), now=NOW)
+
+    assert run.errors == 1
+    assert run.imported == 1          # le second joueur a bien ete traite
+    issues = [c.args[2] for c in rec.await_args_list]
+    assert OUTCOME_ERROR in issues
+    # La raison nomme le type d'erreur, sinon le diagnostic est impossible.
+    raisons = [c.kwargs.get("reason", "") for c in rec.await_args_list]
+    assert any("KeyError" in (r or "") for r in raisons)
+
+
+@pytest.mark.asyncio
+async def test_le_cache_passe_au_scraper_a_la_bonne_forme():
+    """`build_player_report` indexe cache["resolved_players"] directement.
+    Un dict vide levait un KeyError — c'etait la cause de l'echec nocturne."""
+    session = _session_with_written([101])
+    rapport = {"matched": True, "tm_id": "555", "input_name": "Omar Fayed", "seasons": []}
+    vu = {}
+
+    def _report(client, player, cache):
+        vu.update(cache)
+        # Reproduit l'acces reel du scraper : leve si la forme est mauvaise.
+        _ = cache["resolved_players"]
+        return rapport
+
+    with patch("app.ingestion.career_import.players_needing_career", AsyncMock(return_value=[JOUEUR_A])), \
+         patch("app.ingestion.career_import.build_player_report", side_effect=_report), \
+         patch("app.ingestion.career_import.import_career_data", AsyncMock(return_value=_stats())), \
+         patch("app.ingestion.career_import.record_attempt", AsyncMock()):
+        run = await run_career_import(session, client=MagicMock(), now=NOW)
+
+    assert run.errors == 0, "le cache passe au scraper n'a pas la forme attendue"
+    assert run.imported == 1
+    for cle in ("resolved_players", "profile_dob", "competition_names"):
+        assert cle in vu
+
+
+@pytest.mark.asyncio
 async def test_file_vide_ne_declenche_rien():
     session = _session_with_written([])
 
