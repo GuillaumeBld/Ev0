@@ -184,3 +184,48 @@ def test_un_tireur_de_penalty_garde_sa_cote_buteur():
                is_pen_taker=True)
     assert a.prob_goal > 0
     assert a.lambda_penalty > 0
+
+
+# ── Niveau 2 de la cascade : la carriere ──────────────────────────
+
+def test_sous_le_seuil_la_carriere_prime_sur_le_poste():
+    """2 406 joueurs cotes sur 3 467 sous le seuil ont une carriere importee
+    (06/11/2026). Les envoyer sur la moyenne de leur poste jetterait ce qu'on
+    sait d'eux."""
+    # Attaquant, 90 minutes cette saison, carriere a 0.62 xG/90.
+    avec_carriere, _ = regress_to_position(
+        0.20, 90.0, "FW", POSITION_PRIOR_XG, 0.122, carriere=0.62
+    )
+    sans_carriere, _ = regress_to_position(
+        0.20, 90.0, "FW", POSITION_PRIOR_XG, 0.122
+    )
+    # Le repli carriere (0.62) tire vers le haut, l'a priori (0.347) moins.
+    assert avec_carriere > sans_carriere
+    assert avec_carriere > POSITION_PRIOR_XG["FW"]
+
+
+def test_sans_minutes_du_tout_le_rythme_est_celui_de_la_carriere():
+    rythme, poids = regress_to_position(
+        0.0, 0.0, "FW", POSITION_PRIOR_XG, 0.122, carriere=0.62
+    )
+    assert poids == 0.0
+    assert rythme == 0.62, "une carriere connue doit primer sur le poste"
+
+
+def test_au_dela_du_seuil_la_carriere_ne_change_rien():
+    """Un joueur etabli est juge sur sa saison, pas sur son passe."""
+    rythme, poids = regress_to_position(
+        0.30, 1200.0, "FW", POSITION_PRIOR_XG, 0.122, carriere=0.62
+    )
+    assert poids == 1.0
+    assert rythme == 0.30
+
+
+def test_la_cascade_complete_dans_lordre():
+    """Les trois niveaux, du plus informe au moins informe."""
+    # 1. assez de minutes -> mesure intacte
+    assert regress_to_position(0.30, 600.0, "DF", POSITION_PRIOR_XG, 0.122, 0.62)[0] == 0.30
+    # 2. peu de minutes + carriere -> carriere
+    assert regress_to_position(0.30, 0.0, "DF", POSITION_PRIOR_XG, 0.122, 0.62)[0] == 0.62
+    # 3. peu de minutes, rien -> poste
+    assert regress_to_position(0.30, 0.0, "DF", POSITION_PRIOR_XG, 0.122)[0] == POSITION_PRIOR_XG["DF"]

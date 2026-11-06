@@ -410,22 +410,62 @@ def position_prior(position: str | None, priors: dict[str, float], fallback: flo
 def regress_to_position(
     rate: float, minutes: float, position: str | None,
     priors: dict[str, float], fallback: float,
+    carriere: float | None = None,
 ) -> tuple[float, float]:
-    """(rythme ramene vers le poste, poids du joueur entre 0 et 1).
+    """(rythme ramene vers son repli, poids du joueur entre 0 et 1).
 
-    Au-dela de SEUIL_MINUTES le rythme est rendu INTACT (poids 1) : la
-    regression ne concerne que les joueurs qui n'ont pas encore assez joue.
+    Cascade a trois niveaux :
 
-    Le poids est rendu pour que l'appelant puisse dire d'ou vient la cote --
-    a priori, melange, ou mesure.
+      1. minutes >= SEUIL_MINUTES  -> le rythme mesure, INTACT (poids 1)
+      2. sous le seuil, carriere connue -> repli sur la carriere
+      3. sous le seuil, rien        -> repli sur l'a priori du poste
+
+    Le niveau 2 compte : 2 406 joueurs cotes sur 3 467 sous le seuil ont une
+    carriere importee (mesure du 06/11/2026). Les envoyer directement sur la
+    moyenne de leur poste jetterait ce qu'on sait d'eux -- un attaquant
+    transfere avec deux matchs au compteur recevrait "attaquant moyen" au lieu
+    de son propre historique.
+
+    Le poids est rendu pour que l'appelant puisse dire d'ou vient la cote.
     """
     if minutes >= SEUIL_MINUTES:
         return rate, 1.0
-    prior = position_prior(position, priors, fallback)
+    repli = carriere if carriere is not None else position_prior(position, priors, fallback)
     if minutes <= 0:
-        return prior, 0.0
+        return repli, 0.0
     poids = minutes / SEUIL_MINUTES
-    return poids * rate + (1.0 - poids) * prior, poids
+    return poids * rate + (1.0 - poids) * repli, poids
+
+
+async def _enrichir_rythme_carriere(db: AsyncSession, players: list[dict[str, Any]]) -> None:
+    """Pose `carriere_xg_per_90` / `carriere_xa_per_90` sur chaque dict joueur.
+
+    Modifie les dicts sur place. Un joueur sans carriere exploitable reste
+    sans ces cles : la cascade retombe alors sur l'a priori de son poste.
+
+    Toute defaillance est avalee : une carriere absente degrade la precision,
+    elle ne doit pas empecher de coter un match.
+    """
+    ids = [p["player_id"] for p in players if p.get("player_id")]
+    if not ids:
+        return
+    try:
+        from app.pricing.career_blend import blended_rhythms_for
+
+        rythmes = await blended_rhythms_for(db, ids)
+    except Exception as exc:
+        logger.warning(
+            "Rythme carriere indisponible, repli sur l'a priori de poste — %s: %s",
+            type(exc).__name__, exc,
+        )
+        return
+
+    for p in players:
+        r = rythmes.get(p.get("player_id"))
+        if r is None:
+            continue
+        p["carriere_xg_per_90"] = r.goal_rate_per_90
+        p["carriere_xa_per_90"] = r.assist_rate_per_90
 
 
 def compute_player_shares(
@@ -457,7 +497,8 @@ def compute_player_shares(
         # aussi par les minutes attendues, donc il souffre de la meme
         # amplification. Une seule intervention couvre les deux.
         blended_xg, poids_xg = regress_to_position(
-            blended_xg, mins, pos, POSITION_PRIOR_XG, _PRIOR_XG_FALLBACK
+            blended_xg, mins, pos, POSITION_PRIOR_XG, _PRIOR_XG_FALLBACK,
+            carriere=p.get("carriere_xg_per_90"),
         )
         goal_weight = blended_xg * mins_ratio
 
@@ -470,7 +511,8 @@ def compute_player_shares(
         else:
             blended_xa = xa_per_90
         blended_xa, poids_xa = regress_to_position(
-            blended_xa, mins, pos, POSITION_PRIOR_XA, _PRIOR_XA_FALLBACK
+            blended_xa, mins, pos, POSITION_PRIOR_XA, _PRIOR_XA_FALLBACK,
+            carriere=p.get("carriere_xa_per_90"),
         )
         assist_weight = blended_xa * mins_ratio
 
@@ -1777,6 +1819,17 @@ async def load_match_pricing(
             "check bzz_players/bzz_player_season_stats and loan_team_name values",
             away_team, getattr(fixture, "id", "?"),
         )
+
+    # Niveau 2 de la cascade : la carriere, pour les joueurs qui n'ont pas
+    # encore assez joue cette saison. Sans elle, un joueur transfere avec deux
+    # matchs au compteur recevrait la moyenne generique de son poste alors
+    # qu'on connait son historique -- mesure du 06/11/2026 : 2 406 joueurs
+    # cotes sur 3 467 sous le seuil ont une carriere importee.
+    #
+    # Une seule paire de requetes pour les deux equipes : la boucle de
+    # scraping tourne toutes les 60 secondes, un appel par joueur y serait
+    # trop couteux.
+    await _enrichir_rythme_carriere(db, home_players_db + away_players_db)
 
     home_shares = compute_player_shares(home_players_db, home_team, lambda_team=home_match_xg)
     away_shares = compute_player_shares(away_players_db, away_team, lambda_team=away_match_xg)
