@@ -96,7 +96,7 @@ _NATION_CONTINENT: dict[str, str] = {
     "CD": "AFR", "EC": "SAM", "EG": "AFR", "GB": "EUR", "FR": "EUR", "DE": "EUR", "GH": "AFR",
     "HT": "NAM", "IR": "ASI", "IQ": "ASI", "JP": "ASI", "JO": "ASI", "MX": "NAM", "MA": "AFR",
     "NL": "EUR", "NZ": "OCE", "NO": "EUR", "PA": "NAM", "PY": "SAM", "PT": "EUR", "QA": "ASI",
-    "SA": "ASI", "ZA": "AFR", "KR": "ASI", "ES": "EUR", "SE": "EUR", "CH": "EUR", "TN": "AFR",
+    "SA": "ASI", "SN": "AFR", "ZA": "AFR", "KR": "ASI", "ES": "EUR", "SE": "EUR", "CH": "EUR", "TN": "AFR",
     "TR": "EUR", "US": "NAM", "UY": "SAM", "UZ": "ASI",
 }
 

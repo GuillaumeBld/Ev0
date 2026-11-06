@@ -240,3 +240,14 @@ async def test_geo_selection_nation_sans_mapping_ignoree(client, base_config, ca
     assert resp.status_code == 200
     data = resp.json()
     assert data["countries_selections"] == []
+
+
+def test_every_nation_iso2_has_a_continent():
+    """Garde-fou : toute nation listée dans _NATION_ISO2 doit avoir un
+    continent dans _NATION_CONTINENT. Sinon le code retombe silencieusement
+    sur 'EUR' (règle anti-faux : pas de fallback muet). Ce test a attrapé le
+    Sénégal (SN) ajouté à l'ISO2 mais oublié côté continent."""
+    from app.api.atlas import _NATION_CONTINENT, _NATION_ISO2
+
+    manquants = sorted(set(_NATION_ISO2.values()) - set(_NATION_CONTINENT))
+    assert manquants == [], f"ISO2 sans continent: {manquants}"
