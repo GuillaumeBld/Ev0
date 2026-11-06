@@ -10,10 +10,15 @@ import { Explorer, type ExplorerContext } from '@/components/atlas/Explorer'
 import { CompetitionMenu } from '@/components/atlas/CompetitionMenu'
 import { PlayerDetail } from '@/components/atlas/PlayerDetail'
 import { CompareModal } from '@/components/atlas/CompareModal'
-import { fetchGeo, type PlayerSummary } from '@/lib/atlas'
+import { fetchGeo, type PlayerSummary, type MapCountry } from '@/lib/atlas'
 
 type Mode = 'map' | 'menu'
 type Palette = 'ambre' | 'bleu' | 'cuir'
+/** Switch Clubs/Sélections de la carte (Task 3) : selon le mode, la carte
+ *  allume un ensemble de pays différent (`countries_clubs` vs
+ *  `countries_selections`) et le clic sur un pays ouvre une entité
+ *  différente (championnats/clubs vs sélection nationale). */
+type EntityMode = 'clubs' | 'selections'
 
 const foldAccents = (s: string): string =>
   s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
@@ -22,6 +27,7 @@ export default function AtlasPage() {
   const { data: geo, isLoading, isError, refetch } = useQuery({ queryKey: ['atlas-geo'], queryFn: fetchGeo })
 
   const [mode, setMode] = useState<Mode>('map')
+  const [entityMode, setEntityMode] = useState<EntityMode>('clubs')
   const [theme, setTheme] = useState<'dark' | 'light'>('dark')
   const [palette, setPalette] = useState<Palette>('ambre')
   const [search, setSearch] = useState('')
@@ -40,14 +46,37 @@ export default function AtlasPage() {
     } catch { /* localStorage indisponible (SSR / navigation privée) */ }
   }, [])
 
+  // Résolution du clic-pays, mode-dépendante (Task 3) : Clubs -> championnat
+  // du pays (comportement historique, inchangé) ; Sélections -> sélection
+  // nationale du pays via son national_team_api_id. Un pays allumé sur la
+  // carte ouvre TOUJOURS la bonne entité ; un pays absent de l'ensemble du
+  // mode courant n'est de toute façon jamais cliquable (WorldMap ne colore
+  // que ce qu'on lui passe) — voir `mapCountries` ci-dessous.
   const openCountry = useCallback((iso: string) => {
     if (!geo) return
-    const country = geo.countries.find((c) => c.code === iso)
-    if (!country || country.leagues.length === 0) return
+    if (entityMode === 'selections') {
+      const nation = geo.countries_selections.find((c) => c.code === iso)
+      if (!nation) return
+      setSelectedIso(iso)
+      setExplorerContext({ kind: 'nation', country: nation })
+      setMode('map')
+      return
+    }
+    const country = geo.countries_clubs.find((c) => c.code === iso)
+    if (!country) return
+    if (country.leagues.length === 0) {
+      // Pays allumé uniquement via un club de coupe (ex. Maroc en C1 sans
+      // championnat domestique suivi) : pas encore de barre latérale de
+      // clubs par pays (Task 4) — on oriente vers les compétitions
+      // internationales plutôt que de laisser le clic sans effet.
+      setSelectedIso(iso)
+      setMode('menu')
+      return
+    }
     setSelectedIso(iso)
     setExplorerContext({ kind: 'league', country, league: country.leagues[0] })
     setMode('map')
-  }, [geo])
+  }, [geo, entityMode])
 
   const openIntl = useCallback((leagueApiId: number) => {
     if (!geo) return
@@ -68,6 +97,20 @@ export default function AtlasPage() {
     return () => window.removeEventListener('keydown', onKey)
   }, [compareSelection, openPlayerId, explorerContext])
 
+  // Changement de mode (Task 3) : la carte recolore et réactive l'ensemble
+  // de pays du nouveau mode (via `mapCountries` ci-dessous) — on referme
+  // aussi tout explorateur ouvert, sa sélection pouvant n'avoir aucun sens
+  // dans l'autre mode (ex. un championnat ouvert alors qu'on bascule vers
+  // Sélections).
+  function switchEntityMode(next: EntityMode) {
+    setEntityMode((cur) => {
+      if (cur === next) return cur
+      setSelectedIso(null)
+      setExplorerContext(null)
+      return next
+    })
+  }
+
   function toggleTheme() {
     setTheme((t) => {
       const next = t === 'dark' ? 'light' : 'dark'
@@ -84,11 +127,43 @@ export default function AtlasPage() {
   function handleSearchSubmit(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key !== 'Enter' || !geo) return
     const q = foldAccents(search)
-    const hit = geo.countries.find((c) => foldAccents(c.name).includes(q))
+    const pool: { code: string; name: string }[] =
+      entityMode === 'selections' ? geo.countries_selections : geo.countries_clubs
+    const hit = pool.find((c) => foldAccents(c.name).includes(q))
     if (hit) openCountry(hit.code)
   }
 
   const totalLeagues = useMemo(() => geo?.countries.reduce((s, c) => s + c.leagues.length, 0) ?? 0, [geo])
+
+  // Ensemble de pays allumés + texte de l'eyebrow pour le mode courant
+  // (Task 3) — `WorldMap` est agnostique du mode, il reçoit juste la forme
+  // normalisée `MapCountry[]`. Les deux ensembles diffèrent par
+  // construction côté backend (`countries_clubs` vs `countries_selections`),
+  // donc le switch recolore bien des pays différents.
+  const { mapCountries, mapSummary } = useMemo<{ mapCountries: MapCountry[]; mapSummary: string }>(() => {
+    if (!geo) return { mapCountries: [], mapSummary: '' }
+    if (entityMode === 'selections') {
+      return {
+        mapCountries: geo.countries_selections.map((c) => ({
+          code: c.code, name: c.name, continent: c.continent, detail: 'Sélection nationale',
+        })),
+        mapSummary: `${geo.countries_selections.length} sélections nationales · ${geo.international.length} compétitions internationales`,
+      }
+    }
+    const leagueCount = geo.countries_clubs.reduce((s, c) => s + c.leagues.length, 0)
+    const clubCount = geo.countries_clubs.reduce(
+      (s, c) => s + c.leagues.reduce((ls, l) => ls + l.club_count, 0), 0,
+    )
+    return {
+      mapCountries: geo.countries_clubs.map((c) => ({
+        code: c.code, name: c.name, continent: c.continent,
+        detail: c.leagues.length > 0
+          ? `${c.leagues.length} championnat${c.leagues.length > 1 ? 's' : ''}`
+          : 'Clubs en coupe européenne',
+      })),
+      mapSummary: `${leagueCount} championnats · ${clubCount} clubs · ${geo.international.length} compétitions internationales`,
+    }
+  }, [geo, entityMode])
 
   return (
     <div
@@ -116,6 +191,14 @@ export default function AtlasPage() {
           </button>
           <button className={mode === 'menu' ? styles.on : undefined} onClick={() => setMode('menu')}>
             <LayoutList size={15} /><span>Menus</span>
+          </button>
+        </div>
+        <div className={styles.modetog} title="Clubs ou sélections nationales">
+          <button className={entityMode === 'clubs' ? styles.on : undefined} onClick={() => switchEntityMode('clubs')}>
+            <span aria-hidden>👕</span><span>Clubs</span>
+          </button>
+          <button className={entityMode === 'selections' ? styles.on : undefined} onClick={() => switchEntityMode('selections')}>
+            <span aria-hidden>🌍</span><span>Sélections</span>
           </button>
         </div>
         <div className={styles.palsel} title="Palette">
@@ -147,8 +230,8 @@ export default function AtlasPage() {
         </div>
       ) : (
         <WorldMap
-          countries={geo.countries}
-          international={geo.international}
+          countries={mapCountries}
+          summary={mapSummary}
           selectedIso={selectedIso}
           onSelectCountry={openCountry}
           onOpenInternational={() => setMode('menu')}

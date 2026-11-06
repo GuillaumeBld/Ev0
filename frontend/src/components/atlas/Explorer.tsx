@@ -8,14 +8,20 @@ import styles from './atlas.module.css'
 import { ClubCrest } from './ClubCrest'
 import { PlayerCard, PlayerTableRow } from './PlayerCard'
 import {
-  fetchPlayers, fetchSelectionPlayers, fetchCanonicalTeams,
-  type GeoCountry, type GeoLeague, type GeoIntl,
+  fetchPlayers, fetchSelectionPlayers, fetchCanonicalTeams, fetchCompetitionClubs,
+  INTL_CLUB_COMP_LEAGUE_IDS,
+  type GeoCountry, type GeoLeague, type GeoIntl, type SelectionCountry,
   type CanonicalTeam, type PlayerSummary, type PlayerSortField,
 } from '@/lib/atlas'
 
 export type ExplorerContext =
   | { kind: 'league'; country: GeoCountry; league: GeoLeague }
   | { kind: 'intl'; intl: GeoIntl }
+  // Clic sur un pays depuis la carte en mode Sélections (Task 3) : ouvre
+  // directement la sélection nationale de ce pays (toutes compétitions de
+  // sélection confondues, pas de barre latérale — un seul pays, un seul
+  // effectif), via `national_team_api_id` -> `fetchSelectionPlayers`.
+  | { kind: 'nation'; country: SelectionCountry }
 
 const CONT: Record<string, string> = {
   EUR: '#e7ab4e', SAM: '#49ad73', NAM: '#dd8445', ASI: '#d35f54', AFR: '#c98a3e', OCE: '#3fa6ad',
@@ -64,12 +70,24 @@ interface ExplorerProps {
 }
 
 export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpenCompare }: ExplorerProps) {
-  const leagueApiId = context.kind === 'league' ? context.league.league_api_id : context.intl.league_api_id
+  const leagueApiId = context.kind === 'league' ? context.league.league_api_id
+    : context.kind === 'intl' ? context.intl.league_api_id
+    : null // 'nation' : pas de compétition précise, stats agrégées toutes compétitions de sélection
+  // Clic-pays en mode Sélections (Task 3) : une seule nation, résolue par
+  // son national_team_api_id — pas de leagueApiId associé.
+  const nationTeamId = context.kind === 'nation' ? context.country.national_team_api_id : null
   // Compétitions "sélection" (Coupe du monde, Nations League) : barre latérale
   // = équipes nationales, liste des joueurs = stats sélection (endpoint dédié).
   // Les compétitions de clubs internationales (C1/C2/C3, Libertadores) gardent
   // le flux `fetchPlayers` existant (déjà résolu côté backend, Task 4).
-  const isSelection = context.kind === 'intl' && context.intl.kind === 'selection'
+  const isSelection = nationTeamId != null || (context.kind === 'intl' && context.intl.kind === 'selection')
+  // Coupe de clubs internationale (C1/C2/C3 phase de ligue, Libertadores/
+  // Sudamericana/Super Coupe) : la barre latérale "Clubs" vient de
+  // `fetchCompetitionClubs`, pas de `fetchCanonicalTeams` (qui ne porte que
+  // l'engagement domestique d'un club, jamais l'id d'une coupe — voir
+  // `INTL_CLUB_COMP_LEAGUE_IDS` dans `lib/atlas.ts`).
+  const isIntlClubComp = context.kind === 'intl' && context.intl.kind !== 'selection'
+    && INTL_CLUB_COMP_LEAGUE_IDS.has(context.intl.league_api_id)
 
   const [position, setPosition] = useState<'' | 'G' | 'D' | 'M' | 'F'>('')
   const [query, setQuery] = useState('')
@@ -82,12 +100,13 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
   const [selectedClub, setSelectedClub] = useState<CanonicalTeam | null>(null)
   const [offset, setOffset] = useState(0)
 
-  // Reset the whole explorer-local state when the division (league) changes,
-  // same as switching championships in the reference mockup.
+  // Reset the whole explorer-local state when the division (league) — or,
+  // for a 'nation' context, the nation itself — changes, same as switching
+  // championships in the reference mockup.
   useEffect(() => {
     setPosition(''); setQuery(''); setDebouncedQuery(''); setSortBy('avg_rating'); setSortOrder('desc')
     setView('cards'); setCompareMode(false); setSelected([]); setSelectedClub(null); setOffset(0)
-  }, [leagueApiId])
+  }, [leagueApiId, nationTeamId])
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQuery(query), 300)
@@ -96,22 +115,56 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
 
   useEffect(() => { setOffset(0) }, [position, debouncedQuery, sortBy, sortOrder, selectedClub])
 
-  const accent = context.kind === 'league' ? (CONT[context.country.continent] ?? 'var(--a)') : 'var(--a)'
+  const accent = context.kind === 'league' ? (CONT[context.country.continent] ?? 'var(--a)')
+    : context.kind === 'nation' ? (CONT[context.country.continent] ?? 'var(--a)')
+    : 'var(--a)'
 
   const clubsQuery = useQuery({ queryKey: ['atlas-canonical-teams'], queryFn: fetchCanonicalTeams, staleTime: 10 * 60 * 1000 })
-  const clubs = useMemo(
-    () => (clubsQuery.data ?? []).filter((t) => t.league_api_id === leagueApiId).sort((a, b) => a.name_fr.localeCompare(b.name_fr)),
-    [clubsQuery.data, leagueApiId],
-  )
+  // Coupe de clubs internationale : clubs dérivés du calendrier de la
+  // compétition côté backend (phase de ligue pour C1/C2/C3), pas de la
+  // table canonique filtrée par ligue domestique.
+  const competitionClubsQuery = useQuery({
+    queryKey: ['atlas-competition-clubs', leagueApiId],
+    queryFn: () => fetchCompetitionClubs(leagueApiId as number),
+    enabled: isIntlClubComp,
+    staleTime: 10 * 60 * 1000,
+  })
+  // Pas de barre latérale pour un 'nation' (pays unique, pas de leagueApiId) :
+  // le filtre `=== leagueApiId` sur `null` matcherait les clubs sans
+  // engagement renseigné (`league_api_id` nullable), d'où la garde explicite.
+  // Coupe de clubs internationale : adapte `CompetitionClub` (forme backend
+  // dédiée) en `CanonicalTeam` pour réutiliser tel quel le rendu de la barre
+  // latérale et du bandeau club des championnats (même ClubCrest, même
+  // `.clubitem`) — "même affichage que les championnats" (spec Task 4).
+  const clubs = useMemo((): CanonicalTeam[] => {
+    if (leagueApiId == null) return []
+    if (isIntlClubComp) {
+      return (competitionClubsQuery.data ?? [])
+        .map((c): CanonicalTeam => ({
+          id: c.bzz_team_id,
+          name_fr: c.name,
+          name_en: null,
+          api_football_id: c.api_football_id,
+          bzz_team_id: c.bzz_team_id,
+          sofascore_team_id: null,
+          aliases: [],
+          league_api_id: leagueApiId,
+          country: c.country,
+          crest_url: c.crest_url,
+        }))
+        .sort((a, b) => a.name_fr.localeCompare(b.name_fr))
+    }
+    return (clubsQuery.data ?? []).filter((t) => t.league_api_id === leagueApiId).sort((a, b) => a.name_fr.localeCompare(b.name_fr))
+  }, [clubsQuery.data, competitionClubsQuery.data, isIntlClubComp, leagueApiId])
 
   // Displayed list — real server pagination for the whole division, a single
   // bounded request for "one club's squad" (SQUAD_LIMIT, not a pagination dodge).
   const playersQuery = useQuery({
-    queryKey: ['atlas-players', isSelection, leagueApiId, selectedClub?.bzz_team_id, position, debouncedQuery, sortBy, sortOrder, selectedClub ? 0 : offset],
+    queryKey: ['atlas-players', isSelection, leagueApiId, nationTeamId, selectedClub?.bzz_team_id, position, debouncedQuery, sortBy, sortOrder, selectedClub ? 0 : offset],
     queryFn: () => {
       if (isSelection) {
         return fetchSelectionPlayers({
-          national_team_api_id: selectedClub?.bzz_team_id ?? undefined,
+          national_team_api_id: selectedClub?.bzz_team_id ?? nationTeamId ?? undefined,
           league_api_id: leagueApiId,
           position: position || undefined, q: debouncedQuery || undefined,
           sort_by: sortBy, sort_order: sortOrder,
@@ -121,7 +174,15 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
       }
       return selectedClub
         ? fetchPlayers({
-          team_api_id: selectedClub.bzz_team_id ?? undefined, position: position || undefined,
+          team_api_id: selectedClub.bzz_team_id ?? undefined,
+          // Coupe de clubs internationale : il faut repasser `league_api_id`
+          // même avec `team_api_id` pour que le backend restreigne les stats
+          // affichées à cette compétition (`restrict_stats_league`) — sinon
+          // le club filtre le joueur mais ses stats restent l'agrégat toutes
+          // compétitions. Les championnats domestiques n'en ont pas besoin
+          // (comportement inchangé : stats déjà toutes-compétitions).
+          league_api_id: isIntlClubComp ? leagueApiId : undefined,
+          position: position || undefined,
           q: debouncedQuery || undefined, sort_by: sortBy, sort_order: sortOrder, limit: SQUAD_LIMIT, offset: 0,
         })
         : fetchPlayers({
@@ -129,7 +190,7 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
           sort_by: sortBy, sort_order: sortOrder, limit: PAGE_SIZE + 1, offset,
         })
     },
-    enabled: leagueApiId != null && (!selectedClub || !!selectedClub.bzz_team_id),
+    enabled: (leagueApiId != null || nationTeamId != null) && (!selectedClub || !!selectedClub.bzz_team_id),
   })
 
   const hasNext = !selectedClub && (playersQuery.data?.length ?? 0) > PAGE_SIZE
@@ -138,13 +199,19 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
   // Effectif complet du club sélectionné (sans filtres), pour la bannière —
   // requête séparée de la liste affichée, qui elle peut être filtrée par poste/recherche.
   const squadStatsQuery = useQuery({
-    queryKey: ['atlas-squad-stats', isSelection, selectedClub?.bzz_team_id],
+    queryKey: ['atlas-squad-stats', isSelection, isIntlClubComp, leagueApiId, selectedClub?.bzz_team_id],
     queryFn: () => isSelection
       ? fetchSelectionPlayers({
         national_team_api_id: selectedClub!.bzz_team_id ?? undefined, league_api_id: leagueApiId,
         limit: SQUAD_LIMIT, offset: 0, sort_by: 'goals', sort_order: 'desc',
       })
-      : fetchPlayers({ team_api_id: selectedClub!.bzz_team_id ?? undefined, limit: SQUAD_LIMIT, offset: 0, sort_by: 'goals', sort_order: 'desc' }),
+      // Coupe de clubs internationale : même raison que plus haut — repasser
+      // `league_api_id` pour restreindre les stats de la bannière à la compétition.
+      : fetchPlayers({
+        team_api_id: selectedClub!.bzz_team_id ?? undefined,
+        league_api_id: isIntlClubComp ? leagueApiId : undefined,
+        limit: SQUAD_LIMIT, offset: 0, sort_by: 'goals', sort_order: 'desc',
+      }),
     enabled: !!selectedClub?.bzz_team_id,
   })
 
@@ -169,7 +236,9 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
     }
   }
 
-  const title = context.kind === 'league' ? context.country.name : context.intl.name
+  const title = context.kind === 'league' ? context.country.name
+    : context.kind === 'nation' ? context.country.name
+    : context.intl.name
   const subtitleLeague = context.kind === 'league' ? context.league : null
 
   return (
@@ -187,6 +256,8 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
                   <span className={styles.d} />{context.league.coverage === 'full' ? 'complet' : 'partiel'}
                 </span>
               </div>
+            ) : context.kind === 'nation' ? (
+              <div className={styles.sub}>Sélection nationale · 2026-27</div>
             ) : (
               <div className={styles.sub}>{context.intl.org} · {context.intl.kind === 'selection' ? 'sélections' : 'clubs'}</div>
             )}
