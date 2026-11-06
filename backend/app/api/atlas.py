@@ -8,6 +8,7 @@ seule requête à base de window function, pas une par ligue).
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -15,9 +16,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzPlayerSeasonStat, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
 from app.models.data_coverage import DataCoverageRun
 from app.models.leagues import League
+from app.services.season_service import current_season, season_end, season_start
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -252,3 +255,171 @@ async def atlas_geo(db: AsyncSession = Depends(get_db)) -> GeoOut:
     international_out = [io for _, io in sorted(intl_raw, key=lambda t: t[0])]
 
     return GeoOut(countries=countries_out, international=international_out)
+
+
+# ---------------------------------------------------------------------------
+# GET /competitions/{league_api_id}/clubs — barre latérale de clubs des coupes
+# ---------------------------------------------------------------------------
+# Les coupes d'Europe (C1=7, C2=8, C3=83) empilent dans bzz_events un
+# calendrier qui mélange tours de qualification et phase de ligue. Décision
+# produit : la barre latérale de clubs d'une coupe d'Europe n'affiche QUE la
+# phase de ligue. Vérifié en base : les tours de qualification comptent
+# 39-48 matchs, la phase de ligue 15-20 — cette fenêtre sépare nettement les
+# deux groupes de rounds et rend exactement 36 clubs pour la C1 (saison
+# courante). Libertadores/Sudamericana (32/33) et la Super Coupe (90) ne
+# connaissent pas ce découpage : tous les participants sont rendus, sans
+# filtre de round.
+
+_EUROPEAN_CUP_LEAGUE_IDS: frozenset[int] = frozenset({7, 8, 83})
+_LEAGUE_PHASE_ROUND_MIN = 15
+_LEAGUE_PHASE_ROUND_MAX = 20
+
+
+class CompetitionClubOut(BaseModel):
+    bzz_team_id: int
+    name: str
+    crest_url: str | None
+    api_football_id: int | None
+    country: str | None
+    player_count: int
+
+
+class CompetitionClubsOut(BaseModel):
+    clubs: list[CompetitionClubOut]
+
+
+async def _competition_team_ids(
+    db: AsyncSession, league_api_id: int, season: str
+) -> list[int]:
+    """Identifiants Bzzoiro des clubs engagés dans une compétition de clubs
+    internationale, pour la saison donnée.
+
+    Pour une coupe d'Europe (voir `_EUROPEAN_CUP_LEAGUE_IDS`), ne garde que
+    les events dont le round compte entre `_LEAGUE_PHASE_ROUND_MIN` et
+    `_LEAGUE_PHASE_ROUND_MAX` matchs — la phase de ligue. Pour les autres
+    compétitions (Libertadores/Sudamericana/Super Coupe), aucun filtre :
+    tous les participants.
+    """
+    debut = season_start(season)
+    fin = season_end(season)
+    rows = (
+        await db.execute(
+            select(
+                BzzEvent.round_number,
+                BzzEvent.home_team_api_id,
+                BzzEvent.away_team_api_id,
+            ).where(
+                BzzEvent.league_api_id == league_api_id,
+                BzzEvent.event_date >= debut,
+                BzzEvent.event_date < fin,
+            )
+        )
+    ).all()
+
+    if league_api_id in _EUROPEAN_CUP_LEAGUE_IDS:
+        round_counts: dict[int, int] = defaultdict(int)
+        for round_number, _home, _away in rows:
+            if round_number is not None:
+                round_counts[round_number] += 1
+        phase_rounds = {
+            r
+            for r, cnt in round_counts.items()
+            if _LEAGUE_PHASE_ROUND_MIN <= cnt <= _LEAGUE_PHASE_ROUND_MAX
+        }
+        rows = [r for r in rows if r[0] in phase_rounds]
+
+    team_ids: set[int] = set()
+    for _round_number, home, away in rows:
+        if home is not None:
+            team_ids.add(home)
+        if away is not None:
+            team_ids.add(away)
+    return sorted(team_ids)
+
+
+@router.get("/competitions/{league_api_id}/clubs", response_model=CompetitionClubsOut)
+async def competition_clubs(
+    league_api_id: int, db: AsyncSession = Depends(get_db)
+) -> CompetitionClubsOut:
+    """Clubs d'une compétition de clubs, pour la barre latérale Atlas des coupes.
+
+    Noms/écussons/pays via `canonical_teams` (jointure par `bzz_team_id`) —
+    source d'autorité. Un club absent du référentiel canonique garde son nom
+    brut `bzz_teams.name`, et n'a ni écusson ni pays : jamais inventés.
+    `player_count` compte les joueurs ayant une ligne de stats de saison
+    dans CETTE compétition pour ce club (résolu via `current_team_api_id`,
+    seule autorité sur la composition d'un effectif — voir `list_players`).
+    """
+    season = await current_season(db)
+    team_ids = await _competition_team_ids(db, league_api_id, season)
+    if not team_ids:
+        return CompetitionClubsOut(clubs=[])
+
+    canonical_rows = (
+        await db.execute(
+            select(
+                CanonicalTeam.bzz_team_id,
+                CanonicalTeam.name_fr,
+                CanonicalTeam.crest_url,
+                CanonicalTeam.api_football_id,
+                CanonicalTeam.country,
+            ).where(CanonicalTeam.bzz_team_id.in_(team_ids))
+        )
+    ).all()
+    canonical_by_id = {row[0]: row for row in canonical_rows}
+
+    manquants = [tid for tid in team_ids if tid not in canonical_by_id]
+    fallback_names: dict[int, str] = {}
+    if manquants:
+        fallback_rows = (
+            await db.execute(
+                select(BzzTeam.api_id, BzzTeam.name).where(BzzTeam.api_id.in_(manquants))
+            )
+        ).all()
+        fallback_names = dict(fallback_rows)
+
+    player_counts: dict[int, int] = dict(
+        (
+            await db.execute(
+                select(
+                    BzzPlayer.current_team_api_id,
+                    func.count(func.distinct(BzzPlayer.api_id)),
+                )
+                .join(
+                    BzzPlayerSeasonStat,
+                    BzzPlayerSeasonStat.player_api_id == BzzPlayer.api_id,
+                )
+                .where(
+                    BzzPlayerSeasonStat.league_api_id == league_api_id,
+                    BzzPlayerSeasonStat.season == season,
+                    BzzPlayer.current_team_api_id.in_(team_ids),
+                )
+                .group_by(BzzPlayer.current_team_api_id)
+            )
+        ).all()
+    )
+
+    clubs: list[CompetitionClubOut] = []
+    for tid in team_ids:
+        canon = canonical_by_id.get(tid)
+        if canon is not None:
+            _, name_fr, crest_url, api_football_id, country = canon
+            name = name_fr
+        else:
+            name = fallback_names.get(tid) or f"Club {tid}"
+            crest_url = None
+            api_football_id = None
+            country = None
+        clubs.append(
+            CompetitionClubOut(
+                bzz_team_id=tid,
+                name=name,
+                crest_url=crest_url,
+                api_football_id=api_football_id,
+                country=country,
+                player_count=player_counts.get(tid, 0),
+            )
+        )
+
+    clubs.sort(key=lambda c: c.name)
+    return CompetitionClubsOut(clubs=clubs)
