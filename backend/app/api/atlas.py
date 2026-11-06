@@ -83,7 +83,7 @@ _NATION_ISO2: dict[str, str] = {
     "Ecuador": "EC", "Egypt": "EG", "England": "GB", "France": "FR", "Germany": "DE", "Ghana": "GH",
     "Haiti": "HT", "Iran": "IR", "Iraq": "IQ", "Japan": "JP", "Jordan": "JO", "Mexico": "MX", "Morocco": "MA",
     "Netherlands": "NL", "New Zealand": "NZ", "Norway": "NO", "Panama": "PA", "Paraguay": "PY", "Portugal": "PT",
-    "Qatar": "QA", "Saudi Arabia": "SA", "Scotland": "GB", "South Africa": "ZA", "South Korea": "KR", "Spain": "ES",
+    "Qatar": "QA", "Saudi Arabia": "SA", "Scotland": "GB", "Senegal": "SN", "South Africa": "ZA", "South Korea": "KR", "Spain": "ES",
     "Sweden": "SE", "Switzerland": "CH", "Tunisia": "TN", "Türkiye": "TR", "USA": "US", "Uruguay": "UY",
     "Uzbekistan": "UZ",
 }
