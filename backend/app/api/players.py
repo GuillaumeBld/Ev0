@@ -17,6 +17,7 @@ from app.db import get_db
 from app.ingestion.bzzoiro.constants import (
     EFFECTIFS_REGLEMENTAIRES,
     INTL_CLUB_COMP_LEAGUE_IDS,
+    SELECTION_STATS_LEAGUE_IDS,
     TARGET_LEAGUE_API_ID_LIST,
     TARGET_LEAGUE_INTERNAL_ID_LIST,
 )
@@ -45,6 +46,16 @@ TARGET_INTERNAL_IDS = [1, 3, 4, 5, 6, 7]  # PL=1, LaLiga=3, SerieA=4, BL=5, L1=6
 # Old SofaScore IDs kept for recent_matches query (old events still carry those IDs).
 TARGET_LEAGUE_IDS = TARGET_LEAGUE_INTERNAL_ID_LIST  # PL=1, LL=3, SA=4, BL=5, L1=6, UCL=7
 _ALL_LEAGUE_IDS = TARGET_LEAGUE_INTERNAL_ID_LIST  # canonical Bzzoiro IDs only: [1,3,4,5,6,7]
+
+# Ligues du journal match par match de la fiche joueur (recent_matches) :
+# les 6 championnats/UCL cibles, PLUS les autres competitions internationales
+# de clubs (Europa, Conference, Super Coupe, Libertadores/Sudamericana) et les
+# selections nationales ayant de vraies stats de match (Coupe du monde, Ligues
+# des Nations). Le journal doit couvrir club + coupes + selection, pas
+# seulement les 6 championnats domestiques.
+RECENT_MATCHES_LEAGUE_IDS: frozenset[int] = (
+    frozenset(_ALL_LEAGUE_IDS) | INTL_CLUB_COMP_LEAGUE_IDS | SELECTION_STATS_LEAGUE_IDS
+)
 
 CSV_FIELDS = [
     "name",
@@ -150,6 +161,11 @@ class RecentMatch(BaseModel):
 
     event_api_id: int
     event_date: datetime | None
+    # Identifiant de ligue (BzzEvent.league_api_id) : permet au front d'afficher
+    # la competition de chaque match du journal (club, coupe, selection). None
+    # si l'event n'a pas de ligue resolue (ne devrait pas arriver vu le filtre
+    # de la requete qui l'exige).
+    league_api_id: int | None = None
     opponent: str | None
     is_home: bool | None
     minutes_played: int | None
@@ -1547,20 +1563,21 @@ async def get_player(
             BzzEvent.away_team_api_id,
             home_team_alias.c.name.label("home_team_name"),
             away_team_alias.c.name.label("away_team_name"),
+            BzzEvent.league_api_id,
         )
         .join(BzzEvent, BzzEvent.api_id == BzzPlayerMatchStat.event_api_id)
         .outerjoin(home_team_alias, home_team_alias.c.api_id == BzzEvent.home_team_api_id)
         .outerjoin(away_team_alias, away_team_alias.c.api_id == BzzEvent.away_team_api_id)
         .where(
             BzzPlayerMatchStat.player_api_id == player_api_id,
-            BzzEvent.league_api_id.in_(_ALL_LEAGUE_IDS),
+            BzzEvent.league_api_id.in_(RECENT_MATCHES_LEAGUE_IDS),
         )
         .order_by(desc(BzzEvent.event_date))
     )
     recent_rows = recent_result.all()
 
     recent_matches: list[RecentMatch] = []
-    for ms, event_date, home_api_id, away_api_id, home_name, away_name in recent_rows:
+    for ms, event_date, home_api_id, away_api_id, home_name, away_name, league_api_id in recent_rows:
         # Use team_api_id from the stat row; fall back to the player's current team
         player_team_id = ms.team_api_id or player.current_team_api_id
         if player_team_id is not None:
@@ -1585,6 +1602,7 @@ async def get_player(
             RecentMatch(
                 event_api_id=ms.event_api_id,
                 event_date=event_date,
+                league_api_id=league_api_id,
                 opponent=opponent,
                 is_home=is_home,
                 minutes_played=ms.minutes_played,
