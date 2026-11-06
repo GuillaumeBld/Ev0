@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.pricing.assist import (
     ASSIST_GOAL_RATE,
+    CLAMP_LAMBDA_MIN as CLAMP_LAMBDA_MIN_ASSIST,
     calculate_assist_lambda,
     calculate_creation_multiplier_v2,
     calculate_xa_conversion,
@@ -202,6 +203,11 @@ class PlayerShare:
     form_assists_5: float | None = None
     finishing_delta: float = 0.0
     has_bzz_stats: bool = False  # True when loaded from bzz_player_season_stats
+    # Part du rythme qui vient du joueur lui-meme, le reste venant de l'a priori
+    # de son poste. 0 = la cote est celle du poste, 1 = elle est entierement
+    # mesuree. Sert a afficher d'ou vient une cote.
+    poids_mesure_goal: float = 1.0
+    poids_mesure_assist: float = 1.0
 
 
 @dataclass
@@ -232,6 +238,10 @@ class PlayerAllocation:
     # probabilites et les cotes valent 0 — une absence, pas un prix.
     has_signal_goal: bool = True
     has_signal_assist: bool = True
+    # Part du rythme venant du joueur, le reste de l'a priori de son poste.
+    # Permet d'afficher si une cote est mesuree, melangee, ou issue du poste.
+    poids_mesure_goal: float = 1.0
+    poids_mesure_assist: float = 1.0
     # Supersub fields
     p_goal_supersub: float = 0.0
     fair_odds_goal_supersub: float = 99.0
@@ -328,6 +338,96 @@ def assess_inputs(players: list[dict[str, Any]], team: str) -> list[InputWarning
 
 # ── Stage 2: Player shares ────────────────────────────────────────
 
+# ── Rythme de base par poste (regression vers l'a priori) ─────────
+#
+# Un rythme par 90 calcule sur quelques minutes ne veut rien dire, et la cote
+# supersub l'amplifie en divisant par (minutes_attendues / 90) : pour un joueur
+# a 1,6 minute, cela multiplie par 56. Constate en production le 06/11/2026 --
+# Federico Gatti, defenseur, 1,6 minute jouee, cote juste a 1.04, soit 96 % de
+# chances de marquer. 1 206 recommandations actives reposaient sur moins de
+# 20 minutes attendues.
+#
+# On ramene donc le rythme mesure vers celui de son poste, mais UNIQUEMENT
+# tant que le joueur n'a pas atteint le seuil de minutes qui rend son propre
+# rythme exploitable :
+#
+#     poids = min(1, minutes / SEUIL_MINUTES)
+#     rythme = poids * mesure + (1 - poids) * a_priori_du_poste
+#
+# Au-dela du seuil le poids vaut 1 : le rythme du joueur est pris tel quel,
+# intact. Un joueur etabli n'est JAMAIS tire vers son poste -- c'est ce qui
+# distingue cette regression d'une penalite de poste, que le depot a
+# explicitement rejetee par le passe (voir test_defender_calibration.py).
+#
+# Sous le seuil, le poids monte lineairement de 0 a 1, donc aucune marche a la
+# frontiere : a 449 minutes le joueur pese 99,8 %, a 450 il pese 100 %.
+#
+#     0 minute     ->   0 % joueur, 100 % poste   (cote de base pure)
+#   225 minutes    ->  50 % / 50 %
+#   450 minutes    -> 100 % joueur                (et au-dela, inchange)
+#
+# Effet sur les cas reels du 06/11/2026 : Federico Gatti, defenseur, 1,6
+# minute jouee, passe d'une cote juste de 1.04 -- soit 96 % de chances de
+# marquer -- a la cote de son poste. Son rythme surbooste pese 0,36 %.
+#
+# L'a priori est un CENTRE DE GRAVITE sous le seuil, jamais un plancher : un
+# attaquant reellement faible s'en eloigne vers le bas des qu'il joue. Un
+# plancher produirait de la fausse value sur tous les mauvais attaquants.
+#
+# Valeurs mesurees le 06/11/2026 sur bzz_player_season_stats, saison en cours,
+# joueurs a 450 minutes ou plus, cinq grands championnats et C1 (3 431
+# joueurs). Granularite F/M/D : c'est ce que la mesure couvre, les 11 buckets
+# fins sont rabattus sur leur famille faute de mesure par bucket.
+#
+# SEUIL_MINUTES et les a priori restent a calibrer au score de Brier -- voir
+# docs/superpowers/specs/2026-11-06-cote-par-defaut-a-priori-poste-design.md
+SEUIL_MINUTES: float = 450.0
+
+POSITION_PRIOR_XG: dict[str, float] = {"FW": 0.347, "MF": 0.132, "DF": 0.056, "GK": 0.035}
+POSITION_PRIOR_XA: dict[str, float] = {"FW": 0.115, "MF": 0.126, "DF": 0.059, "GK": 0.006}
+
+# Poste inconnu : moyenne mesuree sur les joueurs sans position renseignee.
+_PRIOR_XG_FALLBACK: float = 0.122
+_PRIOR_XA_FALLBACK: float = 0.056
+
+# Les 11 buckets fins vers les trois familles mesurees.
+_PRIOR_FAMILY: dict[str, str] = {
+    "CF_lone": "FW", "CF_pair": "FW", "SS": "FW", "winger": "FW", "FW": "FW",
+    "AM": "MF", "CM": "MF", "DM": "MF", "MF": "MF",
+    "WB": "DF", "FB": "DF", "CB": "DF", "DF": "DF",
+    "GK": "GK",
+}
+
+
+def position_prior(position: str | None, priors: dict[str, float], fallback: float) -> float:
+    """A priori de rythme pour ce poste, ou la moyenne generale si inconnu."""
+    famille = _PRIOR_FAMILY.get(position or "")
+    if famille is None:
+        return fallback
+    return priors.get(famille, fallback)
+
+
+def regress_to_position(
+    rate: float, minutes: float, position: str | None,
+    priors: dict[str, float], fallback: float,
+) -> tuple[float, float]:
+    """(rythme ramene vers le poste, poids du joueur entre 0 et 1).
+
+    Au-dela de SEUIL_MINUTES le rythme est rendu INTACT (poids 1) : la
+    regression ne concerne que les joueurs qui n'ont pas encore assez joue.
+
+    Le poids est rendu pour que l'appelant puisse dire d'ou vient la cote --
+    a priori, melange, ou mesure.
+    """
+    if minutes >= SEUIL_MINUTES:
+        return rate, 1.0
+    prior = position_prior(position, priors, fallback)
+    if minutes <= 0:
+        return prior, 0.0
+    poids = minutes / SEUIL_MINUTES
+    return poids * rate + (1.0 - poids) * prior, poids
+
+
 def compute_player_shares(
     players: list[dict[str, Any]],
     team: str,
@@ -353,6 +453,12 @@ def compute_player_shares(
             blended_xg = (1 - form_w) * xg_per_90 + form_w * form_rate
         else:
             blended_xg = xg_per_90
+        # Regression vers le poste APRES le melange de forme : form_rate divise
+        # aussi par les minutes attendues, donc il souffre de la meme
+        # amplification. Une seule intervention couvre les deux.
+        blended_xg, poids_xg = regress_to_position(
+            blended_xg, mins, pos, POSITION_PRIOR_XG, _PRIOR_XG_FALLBACK
+        )
         goal_weight = blended_xg * mins_ratio
 
         # Assist weight — blend season xa_per_90 + form_assists_5
@@ -363,9 +469,12 @@ def compute_player_shares(
             blended_xa = (1 - form_w) * xa_per_90 + form_w * form_xa_rate
         else:
             blended_xa = xa_per_90
+        blended_xa, poids_xa = regress_to_position(
+            blended_xa, mins, pos, POSITION_PRIOR_XA, _PRIOR_XA_FALLBACK
+        )
         assist_weight = blended_xa * mins_ratio
 
-        entries.append((p, exp_mins, goal_weight, assist_weight))
+        entries.append((p, exp_mins, goal_weight, assist_weight, poids_xg, poids_xa))
 
     # Pass 2 — denominators
     total_goal = sum(e[2] for e in entries)
@@ -376,7 +485,7 @@ def compute_player_shares(
 
     # Pass 3 — build PlayerShare objects
     shares = []
-    for p, exp_mins, goal_weight, assist_weight in entries:
+    for p, exp_mins, goal_weight, assist_weight, poids_xg, poids_xa in entries:
         pos = p.get("position")
         matches = p.get("matches_played", 0) or 0
         npxg_total = p.get("npxg_total") or p.get("npxg") or 0.0
@@ -414,6 +523,8 @@ def compute_player_shares(
             form_assists_5=p.get("form_assists_5"),
             finishing_delta=p.get("finishing_delta") or 0.0,
             has_bzz_stats=p.get("has_bzz_stats", False),
+            poids_mesure_goal=round(poids_xg, 4),
+            poids_mesure_assist=round(poids_xa, 4),
         ))
     return shares
 
@@ -474,7 +585,13 @@ def allocate_player(
     # les 30 jours au 06/11/2026 — toutes avec lambda au plancher.
     has_signal_goal = share.npxg_share > 0.0 or is_pen_taker
 
-    lambda_total = max(0.001, min(lambda_open_play + lambda_penalty, 3.0))
+    # Le lambda BRUT, avant tout plancher : c'est lui qui sert a normaliser a
+    # 90 minutes plus bas. Plafonner d'abord puis diviser par mins_ratio
+    # multipliait le plancher par 90 -- un joueur a une minute attendue
+    # ressortait a 1.69 passeur ou 11.62 buteur (06/11/2026). Le plancher
+    # protege d'une division par zero ; il ne doit jamais etre normalise.
+    lambda_total_brut = lambda_open_play + lambda_penalty
+    lambda_total = max(0.001, min(lambda_total_brut, 3.0))
     if has_signal_goal:
         prob_goal = 1 - math.exp(-lambda_total)
         fair_odds_goal = round(1 / prob_goal, 2) if prob_goal > 0 else 9999.0
@@ -496,10 +613,12 @@ def allocate_player(
     }
     creation_mult = calculate_creation_multiplier_v2(assist_stats, share.position)
     xa_conversion = calculate_xa_conversion(assist_stats, share.position)
+    # Brut d'abord, pour la meme raison que le buteur : le plancher passeur
+    # (0.01) normalise a 90 minutes donnait 1.69 -- 867 recommandations sur
+    # 30 jours. On normalise le brut, on plafonne apres.
+    lambda_assist_brut = share.xa_share * budget_assists * creation_mult * xa_conversion
     lambda_assist = calculate_assist_lambda(share.xa_share, budget_assists, creation_mult, xa_conversion)
 
-    # Meme raison que pour le buteur. Plancher passeur = 0.01, qui donnait
-    # 1.69 passeur : 867 recommandations sur 30 jours, toutes sans matiere.
     has_signal_assist = share.xa_share > 0.0
 
     if has_signal_assist:
@@ -518,8 +637,16 @@ def allocate_player(
     # par mins_ratio multiplie par 90 quand une seule minute est attendue.
     # Elle reste juste tant que lambda porte un vrai signal — sans signal, on
     # ne normalise rien.
-    lambda_total_90 = lambda_total / mins_ratio if mins_ratio > 0 else lambda_total
-    lambda_assist_90 = lambda_assist / mins_ratio if mins_ratio > 0 else lambda_assist
+    # On normalise le BRUT, puis on plafonne : l'inverse multipliait le
+    # plancher par 90 quand une seule minute etait attendue.
+    lambda_total_90 = (
+        max(0.001, min(lambda_total_brut / mins_ratio, 3.0))
+        if mins_ratio > 0 else lambda_total
+    )
+    lambda_assist_90 = (
+        max(CLAMP_LAMBDA_MIN_ASSIST, min(lambda_assist_brut / mins_ratio, 2.0))
+        if mins_ratio > 0 else lambda_assist
+    )
 
     if has_signal_goal:
         p_goal_ss = 1.0 - math.exp(-lambda_total_90)
@@ -562,6 +689,8 @@ def allocate_player(
         has_form_assist=share.form_assists_5 is not None,
         has_signal_goal=has_signal_goal,
         has_signal_assist=has_signal_assist,
+        poids_mesure_goal=share.poids_mesure_goal,
+        poids_mesure_assist=share.poids_mesure_assist,
         p_goal_supersub=round(p_goal_ss, 4),
         fair_odds_goal_supersub=fair_odds_goal_ss,
         p_assist_supersub=round(p_assist_ss, 4),
