@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { clsx } from 'clsx'
 import { ArrowLeft } from 'lucide-react'
@@ -297,6 +297,9 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
     enabled: open,
   })
 
+  const [tab, setTab] = useState<'club' | 'selection' | 'career'>('club')
+  const hasSelection = !!player?.selection_stats
+
   const matches = player?.recent_matches ?? []
   const { sortedDesc, ratings, bars } = useMatchSeries(matches)
   const categories = useMemo(() => (player?.season_stats ? buildCategories(player.season_stats) : []), [player?.season_stats])
@@ -357,7 +360,22 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                 </div>
               </div>
 
+              <div className={styles.ptabs}>
+                <button className={clsx(styles.ptab, tab === 'club' && styles.on)} onClick={() => setTab('club')}>Club</button>
+                <button
+                  className={clsx(styles.ptab, tab === 'selection' && styles.on)}
+                  onClick={() => hasSelection && setTab('selection')}
+                  disabled={!hasSelection}
+                  title={hasSelection ? undefined : 'Aucune stat en sélection'}
+                >
+                  Sélection{player?.national_team_name ? ` · ${player.national_team_name}` : ''}
+                </button>
+                <button className={clsx(styles.ptab, tab === 'career' && styles.on)} onClick={() => setTab('career')}>Carrière</button>
+              </div>
+
               <div className={styles.pdwrap}>
+              {tab === 'club' && (
+                <>
                 <div className={styles.sect}>Statistiques détaillées</div>
                 {categories.length === 0 ? (
                   <p style={{ color: 'var(--t2)', fontSize: 13 }}>Données avancées non disponibles pour ce championnat.</p>
@@ -453,7 +471,11 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                     </table>
                   </div>
                 )}
+                </>
+              )}
 
+              {tab === 'career' && (
+                <>
                 <div className={styles.sect}>Carrière</div>
                 {careerIsError ? (
                   <p style={{ color: 'var(--t2)', fontSize: 13 }}>Erreur de chargement de l’historique de carrière.</p>
@@ -480,6 +502,36 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                     </tbody>
                   </table>
                 )}
+                </>
+              )}
+
+              {tab === 'selection' && player.selection_stats && (() => {
+                const selCats = buildCategories(player.selection_stats)
+                const s = player.selection_stats
+                return (
+                  <>
+                    <div className={styles.sect}>Sélection · {player.national_team_name ?? 'Équipe nationale'}</div>
+                    <div className={styles.ptiles}>
+                      <Tile value={s.goals} label="Buts" />
+                      <Tile value={s.goal_assist} label="Passes d." />
+                      <Tile value={s.matches_played} label="Sélections" />
+                      <Tile value={s.minutes_played} label="Minutes" thousands />
+                      <Tile value={s.avg_rating} label="Note" decimals={1} />
+                    </div>
+                    <div className={styles.pgrid}>
+                      {selCats.map((cat) => (
+                        <div className={styles.ppanel} key={cat.key}>
+                          <div className={styles.ph}>
+                            <div className={styles.ico} style={{ background: `${cat.color}22` }}>{cat.icon}</div>
+                            <h3>{cat.title}</h3>
+                          </div>
+                          <div className={styles.pb}>{cat.rows.map((row) => <Metric key={row.label} row={row} />)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )
+              })()}
               </div>
             </>
           )

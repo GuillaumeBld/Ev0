@@ -124,6 +124,38 @@ export async function fetchPlayers(params: FetchPlayersParams = {}): Promise<Pla
   return res.json()
 }
 
+// ── Selection players (GET /players/selection) ──────────────────────────────
+
+export interface FetchSelectionParams {
+  national_team_api_id?: number | null
+  league_api_id?: number | null
+  position?: 'G' | 'D' | 'M' | 'F' | ''
+  /** Recherche serveur par nom (sous-chaîne, insensible à la casse). */
+  q?: string
+  season?: string | null
+  sort_by?: PlayerSortField | string
+  sort_order?: 'asc' | 'desc'
+  limit?: number
+  offset?: number
+}
+
+export async function fetchSelectionPlayers(params: FetchSelectionParams = {}): Promise<PlayerSummary[]> {
+  const qs = new URLSearchParams()
+  if (params.national_team_api_id != null) qs.set('national_team_api_id', String(params.national_team_api_id))
+  if (params.league_api_id != null) qs.set('league_api_id', String(params.league_api_id))
+  if (params.position) qs.set('position', params.position)
+  if (params.q) qs.set('q', params.q)
+  if (params.season) qs.set('season', params.season)
+  qs.set('sort_by', params.sort_by ?? 'avg_rating')
+  qs.set('sort_order', params.sort_order ?? 'desc')
+  qs.set('limit', String(params.limit ?? 100))
+  qs.set('offset', String(params.offset ?? 0))
+
+  const res = await fetch(`/api/v1/players/selection?${qs}`)
+  if (!res.ok) throw new Error(`fetchSelectionPlayers: HTTP ${res.status}`)
+  return res.json()
+}
+
 export async function fetchPlayer(playerApiId: number): Promise<PlayerDetail> {
   const res = await fetch(`/api/v1/players/${playerApiId}`)
   if (!res.ok) throw new Error(`fetchPlayer: HTTP ${res.status}`)

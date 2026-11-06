@@ -81,3 +81,13 @@ EFFECTIFS_REGLEMENTAIRES: dict[int, int] = {
     5: 18,  # Bundesliga
     6: 18,  # Ligue 1
 }
+
+# Compétitions internationales de CLUBS : leurs stats sont déjà dans
+# bzz_player_season_stats (agrégées par aggregate_all_leagues). On les sert en
+# résolvant les joueurs « par présence de stats dans la compétition », pas par
+# effectif de club engagé (aucun club n'a league_api_id dans cet ensemble).
+INTL_CLUB_COMP_LEAGUE_IDS: frozenset[int] = frozenset({7, 8, 83, 90, 32, 33})
+
+# Sélections ayant de vraies stats de match Bzzoiro (les autres sélections du
+# registre n'ont aucune bzz_player_match_stats -> non affichées au Temps 1).
+SELECTION_STATS_LEAGUE_IDS: frozenset[int] = frozenset({27, 64, 65})

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.ingestion.bzzoiro.constants import (
     EFFECTIFS_REGLEMENTAIRES,
+    INTL_CLUB_COMP_LEAGUE_IDS,
     TARGET_LEAGUE_API_ID_LIST,
     TARGET_LEAGUE_INTERNAL_ID_LIST,
 )
@@ -28,6 +29,7 @@ from app.models.bzzoiro import (
     BzzTeam,
 )
 from app.models.player_career import PlayerCareerSeason
+from app.models.selection_stats import PlayerSelectionSeasonStat
 from app.pricing.career_blend import blended_rhythm
 from app.services.season_service import current_season, season_end, season_start
 
@@ -308,6 +310,13 @@ class PlayerDetail(BaseModel):
     api_football_id: int | None = None
     # Voir PlayerSummary.crest_url — meme resolution, meme garantie.
     crest_url: str | None = None
+    # Stats de selection nationale (toutes competitions de selection
+    # confondues), lues depuis player_selection_season_stats. None si le
+    # joueur n'a aucune selection — la vue club ne doit jamais en inventer.
+    selection_stats: SeasonStatsOut | None = None
+    # Nom de la selection nationale (canonical_teams.name_fr), resolu via
+    # national_team_api_id. None si pas de selection.
+    national_team_name: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -980,17 +989,37 @@ async def list_players(
     # when the unfiltered player set is large.
     player_id_subq = select(BzzPlayer.api_id).where(BzzPlayer.internal_id.is_not(None))
 
+    restrict_stats_league: int | None = None
     if league_api_id is not None:
-        # Effectifs de la saison en cours, quelle que soit la saison des stats.
-        team_ids = await team_ids_for_league(
-            session, league_api_id, await current_season(session)
-        )
-        if not team_ids:
-            return []
-        eff_team = func.coalesce(
-            BzzPlayer.loan_team_api_id, BzzPlayer.current_team_api_id
-        )
-        player_id_subq = player_id_subq.where(eff_team.in_(team_ids))
+        if league_api_id in INTL_CLUB_COMP_LEAGUE_IDS:
+            # Compétition internationale de clubs (LdC, Europa, Conference,
+            # Super Coupe, Libertadores/Sudamericana) : aucun club n'a cet
+            # identifiant comme league_api_id dans le référentiel, donc
+            # team_ids_for_league rend toujours []. On résout les joueurs par
+            # présence d'une ligne de stats DANS cette compétition, puis on
+            # restreint les stats affichées à cette seule compétition (pas
+            # l'agrégat toutes-compétitions).
+            restrict_stats_league = league_api_id
+            player_id_subq = player_id_subq.where(
+                BzzPlayer.api_id.in_(
+                    select(BzzPlayerSeasonStat.player_api_id).where(
+                        BzzPlayerSeasonStat.league_api_id == league_api_id,
+                        BzzPlayerSeasonStat.season == season,
+                    )
+                )
+            )
+        else:
+            # Championnat domestique : effectif de la saison en cours, quelle
+            # que soit la saison des stats.
+            team_ids = await team_ids_for_league(
+                session, league_api_id, await current_season(session)
+            )
+            if not team_ids:
+                return []
+            eff_team = func.coalesce(
+                BzzPlayer.loan_team_api_id, BzzPlayer.current_team_api_id
+            )
+            player_id_subq = player_id_subq.where(eff_team.in_(team_ids))
     if team_api_id is not None:
         # Un joueur appartient a UN club : celui que porte l'effectif
         # Transfermarkt (`sync_squads`), seule autorite sur la composition.
@@ -1014,12 +1043,16 @@ async def list_players(
         return []
 
     # Step 2: fetch ALL season stat rows using the same subquery (no parameter list)
+    stats_filter = [
+        BzzPlayerSeasonStat.player_api_id.in_(player_id_subq),
+        BzzPlayerSeasonStat.season == season,
+    ]
+    if restrict_stats_league is not None:
+        # Compétition internationale de clubs : n'afficher que les stats de
+        # cette compétition, pas l'agrégat toutes-compétitions.
+        stats_filter.append(BzzPlayerSeasonStat.league_api_id == restrict_stats_league)
     all_stats = (await session.execute(
-        select(BzzPlayerSeasonStat)
-        .where(
-            BzzPlayerSeasonStat.player_api_id.in_(player_id_subq),
-            BzzPlayerSeasonStat.season == season,
-        )
+        select(BzzPlayerSeasonStat).where(*stats_filter)
     )).scalars().all()
 
     # Appele directement (tests), compare_previous porte l'objet Query, qui est
@@ -1028,11 +1061,16 @@ async def list_players(
     saison_prec = saison_precedente(season) if comparer else None
     stats_prec_by_player: dict[int, list] = defaultdict(list)
     if saison_prec:
-        for row in (await session.execute(
-            select(BzzPlayerSeasonStat).where(
-                BzzPlayerSeasonStat.player_api_id.in_(player_id_subq),
-                BzzPlayerSeasonStat.season == saison_prec,
+        stats_prec_filter = [
+            BzzPlayerSeasonStat.player_api_id.in_(player_id_subq),
+            BzzPlayerSeasonStat.season == saison_prec,
+        ]
+        if restrict_stats_league is not None:
+            stats_prec_filter.append(
+                BzzPlayerSeasonStat.league_api_id == restrict_stats_league
             )
+        for row in (await session.execute(
+            select(BzzPlayerSeasonStat).where(*stats_prec_filter)
         )).scalars().all():
             stats_prec_by_player[row.player_api_id].append(row)
 
@@ -1153,6 +1191,131 @@ async def list_players(
         })
 
     # Step 5: sort in Python, then paginate
+    _python_sort(results, sort_by, sort_order)
+    return results[offset: offset + limit]
+
+
+# ---------------------------------------------------------------------------
+# GET /players/selection  — joueurs d'une selection nationale
+# ---------------------------------------------------------------------------
+# Doit rester declare AVANT la route /{player_api_id} : sinon FastAPI
+# matche "selection" comme une valeur de player_api_id.
+
+
+@router.get("/selection", response_model=list[PlayerSummary])
+async def list_selection_players(
+    session: AsyncSession = Depends(get_db),
+    national_team_api_id: int | None = Query(None, description="Filter by national team api_id"),
+    league_api_id: int | None = Query(None, description="Filter by selection competition api_id"),
+    position: str | None = Query(None, description="Filter by position: G/D/M/F"),
+    q: str | None = Query(None, description="Filter by player name (case-insensitive substring)"),
+    season: str | None = Query(None),
+    sort_by: str = Query("avg_rating"),
+    sort_order: str = Query("desc"),
+    limit: int = Query(50, le=500),
+    offset: int = Query(0),
+) -> list[dict[str, Any]]:
+    """Joueurs d'une selection nationale, stats lues depuis player_selection_season_stats.
+
+    Quand national_team_api_id est fourni, ne rend que les joueurs de cette
+    selection ; sinon tous les joueurs ayant des stats de selection. Quand
+    league_api_id est omis, les stats agregent toutes les competitions de
+    selection du joueur (Coupe du monde, Ligue des Nations, qualifications...).
+    """
+    conds = [PlayerSelectionSeasonStat.source == "bzzoiro"]
+    if national_team_api_id is not None:
+        conds.append(PlayerSelectionSeasonStat.national_team_api_id == national_team_api_id)
+    if league_api_id is not None:
+        conds.append(PlayerSelectionSeasonStat.league_api_id == league_api_id)
+    if season is not None:
+        conds.append(PlayerSelectionSeasonStat.season == season)
+
+    sel_rows = (await session.execute(
+        select(PlayerSelectionSeasonStat).where(*conds)
+    )).scalars().all()
+    if not sel_rows:
+        return []
+
+    by_player: dict[int, list] = defaultdict(list)
+    for s in sel_rows:
+        by_player[s.player_api_id].append(s)
+
+    player_ids = list(by_player.keys())
+    players = {p.api_id: p for p in (await session.execute(
+        select(BzzPlayer).where(BzzPlayer.api_id.in_(player_ids))
+    )).scalars().all()}
+
+    crest_map = await _team_crest_map(
+        session, [p.current_team_api_id for p in players.values()]
+    )
+
+    results: list[dict[str, Any]] = []
+    for pid, rows in by_player.items():
+        player = players.get(pid)
+        if player is None:
+            continue
+        if position is not None and (player.position or "").upper() != position.upper():
+            continue
+        if q and q.lower() not in (player.name or "").lower():
+            continue
+        merged = _merge_season_stats(rows, rows[0].season)
+        if merged is None:
+            continue
+        api_football_id, crest_url = crest_map.get(player.current_team_api_id) or (None, None)
+        results.append({
+            "player_api_id": player.api_id,
+            "name": player.name,
+            "short_name": player.short_name,
+            "position": player.position,
+            "team_name": player.current_team_name,
+            "api_football_id": api_football_id,
+            "crest_url": crest_url,
+            "nationality": player.nationality,
+            "goals": merged["goals"],
+            "goal_assist": merged["goal_assist"],
+            "xg_per_90": merged["xg_per_90"],
+            "xa_per_90": merged["xa_per_90"],
+            "avg_rating": merged["avg_rating"],
+            "shots_on_target_per_90": merged["shots_on_target_per_90"],
+            "form_xg_5": merged["form_xg_5"],
+            "matches_played": merged["matches_played"],
+            "minutes_played": merged["minutes_played"],
+            "season": merged["season"],
+            "previous": None,
+            # Champs numeriques necessaires au tri (_python_sort), absents du
+            # schema PlayerSummary — meme convention que list_players.
+            "total_shots": merged["total_shots"],
+            "shots_on_target": merged["shots_on_target"],
+            "key_pass": merged["key_pass"],
+            "expected_goals": merged["expected_goals"],
+            "expected_assists": merged["expected_assists"],
+            "yellow_card": merged["yellow_card"],
+            "red_card": merged["red_card"],
+            "saves": merged["saves"],
+            "shots_per_90": merged["shots_per_90"],
+            "key_pass_per_90": merged["key_pass_per_90"],
+            "accurate_cross_per_90": merged["accurate_cross_per_90"],
+            "recoveries_per_90": merged["recoveries_per_90"],
+            "tackles_per_90": merged["tackles_per_90"],
+            "interceptions_per_90": merged["interceptions_per_90"],
+            "shot_accuracy": merged["shot_accuracy"],
+            "xg_per_shot": merged["xg_per_shot"],
+            "finishing_delta": merged["finishing_delta"],
+            "xa_delta": merged["xa_delta"],
+            "pass_completion": merged["pass_completion"],
+            "long_ball_accuracy": merged["long_ball_accuracy"],
+            "cross_accuracy": merged["cross_accuracy"],
+            "duel_win_rate": merged["duel_win_rate"],
+            "aerial_win_rate": merged["aerial_win_rate"],
+            "tackle_success_rate": merged["tackle_success_rate"],
+            "avg_minutes_per_match": merged["avg_minutes_per_match"],
+            "starts_pct": merged["starts_pct"],
+            "form_rating_5": merged["form_rating_5"],
+            "form_goals_5": merged["form_goals_5"],
+            "form_assists_5": merged["form_assists_5"],
+            "rating_trend": merged["rating_trend"],
+        })
+
     _python_sort(results, sort_by, sort_order)
     return results[offset: offset + limit]
 
@@ -1301,6 +1464,29 @@ async def get_player(
     crest_map = await _team_crest_map(session, [player.current_team_api_id])
     api_football_id, crest_url = crest_map.get(player.current_team_api_id) or (None, None)
 
+    # Bloc selection — agrege depuis player_selection_season_stats (toutes
+    # competitions de selection confondues : Coupe du monde, Ligue des
+    # Nations, qualifications...). None si le joueur n'a aucune selection :
+    # la vue club ne doit jamais inventer de stats nationales.
+    from app.models.canonical_teams import CanonicalTeam
+
+    sel_rows = (await session.execute(
+        select(PlayerSelectionSeasonStat).where(
+            PlayerSelectionSeasonStat.player_api_id == player_api_id,
+            PlayerSelectionSeasonStat.source == "bzzoiro",
+        )
+    )).scalars().all()
+    selection_stats_out: SeasonStatsOut | None = None
+    national_team_name: str | None = None
+    if sel_rows:
+        merged_sel = _merge_season_stats(sel_rows, sel_rows[0].season)
+        if merged_sel:
+            selection_stats_out = SeasonStatsOut(**merged_sel)
+        team_id = sel_rows[0].national_team_api_id
+        national_team_name = (await session.execute(
+            select(CanonicalTeam.name_fr).where(CanonicalTeam.bzz_team_id == team_id)
+        )).scalars().first()
+
     return {
         "player_api_id": player.api_id,
         "name": player.name,
@@ -1316,6 +1502,8 @@ async def get_player(
         "crest_url": crest_url,
         "season_stats": season_stats_out,
         "recent_matches": recent_matches,
+        "selection_stats": selection_stats_out,
+        "national_team_name": national_team_name,
     }
 
 
