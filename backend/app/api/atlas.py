@@ -20,6 +20,7 @@ from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzPlayerSeasonStat, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
 from app.models.data_coverage import DataCoverageRun
 from app.models.leagues import League
+from app.models.selection_stats import PlayerSelectionSeasonStat
 from app.services.season_service import current_season, season_end, season_start
 
 router = APIRouter()
@@ -69,6 +70,50 @@ _COUNTRY_MAP: dict[str, tuple[str, str]] = {
 # reprennent simplement le nom anglais du premier pays rencontré.
 _DISPLAY_NAME_OVERRIDES: dict[str, str] = {"GB": "Royaume-Uni"}
 
+# Nom de nation (canonical_teams.name_en pour une équipe de league_api_id=27,
+# voir league_registry.py) -> code ISO2. Couvre les 48 nations réellement
+# présentes en base (fourni par le propriétaire — NE PAS deviner un code pour
+# une nation absente : elle est loggée et omise, voir atlas_geo). England et
+# Scotland partagent GB comme dans _COUNTRY_MAP ci-dessus ; quand les deux
+# ont des stats, England prime (une seule entité GB sur la carte).
+_NATION_ISO2: dict[str, str] = {
+    "Algeria": "DZ", "Argentina": "AR", "Australia": "AU", "Austria": "AT", "Belgium": "BE",
+    "Bosnia & Herzegovina": "BA", "Brazil": "BR", "Cabo Verde": "CV", "Canada": "CA", "Colombia": "CO",
+    "Croatia": "HR", "Curaçao": "CW", "Czechia": "CZ", "Côte d'Ivoire": "CI", "DR Congo": "CD",
+    "Ecuador": "EC", "Egypt": "EG", "England": "GB", "France": "FR", "Germany": "DE", "Ghana": "GH",
+    "Haiti": "HT", "Iran": "IR", "Iraq": "IQ", "Japan": "JP", "Jordan": "JO", "Mexico": "MX", "Morocco": "MA",
+    "Netherlands": "NL", "New Zealand": "NZ", "Norway": "NO", "Panama": "PA", "Paraguay": "PY", "Portugal": "PT",
+    "Qatar": "QA", "Saudi Arabia": "SA", "Scotland": "GB", "South Africa": "ZA", "South Korea": "KR", "Spain": "ES",
+    "Sweden": "SE", "Switzerland": "CH", "Tunisia": "TN", "Türkiye": "TR", "USA": "US", "Uruguay": "UY",
+    "Uzbekistan": "UZ",
+}
+
+# Code ISO2 -> continent, pour les nations ci-dessus. Mêmes libellés que
+# _COUNTRY_MAP (EUR/SAM/NAM/ASI/AFR/OCE) pour rester cohérent avec `countries`.
+_NATION_CONTINENT: dict[str, str] = {
+    "DZ": "AFR", "AR": "SAM", "AU": "OCE", "AT": "EUR", "BE": "EUR", "BA": "EUR", "BR": "SAM",
+    "CV": "AFR", "CA": "NAM", "CO": "SAM", "HR": "EUR", "CW": "NAM", "CZ": "EUR", "CI": "AFR",
+    "CD": "AFR", "EC": "SAM", "EG": "AFR", "GB": "EUR", "FR": "EUR", "DE": "EUR", "GH": "AFR",
+    "HT": "NAM", "IR": "ASI", "IQ": "ASI", "JP": "ASI", "JO": "ASI", "MX": "NAM", "MA": "AFR",
+    "NL": "EUR", "NZ": "OCE", "NO": "EUR", "PA": "NAM", "PY": "SAM", "PT": "EUR", "QA": "ASI",
+    "SA": "ASI", "ZA": "AFR", "KR": "ASI", "ES": "EUR", "SE": "EUR", "CH": "EUR", "TN": "AFR",
+    "TR": "EUR", "US": "NAM", "UY": "SAM", "UZ": "ASI",
+}
+
+# League id de la compétition dont les équipes canoniques (canonical_teams)
+# sont les sélections nationales (voir league_registry.py : "Coupe du monde
+# 2026", kind=selection). C'est dans CE tableau, filtré sur cette league, que
+# le nom de nation (name_en) d'une sélection est résolu.
+_SELECTION_TEAMS_LEAGUE_ID = 27
+
+# Compétitions de clubs internationales dont les participants font "allumer"
+# un pays côté Clubs même sans championnat domestique suivi : coupes
+# d'Europe 7=C1/8=C2/83=C3 (phase de ligue — mêmes ids que
+# _EUROPEAN_CUP_LEAGUE_IDS plus bas, répétés ici car ce module-level dict est
+# évalué avant cette définition) + 32/33=Copa Libertadores/Sudamericana
+# (tous les participants, pas de phase de ligue).
+_CLUB_CUP_LEAGUE_IDS: frozenset[int] = frozenset({7, 8, 83, 32, 33})
+
 _DOMESTIC_KINDS = ("domestic_1", "domestic_2")
 _INTL_KINDS = ("uefa_club", "selection")
 _KIND_WORLD = "world"
@@ -107,9 +152,34 @@ class IntlOut(BaseModel):
     kind: str
 
 
+class ClubCountryOut(BaseModel):
+    code: str
+    name: str
+    continent: str
+    leagues: list[LeagueOut]
+    # True si ce pays a au moins un club participant à une coupe
+    # internationale de clubs (_CLUB_CUP_LEAGUE_IDS), même sans championnat
+    # domestique suivi (leagues peut alors être vide).
+    has_cup_clubs: bool
+
+
+class SelectionCountryOut(BaseModel):
+    code: str
+    name: str
+    continent: str
+    national_team_api_id: int
+
+
 class GeoOut(BaseModel):
     countries: list[CountryOut]
     international: list[IntlOut]
+    # Ensemble "mode Clubs" de la carte : countries + pays via coupe sans
+    # championnat suivi. Ensemble "mode Sélections" : équipes nationales
+    # ayant des stats de sélection. Les deux ensembles diffèrent par
+    # construction (voir _NATION_ISO2 / _CLUB_CUP_LEAGUE_IDS) — c'est ce qui
+    # permet à la carte de recolorer au switch.
+    countries_clubs: list[ClubCountryOut]
+    countries_selections: list[SelectionCountryOut]
 
 
 def _tier_out(tier: str) -> int | str:
@@ -254,7 +324,145 @@ async def atlas_geo(db: AsyncSession = Depends(get_db)) -> GeoOut:
     ]
     international_out = [io for _, io in sorted(intl_raw, key=lambda t: t[0])]
 
-    return GeoOut(countries=countries_out, international=international_out)
+    cup_country_meta = await _club_cup_country_meta(db)
+    countries_clubs_out = _build_countries_clubs(countries_out, cup_country_meta)
+    countries_selections_out = await _selection_countries(db)
+
+    return GeoOut(
+        countries=countries_out,
+        international=international_out,
+        countries_clubs=countries_clubs_out,
+        countries_selections=countries_selections_out,
+    )
+
+
+async def _club_cup_country_meta(db: AsyncSession) -> dict[str, tuple[str, str]]:
+    """code ISO2 -> (continent, nom brut) pour les pays ayant au moins un
+    club participant à une coupe internationale de clubs
+    (`_CLUB_CUP_LEAGUE_IDS`), pour la saison courante.
+
+    Réutilise `_competition_team_ids` (Task 1) — une requête par compétition
+    (5 au total, nombre fixe, pas un N+1 qui grossit avec le nombre de pays).
+    """
+    season = await current_season(db)
+    team_ids: set[int] = set()
+    for league_api_id in sorted(_CLUB_CUP_LEAGUE_IDS):
+        team_ids |= set(await _competition_team_ids(db, league_api_id, season))
+
+    if not team_ids:
+        return {}
+
+    raw_countries = {
+        country
+        for country in (
+            await db.execute(
+                select(CanonicalTeam.country).where(CanonicalTeam.bzz_team_id.in_(team_ids))
+            )
+        ).scalars()
+        if country
+    }
+
+    meta: dict[str, tuple[str, str]] = {}
+    for raw_country in raw_countries:
+        mapped = _COUNTRY_MAP.get(raw_country)
+        if mapped is None:
+            logger.warning(
+                "Atlas: pays de club de coupe sans mapping ignoré: %r", raw_country
+            )
+            continue
+        code, continent = mapped
+        meta.setdefault(code, (continent, raw_country))
+    return meta
+
+
+def _build_countries_clubs(
+    countries_out: list[CountryOut], cup_country_meta: dict[str, tuple[str, str]]
+) -> list[ClubCountryOut]:
+    """`countries` (championnats) + pays via coupe sans championnat suivi."""
+    countries_clubs_out = [
+        ClubCountryOut(
+            code=co.code,
+            name=co.name,
+            continent=co.continent,
+            leagues=co.leagues,
+            has_cup_clubs=co.code in cup_country_meta,
+        )
+        for co in countries_out
+    ]
+    present_codes = {co.code for co in countries_clubs_out}
+    for code, (continent, raw_name) in sorted(cup_country_meta.items()):
+        if code in present_codes:
+            continue
+        countries_clubs_out.append(
+            ClubCountryOut(
+                code=code,
+                name=_DISPLAY_NAME_OVERRIDES.get(code, raw_name),
+                continent=continent,
+                leagues=[],
+                has_cup_clubs=True,
+            )
+        )
+    return countries_clubs_out
+
+
+async def _selection_countries(db: AsyncSession) -> list[SelectionCountryOut]:
+    """Pays ayant une équipe nationale avec des stats de sélection.
+
+    `player_selection_season_stats.national_team_api_id` -> `canonical_teams`
+    (même espace d'identifiants, `bzz_team_id`) filtré sur
+    `league_api_id == _SELECTION_TEAMS_LEAGUE_ID` pour résoudre le nom de
+    nation (`name_en`), puis `_NATION_ISO2` pour l'ISO2. Une nation absente
+    de `_NATION_ISO2`, ou sans `name_en` résolu, est loggée et omise — jamais
+    de code deviné. England et Scotland partagent GB : si les deux ont des
+    stats, England prime (dédoublonnage, une seule entité GB).
+    """
+    team_ids = sorted(
+        {
+            tid
+            for tid in (
+                await db.execute(select(PlayerSelectionSeasonStat.national_team_api_id).distinct())
+            ).scalars()
+            if tid is not None
+        }
+    )
+    if not team_ids:
+        return []
+
+    nation_rows = (
+        await db.execute(
+            select(CanonicalTeam.bzz_team_id, CanonicalTeam.name_en).where(
+                CanonicalTeam.bzz_team_id.in_(team_ids),
+                CanonicalTeam.league_api_id == _SELECTION_TEAMS_LEAGUE_ID,
+            )
+        )
+    ).all()
+
+    by_code: dict[str, SelectionCountryOut] = {}
+    for team_id, name_en in nation_rows:
+        if not name_en:
+            logger.warning(
+                "Atlas: equipe nationale sans name_en ignoree (bzz_team_id=%s)", team_id
+            )
+            continue
+        code = _NATION_ISO2.get(name_en)
+        if code is None:
+            logger.warning(
+                "Atlas: nation sans mapping ISO2 ignoree: %r (bzz_team_id=%s)",
+                name_en,
+                team_id,
+            )
+            continue
+        # GB : England prime sur Scotland si les deux ont des stats, quel
+        # que soit l'ordre de passage des lignes.
+        if code in by_code and name_en != "England":
+            continue
+        by_code[code] = SelectionCountryOut(
+            code=code,
+            name=name_en,
+            continent=_NATION_CONTINENT.get(code, "EUR"),
+            national_team_api_id=team_id,
+        )
+    return sorted(by_code.values(), key=lambda c: c.name)
 
 
 # ---------------------------------------------------------------------------

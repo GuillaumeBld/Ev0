@@ -19,9 +19,12 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import get_db
 from app.main import app
+from app.models.app_config import AppConfig
+from app.models.bzzoiro import BzzEvent
 from app.models.canonical_teams import CanonicalTeam
 from app.models.data_coverage import DataCoverageRun
 from app.models.leagues import League
+from app.models.selection_stats import PlayerSelectionSeasonStat
 
 
 @compiles(JSONB, "sqlite")
@@ -34,6 +37,11 @@ def _compile_array_as_json_for_sqlite(element, compiler, **kw):  # noqa: ARG001
     return "JSON"
 
 
+# BzzEvent / PlayerSelectionSeasonStat / AppConfig : ajoutés quand
+# /atlas/geo s'est étendu aux ensembles countries_clubs/countries_selections
+# (Task 2 du plan atlas-modes-coupes-selections) -- l'endpoint interroge
+# désormais ces tables même quand les tests ci-dessous ne seedent aucune
+# ligne, donc elles doivent exister dans le schéma SQLite en mémoire.
 @pytest.fixture
 async def client():
     engine = create_async_engine(
@@ -42,7 +50,14 @@ async def client():
         connect_args={"check_same_thread": False},
     )
     async with engine.begin() as conn:
-        for table in (League.__table__, CanonicalTeam.__table__, DataCoverageRun.__table__):
+        for table in (
+            League.__table__,
+            CanonicalTeam.__table__,
+            DataCoverageRun.__table__,
+            BzzEvent.__table__,
+            PlayerSelectionSeasonStat.__table__,
+            AppConfig.__table__,
+        ):
             await conn.run_sync(lambda sync_conn, t=table: t.create(sync_conn))
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
