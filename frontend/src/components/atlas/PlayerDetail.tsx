@@ -8,7 +8,7 @@ import styles from './atlas.module.css'
 import { ClubCrest } from './ClubCrest'
 import { ratingColor, ratingBg } from './PlayerCard'
 import { MiniChart, BarsGX, Radar, type GxBar, type RadarAxis } from './charts'
-import { fetchPlayer, fetchCareer, fetchPlayerBreakdown } from '@/lib/atlas'
+import { fetchPlayer, fetchCareer, fetchPlayerBreakdown, fetchPlayerMatchOdds } from '@/lib/atlas'
 import type { SeasonStatsOut, RecentMatch, CareerSeasonOut, PlayerBreakdownRow } from '@/lib/atlas'
 
 /**
@@ -21,14 +21,19 @@ import type { SeasonStatsOut, RecentMatch, CareerSeasonOut, PlayerBreakdownRow }
  * `distRows`, `metric`, `p90`, `clubRadarAxes` de la maquette).
  *
  * Câblée à `GET /players/{id}` (season_stats/recent_matches/selection_stats),
- * `GET /players/{id}/career` et `GET /players/{id}/breakdown` (stats réelles
- * par saison × compétition — remplace les valeurs aléatoires de la maquette).
+ * `GET /players/{id}/career`, `GET /players/{id}/breakdown` (stats réelles
+ * par saison × compétition) et `GET /players/{id}/match-odds` (closing
+ * Betclic buteur/passeur par match).
  *
- * Le journal match par match exhaustif (21 colonnes + cotes Betclic) et les
- * tables "Parcours" façon maquette restent à portée de la Task 5 du plan de
- * refonte (`docs/superpowers/plans/2026-11-06-fiche-joueur-refonte-plan.md`) ;
- * ici l'ancien journal (11 colonnes) est conservé mais filtré par la saison/
- * compétition sélectionnée, comme les graphiques.
+ * Task 5 (ce fichier, complet) : bannière `.banner` en tête de chaque onglet
+ * (totaux toute-carrière, depuis la somme des lignes `/breakdown` du
+ * périmètre), journal match par match exhaustif 21 colonnes + colonnes
+ * `Cote B`/`Cote PD` rouges (`MatchLogTable`, filtré par onglet — club vs
+ * sélection, et par saison/compétition sélectionnée côté club), et tables
+ * "Parcours" (`.tbl`) en bas de chaque onglet : club = `/career` saison par
+ * saison (historique complet, Transfermarkt — plus long que `/breakdown` qui
+ * ne couvre que les saisons avec stats de match détaillées) ; sélection =
+ * `/breakdown` (kind=selection) agrégé par compétition.
  */
 
 // ── Lignes de métrique génériques (réutilisées club + sélection) ───────────
@@ -370,6 +375,36 @@ function seasonOfDate(iso: string): string | null {
   return `${start}-${start + 1}`
 }
 
+/**
+ * Libellés de compétition par `league_api_id`, pour la colonne "Compét." du
+ * journal — repli statique (mirroring `LEAGUE_REGISTRY` côté backend, voir
+ * `backend/app/ingestion/bzzoiro/league_registry.py`) utilisé seulement si
+ * `/breakdown` n'a pas de ligne pour cette ligue sur ce joueur (ex. repli
+ * `season_stats` sans détail par compétition). Quand une ligne `/breakdown`
+ * existe pour cette ligue, son `league_name` réel (table `leagues`) est
+ * préféré — plus précis que ce mini-dictionnaire.
+ */
+const STATIC_LEAGUE_LABELS: Record<number, string> = {
+  1: 'Premier League', 2: 'Liga Portugal', 3: 'La Liga', 4: 'Serie A', 5: 'Bundesliga', 6: 'Ligue 1',
+  7: 'C1', 8: 'C2', 83: 'C3', 90: 'Supercoupe UEFA',
+  32: 'Libertadores', 33: 'Sudamericana',
+  27: 'Coupe du monde', 58: 'Qualifs CM', 59: 'Qualifs CM', 62: 'Qualifs CM', 63: 'Qualifs CM',
+  64: 'Nations League', 65: 'Nations League',
+  66: 'Euro 2024', 67: 'Copa América 2024',
+}
+
+function competitionLabel(leagueApiId: number | null, byId: Map<number, string>): string {
+  if (leagueApiId == null) return '—'
+  return byId.get(leagueApiId) ?? STATIC_LEAGUE_LABELS[leagueApiId] ?? String(leagueApiId)
+}
+
+/** Cote de closing Betclic (buteur ou passeur) pour une cellule du journal —
+ *  `null`/absent ⇒ `—`, jamais une valeur inventée (les cotes ne sont
+ *  collectées que depuis juillet 2026, voir `fetchPlayerMatchOdds`). */
+function oddLabel(value: number | null | undefined): string {
+  return value == null ? '—' : value.toFixed(2)
+}
+
 /** Une ligne `/breakdown` (ou son repli `SeasonStatsOut`) normalisée pour
  *  les sélecteurs Saison/Compétition. */
 interface SelectorRow {
@@ -418,6 +453,80 @@ function formAverage(ratings: number[]): number | null {
   return last5.length ? last5.reduce((a, b) => a + b, 0) / last5.length : null
 }
 
+type MatchOdds = { buteur: number | null; passeur: number | null }
+
+/**
+ * Journal match par match exhaustif — 21 colonnes + `Cote B`/`Cote PD`,
+ * port 1:1 de `clubLogRows`/`selLogRows`/`oddCells` de la maquette
+ * (`docs/superpowers/fiche-joueur-reference-mockup.html`). Partagé entre
+ * l'onglet Club et l'onglet Sélection : seules les `matches` passées en prop
+ * changent (déjà filtrées par onglet + sélecteurs par l'appelant).
+ */
+function MatchLogTable({
+  matches,
+  leagueNameById,
+  oddsByEvent,
+}: {
+  matches: RecentMatch[]
+  leagueNameById: Map<number, string>
+  oddsByEvent: Map<number, MatchOdds>
+}) {
+  if (matches.length === 0) {
+    return <p style={{ color: 'var(--t2)', fontSize: 13 }}>Aucun match disponible pour cette sélection.</p>
+  }
+  return (
+    <div className={styles.logwrap}>
+      <table className={styles.tbl}>
+        <thead>
+          <tr>
+            <th>Date</th><th>Adversaire</th><th>Compét.</th><th>Min</th><th>Note</th><th>B</th><th>PD</th>
+            <th>xG</th><th>xA</th><th>Tirs</th><th>Cadr</th><th>P.clés</th><th>%Pass</th><th>Ctr</th>
+            <th>Duels</th><th>Tacl</th><th>Int</th><th>Récup</th><th>Touch</th><th>CJ</th><th>Fts</th>
+            <th className={styles.odh}>Cote B</th><th className={styles.odh}>Cote PD</th>
+          </tr>
+        </thead>
+        <tbody>
+          {matches.map((m) => {
+            const passPct = sd(m.accurate_pass, m.total_pass)
+            const odds = oddsByEvent.get(m.event_api_id)
+            return (
+              <tr key={m.event_api_id}>
+                <td>{m.event_date ? new Date(m.event_date).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) : 'n/d'}</td>
+                <td><div className={styles.adv}>{m.is_home == null ? '' : m.is_home ? '🏠' : '✈️'} {m.opponent ?? 'n/d'}</div></td>
+                <td className={styles.cp}>{competitionLabel(m.league_api_id, leagueNameById)}</td>
+                <td>{m.minutes_played != null ? `${m.minutes_played}'` : 'n/d'}</td>
+                <td>
+                  {m.rating != null
+                    ? <span className={styles.rt} style={{ background: ratingBg(m.rating), color: ratingColor(m.rating) }}>{m.rating.toFixed(1)}</span>
+                    : 'n/d'}
+                </td>
+                <td>{m.goals ?? 0}</td>
+                <td>{m.goal_assist ?? 0}</td>
+                <td>{m.expected_goals != null ? m.expected_goals.toFixed(2) : '—'}</td>
+                <td>{m.expected_assists != null ? m.expected_assists.toFixed(2) : '—'}</td>
+                <td>{m.total_shots ?? 'n/d'}</td>
+                <td>{m.shots_on_target ?? 'n/d'}</td>
+                <td>{m.key_pass ?? 'n/d'}</td>
+                <td>{passPct != null ? `${Math.round(passPct * 100)}%` : 'n/d'}</td>
+                <td>{m.total_cross ?? 'n/d'}</td>
+                <td>{m.duel_won ?? 'n/d'}</td>
+                <td>{m.total_tackle ?? 'n/d'}</td>
+                <td>{m.interception ?? 'n/d'}</td>
+                <td>{m.ball_recovery ?? 'n/d'}</td>
+                <td>{m.touches ?? 'n/d'}</td>
+                <td>{m.yellow_card ?? 'n/d'}</td>
+                <td>{m.fouls ?? 'n/d'}</td>
+                <td className={styles.odd}>{oddLabel(odds?.buteur)}</td>
+                <td className={styles.odd}>{oddLabel(odds?.passeur)}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | null; onClose: () => void }) {
   const open = playerApiId != null
 
@@ -436,6 +545,12 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
   const { data: breakdown } = useQuery({
     queryKey: ['atlas-player-breakdown', playerApiId],
     queryFn: () => fetchPlayerBreakdown(playerApiId as number),
+    enabled: open,
+  })
+
+  const { data: matchOdds } = useQuery({
+    queryKey: ['atlas-player-match-odds', playerApiId],
+    queryFn: () => fetchPlayerMatchOdds(playerApiId as number),
     enabled: open,
   })
 
@@ -475,6 +590,41 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
     }
     return []
   }, [breakdown, player?.selection_stats])
+
+  // ── Journal : cotes Betclic par event + libellés de compétition ─────────
+  const oddsByEvent = useMemo(() => {
+    const map = new Map<number, MatchOdds>()
+    for (const o of matchOdds?.odds ?? []) map.set(o.event_api_id, { buteur: o.buteur, passeur: o.passeur })
+    return map
+  }, [matchOdds])
+
+  const leagueNameById = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const r of breakdown?.rows ?? []) map.set(r.league_api_id, r.league_name)
+    return map
+  }, [breakdown])
+
+  // ── Bannières : totaux toute-carrière (somme de TOUTES les lignes
+  // breakdown du périmètre, indépendamment du sélecteur saison/compétition
+  // affiché plus bas) ──────────────────────────────────────────────────────
+  const clubCareerAgg = useMemo(() => sumAgg(clubRowsNorm.map((r) => r.agg)), [clubRowsNorm])
+  const selCareerAgg = useMemo(() => sumAgg(selRowsNorm.map((r) => r.agg)), [selRowsNorm])
+
+  /** Parcours en sélection par compétition (table `.tbl` en bas de l'onglet
+   *  Sélection) : les lignes `/breakdown` (kind=selection) sommées par
+   *  `league_api_id` sur toutes les saisons, triées par nombre de sélections
+   *  décroissant. */
+  const selByCompetition = useMemo(() => {
+    const byLeague = new Map<number, { name: string; rows: AggRow[] }>()
+    for (const r of selRowsNorm) {
+      const bucket = byLeague.get(r.league_api_id) ?? { name: r.league_name, rows: [] }
+      bucket.rows.push(r.agg)
+      byLeague.set(r.league_api_id, bucket)
+    }
+    return Array.from(byLeague.entries())
+      .map(([league_api_id, v]) => ({ league_api_id, league_name: v.name, agg: sumAgg(v.rows) }))
+      .sort((a, b) => (b.agg.m ?? 0) - (a.agg.m ?? 0))
+  }, [selRowsNorm])
 
   // ── Onglet Club : sélecteurs Saison + Compétition ───────────────────────
   const seasons = useMemo(
@@ -557,6 +707,22 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
   const clubFormeAvg = formAverage(clubSeries.ratings)
   const selFormeAvg = formAverage(selSeries.ratings)
 
+  /** Totaux "Total club" du bas de la table Parcours — somme de toutes les
+   *  saisons `/career` (Transfermarkt), pas seulement celles couvertes par
+   *  `/breakdown` (voir le commentaire de tête de fichier). */
+  const careerTotals = useMemo(() => {
+    const seasons = career?.career ?? []
+    return seasons.reduce(
+      (acc, s) => ({
+        appearances: acc.appearances + s.appearances,
+        minutes: acc.minutes + s.minutes,
+        goals: acc.goals + s.goals,
+        assists: acc.assists + s.assists,
+      }),
+      { appearances: 0, minutes: 0, goals: 0, assists: 0 },
+    )
+  }, [career])
+
   const partial = hasPartialCoverage(player?.season_stats ?? null)
   const seasonLabel = player?.season_stats?.season
 
@@ -633,6 +799,20 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
               <div className={styles.pdwrap}>
                 {tab === 'club' && (
                   <>
+                    <div className={styles.banner}>
+                      <div className={styles.fg}>🏟️</div>
+                      <div>
+                        <h3>Carrière en club</h3>
+                        <div className={styles.bs}>{player.team_name ?? 'Club actuel'} · toutes compétitions de club</div>
+                      </div>
+                      <div className={styles.ptiles}>
+                        <Tile value={clubCareerAgg.m} label="Matchs" />
+                        <Tile value={clubCareerAgg.g} label="Buts" />
+                        <Tile value={clubCareerAgg.a} label="Passes d." />
+                        <Tile value={clubCareerAgg.min} label="Minutes" thousands />
+                      </div>
+                    </div>
+
                     <div className={styles.sect}>
                       <span>Détail des stats</span>
                       {seasons.length > 0 && (
@@ -739,47 +919,16 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                       </>
                     )}
 
-                    <div className={styles.sect}>Historique match par match</div>
-                    {clubSeries.sortedDesc.length === 0 ? (
-                      <p style={{ color: 'var(--t2)', fontSize: 13 }}>Aucun match disponible pour cette sélection.</p>
-                    ) : (
-                      <div className={styles.logwrap}>
-                        <table className={styles.mlog}>
-                          <thead>
-                            <tr>
-                              <th>Date</th><th>Adversaire</th><th>Min</th><th>B</th><th>PD</th><th>Tirs</th>
-                              <th>xG</th><th>xA</th><th>Pass%</th><th>Duels</th><th>Note</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {clubSeries.sortedDesc.map((m) => {
-                              const passPct = m.total_pass ? (m.accurate_pass ?? 0) / m.total_pass : null
-                              return (
-                                <tr key={m.event_api_id}>
-                                  <td>{m.event_date ? new Date(m.event_date).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) : 'n/d'}</td>
-                                  <td><div className={styles.adv}>{m.is_home == null ? '' : m.is_home ? '🏠' : '✈️'} {m.opponent ?? 'n/d'}</div></td>
-                                  <td>{m.minutes_played != null ? `${m.minutes_played}'` : 'n/d'}</td>
-                                  <td>{m.goals ?? 0}</td>
-                                  <td>{m.goal_assist ?? 0}</td>
-                                  <td>{m.total_shots ?? 'n/d'}</td>
-                                  <td>{m.expected_goals != null ? m.expected_goals.toFixed(2) : '—'}</td>
-                                  <td>{m.expected_assists != null ? m.expected_assists.toFixed(2) : '—'}</td>
-                                  <td>{passPct != null ? `${(passPct * 100).toFixed(0)}%` : 'n/d'}</td>
-                                  <td>{m.duel_won ?? 'n/d'}</td>
-                                  <td>
-                                    {m.rating != null
-                                      ? <span className={styles.rt} style={{ background: ratingBg(m.rating), color: ratingColor(m.rating) }}>{m.rating.toFixed(1)}</span>
-                                      : 'n/d'}
-                                  </td>
-                                </tr>
-                              )
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
+                    <div className={styles.sect}>
+                      <span>Historique match par match</span>
+                      <span className={styles.wlbl}>{clubSeries.sortedDesc.length} matchs</span>
+                    </div>
+                    <MatchLogTable matches={clubSeries.sortedDesc} leagueNameById={leagueNameById} oddsByEvent={oddsByEvent} />
+                    <div className={styles.note}>
+                      <b style={{ color: 'var(--crit)' }}>Cote B / Cote PD</b> = cote de closing Betclic (buteur / passeur) de ce match. <b>—</b> = non disponible (les cotes ne sont collectées que depuis juillet 2026).
+                    </div>
 
-                    <div className={styles.sect}>Carrière</div>
+                    <div className={styles.sect}>Parcours en club — saison par saison</div>
                     {careerIsError ? (
                       <p style={{ color: 'var(--t2)', fontSize: 13 }}>Erreur de chargement de l’historique de carrière.</p>
                     ) : careerLoading ? (
@@ -787,29 +936,54 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                     ) : !career || career.career.length === 0 ? (
                       <p style={{ color: 'var(--t2)', fontSize: 13 }}>Historique de carrière non disponible pour ce joueur.</p>
                     ) : (
-                      <table className={styles.pcar}>
-                        <thead>
-                          <tr><th>Saison</th><th>Compétitions</th><th>M</th><th>Min</th><th>B</th><th>PD</th></tr>
-                        </thead>
-                        <tbody>
-                          {career.career.map((s: CareerSeasonOut) => (
-                            <tr key={s.season}>
-                              <td>{s.season}</td>
-                              <td>{s.competitions.map((c) => c.competition).filter(Boolean).join(', ') || '—'}</td>
-                              <td>{s.appearances}</td>
-                              <td>{s.minutes.toLocaleString('fr-FR')}</td>
-                              <td>{s.goals}</td>
-                              <td>{s.assists}</td>
+                      <div className={styles.logwrap}>
+                        <table className={styles.tbl} style={{ minWidth: 720 }}>
+                          <thead>
+                            <tr><th>Saison</th><th>Compétitions</th><th>M</th><th>Min</th><th>Buts</th><th>PD</th></tr>
+                          </thead>
+                          <tbody>
+                            {career.career.map((s: CareerSeasonOut) => (
+                              <tr key={s.season}>
+                                <td>{s.season}</td>
+                                <td className={styles.cp}>{s.competitions.map((c) => c.competition).filter(Boolean).join(', ') || '—'}</td>
+                                <td>{s.appearances}</td>
+                                <td>{s.minutes.toLocaleString('fr-FR')}</td>
+                                <td>{s.goals}</td>
+                                <td>{s.assists}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot>
+                            <tr>
+                              <td>Total club</td>
+                              <td></td>
+                              <td>{careerTotals.appearances}</td>
+                              <td>{careerTotals.minutes.toLocaleString('fr-FR')}</td>
+                              <td>{careerTotals.goals}</td>
+                              <td>{careerTotals.assists}</td>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                          </tfoot>
+                        </table>
+                      </div>
                     )}
                   </>
                 )}
 
                 {tab === 'selection' && hasSelection && (
                   <>
+                    <div className={styles.banner}>
+                      <div className={styles.fg}>🌍</div>
+                      <div>
+                        <h3>Carrière en sélection — {player.national_team_name ?? 'Équipe nationale'}</h3>
+                        <div className={styles.bs}>stats en sélection uniquement · compétitions internationales (Coupe du monde, Nations League, qualifs, amicaux)</div>
+                      </div>
+                      <div className={styles.ptiles}>
+                        <Tile value={selCareerAgg.m} label="Sélections" />
+                        <Tile value={selCareerAgg.g} label="Buts" />
+                        <Tile value={selCareerAgg.a} label="Passes d." />
+                      </div>
+                    </div>
+
                     <div className={styles.sect}>
                       <span>Détail des stats — {player.national_team_name ?? 'Équipe nationale'}</span>
                       {showSelCompSelector && (
@@ -891,6 +1065,48 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                         ) : <div className={styles.pempty}>n/d</div>}
                       </div>
                     </div>
+
+                    <div className={styles.sect}>
+                      <span>Historique match par match</span>
+                      <span className={styles.wlbl}>{selSeries.sortedDesc.length} matchs</span>
+                    </div>
+                    <MatchLogTable matches={selSeries.sortedDesc} leagueNameById={leagueNameById} oddsByEvent={oddsByEvent} />
+                    <div className={styles.note}>
+                      <b style={{ color: 'var(--crit)' }}>Cote B / Cote PD</b> = cote de closing Betclic (buteur / passeur). Les sélections sont rarement cotées (hors grande compétition) → souvent <b>—</b>.
+                    </div>
+
+                    <div className={styles.sect}>Parcours en sélection — par compétition</div>
+                    {selByCompetition.length === 0 ? (
+                      <p style={{ color: 'var(--t2)', fontSize: 13 }}>Détail par compétition non disponible pour ce joueur.</p>
+                    ) : (
+                      <div className={styles.logwrap}>
+                        <table className={styles.tbl} style={{ minWidth: 640 }}>
+                          <thead>
+                            <tr><th>Compétition</th><th>M</th><th>Min</th><th>Buts</th><th>PD</th></tr>
+                          </thead>
+                          <tbody>
+                            {selByCompetition.map((c) => (
+                              <tr key={c.league_api_id}>
+                                <td className={styles.cp}>{c.league_name}</td>
+                                <td>{c.agg.m ?? 0}</td>
+                                <td>{c.agg.min != null ? c.agg.min.toLocaleString('fr-FR') : 'n/d'}</td>
+                                <td>{c.agg.g ?? 0}</td>
+                                <td>{c.agg.a ?? 0}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot>
+                            <tr>
+                              <td>Total sélection</td>
+                              <td>{selCareerAgg.m ?? 0}</td>
+                              <td>{selCareerAgg.min != null ? selCareerAgg.min.toLocaleString('fr-FR') : 'n/d'}</td>
+                              <td>{selCareerAgg.g ?? 0}</td>
+                              <td>{selCareerAgg.a ?? 0}</td>
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    )}
                   </>
                 )}
               </div>

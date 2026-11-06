@@ -276,16 +276,27 @@ svg.map .geo{transition:transform .7s cubic-bezier(.22,1,.36,1)}
 .lgnd{display:flex;gap:16px;margin-top:10px;font-size:11.5px;color:var(--t2)}
 .lgnd span{display:flex;align-items:center;gap:6px} .lgnd i{width:10px;height:10px;border-radius:3px}
 .logwrap{overflow-x:auto;border:1px solid var(--bd);border-radius:14px;background:var(--surface)}
-.mlog{width:100%;border-collapse:collapse;font-size:12.5px;min-width:920px}
-.mlog thead th{position:sticky;top:0;background:var(--surface2);text-align:right;font-size:10px;letter-spacing:.03em;text-transform:uppercase;color:var(--t3);font-weight:800;padding:9px 10px;border-bottom:1px solid var(--bd);white-space:nowrap}
-.mlog thead th:first-child,.mlog thead th:nth-child(2),.mlog tbody td:first-child,.mlog tbody td:nth-child(2){text-align:left}
-.mlog tbody td{text-align:right;padding:9px 10px;border-bottom:1px solid var(--bd);color:var(--t1);font-weight:600;white-space:nowrap}
-.mlog tbody tr:hover{background:var(--surface2)} .mlog tbody tr:last-child td{border-bottom:0}
-.mlog .adv{display:flex;align-items:center;gap:7px;font-weight:650} .mlog .rt{font-weight:850;padding:2px 8px;border-radius:7px}
-.pcar{width:100%;border-collapse:collapse;font-size:13px;background:var(--surface);border:1px solid var(--bd);border-radius:14px;overflow:hidden}
-.pcar th{text-align:right;font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--t3);font-weight:800;padding:11px 14px;border-bottom:1px solid var(--bd)}
-.pcar th:first-child,.pcar td:first-child,.pcar th:nth-child(2),.pcar td:nth-child(2){text-align:left}
-.pcar td{text-align:right;padding:11px 14px;border-bottom:1px solid var(--bd);color:var(--t1);font-weight:650} .pcar tbody tr:last-child td{border-bottom:0}
+/* Journal match par match (21 colonnes + Cote B/Cote PD) et tables Parcours
+ * (carrière club saison par saison, carrière sélection par compétition) —
+ * port 1:1 de `.tbl` dans docs/superpowers/fiche-joueur-reference-mockup.html. */
+.tbl{width:100%;border-collapse:collapse;font-size:12px;min-width:1120px}
+.tbl thead th{position:sticky;top:0;background:var(--surface2);text-align:right;font-size:9.5px;letter-spacing:.02em;text-transform:uppercase;color:var(--t3);font-weight:800;padding:9px 9px;border-bottom:1px solid var(--bd);white-space:nowrap}
+.tbl thead th:first-child,.tbl thead th:nth-child(2),.tbl thead th:nth-child(3),
+.tbl tbody td:first-child,.tbl tbody td:nth-child(2),.tbl tbody td:nth-child(3){text-align:left}
+.tbl tbody td{text-align:right;padding:8px 9px;border-bottom:1px solid var(--bd);color:var(--t1);font-weight:600;white-space:nowrap}
+.tbl tbody tr:hover{background:var(--surface2)} .tbl tbody tr:last-child td{border-bottom:0}
+.tbl .adv{display:flex;align-items:center;gap:6px;font-weight:650} .tbl .rt{font-weight:850;padding:2px 7px;border-radius:7px}
+.tbl .cp{font-size:11px;color:var(--t2);font-weight:650}
+.tbl td.odd{color:var(--crit);font-weight:800}
+.tbl thead th.odh{color:var(--crit)}
+.tbl tfoot td{text-align:right;padding:9px;font-weight:850;color:var(--t1);border-top:2px solid var(--bd2);background:var(--surface2)}
+.tbl tfoot td:first-child{text-align:left;text-transform:uppercase;font-size:11px;letter-spacing:.08em}
+.note{color:var(--t2);font-size:12px;margin-top:10px;line-height:1.5}
+/* Bannière en tête d'onglet (Club / Sélection) — totaux toute-carrière. */
+.banner{display:flex;align-items:center;gap:14px;background:linear-gradient(120deg,var(--a-soft),transparent 60%),var(--surface);border:1px solid var(--bd);border-radius:14px;padding:13px 18px;flex-wrap:wrap;margin-bottom:4px}
+.fg{font-size:32px;line-height:1}
+.banner h3{margin:0;font-size:16px;color:var(--t1)}
+.bs{font-size:12.5px;color:var(--t2);margin-top:2px}
 .napill{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;padding:3px 10px;border-radius:20px;background:var(--warn-s);color:var(--warn)}
 .pempty{color:var(--t2);font-size:12.5px;padding:10px 0}
 @media(max-width:900px){ .gcards{grid-template-columns:1fr} .ptiles{margin-left:0;width:100%} .phero h2{font-size:24px} }
