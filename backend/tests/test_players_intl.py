@@ -91,6 +91,7 @@ async def test_club_comp_lists_players_by_stats():
         )
     finally:
         mod.team_ids_for_league = original
+        mod.current_season = original_saison
 
     assert len(response) == 1
     assert response[0]["goals"] == 5
