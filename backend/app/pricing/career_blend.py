@@ -80,6 +80,116 @@ def _season_start_year(season: str) -> int | None:
         return None
 
 
+async def blended_rhythms_for(
+    session: AsyncSession, player_api_ids: list[int]
+) -> dict[int, BlendedRhythm]:
+    """Rythmes mélangés de PLUSIEURS joueurs, en deux requêtes au total.
+
+    Même résultat que `blended_rhythm` appelé joueur par joueur -- verrouillé
+    par `test_lot_identique_a_lunitaire`. La version par lot existe parce que
+    le pricing en a besoin pour une cinquantaine de joueurs à chaque match,
+    dans une boucle qui tourne toutes les 60 secondes : cinquante allers-
+    retours en base y seraient trop coûteux.
+
+    Les joueurs sans aucune saison exploitable sont absents du dictionnaire
+    rendu -- l'appelant retombe alors sur l'a priori de poste.
+    """
+    if not player_api_ids:
+        return {}
+
+    season_str = await current_season(session)
+    current_year = season_start(season_str).year
+    ids = list(set(player_api_ids))
+
+    # Requête 1 — bzz, agrégé par (joueur, saison), toutes compétitions.
+    bzz_rows = (await session.execute(
+        select(
+            BzzPlayerSeasonStat.player_api_id,
+            BzzPlayerSeasonStat.season,
+            BzzPlayerSeasonStat.minutes_played,
+            BzzPlayerSeasonStat.expected_goals,
+            BzzPlayerSeasonStat.expected_assists,
+        ).where(BzzPlayerSeasonStat.player_api_id.in_(ids))
+    )).all()
+
+    bzz: dict[int, dict[str, dict[str, float]]] = {}
+    for pid, season, minutes, xg, xa in bzz_rows:
+        if season is None:
+            continue
+        bucket = bzz.setdefault(pid, {}).setdefault(
+            season, {"minutes": 0.0, "xg": 0.0, "xa": 0.0}
+        )
+        bucket["minutes"] += minutes or 0
+        bucket["xg"] += xg or 0.0
+        bucket["xa"] += xa or 0.0
+
+    # Requête 2 — carrière, agrégée par (joueur, année de début de saison).
+    career_rows = (await session.execute(
+        select(
+            PlayerCareerSeason.player_api_id,
+            PlayerCareerSeason.season_start_year,
+            PlayerCareerSeason.goals,
+            PlayerCareerSeason.assists,
+            PlayerCareerSeason.minutes,
+        ).where(PlayerCareerSeason.player_api_id.in_(ids))
+    )).all()
+
+    career: dict[int, dict[int, dict[str, float]]] = {}
+    for pid, year, goals, assists, minutes in career_rows:
+        if year is None:
+            continue
+        bucket = career.setdefault(pid, {}).setdefault(
+            year, {"minutes": 0.0, "goals": 0.0, "assists": 0.0}
+        )
+        bucket["minutes"] += minutes or 0
+        bucket["goals"] += goals or 0
+        bucket["assists"] += assists or 0
+
+    out: dict[int, BlendedRhythm] = {}
+    for pid in ids:
+        par_saison = bzz.get(pid, {})
+        # Anti-double-comptage : une année vue côté bzz n'est jamais reprise
+        # depuis la carrière, même si bzz l'écarte faute de minutes. Sinon la
+        # même saison compterait deux fois, en xG puis en buts réels.
+        couvertes = {
+            y for y in (_season_start_year(s) for s in par_saison) if y is not None
+        }
+        par_annee = {
+            y: b for y, b in career.get(pid, {}).items() if y not in couvertes
+        }
+
+        entries_goal: list[tuple[int, float, float]] = []
+        entries_assist: list[tuple[int, float, float]] = []
+        for season, b in par_saison.items():
+            year = _season_start_year(season)
+            if year is None or b["minutes"] < MIN_SEASON_MINUTES:
+                continue
+            age = current_year - year
+            entries_goal.append((age, b["minutes"], b["xg"] / (b["minutes"] / 90.0)))
+            entries_assist.append((age, b["minutes"], b["xa"] / (b["minutes"] / 90.0)))
+
+        n_carriere = 0
+        for year, b in par_annee.items():
+            if b["minutes"] < MIN_SEASON_MINUTES:
+                continue
+            age = current_year - year
+            entries_goal.append((age, b["minutes"], b["goals"] / (b["minutes"] / 90.0)))
+            entries_assist.append((age, b["minutes"], b["assists"] / (b["minutes"] / 90.0)))
+            n_carriere += 1
+
+        taux_goal = blend_rate(entries_goal)
+        taux_assist = blend_rate(entries_assist)
+        if taux_goal is None or taux_assist is None:
+            continue
+        out[pid] = BlendedRhythm(
+            goal_rate_per_90=taux_goal,
+            assist_rate_per_90=taux_assist,
+            seasons_used=len(entries_goal),
+            has_career=n_carriere > 0,
+        )
+    return out
+
+
 async def blended_rhythm(session: AsyncSession, player_api_id: int) -> BlendedRhythm | None:
     """Rythme mélangé (buteur + passeur) d'un joueur, ou None si aucune donnée."""
     season_str = await current_season(session)
