@@ -76,6 +76,29 @@ function fmt(value: number | null, opts: { pct?: boolean; decimals?: number; sig
   return `${sign}${value.toFixed(opts.decimals ?? 0)}`
 }
 
+/** Âge en années révolues depuis une date ISO de naissance. `null` si la date
+ *  est absente ou illisible — jamais un 0/âge trompeur dans le hero. */
+function computeAge(iso: string | null | undefined): number | null {
+  if (!iso) return null
+  const dob = new Date(iso)
+  if (Number.isNaN(dob.getTime())) return null
+  const now = new Date()
+  let age = now.getFullYear() - dob.getFullYear()
+  const m = now.getMonth() - dob.getMonth()
+  if (m < 0 || (m === 0 && now.getDate() < dob.getDate())) age--
+  return age >= 0 ? age : null
+}
+
+/** Valeur marchande en millions d'euros (« 212 M€ ») : 0 décimale au-delà de
+ *  100 M€, sinon 1 décimale. `null` si absente/≤0 — l'élément est alors omis
+ *  du hero, pas affiché « n/d ». */
+function formatMarketValue(value: number | null | undefined): string | null {
+  if (value == null || value <= 0) return null
+  const millions = value / 1_000_000
+  const rounded = millions >= 100 ? Math.round(millions) : Math.round(millions * 10) / 10
+  return `${rounded.toLocaleString('fr-FR')} M€`
+}
+
 function Metric({ row }: { row: MetricRow }) {
   const value = row.value
   const na = value == null
@@ -723,7 +746,6 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
   }, [career])
 
   const partial = hasPartialCoverage(player?.season_stats ?? null)
-  const seasonLabel = player?.season_stats?.season
 
   const clubCompLabel = effectiveClubComp === 'all'
     ? 'toutes compétitions'
@@ -766,20 +788,23 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                     <h2>{player.name}</h2>
                     <div className={styles.meta}>
                       {player.position && <span className={clsx(styles.pos, styles[player.position])}>{player.position}</span>}
-                      {player.team_name ?? '—'}
-                      {seasonLabel && <span>· {seasonLabel}</span>}
+                      {player.team_name && <span>{player.team_name}</span>}
+                      {player.nationality && <span>· {player.nationality}</span>}
+                      {computeAge(player.date_of_birth) != null && <span>· <b>{computeAge(player.date_of_birth)} ans</b></span>}
+                      {player.height != null && <span>· {player.height} cm</span>}
+                      {player.jersey_number != null && <span>· N°{player.jersey_number}</span>}
+                      {formatMarketValue(player.market_value) && <span>· <b style={{ color: 'var(--a)' }}>{formatMarketValue(player.market_value)}</b></span>}
                       {partial && <span className={styles.napill}>couverture partielle</span>}
+                    </div>
+                    <div className={styles.ptiles} style={{ marginLeft: 0, marginTop: 10 }}>
+                      <Tile value={careerTotals.appearances} label="Matchs carrière" />
+                      <Tile value={careerTotals.goals} label="Buts carrière" />
+                      <Tile value={careerTotals.assists} label="Passes déc." />
                     </div>
                   </div>
                 </div>
-                <Ring note={player.season_stats?.avg_rating ?? null} />
-                <div className={styles.ptiles}>
-                  <Tile value={player.season_stats?.goals ?? null} label="Buts" />
-                  <Tile value={player.season_stats?.goal_assist ?? null} label="Passes d." />
-                  <Tile value={player.season_stats?.expected_goals ?? null} label="xG" decimals={1} />
-                  <Tile value={player.season_stats?.matches_played ?? null} label="Matchs" />
-                  <Tile value={player.season_stats?.minutes_played ?? null} label="Minutes" thousands />
-                  <Tile value={player.season_stats?.avg_rating ?? null} label="Note" decimals={1} />
+                <div style={{ marginLeft: 'auto' }}>
+                  <Ring note={player.season_stats?.avg_rating ?? null} size={82} />
                 </div>
               </div>
 
@@ -975,12 +1000,16 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                       <div>
                         <h3>Carrière en sélection — {player.national_team_name ?? 'Équipe nationale'}</h3>
                         <div className={styles.bs}>stats en sélection uniquement · compétitions internationales (Coupe du monde, Nations League, qualifs, amicaux)</div>
+                        <span className={styles.napill} style={{ marginTop: 8 }}>couverture partielle</span>
                       </div>
                       <div className={styles.ptiles}>
                         <Tile value={selCareerAgg.m} label="Sélections" />
                         <Tile value={selCareerAgg.g} label="Buts" />
                         <Tile value={selCareerAgg.a} label="Passes d." />
                       </div>
+                    </div>
+                    <div className={styles.note}>
+                      Couverture Bzzoiro : Coupe du monde 2026 + Nations League uniquement. Amicaux, qualifications et éditions précédentes à venir (complément Transfermarkt).
                     </div>
 
                     <div className={styles.sect}>
@@ -1087,20 +1116,20 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                             {selByCompetition.map((c) => (
                               <tr key={c.league_api_id}>
                                 <td className={styles.cp}>{c.league_name}</td>
-                                <td>{c.agg.m ?? 0}</td>
+                                <td>{c.agg.m != null ? c.agg.m : 'n/d'}</td>
                                 <td>{c.agg.min != null ? c.agg.min.toLocaleString('fr-FR') : 'n/d'}</td>
-                                <td>{c.agg.g ?? 0}</td>
-                                <td>{c.agg.a ?? 0}</td>
+                                <td>{c.agg.g != null ? c.agg.g : 'n/d'}</td>
+                                <td>{c.agg.a != null ? c.agg.a : 'n/d'}</td>
                               </tr>
                             ))}
                           </tbody>
                           <tfoot>
                             <tr>
                               <td>Total sélection</td>
-                              <td>{selCareerAgg.m ?? 0}</td>
+                              <td>{selCareerAgg.m != null ? selCareerAgg.m : 'n/d'}</td>
                               <td>{selCareerAgg.min != null ? selCareerAgg.min.toLocaleString('fr-FR') : 'n/d'}</td>
-                              <td>{selCareerAgg.g ?? 0}</td>
-                              <td>{selCareerAgg.a ?? 0}</td>
+                              <td>{selCareerAgg.g != null ? selCareerAgg.g : 'n/d'}</td>
+                              <td>{selCareerAgg.a != null ? selCareerAgg.a : 'n/d'}</td>
                             </tr>
                           </tfoot>
                         </table>
