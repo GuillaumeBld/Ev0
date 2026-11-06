@@ -143,6 +143,44 @@ export async function fetchClubs(leagueId: number): Promise<CanonicalTeam[]> {
   return all.filter((t) => t.league_api_id === leagueId)
 }
 
+// ── Competition clubs — barre latérale des coupes de clubs internationales ─
+// `canonical_teams.league_api_id` porte l'engagement DOMESTIQUE d'un club
+// (ex. PSG → Ligue 1) : filtrer par l'id d'une coupe (C1=7…) ne renvoie donc
+// jamais rien — c'est pour ça que la barre latérale des coupes était vide
+// jusqu'ici. `GET /competitions/{id}/clubs` (backend/app/api/atlas.py)
+// dérive la bonne liste depuis le calendrier de la compétition : phase de
+// ligue uniquement pour C1/C2/C3 (~36 clubs), tous les participants pour
+// Libertadores/Sudamericana/Super Coupe.
+
+/** Compétitions de clubs internationales ayant une barre latérale de clubs
+ *  (par opposition aux compétitions de sélections — Mondial/Nations League
+ *  — où la barre latérale, quand elle existe, liste des équipes nationales).
+ *  Même ensemble que `INTL_CLUB_COMP_LEAGUE_IDS` côté backend
+ *  (`backend/app/ingestion/bzzoiro/constants.py`) : Ligue des champions (7),
+ *  Europa (8), Conference (83), Super Coupe (90), Libertadores (32),
+ *  Sudamericana (33). */
+export const INTL_CLUB_COMP_LEAGUE_IDS: ReadonlySet<number> = new Set([7, 8, 83, 90, 32, 33])
+
+export interface CompetitionClub {
+  bzz_team_id: number
+  name: string
+  crest_url: string | null
+  api_football_id: number | null
+  country: string | null
+  player_count: number
+}
+
+export interface CompetitionClubsOut {
+  clubs: CompetitionClub[]
+}
+
+export async function fetchCompetitionClubs(leagueApiId: number): Promise<CompetitionClub[]> {
+  const res = await fetch(`/api/v1/competitions/${leagueApiId}/clubs`)
+  if (!res.ok) throw new Error(`fetchCompetitionClubs: HTTP ${res.status}`)
+  const data: CompetitionClubsOut = await res.json()
+  return data.clubs
+}
+
 // ── Players (GET /players) ──────────────────────────────────────────────────
 
 export type PlayerSortField =
