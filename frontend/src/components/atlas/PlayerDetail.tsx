@@ -9,7 +9,7 @@ import { ClubCrest } from './ClubCrest'
 import { ratingColor, ratingBg } from './PlayerCard'
 import { MiniChart, BarsGX, Radar, type GxBar, type RadarAxis } from './charts'
 import { fetchPlayer, fetchCareer, fetchPlayerBreakdown, fetchPlayerMatchOdds } from '@/lib/atlas'
-import type { SeasonStatsOut, RecentMatch, CareerSeasonOut, PlayerBreakdownRow } from '@/lib/atlas'
+import type { SeasonStatsOut, RecentMatch, PlayerBreakdownRow } from '@/lib/atlas'
 
 /**
  * Fiche joueur plein écran ("grimoire") — portée depuis la maquette VALIDÉE
@@ -97,6 +97,47 @@ function formatMarketValue(value: number | null | undefined): string | null {
   const millions = value / 1_000_000
   const rounded = millions >= 100 ? Math.round(millions) : Math.round(millions * 10) / 10
   return `${rounded.toLocaleString('fr-FR')} M€`
+}
+
+/**
+ * Classe une compétition de l'historique `/career` (Transfermarkt, qui mélange
+ * club ET sélection) comme compétition de SÉLECTION nationale, à exclure du
+ * périmètre « club ». Conservateur : par défaut CLUB (`false`) ; ne bascule en
+ * national que sur des motifs sans ambiguïté (sous-chaînes en minuscules).
+ *
+ * Notamment : « UEFA Europa League » reste CLUB (on n'attrape jamais `europa`),
+ * et « FIFA Club World Cup » reste CLUB (la Coupe du monde des clubs).
+ */
+function isNationalCareerCompetition(name: string | null): boolean {
+  if (!name) return false
+  const n = name.toLowerCase()
+
+  // Amicaux internationaux
+  if (n.includes('friendl')) return true
+  // Ligue des nations
+  if (n.includes('nations league')) return true
+  // Coupe du monde (la vraie) — mais pas la Coupe du monde des CLUBS
+  if (n.includes('world cup') && !n.includes('club')) return true
+  // Coupe d'Afrique des nations
+  if (n.includes('africa cup of nations') || n.includes('afcon')) return true
+  // Copa América
+  if (n.includes('copa am')) return true
+  // Gold Cup (CONCACAF)
+  if (n.includes('gold cup')) return true
+
+  // Championnat d'Europe des NATIONS — jamais la Ligue Europa (club).
+  // On ne teste la famille « euro » que si le nom ne contient pas « europa ».
+  if (!n.includes('europa')) {
+    if (n.includes('uefa euro')) return true
+    if (n.includes('euro') && n.includes('qualif')) return true
+    if (n.includes('euro 20')) return true
+    if (n.includes('euro u')) return true
+  }
+
+  // Compétitions nationales de jeunes (U17/U19/U20/U21) en Euro ou Mondial
+  if (/(u17|u19|u20|u21)/.test(n) && (n.includes('euro') || n.includes('world'))) return true
+
+  return false
 }
 
 function Metric({ row }: { row: MetricRow }) {
@@ -729,9 +770,9 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
   const clubFormeAvg = formAverage(clubSeries.ratings)
   const selFormeAvg = formAverage(selSeries.ratings)
 
-  /** Totaux "Total club" du bas de la table Parcours — somme de toutes les
-   *  saisons `/career` (Transfermarkt), pas seulement celles couvertes par
-   *  `/breakdown` (voir le commentaire de tête de fichier). */
+  /** Totaux toute-carrière (club + sélection) — alimentent UNIQUEMENT le hero,
+   *  conforme à la maquette (602/448/185). Somme de toutes les saisons
+   *  `/career` (Transfermarkt), toutes compétitions confondues. */
   const careerTotals = useMemo(() => {
     const seasons = career?.career ?? []
     return seasons.reduce(
@@ -744,6 +785,45 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
       { appearances: 0, minutes: 0, goals: 0, assists: 0 },
     )
   }, [career])
+
+  /** Parcours « en club » saison par saison — CLUB SEUL. `/career` mélange club
+   *  et sélection ; on retire les compétitions de sélection nationale (Coupe du
+   *  monde, Nations League, qualifs, amicaux…) et on recalcule M/Min/Buts/PD de
+   *  chaque saison depuis les seules compétitions de club. Une saison 100 %
+   *  sélection (aucune compétition club) n'apparaît pas. */
+  const clubCareerSeasons = useMemo(() => {
+    const seasons = career?.career ?? []
+    return seasons
+      .map((s) => {
+        const competitions = s.competitions.filter((c) => !isNationalCareerCompetition(c.competition))
+        const totals = competitions.reduce(
+          (acc, c) => ({
+            appearances: acc.appearances + c.appearances,
+            minutes: acc.minutes + c.minutes,
+            goals: acc.goals + c.goals,
+            assists: acc.assists + c.assists,
+          }),
+          { appearances: 0, minutes: 0, goals: 0, assists: 0 },
+        )
+        return { season: s.season, competitions, ...totals }
+      })
+      .filter((s) => s.competitions.length > 0)
+  }, [career])
+
+  /** Total « club seul » — somme des lignes de `clubCareerSeasons` affichées.
+   *  Alimente la bannière « Carrière en club » ET le pied « Total club » : les
+   *  deux montrent donc le MÊME nombre, égal à la somme des lignes de la table. */
+  const clubCareerTotals = useMemo(() => {
+    return clubCareerSeasons.reduce(
+      (acc, s) => ({
+        appearances: acc.appearances + s.appearances,
+        minutes: acc.minutes + s.minutes,
+        goals: acc.goals + s.goals,
+        assists: acc.assists + s.assists,
+      }),
+      { appearances: 0, minutes: 0, goals: 0, assists: 0 },
+    )
+  }, [clubCareerSeasons])
 
   const partial = hasPartialCoverage(player?.season_stats ?? null)
 
@@ -830,10 +910,10 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                         <div className={styles.bs}>{player.team_name ?? 'Club actuel'} · toutes compétitions de club</div>
                       </div>
                       <div className={styles.ptiles}>
-                        <Tile value={careerTotals.appearances} label="Matchs" />
-                        <Tile value={careerTotals.goals} label="Buts" />
-                        <Tile value={careerTotals.assists} label="Passes d." />
-                        <Tile value={careerTotals.minutes} label="Minutes" thousands />
+                        <Tile value={clubCareerTotals.appearances} label="Matchs" />
+                        <Tile value={clubCareerTotals.goals} label="Buts" />
+                        <Tile value={clubCareerTotals.assists} label="Passes d." />
+                        <Tile value={clubCareerTotals.minutes} label="Minutes" thousands />
                       </div>
                     </div>
 
@@ -957,7 +1037,7 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                       <p style={{ color: 'var(--t2)', fontSize: 13 }}>Erreur de chargement de l’historique de carrière.</p>
                     ) : careerLoading ? (
                       <p style={{ color: 'var(--t2)', fontSize: 13 }}>Chargement…</p>
-                    ) : !career || career.career.length === 0 ? (
+                    ) : clubCareerSeasons.length === 0 ? (
                       <p style={{ color: 'var(--t2)', fontSize: 13 }}>Historique de carrière non disponible pour ce joueur.</p>
                     ) : (
                       <div className={styles.logwrap}>
@@ -966,7 +1046,7 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                             <tr><th>Saison</th><th>Compétitions</th><th>M</th><th>Min</th><th>Buts</th><th>PD</th></tr>
                           </thead>
                           <tbody>
-                            {career.career.map((s: CareerSeasonOut) => (
+                            {clubCareerSeasons.map((s) => (
                               <tr key={s.season}>
                                 <td>{s.season}</td>
                                 <td className={styles.cp}>{s.competitions.map((c) => c.competition).filter(Boolean).join(', ') || '—'}</td>
@@ -981,10 +1061,10 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                             <tr>
                               <td>Total club</td>
                               <td></td>
-                              <td>{careerTotals.appearances}</td>
-                              <td>{careerTotals.minutes.toLocaleString('fr-FR')}</td>
-                              <td>{careerTotals.goals}</td>
-                              <td>{careerTotals.assists}</td>
+                              <td>{clubCareerTotals.appearances}</td>
+                              <td>{clubCareerTotals.minutes.toLocaleString('fr-FR')}</td>
+                              <td>{clubCareerTotals.goals}</td>
+                              <td>{clubCareerTotals.assists}</td>
                             </tr>
                           </tfoot>
                         </table>
