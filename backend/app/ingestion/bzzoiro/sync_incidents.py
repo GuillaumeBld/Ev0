@@ -36,6 +36,24 @@ _SENTINEL_TYPE = "match_processed"
 SENTINEL_UNAVAILABLE = "__incidents_unavailable__"
 SENTINEL_UNAVAILABLE_TYPE = "events_unavailable"  # <= 20 chars (varchar(20))
 
+# Delai avant de tenir un 404 pour definitif.
+#
+# Un 404 sur cet endpoint a DEUX sens que la reponse ne distingue pas :
+# "evenement supprime chez Bzzoiro" (definitif) et "pas encore publie"
+# (transitoire). La synchro tourne peu apres la fin des matchs, donc le second
+# cas est le plus courant -- et il etait traite comme le premier.
+#
+# Degats mesures le 06/11/2026 : 1 030 matchs marques definitivement
+# indisponibles, plus un seul but ingere depuis aout, et un reglement qui
+# annule 8 514 paris sur 9 903 faute de verite terrain. Sur 20 matchs marques
+# tires au hasard, 20 avaient leurs incidents disponibles a la verification --
+# la sentinelle etait fausse dans tous les cas testes.
+#
+# Sous ce delai, un 404 ne marque donc plus rien : la fixture est simplement
+# reprise au passage suivant, la selection reprenant d'elle-meme toute fixture
+# sans sentinelle. Au-dela, le 404 est tenu pour definitif.
+DELAI_AVANT_404_DEFINITIF = timedelta(hours=48)
+
 
 def _parse_incidents(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Extract goal/assist/substitution rows from Bzzoiro incident list.
@@ -192,10 +210,26 @@ async def sync_incidents(
             data = await client.get_page(f"/api/v2/events/{bzz_api_id}/incidents/")
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
-                # 404 permanent (événement supprimé côté Bzzoiro) : sentinel
-                # pour sortir la fixture de la sélection — fin de la boucle.
-                # minute=0 obligatoire : avec NULL la contrainte unique ne
-                # s'applique pas (NULLs distincts) et le sentinel se duplique.
+                # Un 404 sur un match termine il y a peu veut dire "pas encore
+                # publie", pas "disparu" : on ne marque rien et la fixture est
+                # reprise au passage suivant. Voir DELAI_AVANT_404_DEFINITIF.
+                age = (
+                    datetime.now(UTC) - fixture.kickoff_utc
+                    if fixture.kickoff_utc is not None else None
+                )
+                if age is not None and age < DELAI_AVANT_404_DEFINITIF:
+                    logger.info(
+                        "sync_incidents: fixture %d (bzz_id=%d) → 404 mais match "
+                        "termine il y a %.1f h, nouvelle tentative au prochain passage",
+                        fixture.id, bzz_api_id, age.total_seconds() / 3600,
+                    )
+                    continue
+
+                # Au-dela du delai, ou sans date de coup d'envoi exploitable :
+                # 404 tenu pour definitif. Sentinel pour sortir la fixture de
+                # la selection. minute=0 obligatoire : avec NULL la contrainte
+                # unique ne s'applique pas (NULLs distincts) et le sentinel se
+                # duplique.
                 await _store_events(session, fixture.id, [{
                     "player_name": SENTINEL_UNAVAILABLE,
                     "event_type": SENTINEL_UNAVAILABLE_TYPE,
@@ -203,9 +237,11 @@ async def sync_incidents(
                 }])
                 await session.commit()
                 logger.warning(
-                    "sync_incidents: fixture %d (bzz_id=%d) → 404 permanent, "
-                    "sentinel 'events_unavailable' stocké — plus de retry",
+                    "sync_incidents: fixture %d (bzz_id=%d) → 404 persistant "
+                    "(%s), sentinel 'events_unavailable' stocké — plus de retry",
                     fixture.id, bzz_api_id,
+                    f"{age.total_seconds() / 3600:.0f} h apres le match"
+                    if age is not None else "sans date de coup d'envoi",
                 )
                 processed += 1
             else:
@@ -270,9 +306,10 @@ async def sync_incidents(
             )
             goal_count = goal_count_res.scalar_one()
             still_incomplete = goal_count != fixture.home_score + fixture.away_score
+            # Meme delai que pour le 404 : un seul endroit a regler.
             old_enough = (
                 fixture.kickoff_utc is not None
-                and fixture.kickoff_utc < datetime.now(UTC) - timedelta(hours=48)
+                and fixture.kickoff_utc < datetime.now(UTC) - DELAI_AVANT_404_DEFINITIF
             )
             if still_incomplete and old_enough:
                 await _store_events(session, fixture.id, [{
