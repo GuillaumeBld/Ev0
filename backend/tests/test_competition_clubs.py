@@ -129,6 +129,50 @@ async def test_competition_clubs_libertadores_all():
 
 
 @pytest.mark.asyncio
+async def test_competition_clubs_country_fallback_without_canonical():
+    """Un club de coupe sans AUCUNE entrée canonical_teams (ex. Shakhtar
+    Donetsk, bzz_team_id=402) retombe sur `_CUP_CLUB_COUNTRY` (repli curé,
+    dédié à l'affichage carte — jamais une insertion dans canonical_teams)
+    pour afficher son pays. Un club toujours inconnu (ni canonical, ni
+    _CUP_CLUB_COUNTRY) garde `country=None`, jamais deviné.
+    """
+    import app.api.atlas as mod
+
+    # Ligue 32 (Libertadores) : pas de filtre de round.
+    event_rows = [(1, 402, 999)]
+    event_result = _exec_result(event_rows)
+
+    # Aucun canonical pour 402 ni 999.
+    canonical_result = _exec_result([])
+    fallback_result = _exec_result([(402, "Shakhtar Donetsk"), (999, "Club Inconnu")])
+    player_count_result = _exec_result([])
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(
+        side_effect=[event_result, canonical_result, fallback_result, player_count_result]
+    )
+
+    async def _saison_courante(_db):
+        return "2025-2026"
+
+    original_season = mod.current_season
+    mod.current_season = _saison_courante
+    try:
+        response = await mod.competition_clubs(league_api_id=32, db=mock_db)
+    finally:
+        mod.current_season = original_season
+
+    club_402 = next(c for c in response.clubs if c.bzz_team_id == 402)
+    assert club_402.name == "Shakhtar Donetsk"
+    assert club_402.country == "Ukraine"
+
+    # 999 n'est ni dans canonical_teams ni dans _CUP_CLUB_COUNTRY -> pays
+    # inconnu, jamais deviné.
+    club_999 = next(c for c in response.clubs if c.bzz_team_id == 999)
+    assert club_999.country is None
+
+
+@pytest.mark.asyncio
 async def test_competition_clubs_empty_when_no_events():
     """Aucun event pour la ligue/saison -> clubs vide, pas d'erreur."""
     import app.api.atlas as mod

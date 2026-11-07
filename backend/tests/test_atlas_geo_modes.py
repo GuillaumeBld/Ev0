@@ -80,17 +80,13 @@ async def _seed(factory, *, leagues=(), teams=(), runs=(), events=(), selections
         await session.commit()
 
 
-def _league_phase_c1_events(morocco_team_id: int) -> list[BzzEvent]:
+def _league_phase_c1_events_for(team_ids: list[int], *, api_id_start: int = 1000) -> list[BzzEvent]:
     """18 matchs (round_number=2) -> phase de ligue de la C1 (voir
-    _EUROPEAN_CUP_LEAGUE_IDS / _LEAGUE_PHASE_ROUND_MIN/MAX dans atlas.py).
-    36 équipes distinctes (501..536), dont `morocco_team_id` (501), sans
-    championnat domestique suivi dans ce test -> doit apparaître dans
-    countries_clubs via la coupe uniquement.
-    """
-    team_ids = list(range(501, 537))
-    assert morocco_team_id in team_ids
+    _EUROPEAN_CUP_LEAGUE_IDS / _LEAGUE_PHASE_ROUND_MIN/MAX dans atlas.py), à
+    partir de 36 team_ids fournis par l'appelant."""
+    assert len(team_ids) == 36
     events = []
-    api_id = 1000
+    api_id = api_id_start
     event_date = datetime(2025, 10, 1, tzinfo=UTC)
     for i in range(0, len(team_ids), 2):
         api_id += 1
@@ -106,6 +102,16 @@ def _league_phase_c1_events(morocco_team_id: int) -> list[BzzEvent]:
         )
     assert len(events) == 18
     return events
+
+
+def _league_phase_c1_events(morocco_team_id: int) -> list[BzzEvent]:
+    """Variante de `_league_phase_c1_events_for` pour une seule équipe
+    d'intérêt (`morocco_team_id`, 501) parmi 36 (501..536), sans championnat
+    domestique suivi dans ce test -> doit apparaître dans countries_clubs via
+    la coupe uniquement."""
+    team_ids = list(range(501, 537))
+    assert morocco_team_id in team_ids
+    return _league_phase_c1_events_for(team_ids)
 
 
 @pytest.fixture
@@ -182,6 +188,40 @@ async def test_geo_modes_sets_differ(client, base_config):
     assert data["international"] == [
         {"league_api_id": 7, "name": "Ligue des Champions", "org": "UEFA", "kind": "uefa_club"}
     ]
+
+
+async def test_geo_club_cup_country_fallback_without_canonical(client, base_config):
+    """Un club de coupe SANS aucune entrée canonical_teams (ex. Shakhtar
+    Donetsk, bzz_team_id=402) doit tout de même allumer son pays côté
+    countries_clubs, via le repli curé `_CUP_CLUB_COUNTRY` (pas une insertion
+    canonical_teams, pas un pays deviné)."""
+    ac, factory = client
+    team_ids = [402, *range(601, 636)]
+    await _seed(
+        factory,
+        config=base_config,
+        leagues=[
+            League(
+                id=7, name="Ligue des Champions", country=None, tier="1",
+                kind="uefa_club", format="groups", expected_count=None, rank=1,
+            ),
+        ],
+        events=_league_phase_c1_events_for(team_ids, api_id_start=2000),
+        # Aucun CanonicalTeam pour 402 ni pour les 35 autres : le pays de
+        # 402 doit venir exclusivement de _CUP_CLUB_COUNTRY.
+    )
+
+    resp = await ac.get("/api/v1/atlas/geo")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    clubs_by_code = {c["code"]: c for c in data["countries_clubs"]}
+    assert "UA" in clubs_by_code
+    assert clubs_by_code["UA"]["has_cup_clubs"] is True
+    # Pas de championnat domestique Ukraine suivi dans ce test -> leagues
+    # vide, même règle que le Maroc dans le test précédent.
+    assert clubs_by_code["UA"]["leagues"] == []
+    assert "UA" not in {c["code"] for c in data["countries"]}
 
 
 async def test_geo_selections_gb_dedup_england_primes(client, base_config):

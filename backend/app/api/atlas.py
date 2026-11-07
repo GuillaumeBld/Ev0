@@ -64,6 +64,60 @@ _COUNTRY_MAP: dict[str, tuple[str, str]] = {
     "Morocco": ("MA", "AFR"),
     "Tunisia": ("TN", "AFR"),
     "Australia": ("AU", "OCE"),
+    # Pays de clubs de coupe (C1/C2/C3, Libertadores/Sudamericana) sans
+    # championnat domestique suivi en base — voir _CUP_CLUB_COUNTRY. Aucun de
+    # ces pays n'a de League.country correspondant (vérifié dans
+    # league_registry.py), donc les ajouter ici n'allume PAS de nœud
+    # "championnat" fantôme : la boucle de /atlas/geo n'itère que sur les
+    # lignes `leagues`, ce mapping n'est consulté que si une ligne existe
+    # (League.country) ou si _club_cup_country_meta le résout via un club de
+    # coupe (voir _CUP_CLUB_COUNTRY plus bas).
+    "Austria": ("AT", "EUR"),
+    "Azerbaijan": ("AZ", "EUR"),
+    "Ukraine": ("UA", "EUR"),
+    "Slovakia": ("SK", "EUR"),
+    "Croatia": ("HR", "EUR"),
+    "Armenia": ("AM", "EUR"),
+    "Hungary": ("HU", "EUR"),
+    "Israel": ("IL", "EUR"),
+    "Slovenia": ("SI", "EUR"),
+    "Cyprus": ("CY", "EUR"),
+    "Georgia": ("GE", "EUR"),
+    "Kazakhstan": ("KZ", "ASI"),
+    "Bosnia & Herzegovina": ("BA", "EUR"),
+    "Serbia": ("RS", "EUR"),
+    "Lithuania": ("LT", "EUR"),
+    "Andorra": ("AD", "EUR"),
+    "Albania": ("AL", "EUR"),
+    "Gibraltar": ("GI", "EUR"),
+    "Latvia": ("LV", "EUR"),
+    "Paraguay": ("PY", "SAM"),
+    "Chile": ("CL", "SAM"),
+    "Ecuador": ("EC", "SAM"),
+    "Bolivia": ("BO", "SAM"),
+    "Peru": ("PE", "SAM"),
+    "Uruguay": ("UY", "SAM"),
+}
+
+# bzz_team_id -> nom de pays (anglais, même nomenclature que _COUNTRY_MAP),
+# pour les clubs de coupe internationale (C1/C2/C3, Libertadores/
+# Sudamericana) dont le pays n'est PAS résoluble via canonical_teams (aucune
+# entrée canonique pour ce club). Table de correspondance dédiée, curée à la
+# main — volontairement SÉPARÉE de canonical_teams : on ne veut ni insérer de
+# ligne dans canonical_teams ni créer de nouvelle entité équipe pour ces
+# clubs (risque de doublon / impact calculateur). Utilisée UNIQUEMENT comme
+# repli d'affichage carte/coupe (voir _club_cup_country_meta et
+# competition_clubs ci-dessous). Jamais une supposition : ces 34 pays sont
+# vérifiés manuellement par le propriétaire du produit.
+_CUP_CLUB_COUNTRY: dict[int, str] = {
+    1404: "Austria", 412: "Azerbaijan", 402: "Ukraine", 374: "Slovakia",
+    133: "Croatia", 3298: "Armenia", 143: "Hungary", 416: "Israel", 406: "Slovenia",
+    2346: "Cyprus", 147: "Austria", 128: "Austria",
+    395: "Georgia", 126: "Kazakhstan", 2313: "Bosnia & Herzegovina", 131: "Serbia",
+    3575: "Lithuania", 2343: "Croatia", 398: "Andorra", 401: "Albania", 382: "Gibraltar",
+    119: "Cyprus", 2838: "Latvia",
+    791: "Paraguay", 783: "Chile", 793: "Ecuador", 778: "Ecuador", 779: "Chile",
+    775: "Bolivia", 750: "Peru", 752: "Ecuador", 747: "Uruguay", 746: "Paraguay", 741: "Paraguay",
 }
 
 # Code ISO2 -> nom affiché, quand il diverge du nom de pays brut trouvé en
@@ -346,6 +400,10 @@ async def _club_cup_country_meta(db: AsyncSession) -> dict[str, tuple[str, str]]
 
     Réutilise `_competition_team_ids` (Task 1) — une requête par compétition
     (5 au total, nombre fixe, pas un N+1 qui grossit avec le nombre de pays).
+
+    Pays résolus en priorité via `canonical_teams.country` ; pour un club
+    sans entrée canonique (ou avec `country` NULL), repli sur
+    `_CUP_CLUB_COUNTRY` (curé — jamais un pays deviné).
     """
     season = await current_season(db)
     team_ids: set[int] = set()
@@ -355,14 +413,19 @@ async def _club_cup_country_meta(db: AsyncSession) -> dict[str, tuple[str, str]]
     if not team_ids:
         return {}
 
+    canonical_countries: dict[int, str | None] = dict(
+        (
+            await db.execute(
+                select(CanonicalTeam.bzz_team_id, CanonicalTeam.country).where(
+                    CanonicalTeam.bzz_team_id.in_(team_ids)
+                )
+            )
+        ).all()
+    )
     raw_countries = {
         country
-        for country in (
-            await db.execute(
-                select(CanonicalTeam.country).where(CanonicalTeam.bzz_team_id.in_(team_ids))
-            )
-        ).scalars()
-        if country
+        for tid in team_ids
+        if (country := canonical_countries.get(tid) or _CUP_CLUB_COUNTRY.get(tid))
     }
 
     meta: dict[str, tuple[str, str]] = {}
@@ -556,7 +619,11 @@ async def competition_clubs(
 
     Noms/écussons/pays via `canonical_teams` (jointure par `bzz_team_id`) —
     source d'autorité. Un club absent du référentiel canonique garde son nom
-    brut `bzz_teams.name`, et n'a ni écusson ni pays : jamais inventés.
+    brut `bzz_teams.name`, et n'a ni écusson ni pays. Si le pays reste
+    inconnu (pas de canonical, ou `country` NULL), repli sur
+    `_CUP_CLUB_COUNTRY` (table de correspondance curée, dédiée à l'affichage
+    carte — jamais une insertion dans `canonical_teams`) ; si toujours
+    inconnu, `country` reste `None`, jamais deviné.
     `player_count` compte les joueurs ayant une ligne de stats de saison
     dans CETTE compétition pour ce club (résolu via `current_team_api_id`,
     seule autorité sur la composition d'un effectif — voir `list_players`).
@@ -621,6 +688,8 @@ async def competition_clubs(
             crest_url = None
             api_football_id = None
             country = None
+        if country is None:
+            country = _CUP_CLUB_COUNTRY.get(tid)
         clubs.append(
             CompetitionClubOut(
                 bzz_team_id=tid,
