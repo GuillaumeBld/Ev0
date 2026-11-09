@@ -1868,10 +1868,9 @@ async def job_import_careers() -> None:
     rattrapage initial se fait de toute facon a la main, en une passe.
     """
     from app.alerts import send_alert
-    from app.ingestion.career_import import DEFAULT_BATCH_LIMIT
 
     try:
-        run = await asyncio.to_thread(_run_career_import_blocking, DEFAULT_BATCH_LIMIT)
+        run = await asyncio.to_thread(_run_career_import_blocking, settings.career_batch_limit)
     except Exception as exc:
         logger.exception("Import carriere : le lot a echoue — %s", exc)
         await send_alert(
