@@ -37,6 +37,21 @@ class PlayerCareerSeason(Base, TimestampMixin):
     assists: Mapped[int] = mapped_column(Integer, nullable=False)
     minutes: Mapped[int] = mapped_column(Integer, nullable=False)
 
+    # --- Gabarit Bzzoiro complémenté par Transfermarkt (nullable : NULL = inconnu, jamais 0 deviné) ---
+    starts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_shots: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    shots_on_target: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_pass: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    accurate_pass: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tackle: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    won_tackle: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    yellow_card: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    red_card: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fouls_committed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fouls_suffered: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    offsides: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False, server_default="transfermarkt")
+
     def __repr__(self) -> str:
         return (
             f"<PlayerCareerSeason player_api_id={self.player_api_id} "
