@@ -41,6 +41,7 @@ from app.ingestion.transfermarkt.squad_scraper import SquadResult, TMPlayer
 from app.ingestion.transfermarkt.sync_squads import sync_squads
 from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzPlayerMatchStat, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
+from app.models.player_tm_id import PlayerTmId
 from app.models.squad_sync import SquadSyncRun
 
 TODAY = dt.date(2026, 8, 15)
@@ -78,6 +79,9 @@ async def session_factory():
         # interroge ces deux tables a chaque pass "departs".
         await conn.run_sync(lambda sync_conn: BzzEvent.__table__.create(sync_conn))
         await conn.run_sync(lambda sync_conn: BzzPlayerMatchStat.__table__.create(sync_conn))
+        # La pass "matched" persiste desormais les tm_id des joueurs matches
+        # (source 'squad') dans cette table.
+        await conn.run_sync(lambda sync_conn: PlayerTmId.__table__.create(sync_conn))
 
     try:
         yield async_sessionmaker(engine, expire_on_commit=False)
