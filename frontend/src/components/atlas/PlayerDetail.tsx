@@ -10,6 +10,7 @@ import { ratingColor, ratingBg } from './PlayerCard'
 import { MiniChart, BarsGX, Radar, type GxBar, type RadarAxis } from './charts'
 import { fetchPlayer, fetchCareer, fetchPlayerBreakdown, fetchPlayerMatchOdds } from '@/lib/atlas'
 import type { SeasonStatsOut, RecentMatch, PlayerBreakdownRow } from '@/lib/atlas'
+import type { CareerCompetitionOut } from '@/lib/api'
 
 /**
  * Fiche joueur plein écran ("grimoire") — portée depuis la maquette VALIDÉE
@@ -140,6 +141,77 @@ function isNationalCareerCompetition(name: string | null): boolean {
   return false
 }
 
+/** Jalon 11 — colonnes enrichies des tables « Parcours » (club + sélection) :
+ *  `null`/`undefined` → **"—"**, jamais `0` ni vide (voir
+ *  `docs/.../fiche-enrichie.html`, classe `.nd`). Nom distinct du `fmt()`
+ *  ci-dessus (qui rend `"n/d"` et gère `pct`/`sign` pour les tuiles `Metric`)
+ *  pour ne rien changer à son comportement existant. */
+function careerVal(value: number | null | undefined, decimals = 0): string {
+  if (value == null) return '—'
+  return decimals > 0 ? value.toFixed(decimals) : Math.round(value).toLocaleString('fr-FR')
+}
+
+/** `%P` des tables « Parcours » = `accurate/total*100` arrondi, "—" si le
+ *  dénominateur est inconnu ou nul — jamais un pourcentage inventé. */
+function careerPct(num: number | null | undefined, den: number | null | undefined): string {
+  if (num == null || den == null || den === 0) return '—'
+  return `${Math.round((num / den) * 100)}%`
+}
+
+/** Somme "respectant NULL" : `null` si AUCUNE valeur de la liste n'est
+ *  connue (jamais un 0 fabriqué), sinon la somme des valeurs connues. */
+function sumNullable(values: (number | null | undefined)[]): number | null {
+  const known = values.filter((v): v is number => v != null)
+  return known.length ? known.reduce((a, b) => a + b, 0) : null
+}
+
+/** Moyenne pondérée "respectant NULL" (ex. note moyenne pondérée par les
+ *  minutes jouées) : ignore les paires sans valeur ou sans poids ; `null` si
+ *  aucune paire exploitable — jamais une moyenne inventée. */
+function weightedAvgNullable(pairs: { value: number | null | undefined; weight: number | null | undefined }[]): number | null {
+  const known = pairs.filter(
+    (p): p is { value: number; weight: number } => p.value != null && p.weight != null && p.weight > 0,
+  )
+  if (!known.length) return null
+  const totalWeight = known.reduce((s, p) => s + p.weight, 0)
+  if (totalWeight <= 0) return null
+  return known.reduce((s, p) => s + p.value * p.weight, 0) / totalWeight
+}
+
+/** Totaux enrichis (Jalon 11) d'un groupe de compétitions `/career` — sommes
+ *  champ par champ en respectant NULL (voir `sumNullable`), note moyenne
+ *  pondérée par les minutes jouées. Partagé par les lignes "Parcours en
+ *  club — saison par saison" ET leur pied "Total club". */
+interface CareerExtTotals {
+  starts: number | null
+  total_shots: number | null
+  shots_on_target: number | null
+  total_pass: number | null
+  accurate_pass: number | null
+  total_tackle: number | null
+  fouls_committed: number | null
+  offsides: number | null
+  yellow_card: number | null
+  expected_goals: number | null
+  avg_rating: number | null
+}
+
+function sumCareerExt(competitions: CareerCompetitionOut[]): CareerExtTotals {
+  return {
+    starts: sumNullable(competitions.map((c) => c.starts)),
+    total_shots: sumNullable(competitions.map((c) => c.total_shots)),
+    shots_on_target: sumNullable(competitions.map((c) => c.shots_on_target)),
+    total_pass: sumNullable(competitions.map((c) => c.total_pass)),
+    accurate_pass: sumNullable(competitions.map((c) => c.accurate_pass)),
+    total_tackle: sumNullable(competitions.map((c) => c.total_tackle)),
+    fouls_committed: sumNullable(competitions.map((c) => c.fouls_committed)),
+    offsides: sumNullable(competitions.map((c) => c.offsides)),
+    yellow_card: sumNullable(competitions.map((c) => c.yellow_card)),
+    expected_goals: sumNullable(competitions.map((c) => c.expected_goals)),
+    avg_rating: weightedAvgNullable(competitions.map((c) => ({ value: c.avg_rating, weight: c.minutes }))),
+  }
+}
+
 function Metric({ row }: { row: MetricRow }) {
   const value = row.value
   const na = value == null
@@ -207,12 +279,18 @@ interface AggRow {
   cj: number | null; rj: number | null
   fc: number | null; wf: number | null
   note: number | null
+  // --- Jalon 11 : colonnes enrichies de la table « Parcours en sélection ».
+  // `st` (titularisations) et `tkl` (tacles) viennent de `/breakdown` ou de
+  // son repli `season_stats`. `off` (hors-jeu) n'existe dans AUCUNE des deux
+  // sources actuelles → reste toujours `null` ("—"), jamais inventé.
+  st: number | null; tkl: number | null; off: number | null
 }
 
 const EMPTY_AGG: AggRow = {
   m: null, min: null, g: null, a: null, xg: null, xa: null, sh: null, sot: null, kp: null,
   tp: null, ap: null, tc: null, ac: null, tlb: null, alb: null, dw: null, dl: null, aw: null, al: null,
   disp: null, plost: null, cj: null, rj: null, fc: null, wf: null, note: null,
+  st: null, tkl: null, off: null,
 }
 
 function rowToAgg(r: PlayerBreakdownRow): AggRow {
@@ -230,6 +308,7 @@ function rowToAgg(r: PlayerBreakdownRow): AggRow {
     cj: r.yellow_card, rj: r.red_card,
     fc: r.fouls, wf: r.was_fouled,
     note: r.avg_rating,
+    st: r.starts, tkl: r.total_tackle, off: null,
   }
 }
 
@@ -254,12 +333,13 @@ function seasonStatsToAgg(s: SeasonStatsOut): AggRow {
     cj: s.yellow_card, rj: s.red_card,
     fc: null, wf: null,
     note: s.avg_rating,
+    st: s.starts, tkl: s.total_tackle, off: null,
   }
 }
 
 const AGG_SUM_KEYS: (keyof AggRow)[] = [
   'm', 'min', 'g', 'a', 'xg', 'xa', 'sh', 'sot', 'kp', 'tp', 'ap', 'tc', 'ac', 'tlb', 'alb',
-  'dw', 'dl', 'aw', 'al', 'disp', 'plost', 'cj', 'rj', 'fc', 'wf',
+  'dw', 'dl', 'aw', 'al', 'disp', 'plost', 'cj', 'rj', 'fc', 'wf', 'st', 'tkl', 'off',
 ]
 
 /** "Toutes" = somme des lignes de la saison (ou de la compétition), comme
@@ -805,16 +885,23 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
           }),
           { appearances: 0, minutes: 0, goals: 0, assists: 0 },
         )
-        return { season: s.season, competitions, ...totals }
+        // Jalon 11 : colonnes enrichies — sommées en respectant NULL
+        // (`sumCareerExt`), jamais 0 inventé quand aucune compétition de la
+        // saison ne fournit le champ.
+        const ext = sumCareerExt(competitions)
+        return { season: s.season, competitions, ...totals, ...ext }
       })
       .filter((s) => s.competitions.length > 0)
   }, [career])
 
   /** Total « club seul » — somme des lignes de `clubCareerSeasons` affichées.
    *  Alimente la bannière « Carrière en club » ET le pied « Total club » : les
-   *  deux montrent donc le MÊME nombre, égal à la somme des lignes de la table. */
+   *  deux montrent donc le MÊME nombre, égal à la somme des lignes de la table.
+   *  Les colonnes enrichies (Jalon 11) sont recalculées depuis l'ensemble des
+   *  compétitions aplaties plutôt que ré-agrégées depuis les lignes de saison,
+   *  pour que la moyenne pondérée de `avg_rating` reste exacte. */
   const clubCareerTotals = useMemo(() => {
-    return clubCareerSeasons.reduce(
+    const base = clubCareerSeasons.reduce(
       (acc, s) => ({
         appearances: acc.appearances + s.appearances,
         minutes: acc.minutes + s.minutes,
@@ -823,6 +910,8 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
       }),
       { appearances: 0, minutes: 0, goals: 0, assists: 0 },
     )
+    const ext = sumCareerExt(clubCareerSeasons.flatMap((s) => s.competitions))
+    return { ...base, ...ext }
   }, [clubCareerSeasons])
 
   const partial = hasPartialCoverage(player?.season_stats ?? null)
@@ -1041,9 +1130,16 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                       <p style={{ color: 'var(--t2)', fontSize: 13 }}>Historique de carrière non disponible pour ce joueur.</p>
                     ) : (
                       <div className={styles.logwrap}>
-                        <table className={styles.tbl} style={{ minWidth: 720 }}>
+                        <table className={styles.tbl} style={{ minWidth: 1180 }}>
                           <thead>
-                            <tr><th>Saison</th><th>Compétitions</th><th>M</th><th>Min</th><th>Buts</th><th>PD</th></tr>
+                            <tr>
+                              <th>Saison</th><th>Compétitions</th>
+                              <th>M</th><th>Tit</th><th>Min</th>
+                              <th>Buts</th><th>Tirs</th><th>TC</th>
+                              <th>PD</th><th>Passes</th><th>%P</th>
+                              <th>Tacl</th><th>Fts</th><th>HJ</th><th>CJ</th>
+                              <th>xG</th><th>Note</th>
+                            </tr>
                           </thead>
                           <tbody>
                             {clubCareerSeasons.map((s) => (
@@ -1051,9 +1147,20 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                                 <td>{s.season}</td>
                                 <td className={styles.cp}>{s.competitions.map((c) => c.competition).filter(Boolean).join(', ') || '—'}</td>
                                 <td>{s.appearances}</td>
+                                <td>{careerVal(s.starts)}</td>
                                 <td>{s.minutes.toLocaleString('fr-FR')}</td>
                                 <td>{s.goals}</td>
+                                <td>{careerVal(s.total_shots)}</td>
+                                <td>{careerVal(s.shots_on_target)}</td>
                                 <td>{s.assists}</td>
+                                <td>{careerVal(s.total_pass)}</td>
+                                <td>{careerPct(s.accurate_pass, s.total_pass)}</td>
+                                <td>{careerVal(s.total_tackle)}</td>
+                                <td>{careerVal(s.fouls_committed)}</td>
+                                <td>{careerVal(s.offsides)}</td>
+                                <td>{careerVal(s.yellow_card)}</td>
+                                <td>{careerVal(s.expected_goals, 1)}</td>
+                                <td>{careerVal(s.avg_rating, 1)}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -1062,9 +1169,20 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                               <td>Total club</td>
                               <td></td>
                               <td>{clubCareerTotals.appearances}</td>
+                              <td>{careerVal(clubCareerTotals.starts)}</td>
                               <td>{clubCareerTotals.minutes.toLocaleString('fr-FR')}</td>
                               <td>{clubCareerTotals.goals}</td>
+                              <td>{careerVal(clubCareerTotals.total_shots)}</td>
+                              <td>{careerVal(clubCareerTotals.shots_on_target)}</td>
                               <td>{clubCareerTotals.assists}</td>
+                              <td>{careerVal(clubCareerTotals.total_pass)}</td>
+                              <td>{careerPct(clubCareerTotals.accurate_pass, clubCareerTotals.total_pass)}</td>
+                              <td>{careerVal(clubCareerTotals.total_tackle)}</td>
+                              <td>{careerVal(clubCareerTotals.fouls_committed)}</td>
+                              <td>{careerVal(clubCareerTotals.offsides)}</td>
+                              <td>{careerVal(clubCareerTotals.yellow_card)}</td>
+                              <td>{careerVal(clubCareerTotals.expected_goals, 1)}</td>
+                              <td>{careerVal(clubCareerTotals.avg_rating, 1)}</td>
                             </tr>
                           </tfoot>
                         </table>
@@ -1188,28 +1306,57 @@ export function PlayerDetail({ playerApiId, onClose }: { playerApiId: number | n
                       <p style={{ color: 'var(--t2)', fontSize: 13 }}>Détail par compétition non disponible pour ce joueur.</p>
                     ) : (
                       <div className={styles.logwrap}>
-                        <table className={styles.tbl} style={{ minWidth: 640 }}>
+                        <table className={styles.tbl} style={{ minWidth: 1100 }}>
                           <thead>
-                            <tr><th>Compétition</th><th>M</th><th>Min</th><th>Buts</th><th>PD</th></tr>
+                            <tr>
+                              <th>Compétition</th>
+                              <th>M</th><th>Tit</th><th>Min</th>
+                              <th>Buts</th><th>Tirs</th><th>TC</th>
+                              <th>PD</th><th>Passes</th><th>%P</th>
+                              <th>Tacl</th><th>Fts</th><th>HJ</th><th>CJ</th>
+                              <th>xG</th><th>Note</th>
+                            </tr>
                           </thead>
                           <tbody>
                             {selByCompetition.map((c) => (
                               <tr key={c.league_api_id}>
                                 <td className={styles.cp}>{c.league_name}</td>
-                                <td>{c.agg.m != null ? c.agg.m : 'n/d'}</td>
-                                <td>{c.agg.min != null ? c.agg.min.toLocaleString('fr-FR') : 'n/d'}</td>
-                                <td>{c.agg.g != null ? c.agg.g : 'n/d'}</td>
-                                <td>{c.agg.a != null ? c.agg.a : 'n/d'}</td>
+                                <td>{careerVal(c.agg.m)}</td>
+                                <td>{careerVal(c.agg.st)}</td>
+                                <td>{c.agg.min != null ? c.agg.min.toLocaleString('fr-FR') : '—'}</td>
+                                <td>{careerVal(c.agg.g)}</td>
+                                <td>{careerVal(c.agg.sh)}</td>
+                                <td>{careerVal(c.agg.sot)}</td>
+                                <td>{careerVal(c.agg.a)}</td>
+                                <td>{careerVal(c.agg.tp)}</td>
+                                <td>{careerPct(c.agg.ap, c.agg.tp)}</td>
+                                <td>{careerVal(c.agg.tkl)}</td>
+                                <td>{careerVal(c.agg.fc)}</td>
+                                <td>{careerVal(c.agg.off)}</td>
+                                <td>{careerVal(c.agg.cj)}</td>
+                                <td>{careerVal(c.agg.xg, 1)}</td>
+                                <td>{careerVal(c.agg.note, 1)}</td>
                               </tr>
                             ))}
                           </tbody>
                           <tfoot>
                             <tr>
                               <td>Total sélection</td>
-                              <td>{selCareerAgg.m != null ? selCareerAgg.m : 'n/d'}</td>
-                              <td>{selCareerAgg.min != null ? selCareerAgg.min.toLocaleString('fr-FR') : 'n/d'}</td>
-                              <td>{selCareerAgg.g != null ? selCareerAgg.g : 'n/d'}</td>
-                              <td>{selCareerAgg.a != null ? selCareerAgg.a : 'n/d'}</td>
+                              <td>{careerVal(selCareerAgg.m)}</td>
+                              <td>{careerVal(selCareerAgg.st)}</td>
+                              <td>{selCareerAgg.min != null ? selCareerAgg.min.toLocaleString('fr-FR') : '—'}</td>
+                              <td>{careerVal(selCareerAgg.g)}</td>
+                              <td>{careerVal(selCareerAgg.sh)}</td>
+                              <td>{careerVal(selCareerAgg.sot)}</td>
+                              <td>{careerVal(selCareerAgg.a)}</td>
+                              <td>{careerVal(selCareerAgg.tp)}</td>
+                              <td>{careerPct(selCareerAgg.ap, selCareerAgg.tp)}</td>
+                              <td>{careerVal(selCareerAgg.tkl)}</td>
+                              <td>{careerVal(selCareerAgg.fc)}</td>
+                              <td>{careerVal(selCareerAgg.off)}</td>
+                              <td>{careerVal(selCareerAgg.cj)}</td>
+                              <td>{careerVal(selCareerAgg.xg, 1)}</td>
+                              <td>{careerVal(selCareerAgg.note, 1)}</td>
                             </tr>
                           </tfoot>
                         </table>
