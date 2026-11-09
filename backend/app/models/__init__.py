@@ -17,6 +17,7 @@ from app.models.odds_scrape_state import OddsScrapeState
 from app.models.player_career import PlayerCareerSeason
 from app.models.player_match_minutes import PlayerMatchMinutes
 from app.models.player_odds_snapshot import PlayerOddsSnapshot
+from app.models.player_tm_id import PlayerTmId
 from app.models.poll_state import OddsPortalPollState
 from app.models.recommendations import Recommendation
 from app.models.selection_stats import PlayerSelectionSeasonStat
@@ -48,6 +49,7 @@ __all__ = [
     "PlayerMatchMinutes",
     "PlayerOddsSnapshot",
     "PlayerSelectionSeasonStat",
+    "PlayerTmId",
     "Recommendation",
     "SquadSyncRun",
     "TeamLineup",

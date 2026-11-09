@@ -43,12 +43,14 @@ import logging
 from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.transfermarkt.player_match import MatchReport, match_players
 from app.ingestion.transfermarkt.squad_scraper import TMPlayer, fetch_club_squad
 from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzPlayerMatchStat, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
+from app.models.player_tm_id import PlayerTmId
 from app.models.squad_sync import SquadSyncRun
 from app.scripts.transfermarkt_career import TransfermarktClient
 
@@ -120,6 +122,44 @@ async def _ayant_joue_pour_le_club(
         .distinct()
     )
     return set((await session.execute(stmt)).scalars().all())
+
+
+async def _persist_matched_tm_ids(
+    session: AsyncSession, matched: dict[int, int], found_ids: set[int]
+) -> None:
+    """Persiste `player_tm_ids` pour les joueurs matches de ce club, source
+    `squad` (exacte : le joueur est dans ce roster TM, zero requete TM
+    supplementaire, la liaison `tm_player_id -> bzz_api_id` est deja dans
+    `report.matched`). `source='squad'` ECRASE toujours une liaison
+    existante (cf. module docstring de la tache : c'est la source la plus
+    fiable, elle prime sur toute source devinee ulterieurement).
+
+    N'ecrit que pour les `bzz_api_id` reellement presents en base
+    (`found_ids`, deja calcule par l'appelant) : un `bzz_api_id` absent de
+    `bzz_players` casserait la FK `player_tm_ids.player_api_id`, et ce cas
+    est deja trace par l'appelant (voir le `logger.warning` sur `missing`).
+    Garde-fou supplementaire : `tm_player_id` doit etre un entier > 0 (jamais
+    0/negatif/degenere)."""
+    now = datetime.now(UTC)
+    for tm_player_id, bzz_api_id in matched.items():
+        if bzz_api_id not in found_ids:
+            continue
+        if not isinstance(tm_player_id, int) or isinstance(tm_player_id, bool) or tm_player_id <= 0:
+            continue
+        stmt = (
+            pg_insert(PlayerTmId)
+            .values(
+                player_api_id=bzz_api_id,
+                tm_id=tm_player_id,
+                source="squad",
+                updated_at=now,
+            )
+            .on_conflict_do_update(
+                index_elements=["player_api_id"],
+                set_={"tm_id": tm_player_id, "source": "squad", "updated_at": now},
+            )
+        )
+        await session.execute(stmt)
 
 
 async def _load_team_names(session: AsyncSession, bzz_team_ids: set[int]) -> dict[int, str]:
@@ -288,6 +328,12 @@ async def sync_squads(
             player.loan_team_name = None
             player.tm_absent_streak = 0
             players_updated += 1
+
+        # Liaison tm_id (source 'squad', exacte, zero requete TM
+        # supplementaire) : premiere source du store `player_tm_ids`, les
+        # jalons suivants (Wikidata...) le completeront sans jamais ecraser
+        # une entree 'squad'.
+        await _persist_matched_tm_ids(session, report.matched, found_ids)
 
     # Pass "departs" (prudent) : sur le snapshot PREALABLE, jamais sur un
     # joueur matche/reassigne ce run (deja rattache par le pass ci-dessus), et
