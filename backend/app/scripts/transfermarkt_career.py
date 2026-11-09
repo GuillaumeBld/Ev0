@@ -603,6 +603,11 @@ def aggregate_by_season_and_competition(
                  "yellow_card": 0, "red_card": 0,
                  "fouls_committed": 0, "fouls_suffered": 0, "offsides": 0}
     )
+    # Compartiment Selection vs Club : accumule, par bucket, la liste des
+    # drapeaux isNationalGame des matchs JOUES rencontres. `is_national`
+    # final = all(...) sur cette liste -> un seul match club dans un bucket
+    # sinon tout-international le bascule a False (jamais de faux positif).
+    national_flags: dict[tuple[Any, Any], list[bool]] = defaultdict(list)
     skipped_states: dict[str, int] = defaultdict(int)
 
     for game in games:
@@ -638,6 +643,8 @@ def aggregate_by_season_and_competition(
         else:
             bucket["competition"] = competition_id
 
+        national_flags[key].append(bool(game_info.get("isNationalGame")))
+
         bucket["appearances"] += 1
 
         goal_stats = stats.get("goalStatistics") or {}
@@ -668,6 +675,10 @@ def aggregate_by_season_and_competition(
 
     if skipped_states:
         log.info("Matchs exclus des apparitions (non joues): %s", dict(skipped_states))
+
+    for key, bucket in buckets.items():
+        flags = national_flags.get(key) or []
+        bucket["is_national"] = bool(flags) and all(flags)
 
     seasons = list(buckets.values())
     seasons.sort(key=lambda s: (-(s.get("season_start_year") or 0), str(s.get("competition") or "")))

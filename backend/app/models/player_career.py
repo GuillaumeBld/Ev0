@@ -1,6 +1,6 @@
 """Player career history (per season / competition), sourced from Transfermarkt."""
 
-from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -51,6 +51,13 @@ class PlayerCareerSeason(Base, TimestampMixin):
     fouls_suffered: Mapped[int | None] = mapped_column(Integer, nullable=True)
     offsides: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source: Mapped[str] = mapped_column(String(16), nullable=False, server_default="transfermarkt")
+
+    # Compartiment Selection (equipe nationale) vs Club : True si TOUS les
+    # matchs joues de ce bucket (saison, competition) sont des matchs
+    # internationaux (gameInformation.isNationalGame cote Transfermarkt).
+    # Defaut False : un bucket club normal, ou tout bucket mixte/ambigu,
+    # n'est jamais marque selection a tort.
+    is_national: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
 
     def __repr__(self) -> str:
         return (

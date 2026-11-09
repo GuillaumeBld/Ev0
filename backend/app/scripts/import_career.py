@@ -143,6 +143,10 @@ def _season_values(player_api_id: int, tm_id: int | None, season: dict[str, Any]
         "fouls_suffered": season.get("fouls_suffered"),
         "offsides": season.get("offsides"),
         "source": "transfermarkt",
+        # Compartiment Selection vs Club : vrai seulement si l'agregation
+        # (jalon 6) a determine que TOUS les matchs du bucket sont
+        # internationaux. Cle absente du bucket -> False, jamais devine a True.
+        "is_national": season.get("is_national", False),
     }
 
 
