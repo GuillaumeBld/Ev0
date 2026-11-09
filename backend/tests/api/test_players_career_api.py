@@ -31,6 +31,7 @@ def _career_row(
     goals: int = 10,
     assists: int = 5,
     minutes: int = 2500,
+    is_national: bool = False,
 ) -> PlayerCareerSeason:
     return PlayerCareerSeason(
         player_api_id=1,
@@ -42,6 +43,7 @@ def _career_row(
         goals=goals,
         assists=assists,
         minutes=minutes,
+        is_national=is_national,
     )
 
 
@@ -84,8 +86,11 @@ async def test_get_player_career_empty_when_no_career_rows(monkeypatch):
     career_result = MagicMock()
     career_result.scalars.return_value.all.return_value = []
 
+    bzz_result = MagicMock()
+    bzz_result.scalars.return_value.all.return_value = []
+
     mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(side_effect=[player_result, career_result])
+    mock_db.execute = AsyncMock(side_effect=[player_result, career_result, bzz_result])
 
     called_with: dict = {}
 
@@ -138,8 +143,11 @@ async def test_get_player_career_full_detail(monkeypatch):
     career_result = MagicMock()
     career_result.scalars.return_value.all.return_value = rows
 
+    bzz_result = MagicMock()
+    bzz_result.scalars.return_value.all.return_value = []
+
     mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(side_effect=[player_result, career_result])
+    mock_db.execute = AsyncMock(side_effect=[player_result, career_result, bzz_result])
 
     rhythm = BlendedRhythm(
         goal_rate_per_90=0.42, assist_rate_per_90=0.21, seasons_used=3, has_career=True,
@@ -215,8 +223,11 @@ async def test_get_player_career_none_season_start_year_sorts_last(monkeypatch):
     career_result = MagicMock()
     career_result.scalars.return_value.all.return_value = rows
 
+    bzz_result = MagicMock()
+    bzz_result.scalars.return_value.all.return_value = []
+
     mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(side_effect=[player_result, career_result])
+    mock_db.execute = AsyncMock(side_effect=[player_result, career_result, bzz_result])
 
     async def fake_blended_rhythm(session, player_api_id):
         return None
@@ -247,8 +258,11 @@ async def test_get_player_career_calls_blended_rhythm_with_correct_id(monkeypatc
     career_result = MagicMock()
     career_result.scalars.return_value.all.return_value = []
 
+    bzz_result = MagicMock()
+    bzz_result.scalars.return_value.all.return_value = []
+
     mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(side_effect=[player_result, career_result])
+    mock_db.execute = AsyncMock(side_effect=[player_result, career_result, bzz_result])
 
     calls = []
 
