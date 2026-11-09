@@ -212,10 +212,15 @@ async def players_needing_career(
     """File d'attente : les joueurs a traiter au prochain passage.
 
     Univers Atlas complet (clubs de toute ligue integree + selections
-    nationales), priorise par vagues : la vague 1 (ligues suivies + nations
-    Mondial) est rendue entierement avant la vague 2 (competitions de coupe
-    + reste). A l'interieur d'une vague, l'ordre est stable par
-    `player_api_id` (critere herite de la version precedente de la file).
+    nationales), triee par un ordre a trois niveaux (Task 5) :
+      1. `known_tm_id` connu (chemin rapide via `player_tm_ids`, 0 recherche,
+         non rate-limite) avant les joueurs sans tm_id connu (repli par
+         recherche schnellsuche, lui rate-limite) ;
+      2. a l'interieur de chacun de ces deux groupes, la vague (Task 4) :
+         vague 1 (ligues suivies + nations Mondial) avant vague 2
+         (competitions de coupe + reste) ;
+      3. `player_api_id`, pour la stabilite (critere herite de la version
+         precedente de la file).
 
     Rendus au format attendu par `build_player_report` : name, nationality,
     dob (ISO), club. Porte aussi `known_tm_id` (int ou None) : si present,
@@ -253,7 +258,17 @@ async def players_needing_career(
                 "_wave": wave,
             }
 
-    ordered = sorted(best.values(), key=lambda p: (p["_wave"], p["player_api_id"]))
+    # Critere PRIMAIRE : disponibilite du tm_id (chemin rapide, non
+    # rate-limite) avant les joueurs sans tm_id connu (qui tapent la
+    # recherche schnellsuche, elle rate-limitee). `known_tm_id is None`
+    # vaut True (trie apres False) pour les joueurs sans tm_id, donc ceux
+    # avec tm_id connu sortent en premier. La vague reste le critere
+    # secondaire (Task 4, inchange), le `player_api_id` le tertiaire pour
+    # la stabilite.
+    ordered = sorted(
+        best.values(),
+        key=lambda p: (p["known_tm_id"] is None, p["_wave"], p["player_api_id"]),
+    )
     out = [{k: v for k, v in p.items() if k != "_wave"} for p in ordered[:limit]]
     return out
 

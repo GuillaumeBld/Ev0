@@ -1901,6 +1901,62 @@ async def job_import_careers() -> None:
         )
 
 
+def _run_seed_tm_ids_wikidata_blocking() -> dict[str, int]:
+    """Lance le seed Wikidata (jalon 3/5) dans un thread dedie.
+
+    `fetch_wikidata_players` pagine ~221k lignes sur l'endpoint SPARQL public
+    (reseau, plusieurs minutes) : meme contrainte que
+    `_run_career_import_blocking` — ne jamais tenir la boucle du worker
+    pendant une requete longue qui gelerait les cotes et le reglement.
+
+    N'appelle JAMAIS Transfermarkt : seul `query.wikidata.org` est tape ici.
+    """
+
+    async def _run() -> dict[str, int]:
+        from app.ingestion.wikidata_tm_id import fetch_wikidata_players, match_and_store
+
+        eng = create_async_engine(DATABASE_URL, poolclass=NullPool)
+        sm = async_sessionmaker(eng, expire_on_commit=False)
+        try:
+            rows = await fetch_wikidata_players()
+            async with sm() as session:
+                return await match_and_store(session, rows)
+        finally:
+            await eng.dispose()
+
+    return asyncio.run(_run())
+
+
+async def job_seed_tm_ids_wikidata() -> None:
+    """Hebdomadaire : seed Wikidata pour `player_tm_ids` (jalon 3/5).
+
+    Alimente le chemin rapide de l'import carriere (Task 4/5) en `tm_id`
+    gratuits et non rate-limites, sans jamais toucher Transfermarkt — seule
+    `fetch_wikidata_players` (SPARQL) est appelee. Hebdomadaire car le jeu
+    Wikidata (~221k lignes) bouge peu d'une semaine a l'autre ; journalier
+    serait un cout reseau sans benefice proportionnel.
+    """
+    from app.alerts import send_alert
+
+    try:
+        stats = await asyncio.to_thread(_run_seed_tm_ids_wikidata_blocking)
+    except Exception as exc:
+        logger.exception("Seed Wikidata tm_id : le run a echoue — %s", exc)
+        await send_alert(
+            f"⚠️ Seed Wikidata tm_id : le run hebdomadaire a échoué\n<code>{exc}</code>",
+            channel="incidents",
+        )
+        return
+
+    logger.info(
+        "Seed Wikidata tm_id : %d apparies, %d sans dob, %d ambigus, %d deja source=squad.",
+        stats.get("matched", 0),
+        stats.get("skipped_no_dob", 0),
+        stats.get("skipped_ambiguous", 0),
+        stats.get("skipped_squad_exists", 0),
+    )
+
+
 def _resolve_clubs_blocking():
     """Resout les `transfermarkt_club_id` manquants, dans un thread dedie.
 
@@ -2586,6 +2642,22 @@ def create_scheduler() -> AsyncIOScheduler:
         CronTrigger(hour=5, minute=0),
         id="import_careers",
         name="Import carrieres Transfermarkt (lot nocturne)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Seed Wikidata tm_id (jalon 3/5 contournement rate-limit TM) : hebdo,
+    # lundi 03:00 UTC. Alimente player_tm_ids en amont du lot carriere
+    # nocturne (05:00) — jamais Transfermarkt, requete SPARQL seulement.
+    # max_instances=1 + coalesce : un run pagine ~221k lignes (plusieurs
+    # minutes), deux runs concurrents n'apportent rien et doublent la charge
+    # reseau pour rien.
+    scheduler.add_job(
+        job_seed_tm_ids_wikidata,
+        CronTrigger(day_of_week="mon", hour=3, minute=0),
+        id="seed_tm_ids_wikidata",
+        name="Seed Wikidata tm_id (contournement rate-limit Transfermarkt)",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
