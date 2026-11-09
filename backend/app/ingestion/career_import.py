@@ -36,6 +36,7 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ingestion.career_priority import wave_of
 from app.models.career_import import (
     OUTCOME_ERROR,
     OUTCOME_OK,
@@ -123,30 +124,41 @@ def should_retry(outcome: str, attempted_at: dt.datetime, now: dt.datetime) -> b
     return (now - attempted_at) >= delay
 
 
-# Joueurs du perimetre cote, sans carriere, avec une date de naissance.
+# Univers Atlas, sans carriere, avec une date de naissance.
 #
 # La date de naissance est obligatoire : `import_career.py` matche sur
 # (nom normalise, date de naissance) et refuse de trancher sans elle. La
 # demander ici evite une requete Transfermarkt qui finirait rejetee.
 #
-# `minutes_played > 0` ecarte les joueurs listes dans un effectif mais qui
-# n'ont pas joue une minute cette saison.
+# Deux sous-ensembles, combines par UNION :
+#   - les joueurs de club : `current_team_api_id` rattache a une ligne de
+#     `canonical_teams`, quelle que soit la ligue (plus seulement les cinq
+#     grands championnats + C1 comme avant). `league_api_id` sert ensuite a
+#     `wave_of` pour prioriser.
+#   - les joueurs de selection : tout `player_api_id` present dans
+#     `player_selection_season_stats` (Mondial, Ligues des nations), meme
+#     sans club integre au referentiel.
+# Un meme joueur peut apparaitre dans les deux (club + selection) : le
+# regroupement et le choix de la vague la plus prioritaire se font cote
+# Python dans `players_needing_career`, car `wave_of` n'existe pas en SQL.
+#
+# Pas de LIMIT ici : il faut d'abord regrouper par joueur et trier par vague
+# (vague 1 entierement drainee avant la vague 2) avant de tronquer — un LIMIT
+# SQL sur un resultat non trie par vague pourrait saturer la limite avec de
+# la vague 2 alors que la vague 1 n'est pas encore drainee.
 _QUEUE_SQL = text(
     """
-    SELECT DISTINCT
+    SELECT
         p.api_id            AS player_api_id,
         p.name              AS name,
         p.nationality       AS nationality,
         p.date_of_birth     AS dob,
-        p.current_team_name AS club
-    FROM bzz_player_season_stats s
-    JOIN bzz_leagues  l ON l.api_id = s.league_api_id
-    JOIN bzz_players  p ON p.api_id = s.player_api_id
+        p.current_team_name AS club,
+        ct.league_api_id    AS league_api_id
+    FROM bzz_players p
+    JOIN canonical_teams ct ON ct.bzz_team_id = p.current_team_api_id
     LEFT JOIN career_import_attempts a ON a.player_api_id = p.api_id
-    WHERE (s.season LIKE '2025%' OR s.season LIKE '2026%')
-      AND COALESCE(s.minutes_played, 0) > 0
-      AND l.name = ANY(:leagues)
-      AND p.date_of_birth IS NOT NULL
+    WHERE p.date_of_birth IS NOT NULL
       AND NOT EXISTS (
           SELECT 1 FROM player_career_seasons c
           WHERE c.player_api_id = p.api_id
@@ -155,8 +167,28 @@ _QUEUE_SQL = text(
           a.player_api_id IS NULL
           OR (a.outcome <> 'ok' AND a.attempted_at < :retry_before)
       )
-    ORDER BY p.api_id
-    LIMIT :limit
+
+    UNION ALL
+
+    SELECT
+        p.api_id            AS player_api_id,
+        p.name              AS name,
+        p.nationality       AS nationality,
+        p.date_of_birth     AS dob,
+        p.current_team_name AS club,
+        sel.league_api_id   AS league_api_id
+    FROM bzz_players p
+    JOIN player_selection_season_stats sel ON sel.player_api_id = p.api_id
+    LEFT JOIN career_import_attempts a ON a.player_api_id = p.api_id
+    WHERE p.date_of_birth IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM player_career_seasons c
+          WHERE c.player_api_id = p.api_id
+      )
+      AND (
+          a.player_api_id IS NULL
+          OR (a.outcome <> 'ok' AND a.attempted_at < :retry_before)
+      )
     """
 )
 
@@ -168,6 +200,12 @@ async def players_needing_career(
 ) -> list[dict[str, Any]]:
     """File d'attente : les joueurs a traiter au prochain passage.
 
+    Univers Atlas complet (clubs de toute ligue integree + selections
+    nationales), priorise par vagues : la vague 1 (ligues suivies + nations
+    Mondial) est rendue entierement avant la vague 2 (competitions de coupe
+    + reste). A l'interieur d'une vague, l'ordre est stable par
+    `player_api_id` (critere herite de la version precedente de la file).
+
     Rendus au format attendu par `build_player_report` : name, nationality,
     dob (ISO), club.
     """
@@ -178,26 +216,31 @@ async def players_needing_career(
     retry_before = now - RETRY_AFTER[OUTCOME_ERROR]
 
     rows = (
-        await session.execute(
-            _QUEUE_SQL,
-            {
-                "leagues": list(PRICED_LEAGUES),
-                "retry_before": retry_before,
-                "limit": limit,
-            },
-        )
+        await session.execute(_QUEUE_SQL, {"retry_before": retry_before})
     ).mappings().all()
 
-    out: list[dict[str, Any]] = []
+    # Un joueur peut sortir plusieurs fois (club ET selection, ou plusieurs
+    # lignes de selection) : on garde une seule entree par joueur, avec la
+    # vague la plus prioritaire (la plus petite) qu'il atteint par n'importe
+    # laquelle de ses lignes.
+    best: dict[int, dict[str, Any]] = {}
     for r in rows:
-        dob = r["dob"]
-        out.append({
-            "player_api_id": r["player_api_id"],
-            "name": r["name"],
-            "nationality": r["nationality"] or "",
-            "dob": dob.isoformat() if hasattr(dob, "isoformat") else str(dob),
-            "club": r["club"] or "",
-        })
+        api_id = r["player_api_id"]
+        wave = wave_of(r["league_api_id"])
+        current = best.get(api_id)
+        if current is None or wave < current["_wave"]:
+            dob = r["dob"]
+            best[api_id] = {
+                "player_api_id": api_id,
+                "name": r["name"],
+                "nationality": r["nationality"] or "",
+                "dob": dob.isoformat() if hasattr(dob, "isoformat") else str(dob),
+                "club": r["club"] or "",
+                "_wave": wave,
+            }
+
+    ordered = sorted(best.values(), key=lambda p: (p["_wave"], p["player_api_id"]))
+    out = [{k: v for k, v in p.items() if k != "_wave"} for p in ordered[:limit]]
     return out
 
 
