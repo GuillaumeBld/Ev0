@@ -213,3 +213,43 @@ async def test_existing_wikidata_source_is_updated(db_session):
     assert tm_row.tm_id == 999
     assert tm_row.source == "wikidata"
     assert stats["matched"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_skips_failed_page_without_truncating(monkeypatch):
+    """Une page en echec definitif (None) est SAUTEE : les pages suivantes sont
+    quand meme collectees (pas d'arret premature qui tronquerait le jeu)."""
+    import app.ingestion.wikidata_tm_id as wd
+
+    page0 = [{"tmid": {"value": "10"}, "name": {"value": "A"}, "dob": {"value": "1990-01-01"}}]
+    page2 = [{"tmid": {"value": "20"}, "name": {"value": "B"}, "dob": {"value": "1991-02-02"}}]
+    # offset 0 -> page pleine ; offset PAGE_SIZE -> echec (None) ; offset 2*PAGE_SIZE -> page pleine ; puis vide
+    responses = {0: page0, wd.PAGE_SIZE: None, 2 * wd.PAGE_SIZE: page2, 3 * wd.PAGE_SIZE: []}
+
+    # page pleine = PAGE_SIZE lignes pour forcer la poursuite ; on duplique.
+    responses[0] = page0 * wd.PAGE_SIZE
+    responses[2 * wd.PAGE_SIZE] = page2 * wd.PAGE_SIZE
+
+    async def fake_fetch_page(client, offset):
+        return responses.get(offset, [])
+
+    monkeypatch.setattr(wd, "_fetch_page", fake_fetch_page)
+
+    rows = await wd.fetch_wikidata_players()
+    tmids = {r["tm_id"] for r in rows}
+    # Les deux pages valides sont collectees malgre la page du milieu en echec.
+    assert 10 in tmids and 20 in tmids
+
+
+@pytest.mark.asyncio
+async def test_fetch_stops_after_too_many_consecutive_failures(monkeypatch):
+    """Garde-fou : si trop de pages consecutives echouent, la pagination s'arrete
+    (pas de boucle infinie contre un endpoint HS)."""
+    import app.ingestion.wikidata_tm_id as wd
+
+    async def always_fail(client, offset):
+        return None
+
+    monkeypatch.setattr(wd, "_fetch_page", always_fail)
+    rows = await wd.fetch_wikidata_players()
+    assert rows == []

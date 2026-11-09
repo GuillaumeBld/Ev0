@@ -32,11 +32,16 @@ logger = logging.getLogger(__name__)
 SPARQL_ENDPOINT = "https://query.wikidata.org/sparql"
 USER_AGENT = "Ev0/1.0 (yohan.resin972@gmail.com)"
 
-# Taille de page : au-dela, l'endpoint public Wikidata timeout plus souvent.
-PAGE_SIZE = 20_000
+# Taille de page : des pages de 20 000 lignes font systematiquement timeout
+# (502) sur l'endpoint public Wikidata ; 2 500 passe de maniere fiable (avec
+# quelques retries). Ne pas remonter sans valider contre le vrai endpoint.
+PAGE_SIZE = 2_500
 TIMEOUT_SECONDS = 60.0
 MAX_ATTEMPTS_PER_PAGE = 5
 BASE_BACKOFF_SECONDS = 2.0
+# Au-dela de ce nombre de pages consecutives en echec, l'endpoint est
+# probablement indisponible -> on arrete la pagination plutot que de boucler.
+MAX_CONSECUTIVE_PAGE_FAILURES = 8
 
 # Requete VALIDEE (voir cahier des charges) : ?p wdt:P2446 ?tmid (id joueur
 # Transfermarkt) ; wdt:P569 ?dob (date de naissance) ; rdfs:label ?name en
@@ -136,18 +141,36 @@ async def fetch_wikidata_players() -> list[dict]:
     """Recupere la totalite du jeu Wikidata (joueur Transfermarkt-id + dob,
     ~221k lignes) en paginant LIMIT/OFFSET jusqu'a une page vide. Jamais de
     crash du lot sur une page : une page qui echoue apres retry/backoff est
-    loggee et arrete la pagination, en renvoyant ce qui a deja ete collecte
-    plutot que de laisser planter l'appelant."""
+    SAUTEE (la pagination continue a l'offset suivant) plutot que de tronquer
+    tout le reste du jeu -- l'endpoint public Wikidata renvoie des 502
+    intermittents, un seul blip ne doit pas priver de toutes les pages
+    suivantes. Les pages sautees sont completees au prochain passage. Un
+    garde-fou arrete la boucle si trop de pages consecutives echouent
+    (endpoint probablement indisponible)."""
     rows: list[dict] = []
     offset = 0
+    skipped_pages = 0
+    consecutive_failures = 0
     async with httpx.AsyncClient() as client:
         while True:
             bindings = await _fetch_page(client, offset)
             if bindings is None:
+                skipped_pages += 1
+                consecutive_failures += 1
                 logger.error(
-                    "Pagination Wikidata interrompue a offset=%s (echecs repetes).", offset
+                    "Wikidata page offset=%s sautee (echecs repetes). Total sautees=%s.",
+                    offset, skipped_pages,
                 )
-                break
+                if consecutive_failures >= MAX_CONSECUTIVE_PAGE_FAILURES:
+                    logger.error(
+                        "Wikidata : %s pages consecutives en echec a offset=%s -> arret "
+                        "(endpoint probablement indisponible).",
+                        consecutive_failures, offset,
+                    )
+                    break
+                offset += PAGE_SIZE
+                continue
+            consecutive_failures = 0
             if not bindings:
                 break
             for binding in bindings:
@@ -159,6 +182,11 @@ async def fetch_wikidata_players() -> list[dict]:
             if len(bindings) < PAGE_SIZE:
                 break
             offset += PAGE_SIZE
+    if skipped_pages:
+        logger.warning(
+            "Wikidata : %s page(s) sautee(s) sur ce run (jeu incomplet, complete au "
+            "prochain passage hebdomadaire).", skipped_pages,
+        )
     return rows
 
 
