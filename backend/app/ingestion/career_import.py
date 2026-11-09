@@ -47,6 +47,7 @@ from app.models.player_career import PlayerCareerSeason
 from app.scripts.import_career import import_career_data
 from app.scripts.transfermarkt_career import (
     build_player_report,
+    build_player_report_from_tm_id,
     load_cache,
 )
 
@@ -142,6 +143,12 @@ def should_retry(outcome: str, attempted_at: dt.datetime, now: dt.datetime) -> b
 # regroupement et le choix de la vague la plus prioritaire se font cote
 # Python dans `players_needing_career`, car `wave_of` n'existe pas en SQL.
 #
+# LEFT JOIN `player_tm_ids` : quand une ligne existe (remplie aux jalons
+# squad/Wikidata du contournement rate-limit TM), `run_career_import` saute
+# la recherche par nom (schnellsuche) et attaque directement l'API carriere
+# via `build_player_report_from_tm_id`. Sans ligne -> `known_tm_id` est NULL
+# et le repli par recherche (inchange) s'applique.
+#
 # Pas de LIMIT ici : il faut d'abord regrouper par joueur et trier par vague
 # (vague 1 entierement drainee avant la vague 2) avant de tronquer — un LIMIT
 # SQL sur un resultat non trie par vague pourrait saturer la limite avec de
@@ -154,10 +161,12 @@ _QUEUE_SQL = text(
         p.nationality       AS nationality,
         p.date_of_birth     AS dob,
         p.current_team_name AS club,
-        ct.league_api_id    AS league_api_id
+        ct.league_api_id    AS league_api_id,
+        pt.tm_id            AS known_tm_id
     FROM bzz_players p
     JOIN canonical_teams ct ON ct.bzz_team_id = p.current_team_api_id
     LEFT JOIN career_import_attempts a ON a.player_api_id = p.api_id
+    LEFT JOIN player_tm_ids pt ON pt.player_api_id = p.api_id
     WHERE p.date_of_birth IS NOT NULL
       AND NOT EXISTS (
           SELECT 1 FROM player_career_seasons c
@@ -176,10 +185,12 @@ _QUEUE_SQL = text(
         p.nationality       AS nationality,
         p.date_of_birth     AS dob,
         p.current_team_name AS club,
-        sel.league_api_id   AS league_api_id
+        sel.league_api_id   AS league_api_id,
+        pt.tm_id            AS known_tm_id
     FROM bzz_players p
     JOIN player_selection_season_stats sel ON sel.player_api_id = p.api_id
     LEFT JOIN career_import_attempts a ON a.player_api_id = p.api_id
+    LEFT JOIN player_tm_ids pt ON pt.player_api_id = p.api_id
     WHERE p.date_of_birth IS NOT NULL
       AND NOT EXISTS (
           SELECT 1 FROM player_career_seasons c
@@ -207,7 +218,9 @@ async def players_needing_career(
     `player_api_id` (critere herite de la version precedente de la file).
 
     Rendus au format attendu par `build_player_report` : name, nationality,
-    dob (ISO), club.
+    dob (ISO), club. Porte aussi `known_tm_id` (int ou None) : si present,
+    `run_career_import` saute la recherche par nom et attaque directement
+    l'API carriere via `build_player_report_from_tm_id`.
     """
     now = now or dt.datetime.now(dt.timezone.utc)
     # Un seul seuil pour les deux issues : on prend le plus permissif (erreur
@@ -236,6 +249,7 @@ async def players_needing_career(
                 "nationality": r["nationality"] or "",
                 "dob": dob.isoformat() if hasattr(dob, "isoformat") else str(dob),
                 "club": r["club"] or "",
+                "known_tm_id": r["known_tm_id"],
                 "_wave": wave,
             }
 
@@ -322,7 +336,13 @@ async def run_career_import(
         api_id = player["player_api_id"]
         run.attempted += 1
         try:
-            report = build_player_report(client, player, cache)
+            known_tm_id = player.get("known_tm_id")
+            if known_tm_id:
+                # Chemin rapide : tm_id deja connu (player_tm_ids) -> 0
+                # recherche schnellsuche, directement l'API carriere + profil.
+                report = build_player_report_from_tm_id(client, player, known_tm_id)
+            else:
+                report = build_player_report(client, player, cache)
         except Exception as exc:
             # Toute defaillance sur UN joueur : panne reseau, HTTP, ou reponse
             # inattendue du scraper. On ne filtre pas sur TransfermarktError :

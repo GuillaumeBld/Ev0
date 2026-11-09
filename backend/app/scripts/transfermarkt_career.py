@@ -724,6 +724,63 @@ def build_player_report(
     return report
 
 
+def build_player_report_from_tm_id(
+    client: TransfermarktClient,
+    expected: dict[str, Any],
+    tm_id: int | str,
+) -> dict[str, Any]:
+    """Chemin rapide : le tm_id du joueur est deja connu (`player_tm_ids`,
+    rempli par la synchro d'effectifs ou le resolveur Wikidata) -> on SAUTE
+    `resolve_player`/`search_player_candidates` (schnellsuche, rate-limite et
+    ambigu sur homonymes) et on attaque directement l'API carriere (`ceapi`,
+    qui repond 200 pour un tm_id connu) ainsi que la page profil (qui repond
+    200 elle aussi) pour revalider la date de naissance.
+
+    Garde-fou anti-erreur conserve : un tm_id est un pari sur la source qui
+    l'a produit (squad roster, Wikidata) ; si la page profil expose une date
+    de naissance et qu'elle NE correspond PAS a celle attendue, on refuse le
+    tm_id plutot que d'importer une carriere erronee. Si le profil n'expose
+    pas de date (rare), on accepte : la source du tm_id a deja ete verifiee
+    en amont.
+
+    Renvoie EXACTEMENT la meme structure de dict que `build_player_report`.
+    """
+    profile_url = f"{BASE_URL}/x/profil/spieler/{tm_id}"
+    profile_cache: dict[str, Any] = {"profile_dob": {}}
+    dob_tm = fetch_profile_dob(client, str(tm_id), profile_url, profile_cache)
+
+    report: dict[str, Any] = {
+        "input_name": expected["name"],
+        "input_nationality": expected.get("nationality"),
+        "input_dob": expected["dob"],
+        "input_club": expected.get("club"),
+        "matched": False,
+        "tm_id": tm_id,
+        "matched_name": None,
+        "profile_url": profile_url,
+        "dob_transfermarkt": dob_tm,
+        "match_confidence": "unresolved",
+        "reason": None,
+        "candidates_checked": [],
+    }
+
+    if dob_tm is not None and dob_tm != expected["dob"]:
+        report["reason"] = "dob TM discordante (fast-path tm_id)"
+        report["total_games_fetched"] = 0
+        report["seasons"] = []
+        return report
+
+    report["matched"] = True
+    report["match_confidence"] = "known_tm_id"
+    report["reason"] = None
+
+    games = fetch_career_games(client, str(tm_id))
+    seasons = aggregate_by_season_and_competition(client, games, profile_cache)
+    report["total_games_fetched"] = len(games)
+    report["seasons"] = seasons
+    return report
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Recuperateur durci : historique de carriere Transfermarkt avec validation par date de naissance."

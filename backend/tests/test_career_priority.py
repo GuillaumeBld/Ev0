@@ -23,6 +23,7 @@ from app.models.bzzoiro import BzzPlayer
 from app.models.canonical_teams import CanonicalTeam
 from app.models.career_import import CareerImportAttempt
 from app.models.player_career import PlayerCareerSeason
+from app.models.player_tm_id import PlayerTmId
 from app.models.selection_stats import PlayerSelectionSeasonStat
 
 NOW = dt.datetime(2026, 11, 9, 3, 0, tzinfo=dt.UTC)
@@ -79,6 +80,10 @@ async def session_factory():
             PlayerSelectionSeasonStat.__table__,
             CareerImportAttempt.__table__,
             PlayerCareerSeason.__table__,
+            # Jalon 4/5 contournement rate-limit TM : `players_needing_career`
+            # LEFT JOIN desormais `player_tm_ids` ; sans cette table, la
+            # requete SQL de la fixture echoue (OperationalError).
+            PlayerTmId.__table__,
         ):
             await conn.run_sync(lambda sync_conn, t=table: t.create(sync_conn))
     factory = async_sessionmaker(engine, expire_on_commit=False)
