@@ -126,6 +126,23 @@ def _season_values(player_api_id: int, tm_id: int | None, season: dict[str, Any]
         "goals": season.get("goals") or 0,
         "assists": season.get("assists") or 0,
         "minutes": season.get("minutes") or 0,
+        # Colonnes nullables (cf. app/models/player_career.py) : NULL =
+        # inconnu, jamais 0 devine. Pas de "or 0" ici -> une cle absente ou
+        # explicitement None du bucket d'agregation (jalon 2) reste NULL en
+        # base plutot que d'etre confondue avec une vraie valeur 0.
+        "starts": season.get("starts"),
+        "total_shots": season.get("total_shots"),
+        "shots_on_target": season.get("shots_on_target"),
+        "total_pass": season.get("total_pass"),
+        "accurate_pass": season.get("accurate_pass"),
+        "total_tackle": season.get("total_tackle"),
+        "won_tackle": season.get("won_tackle"),
+        "yellow_card": season.get("yellow_card"),
+        "red_card": season.get("red_card"),
+        "fouls_committed": season.get("fouls_committed"),
+        "fouls_suffered": season.get("fouls_suffered"),
+        "offsides": season.get("offsides"),
+        "source": "transfermarkt",
     }
 
 
