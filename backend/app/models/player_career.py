@@ -1,6 +1,6 @@
 """Player career history (per season / competition), sourced from Transfermarkt."""
 
-from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -36,6 +36,28 @@ class PlayerCareerSeason(Base, TimestampMixin):
     goals: Mapped[int] = mapped_column(Integer, nullable=False)
     assists: Mapped[int] = mapped_column(Integer, nullable=False)
     minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # --- Gabarit Bzzoiro complémenté par Transfermarkt (nullable : NULL = inconnu, jamais 0 deviné) ---
+    starts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_shots: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    shots_on_target: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_pass: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    accurate_pass: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tackle: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    won_tackle: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    yellow_card: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    red_card: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fouls_committed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fouls_suffered: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    offsides: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False, server_default="transfermarkt")
+
+    # Compartiment Selection (equipe nationale) vs Club : True si TOUS les
+    # matchs joues de ce bucket (saison, competition) sont des matchs
+    # internationaux (gameInformation.isNationalGame cote Transfermarkt).
+    # Defaut False : un bucket club normal, ou tout bucket mixte/ambigu,
+    # n'est jamais marque selection a tort.
+    is_national: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
 
     def __repr__(self) -> str:
         return (

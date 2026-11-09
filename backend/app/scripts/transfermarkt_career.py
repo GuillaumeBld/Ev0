@@ -597,8 +597,17 @@ def aggregate_by_season_and_competition(
     hors groupe, convoque non joue ou absence sont exclus.
     """
     buckets: dict[tuple[Any, Any], dict[str, Any]] = defaultdict(
-        lambda: {"appearances": 0, "goals": 0, "assists": 0, "minutes": 0}
+        lambda: {"appearances": 0, "goals": 0, "assists": 0, "minutes": 0,
+                 "starts": 0, "total_shots": 0, "shots_on_target": 0,
+                 "total_pass": 0, "accurate_pass": 0, "total_tackle": 0, "won_tackle": 0,
+                 "yellow_card": 0, "red_card": 0,
+                 "fouls_committed": 0, "fouls_suffered": 0, "offsides": 0}
     )
+    # Compartiment Selection vs Club : accumule, par bucket, la liste des
+    # drapeaux isNationalGame des matchs JOUES rencontres. `is_national`
+    # final = all(...) sur cette liste -> un seul match club dans un bucket
+    # sinon tout-international le bascule a False (jamais de faux positif).
+    national_flags: dict[tuple[Any, Any], list[bool]] = defaultdict(list)
     skipped_states: dict[str, int] = defaultdict(int)
 
     for game in games:
@@ -634,6 +643,8 @@ def aggregate_by_season_and_competition(
         else:
             bucket["competition"] = competition_id
 
+        national_flags[key].append(bool(game_info.get("isNationalGame")))
+
         bucket["appearances"] += 1
 
         goal_stats = stats.get("goalStatistics") or {}
@@ -643,8 +654,31 @@ def aggregate_by_season_and_competition(
         minutes = (stats.get("playingTimeStatistics") or {}).get("playedMinutes")
         bucket["minutes"] += minutes or 0
 
+        play = stats.get("playingTimeStatistics") or {}
+        if play.get("isStarting"):
+            bucket["starts"] += 1
+        bucket["total_shots"] += goal_stats.get("scoringAttempts") or 0
+        bucket["shots_on_target"] += goal_stats.get("scoringAttemptsOnGoal") or 0
+        dist = stats.get("distributionStatistics") or {}
+        bucket["total_pass"] += dist.get("passes") or 0
+        bucket["accurate_pass"] += dist.get("passesReached") or 0
+        duel = stats.get("duelStatistics") or {}
+        bucket["total_tackle"] += duel.get("tackles") or 0
+        bucket["won_tackle"] += duel.get("tacklesWon") or 0
+        bucket["fouls_committed"] += duel.get("foulsCommitted") or 0
+        bucket["fouls_suffered"] += duel.get("foulsGained") or 0
+        bucket["offsides"] += duel.get("offsides") or 0
+        card = stats.get("cardStatistics") or {}
+        bucket["yellow_card"] += card.get("yellowCardNet") or 0
+        red = card.get("redCard")
+        bucket["red_card"] += 1 if (isinstance(red, dict) and red.get("minute") is not None) else 0
+
     if skipped_states:
         log.info("Matchs exclus des apparitions (non joues): %s", dict(skipped_states))
+
+    for key, bucket in buckets.items():
+        flags = national_flags.get(key) or []
+        bucket["is_national"] = bool(flags) and all(flags)
 
     seasons = list(buckets.values())
     seasons.sort(key=lambda s: (-(s.get("season_start_year") or 0), str(s.get("competition") or "")))

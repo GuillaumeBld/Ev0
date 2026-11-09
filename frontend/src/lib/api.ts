@@ -796,6 +796,43 @@ export interface CareerCompetitionOut {
   goals: number
   assists: number
   minutes: number
+  /** "bzzoiro" | "merged" | "transfermarkt" — voir `CareerCompetitionOut`
+   *  côté backend (`backend/app/api/players.py`). Optionnel : rétrocompat
+   *  avec les réponses émises avant le jalon 10. */
+  source?: string
+  is_national?: boolean
+  /** Champs Bzzoiro-only — jamais comblés par Transfermarkt (voir docstring
+   *  backend). `null` si non disponible pour cette (saison, compétition). */
+  expected_goals?: number | null
+  avg_rating?: number | null
+
+  // --- Jalon 10 : gabarit complet, réconcilié champ par champ côté backend
+  // (`_build_career_seasons`). Tous nullable : `null` si aucune des deux
+  // sources ne fournit le champ — jamais une valeur inventée.
+  starts?: number | null
+  total_shots?: number | null
+  shots_on_target?: number | null
+  key_pass?: number | null
+  total_pass?: number | null
+  accurate_pass?: number | null
+  total_cross?: number | null
+  accurate_cross?: number | null
+  total_long_balls?: number | null
+  accurate_long_balls?: number | null
+  total_tackle?: number | null
+  won_tackle?: number | null
+  duel_won?: number | null
+  duel_lost?: number | null
+  interception?: number | null
+  ball_recovery?: number | null
+  aerial_won?: number | null
+  aerial_lost?: number | null
+  fouls_committed?: number | null
+  fouls_suffered?: number | null
+  offsides?: number | null
+  yellow_card?: number | null
+  red_card?: number | null
+  expected_assists?: number | null
 }
 
 export interface CareerSeasonOut {
@@ -806,6 +843,22 @@ export interface CareerSeasonOut {
   assists: number
   minutes: number
   competitions: CareerCompetitionOut[]
+
+  // --- Jalon 10 : totaux "Parcours" agrégés côté backend (sommes sur les
+  // compétitions de la saison), même principe que ci-dessus : `null` si
+  // aucune compétition de la saison ne fournit le champ (jamais 0 inventé).
+  starts?: number | null
+  total_shots?: number | null
+  shots_on_target?: number | null
+  total_pass?: number | null
+  accurate_pass?: number | null
+  total_tackle?: number | null
+  won_tackle?: number | null
+  yellow_card?: number | null
+  red_card?: number | null
+  fouls_committed?: number | null
+  fouls_suffered?: number | null
+  offsides?: number | null
 }
 
 export interface BlendedRhythmOut {

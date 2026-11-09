@@ -21,6 +21,8 @@ from app.ingestion.bzzoiro.constants import (
     TARGET_LEAGUE_API_ID_LIST,
     TARGET_LEAGUE_INTERNAL_ID_LIST,
 )
+from app.ingestion.bzzoiro.league_registry import LEAGUE_REGISTRY, TIER_SELECTION
+from app.ingestion.competition_identity import tm_code_to_league_api_id
 from app.models.bzzoiro import (
     BzzEvent,
     BzzLeague,
@@ -261,7 +263,17 @@ class SeasonStatsOut(BaseModel):
 
 
 class CareerCompetitionOut(BaseModel):
-    """One (season, competition) row from player_career_seasons."""
+    """One (season, competition) row, reconciled between Bzzoiro
+    (bzz_player_season_stats, authority) and Transfermarkt
+    (player_career_seasons, complement) — see `_build_career_seasons`.
+
+    `source` tells which side the displayed values came from:
+    "bzzoiro" (Bzzoiro had the row, nothing to fill), "merged" (Bzzoiro had
+    the row but at least one NULL field was filled from the Transfermarkt
+    counterpart), or "transfermarkt" (Bzzoiro had no row at all for this
+    (season, competition)). `expected_goals`/`avg_rating` are Bzzoiro-only
+    fields: never fabricated when the entry is Transfermarkt-only.
+    """
 
     competition: str | None
     competition_code: str | None
@@ -269,6 +281,39 @@ class CareerCompetitionOut(BaseModel):
     goals: int
     assists: int
     minutes: int
+    source: str
+    is_national: bool = False
+    expected_goals: float | None = None
+    avg_rating: float | None = None
+
+    # --- Task 10 : gabarit complet, reconcilie champ par champ (voir
+    # _build_career_seasons). Additifs uniquement — rien ci-dessus n'est
+    # renomme ou supprime. NULL si aucune des deux sources ne fournit le
+    # champ ; jamais invente.
+    starts: int | float | None = None
+    total_shots: int | float | None = None
+    shots_on_target: int | float | None = None
+    key_pass: int | float | None = None
+    total_pass: int | float | None = None
+    accurate_pass: int | float | None = None
+    total_cross: int | float | None = None
+    accurate_cross: int | float | None = None
+    total_long_balls: int | float | None = None
+    accurate_long_balls: int | float | None = None
+    total_tackle: int | float | None = None
+    won_tackle: int | float | None = None
+    duel_won: int | float | None = None
+    duel_lost: int | float | None = None
+    interception: int | float | None = None
+    ball_recovery: int | float | None = None
+    aerial_won: int | float | None = None
+    aerial_lost: int | float | None = None
+    fouls_committed: int | float | None = None
+    fouls_suffered: int | float | None = None
+    offsides: int | float | None = None
+    yellow_card: int | float | None = None
+    red_card: int | float | None = None
+    expected_assists: int | float | None = None
 
 
 class CareerSeasonOut(BaseModel):
@@ -280,6 +325,24 @@ class CareerSeasonOut(BaseModel):
     goals: int
     assists: int
     minutes: int
+
+    # --- Task 10 : totaux "Parcours" agreges (sommes sur les competitions
+    # de la saison), meme principe qu'appearances/goals/assists/minutes
+    # ci-dessus mais nullable : None si aucune competition de la saison ne
+    # fournit le champ (jamais 0 invente).
+    starts: int | float | None = None
+    total_shots: int | float | None = None
+    shots_on_target: int | float | None = None
+    total_pass: int | float | None = None
+    accurate_pass: int | float | None = None
+    total_tackle: int | float | None = None
+    won_tackle: int | float | None = None
+    yellow_card: int | float | None = None
+    red_card: int | float | None = None
+    fouls_committed: int | float | None = None
+    fouls_suffered: int | float | None = None
+    offsides: int | float | None = None
+
     competitions: list[CareerCompetitionOut]
 
 
@@ -1843,59 +1906,329 @@ async def get_player(
 
 _UNKNOWN_COMPETITION_LABEL = "Autre"
 
+# Bzzoiro's `season` string is always "NNNN-NNNN" (see
+# app.services.season_service), unlike Transfermarkt's "NN/NN"-style
+# `season` display string — the two can never be compared as raw strings.
+# `season_start_year` (an explicit int on both sides once parsed) is the
+# only safe merge key across the two sources.
+_BZZ_SEASON_RE = re.compile(r"^(\d{4})-(\d{4})$")
 
-def _build_career_seasons(rows: list[PlayerCareerSeason]) -> list[CareerSeasonOut]:
-    """Group career rows by season (summed across competitions), keep per-competition detail.
 
-    Sorted by season_start_year descending; seasons with no season_start_year
-    (malformed/unparsable source data) sort last, never first.
+def _bzz_season_start_year(season: str) -> int | None:
+    """Parse Bzzoiro's "NNNN-NNNN" season string into its start year.
 
-    `competition_code` is always "" (never NULL, see app.scripts.import_career)
-    for matches without a Transfermarkt competitionId (friendlies) — such rows
-    get a readable fallback label instead of a raw empty string.
+    Defensive: an unparsable season string (never seen in practice, but
+    never trusted blindly either) returns None rather than raising —
+    consistent with how a missing/unparsable TM `season_start_year` is
+    already handled (bucket sorts last, grouped by raw string instead).
     """
-    grouped: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
+    match = _BZZ_SEASON_RE.match(season or "")
+    return int(match.group(1)) if match else None
 
-    for row in rows:
-        bucket = grouped.get(row.season)
-        if bucket is None:
-            bucket = {
-                "season": row.season,
-                "season_start_year": row.season_start_year,
-                "appearances": 0,
-                "goals": 0,
-                "assists": 0,
-                "minutes": 0,
-                "competitions": [],
-            }
-            grouped[row.season] = bucket
-            order.append(row.season)
-        elif bucket["season_start_year"] is None and row.season_start_year is not None:
-            bucket["season_start_year"] = row.season_start_year
 
-        bucket["appearances"] += row.appearances
-        bucket["goals"] += row.goals
-        bucket["assists"] += row.assists
-        bucket["minutes"] += row.minutes
+def _season_bucket_key(season_start_year: int | None, season: str) -> Any:
+    """Grouping key for one season, across both sources.
+
+    Known `season_start_year` is the key (so a Bzzoiro "NNNN-NNNN" season
+    string and a Transfermarkt "NN/NN" display string for the same real
+    season — e.g. start year 2025 on both sides — land in the same
+    bucket). Falls back to the raw season string when the year truly isn't
+    known on either side — same degraded behaviour as before Task 8.
+    """
+    return season_start_year if season_start_year is not None else ("raw", season)
+
+
+def _competition_identity(
+    *, league_api_id: int | None = None, competition_code: str | None = None
+) -> tuple[str, Any]:
+    """Stable identity for one (season, competition) merge bucket.
+
+    Bzzoiro rows pass `league_api_id` directly — already the
+    LEAGUE_REGISTRY/internal id space (see
+    app.ingestion.competition_identity's module docstring). Transfermarkt
+    rows pass `competition_code`, mapped onto that same id space via
+    `tm_code_to_league_api_id` (Task 7) when the mapping is known, so a
+    Bzzoiro row and a TM row for the same real competition resolve to the
+    SAME key. An unmapped TM code (e.g. "EM", edition-ambiguous — see
+    competition_identity.py) gets its own "tm" namespace: it never silently
+    merges with an unrelated competition.
+    """
+    if league_api_id is not None:
+        return ("league", league_api_id)
+    mapped = tm_code_to_league_api_id(competition_code) if competition_code else None
+    if mapped is not None:
+        return ("league", mapped)
+    return ("tm", competition_code)
+
+
+# Task 10 : subset "Parcours" des nouveaux champs fins qui est aussi
+# agrege (somme) au niveau CareerSeasonOut, comme appearances/goals/
+# assists/minutes le sont deja. Nullable : une saison sans aucune
+# competition fournissant le champ reste None, jamais 0 invente.
+_SEASON_AGGREGATE_FIELDS = (
+    "starts",
+    "total_shots",
+    "shots_on_target",
+    "total_pass",
+    "accurate_pass",
+    "total_tackle",
+    "won_tackle",
+    "yellow_card",
+    "red_card",
+    "fouls_committed",
+    "fouls_suffered",
+    "offsides",
+)
+
+
+def _build_career_seasons(
+    tm_rows: list[PlayerCareerSeason],
+    bzz_rows: list[BzzPlayerSeasonStat],
+) -> list[CareerSeasonOut]:
+    """Reconcile Bzzoiro (authority) and Transfermarkt (complement) career
+    rows into one entry per (season, competition) — never two.
+
+    Rule (Task 8): if a Bzzoiro row and a TM row land on the same
+    (season, competition) key, the Bzzoiro values win; any Bzzoiro field
+    that is NULL gets filled from the TM counterpart (`source="merged"`
+    when that happens, `source="bzzoiro"` when Bzzoiro already had
+    everything). A TM row with no Bzzoiro counterpart becomes a
+    `source="transfermarkt"` entry — its xG/notes fields (Bzzoiro-only)
+    stay None, never fabricated. A Bzzoiro row with no TM counterpart
+    becomes a `source="bzzoiro"` entry.
+
+    Sorted by season_start_year descending; seasons with no
+    season_start_year sort last, never first (unchanged from before).
+    """
+    # key -> merged per-competition fields (not yet a CareerCompetitionOut:
+    # built once per key is final after both passes).
+    competitions: dict[tuple[Any, tuple[str, Any]], dict[str, Any]] = {}
+    season_labels: dict[Any, str] = {}
+    season_start_years: dict[Any, int | None] = {}
+
+    # Pass 1 — seed every bucket from Bzzoiro (authority).
+    for row in bzz_rows:
+        season_start_year = _bzz_season_start_year(row.season)
+        bucket = _season_bucket_key(season_start_year, row.season)
+        season_labels.setdefault(bucket, row.season)
+        season_start_years[bucket] = season_start_year
+
+        identity = _competition_identity(league_api_id=row.league_api_id)
+        key = (bucket, identity)
+        league_meta = (
+            LEAGUE_REGISTRY.get(row.league_api_id) if row.league_api_id is not None else None
+        )
+        competitions[key] = {
+            "competition": league_meta.name if league_meta else None,
+            "competition_code": None,
+            "appearances": row.matches_played,
+            "goals": row.goals,
+            "assists": row.goal_assist,
+            "minutes": row.minutes_played,
+            "expected_goals": row.expected_goals,
+            "avg_rating": row.avg_rating,
+            "is_national": bool(league_meta and league_meta.tier == TIER_SELECTION),
+            "source": "bzzoiro",
+            # Gabarit Bzzoiro (Task 10) : fourni directement par la ligne.
+            "starts": row.starts,
+            "total_shots": row.total_shots,
+            "shots_on_target": row.shots_on_target,
+            "key_pass": row.key_pass,
+            "total_pass": row.total_pass,
+            "accurate_pass": row.accurate_pass,
+            "total_cross": row.total_cross,
+            "accurate_cross": row.accurate_cross,
+            "total_long_balls": row.total_long_balls,
+            "accurate_long_balls": row.accurate_long_balls,
+            "total_tackle": row.total_tackle,
+            "won_tackle": row.won_tackle,
+            "duel_won": row.duel_won,
+            "duel_lost": row.duel_lost,
+            "interception": row.interception,
+            "ball_recovery": row.ball_recovery,
+            "aerial_won": row.aerial_won,
+            "aerial_lost": row.aerial_lost,
+            "yellow_card": row.yellow_card,
+            "red_card": row.red_card,
+            "expected_assists": row.expected_assists,
+            # Hors gabarit Bzzoiro (bzz_player_season_stats n'a pas ces
+            # colonnes) -> None tant que TM ne comble pas (pass 2).
+            "fouls_committed": None,
+            "fouls_suffered": None,
+            "offsides": None,
+        }
+
+    # Pass 2 — Transfermarkt fills NULL fields on an existing Bzzoiro bucket
+    # (-> "merged"), or creates a TM-only entry when Bzzoiro has nothing here.
+    for row in tm_rows:
+        bucket = _season_bucket_key(row.season_start_year, row.season)
+        season_labels.setdefault(bucket, row.season)
+        season_start_years.setdefault(bucket, row.season_start_year)
+
+        identity = _competition_identity(competition_code=row.competition_code)
+        key = (bucket, identity)
         competition_label = row.competition
         if row.competition_code == "" and not competition_label:
             competition_label = _UNKNOWN_COMPETITION_LABEL
 
-        bucket["competitions"].append(
+        existing = competitions.get(key)
+        if existing is None:
+            competitions[key] = {
+                "competition": competition_label,
+                "competition_code": row.competition_code,
+                "appearances": row.appearances,
+                "goals": row.goals,
+                "assists": row.assists,
+                "minutes": row.minutes,
+                "expected_goals": None,
+                "avg_rating": None,
+                "is_national": row.is_national,
+                "source": "transfermarkt",
+                # Gabarit TM (Task 10) : fourni directement par la ligne.
+                "starts": row.starts,
+                "total_shots": row.total_shots,
+                "shots_on_target": row.shots_on_target,
+                "total_pass": row.total_pass,
+                "accurate_pass": row.accurate_pass,
+                "total_tackle": row.total_tackle,
+                "won_tackle": row.won_tackle,
+                "yellow_card": row.yellow_card,
+                "red_card": row.red_card,
+                "fouls_committed": row.fouls_committed,
+                "fouls_suffered": row.fouls_suffered,
+                "offsides": row.offsides,
+                # Hors gabarit TM (player_career_seasons n'a pas ces
+                # colonnes, propres a Bzzoiro) -> jamais inventes.
+                "key_pass": None,
+                "total_cross": None,
+                "accurate_cross": None,
+                "total_long_balls": None,
+                "accurate_long_balls": None,
+                "duel_won": None,
+                "duel_lost": None,
+                "interception": None,
+                "ball_recovery": None,
+                "aerial_won": None,
+                "aerial_lost": None,
+                "expected_assists": None,
+            }
+            continue
+
+        filled = False
+        for field, tm_value in (
+            ("appearances", row.appearances),
+            ("goals", row.goals),
+            ("assists", row.assists),
+            ("minutes", row.minutes),
+            ("starts", row.starts),
+            ("total_shots", row.total_shots),
+            ("shots_on_target", row.shots_on_target),
+            ("total_pass", row.total_pass),
+            ("accurate_pass", row.accurate_pass),
+            ("total_tackle", row.total_tackle),
+            ("won_tackle", row.won_tackle),
+            ("yellow_card", row.yellow_card),
+            ("red_card", row.red_card),
+            ("fouls_committed", row.fouls_committed),
+            ("fouls_suffered", row.fouls_suffered),
+            ("offsides", row.offsides),
+        ):
+            if existing.get(field) is None and tm_value is not None:
+                existing[field] = tm_value
+                filled = True
+        if existing.get("competition") is None and competition_label:
+            existing["competition"] = competition_label
+            filled = True
+        if existing.get("competition_code") is None and row.competition_code:
+            existing["competition_code"] = row.competition_code
+            filled = True
+        if filled:
+            existing["source"] = "merged"
+
+    # Group the reconciled competition entries back into one row per season.
+    seasons: dict[Any, dict[str, Any]] = {}
+    for (bucket, _identity), entry in competitions.items():
+        season_dict = seasons.setdefault(
+            bucket,
+            {
+                "season": season_labels.get(bucket, ""),
+                "season_start_year": season_start_years.get(bucket),
+                "appearances": 0,
+                "goals": 0,
+                "assists": 0,
+                "minutes": 0,
+                # Task 10 : totaux "Parcours" agreges, None tant qu'aucune
+                # competition de la saison n'a fourni le champ (jamais 0
+                # invente — voir boucle d'accumulation ci-dessous).
+                "starts": None,
+                "total_shots": None,
+                "shots_on_target": None,
+                "total_pass": None,
+                "accurate_pass": None,
+                "total_tackle": None,
+                "won_tackle": None,
+                "yellow_card": None,
+                "red_card": None,
+                "fouls_committed": None,
+                "fouls_suffered": None,
+                "offsides": None,
+                "competitions": [],
+            },
+        )
+        appearances = entry["appearances"] or 0
+        goals = entry["goals"] or 0
+        assists = entry["assists"] or 0
+        minutes = entry["minutes"] or 0
+        season_dict["appearances"] += appearances
+        season_dict["goals"] += goals
+        season_dict["assists"] += assists
+        season_dict["minutes"] += minutes
+        for field in _SEASON_AGGREGATE_FIELDS:
+            value = entry.get(field)
+            if value is not None:
+                season_dict[field] = (season_dict[field] or 0) + value
+        season_dict["competitions"].append(
             CareerCompetitionOut(
-                competition=competition_label,
-                competition_code=row.competition_code,
-                appearances=row.appearances,
-                goals=row.goals,
-                assists=row.assists,
-                minutes=row.minutes,
+                competition=entry["competition"],
+                competition_code=entry["competition_code"],
+                appearances=appearances,
+                goals=goals,
+                assists=assists,
+                minutes=minutes,
+                source=entry["source"],
+                is_national=entry["is_national"],
+                expected_goals=entry["expected_goals"],
+                avg_rating=entry["avg_rating"],
+                starts=entry["starts"],
+                total_shots=entry["total_shots"],
+                shots_on_target=entry["shots_on_target"],
+                key_pass=entry["key_pass"],
+                total_pass=entry["total_pass"],
+                accurate_pass=entry["accurate_pass"],
+                total_cross=entry["total_cross"],
+                accurate_cross=entry["accurate_cross"],
+                total_long_balls=entry["total_long_balls"],
+                accurate_long_balls=entry["accurate_long_balls"],
+                total_tackle=entry["total_tackle"],
+                won_tackle=entry["won_tackle"],
+                duel_won=entry["duel_won"],
+                duel_lost=entry["duel_lost"],
+                interception=entry["interception"],
+                ball_recovery=entry["ball_recovery"],
+                aerial_won=entry["aerial_won"],
+                aerial_lost=entry["aerial_lost"],
+                fouls_committed=entry["fouls_committed"],
+                fouls_suffered=entry["fouls_suffered"],
+                offsides=entry["offsides"],
+                yellow_card=entry["yellow_card"],
+                red_card=entry["red_card"],
+                expected_assists=entry["expected_assists"],
             )
         )
 
-    seasons = [CareerSeasonOut(**grouped[season]) for season in order]
-    seasons.sort(key=lambda s: (s.season_start_year is None, -(s.season_start_year or 0)))
-    return seasons
+    out_seasons = [CareerSeasonOut(**season_dict) for season_dict in seasons.values()]
+    out_seasons.sort(key=lambda s: (s.season_start_year is None, -(s.season_start_year or 0)))
+    return out_seasons
 
 
 @router.get("/{player_api_id}/career", response_model=PlayerCareerOut)
@@ -1910,6 +2243,12 @@ async def get_player_career(
     (not yet backfilled, or entirely covered by Bzzoiro) is a normal state:
     career=[] and blended_rhythm=None, not a 404 — blended_rhythm() already
     returns None gracefully when there is no usable data.
+
+    `career` is reconciled (Task 8) between Bzzoiro (bzz_player_season_stats,
+    authority) and Transfermarkt (player_career_seasons, complement) — see
+    `_build_career_seasons`. `blended_rhythm` below is computed separately
+    from the database (not from this reconciled `career` list) and is
+    untouched by Task 8.
     """
     player_result = await session.execute(
         select(BzzPlayer.api_id, BzzPlayer.name).where(BzzPlayer.api_id == player_api_id)
@@ -1922,7 +2261,11 @@ async def get_player_career(
         select(PlayerCareerSeason).where(PlayerCareerSeason.player_api_id == player_api_id)
     )).scalars().all()
 
-    career = _build_career_seasons(career_rows)
+    bzz_season_rows = (await session.execute(
+        select(BzzPlayerSeasonStat).where(BzzPlayerSeasonStat.player_api_id == player_api_id)
+    )).scalars().all()
+
+    career = _build_career_seasons(career_rows, bzz_season_rows)
 
     rhythm = await blended_rhythm(session, player_api_id)
     blended_rhythm_out = (

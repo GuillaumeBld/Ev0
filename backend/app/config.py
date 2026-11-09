@@ -59,6 +59,13 @@ class Settings(BaseSettings):  # type: ignore[misc]
     assist_decay_lambda: float = 0.017
     min_edge_threshold: float = 0.05  # 5% minimum edge
 
+    # Import carriere Transfermarkt — taille du lot nocturne (budget de
+    # requetes). La priorisation par vague (vague 1 avant vague 2) est deja
+    # garantie par l'ORDER BY de `players_needing_career` (Task 4) ; ce
+    # parametre pilote uniquement la cadence. Defaut aligne sur
+    # `DEFAULT_BATCH_LIMIT` (app.ingestion.career_import).
+    career_batch_limit: int = 120
+
     @property
     def cors_origins(self) -> list[str]:
         """Parse CORS origins from comma-separated string or wildcard."""
