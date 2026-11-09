@@ -46,7 +46,10 @@ def test_chemin_rapide_saute_la_recherche_et_appelle_profil_et_carriere():
     agg_mock.assert_called_once()
 
     assert report["matched"] is True
-    assert report["tm_id"] == TM_ID
+    # tm_id stocke en STR (comme le chemin lent) : `CareerImportAttempt.tm_id`
+    # est String(20) et asyncpg refuse un int -> cf. test de regression.
+    assert report["tm_id"] == str(TM_ID)
+    assert isinstance(report["tm_id"], str)
     assert report["match_confidence"] == "known_tm_id"
     assert report["reason"] is None
     assert report["profile_url"] == f"{BASE_URL}/x/profil/spieler/{TM_ID}"

@@ -755,7 +755,13 @@ def build_player_report_from_tm_id(
         "input_dob": expected["dob"],
         "input_club": expected.get("club"),
         "matched": False,
-        "tm_id": tm_id,
+        # `tm_id` stocke en STR comme le chemin lent (resolve_player renvoie
+        # toujours une str) : `CareerImportAttempt.tm_id` est String(20) et
+        # `record_attempt` l'ecrit HORS du try/except par joueur. Un int (venu
+        # de la colonne Integer `player_tm_ids.tm_id`) ferait lever asyncpg
+        # (expected str, got int) et planterait tout le lot. L'int brut reste
+        # disponible localement (`tm_id`) pour les URLs/appels ci-dessous.
+        "tm_id": str(tm_id),
         "matched_name": None,
         "profile_url": profile_url,
         "dob_transfermarkt": dob_tm,
