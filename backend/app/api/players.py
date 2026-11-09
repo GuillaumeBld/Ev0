@@ -286,6 +286,35 @@ class CareerCompetitionOut(BaseModel):
     expected_goals: float | None = None
     avg_rating: float | None = None
 
+    # --- Task 10 : gabarit complet, reconcilie champ par champ (voir
+    # _build_career_seasons). Additifs uniquement — rien ci-dessus n'est
+    # renomme ou supprime. NULL si aucune des deux sources ne fournit le
+    # champ ; jamais invente.
+    starts: int | float | None = None
+    total_shots: int | float | None = None
+    shots_on_target: int | float | None = None
+    key_pass: int | float | None = None
+    total_pass: int | float | None = None
+    accurate_pass: int | float | None = None
+    total_cross: int | float | None = None
+    accurate_cross: int | float | None = None
+    total_long_balls: int | float | None = None
+    accurate_long_balls: int | float | None = None
+    total_tackle: int | float | None = None
+    won_tackle: int | float | None = None
+    duel_won: int | float | None = None
+    duel_lost: int | float | None = None
+    interception: int | float | None = None
+    ball_recovery: int | float | None = None
+    aerial_won: int | float | None = None
+    aerial_lost: int | float | None = None
+    fouls_committed: int | float | None = None
+    fouls_suffered: int | float | None = None
+    offsides: int | float | None = None
+    yellow_card: int | float | None = None
+    red_card: int | float | None = None
+    expected_assists: int | float | None = None
+
 
 class CareerSeasonOut(BaseModel):
     """One season of career, aggregated across competitions, with per-competition detail."""
@@ -296,6 +325,24 @@ class CareerSeasonOut(BaseModel):
     goals: int
     assists: int
     minutes: int
+
+    # --- Task 10 : totaux "Parcours" agreges (sommes sur les competitions
+    # de la saison), meme principe qu'appearances/goals/assists/minutes
+    # ci-dessus mais nullable : None si aucune competition de la saison ne
+    # fournit le champ (jamais 0 invente).
+    starts: int | float | None = None
+    total_shots: int | float | None = None
+    shots_on_target: int | float | None = None
+    total_pass: int | float | None = None
+    accurate_pass: int | float | None = None
+    total_tackle: int | float | None = None
+    won_tackle: int | float | None = None
+    yellow_card: int | float | None = None
+    red_card: int | float | None = None
+    fouls_committed: int | float | None = None
+    fouls_suffered: int | float | None = None
+    offsides: int | float | None = None
+
     competitions: list[CareerCompetitionOut]
 
 
@@ -1914,6 +1961,26 @@ def _competition_identity(
     return ("tm", competition_code)
 
 
+# Task 10 : subset "Parcours" des nouveaux champs fins qui est aussi
+# agrege (somme) au niveau CareerSeasonOut, comme appearances/goals/
+# assists/minutes le sont deja. Nullable : une saison sans aucune
+# competition fournissant le champ reste None, jamais 0 invente.
+_SEASON_AGGREGATE_FIELDS = (
+    "starts",
+    "total_shots",
+    "shots_on_target",
+    "total_pass",
+    "accurate_pass",
+    "total_tackle",
+    "won_tackle",
+    "yellow_card",
+    "red_card",
+    "fouls_committed",
+    "fouls_suffered",
+    "offsides",
+)
+
+
 def _build_career_seasons(
     tm_rows: list[PlayerCareerSeason],
     bzz_rows: list[BzzPlayerSeasonStat],
@@ -1962,6 +2029,33 @@ def _build_career_seasons(
             "avg_rating": row.avg_rating,
             "is_national": bool(league_meta and league_meta.tier == TIER_SELECTION),
             "source": "bzzoiro",
+            # Gabarit Bzzoiro (Task 10) : fourni directement par la ligne.
+            "starts": row.starts,
+            "total_shots": row.total_shots,
+            "shots_on_target": row.shots_on_target,
+            "key_pass": row.key_pass,
+            "total_pass": row.total_pass,
+            "accurate_pass": row.accurate_pass,
+            "total_cross": row.total_cross,
+            "accurate_cross": row.accurate_cross,
+            "total_long_balls": row.total_long_balls,
+            "accurate_long_balls": row.accurate_long_balls,
+            "total_tackle": row.total_tackle,
+            "won_tackle": row.won_tackle,
+            "duel_won": row.duel_won,
+            "duel_lost": row.duel_lost,
+            "interception": row.interception,
+            "ball_recovery": row.ball_recovery,
+            "aerial_won": row.aerial_won,
+            "aerial_lost": row.aerial_lost,
+            "yellow_card": row.yellow_card,
+            "red_card": row.red_card,
+            "expected_assists": row.expected_assists,
+            # Hors gabarit Bzzoiro (bzz_player_season_stats n'a pas ces
+            # colonnes) -> None tant que TM ne comble pas (pass 2).
+            "fouls_committed": None,
+            "fouls_suffered": None,
+            "offsides": None,
         }
 
     # Pass 2 — Transfermarkt fills NULL fields on an existing Bzzoiro bucket
@@ -1990,6 +2084,33 @@ def _build_career_seasons(
                 "avg_rating": None,
                 "is_national": row.is_national,
                 "source": "transfermarkt",
+                # Gabarit TM (Task 10) : fourni directement par la ligne.
+                "starts": row.starts,
+                "total_shots": row.total_shots,
+                "shots_on_target": row.shots_on_target,
+                "total_pass": row.total_pass,
+                "accurate_pass": row.accurate_pass,
+                "total_tackle": row.total_tackle,
+                "won_tackle": row.won_tackle,
+                "yellow_card": row.yellow_card,
+                "red_card": row.red_card,
+                "fouls_committed": row.fouls_committed,
+                "fouls_suffered": row.fouls_suffered,
+                "offsides": row.offsides,
+                # Hors gabarit TM (player_career_seasons n'a pas ces
+                # colonnes, propres a Bzzoiro) -> jamais inventes.
+                "key_pass": None,
+                "total_cross": None,
+                "accurate_cross": None,
+                "total_long_balls": None,
+                "accurate_long_balls": None,
+                "duel_won": None,
+                "duel_lost": None,
+                "interception": None,
+                "ball_recovery": None,
+                "aerial_won": None,
+                "aerial_lost": None,
+                "expected_assists": None,
             }
             continue
 
@@ -1999,6 +2120,18 @@ def _build_career_seasons(
             ("goals", row.goals),
             ("assists", row.assists),
             ("minutes", row.minutes),
+            ("starts", row.starts),
+            ("total_shots", row.total_shots),
+            ("shots_on_target", row.shots_on_target),
+            ("total_pass", row.total_pass),
+            ("accurate_pass", row.accurate_pass),
+            ("total_tackle", row.total_tackle),
+            ("won_tackle", row.won_tackle),
+            ("yellow_card", row.yellow_card),
+            ("red_card", row.red_card),
+            ("fouls_committed", row.fouls_committed),
+            ("fouls_suffered", row.fouls_suffered),
+            ("offsides", row.offsides),
         ):
             if existing.get(field) is None and tm_value is not None:
                 existing[field] = tm_value
@@ -2024,6 +2157,21 @@ def _build_career_seasons(
                 "goals": 0,
                 "assists": 0,
                 "minutes": 0,
+                # Task 10 : totaux "Parcours" agreges, None tant qu'aucune
+                # competition de la saison n'a fourni le champ (jamais 0
+                # invente — voir boucle d'accumulation ci-dessous).
+                "starts": None,
+                "total_shots": None,
+                "shots_on_target": None,
+                "total_pass": None,
+                "accurate_pass": None,
+                "total_tackle": None,
+                "won_tackle": None,
+                "yellow_card": None,
+                "red_card": None,
+                "fouls_committed": None,
+                "fouls_suffered": None,
+                "offsides": None,
                 "competitions": [],
             },
         )
@@ -2035,6 +2183,10 @@ def _build_career_seasons(
         season_dict["goals"] += goals
         season_dict["assists"] += assists
         season_dict["minutes"] += minutes
+        for field in _SEASON_AGGREGATE_FIELDS:
+            value = entry.get(field)
+            if value is not None:
+                season_dict[field] = (season_dict[field] or 0) + value
         season_dict["competitions"].append(
             CareerCompetitionOut(
                 competition=entry["competition"],
@@ -2047,6 +2199,30 @@ def _build_career_seasons(
                 is_national=entry["is_national"],
                 expected_goals=entry["expected_goals"],
                 avg_rating=entry["avg_rating"],
+                starts=entry["starts"],
+                total_shots=entry["total_shots"],
+                shots_on_target=entry["shots_on_target"],
+                key_pass=entry["key_pass"],
+                total_pass=entry["total_pass"],
+                accurate_pass=entry["accurate_pass"],
+                total_cross=entry["total_cross"],
+                accurate_cross=entry["accurate_cross"],
+                total_long_balls=entry["total_long_balls"],
+                accurate_long_balls=entry["accurate_long_balls"],
+                total_tackle=entry["total_tackle"],
+                won_tackle=entry["won_tackle"],
+                duel_won=entry["duel_won"],
+                duel_lost=entry["duel_lost"],
+                interception=entry["interception"],
+                ball_recovery=entry["ball_recovery"],
+                aerial_won=entry["aerial_won"],
+                aerial_lost=entry["aerial_lost"],
+                fouls_committed=entry["fouls_committed"],
+                fouls_suffered=entry["fouls_suffered"],
+                offsides=entry["offsides"],
+                yellow_card=entry["yellow_card"],
+                red_card=entry["red_card"],
+                expected_assists=entry["expected_assists"],
             )
         )
 
