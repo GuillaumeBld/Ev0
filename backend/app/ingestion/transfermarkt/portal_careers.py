@@ -77,6 +77,7 @@ class PortalImportReport:
     rows_created: int = 0
     players_refreshed: int = 0
     rows_refreshed: int = 0
+    national_checked: int = 0
 
 
 def list_league_codes(index_html: str) -> list[str]:
@@ -206,6 +207,7 @@ async def import_portal_league(
     """Écrit les carrières d'un championnat. `with_career` est mis à jour au
     fil de l'eau (un joueur listé dans deux championnats n'est créé qu'une fois)."""
     report.players_in_portal += len(careers)
+    national_fixes: list[dict[str, Any]] = []
     for tm_id, seasons in careers.items():
         player_api_id = tm_to_player.get(tm_id)
         if player_api_id is None:
@@ -224,6 +226,25 @@ async def import_portal_league(
             report.rows_refreshed += 1
         if recent:
             report.players_refreshed += 1
+        for (start, comp), b in seasons.items():
+            flags = b["_national"]
+            national_fixes.append(
+                {"pid": player_api_id, "start": start, "comp": comp, "nat": bool(flags) and all(flags)}
+            )
+    if national_fixes:
+        # Étiquette Sélection/Club sur TOUTES les saisons des carrières
+        # existantes : nos imports d'avant l'ajout de `is_national` l'ont
+        # laissée à False (ex. qualifications Euro rangées en « Club »). Seule
+        # cette colonne est touchée, et seulement si elle diffère.
+        await session.execute(
+            text(
+                "UPDATE player_career_seasons SET is_national = :nat, updated_at = now() "
+                "WHERE player_api_id = :pid AND season_start_year = :start "
+                "AND competition_code = :comp AND is_national IS DISTINCT FROM :nat"
+            ),
+            national_fixes,
+        )
+        report.national_checked += len(national_fixes)
     await session.commit()
 
 

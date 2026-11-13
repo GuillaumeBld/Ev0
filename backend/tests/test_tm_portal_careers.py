@@ -93,3 +93,27 @@ async def test_import_creates_full_career_or_refreshes_recent_seasons_only():
     assert 100 in with_career
     assert (report.careers_created, report.rows_created, report.players_refreshed, report.players_known) == (1, 2, 1, 2)
     session.commit.assert_awaited()
+    # étiquette Sélection/Club vérifiée sur toutes les saisons du joueur existant
+    stmt, params = session.execute.await_args.args
+    assert "is_national IS DISTINCT FROM" in str(stmt)
+    assert sorted((p["pid"], p["start"], p["comp"], p["nat"]) for p in params) == [
+        (200, 2020, "FR2", False), (200, 2026, "FR1", False),
+    ]
+    assert report.national_checked == 2
+
+
+@pytest.mark.asyncio
+async def test_national_label_true_only_when_every_played_row_is_a_national_team():
+    careers = pc.aggregate_career_rows(_rows(
+        "2,Old,2019,EMQ,3377,True,4,3,0,270,1,0,0,0,0",
+        # amicaux mêlant club et sélection -> « Club » (jamais de faux positif)
+        "2,Old,2019,FS,3377,True,2,2,0,180,0,0,0,0,0",
+        "2,Old,2019,FS,583,False,3,3,0,200,0,0,0,0,0",
+    ))
+    session = AsyncMock()
+    await pc.import_portal_league(
+        session, careers, tm_to_player={2: 200}, with_career={200},
+        labels=pc.SeasonLabels(), refresh_from_season=2025, report=pc.PortalImportReport(),
+    )
+    params = session.execute.await_args.args[1]
+    assert {p["comp"]: p["nat"] for p in params} == {"EMQ": True, "FS": False}
