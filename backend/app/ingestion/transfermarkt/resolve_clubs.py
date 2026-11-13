@@ -70,6 +70,39 @@ TM_COMPETITION_CODES: dict[str, str] = {
     "ligue_2": "FR2",
     "la_liga_2": "ES2",
     "serie_b": "IT2",
+    # -- Univers Atlas élargi (13/11/2026) ---------------------------------
+    # 27 championnats intégrés côté Bzzoiro mais absents d'ici : leurs ~800
+    # clubs n'avaient jamais d'identifiant TM, donc ni effectif synchronisé
+    # ni tm_id joueur (carrière bloquée sur la recherche rate-limitée).
+    # Codes vérifiés le 13/11/2026 contre les pages compétition TM (nombre
+    # de clubs + titre de saison courante). ARG1 et non AR1N (= 2024 figé).
+    "argentine": "ARG1",
+    "mls": "MLS1",
+    "bresil": "BRA1",
+    "colombie": "COL1",
+    "japon_j1": "JAP1",
+    "arabie_saoudite": "SA1",
+    "chine": "CSL",
+    "mexique": "MEX1",
+    "turquie": "TR1",
+    "liga_portugal_2": "PO2",
+    "serie_c_a": "IT3A",
+    "serie_c_b": "IT3B",
+    "serie_c_c": "IT3C",
+    "tunisie": "TUN1",
+    "maroc": "MAR1",
+    "pologne": "PL1",
+    "roumanie": "RO1",
+    "suede": "SE1",
+    "tchequie": "TS1",
+    "grece": "GR1",
+    "bulgarie": "BU1",
+    "norvege": "NO1",
+    "coree_du_sud": "RSK1",
+    "finlande": "FI1",
+    "suisse": "C1",
+    "danemark": "DK1",
+    "australie": "AUS1",
 }
 
 # Les clubs d'une page competition TM apparaissent comme des liens
