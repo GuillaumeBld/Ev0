@@ -252,7 +252,9 @@ async def sync_squads(
                 samples[club.transfermarkt_club_id] = squad_result.raw_html
             continue
 
-        report = await match_players(session, squad_result.players, today)
+        report = await match_players(
+            session, squad_result.players, today, bzz_team_id=club.bzz_team_id
+        )
         ok_results.append((club, report))
 
     clubs_ok = len(ok_results)

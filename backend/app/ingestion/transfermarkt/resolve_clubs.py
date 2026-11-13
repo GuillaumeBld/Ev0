@@ -20,6 +20,7 @@ import html
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -145,6 +146,27 @@ def fetch_competition_clubs(client: TransfermarktClient, code: str) -> list[tupl
     resp = client.get(url, what=f"la page competition Transfermarkt '{code}'")
     clubs = parse_competition_clubs(resp.text)
     logger.info("Competition '%s' -> %d club(s) trouve(s).", code, len(clubs))
+    return clubs
+
+
+# Coupes d'Europe (13/11/2026) : pages "participants" de la saison courante,
+# tours preliminaires compris (CLQ/ELQ/ECLQ). Chaque saison des clubs entrent
+# en coupe sans jouer dans aucun championnat couvert (Partizan, Qarabag,
+# Celje...) : sans ces pages ils n'ont jamais d'effectif synchronise.
+TM_CUP_PARTICIPANT_CODES: tuple[str, ...] = ("CL", "EL", "UCOL", "CLQ", "ELQ", "ECLQ")
+
+
+def current_tm_season(today: date) -> int:
+    """Saison TM courante (`saison_id`) : annee de debut, bascule au 1er juillet."""
+    return today.year if today.month >= 7 else today.year - 1
+
+
+def fetch_cup_participants(client: TransfermarktClient, code: str, season: int) -> list[tuple[str, int]]:
+    """Clubs participants d'une coupe TM (`code`, ex. 'ECLQ') pour `season`."""
+    url = f"{BASE_URL}/-/teilnehmer/pokalwettbewerb/{code}/saison_id/{season}"
+    resp = client.get(url, what=f"les participants Transfermarkt '{code}' {season}")
+    clubs = parse_competition_clubs(resp.text)
+    logger.info("Coupe '%s' %d -> %d club(s) participant(s).", code, season, len(clubs))
     return clubs
 
 
@@ -305,6 +327,8 @@ async def resolve_and_store_club_ids(
     *,
     client: TransfermarktClient | None = None,
     competitions: dict[str, str] | None = None,
+    cups: tuple[str, ...] | None = None,
+    today: date | None = None,
 ) -> ResolveReport:
     """Resout les `transfermarkt_club_id` des `canonical_teams` pour toutes
     les competitions de `competitions` (par defaut `TM_COMPETITION_CODES`).
@@ -342,6 +366,13 @@ async def resolve_and_store_club_ids(
         tm_clubs: dict[int, str] = {}
         for code in codes.values():
             for name, club_id in fetch_competition_clubs(client, code):
+                tm_clubs.setdefault(club_id, name)
+        # Coupes : par defaut seulement quand on resout la liste par defaut
+        # des championnats (un appel cible `competitions=...` reste cible).
+        cup_codes = cups if cups is not None else (TM_CUP_PARTICIPANT_CODES if competitions is None else ())
+        season = current_tm_season(today or date.today())
+        for code in cup_codes:
+            for name, club_id in fetch_cup_participants(client, code, season):
                 tm_clubs.setdefault(club_id, name)
     finally:
         if owns_client:

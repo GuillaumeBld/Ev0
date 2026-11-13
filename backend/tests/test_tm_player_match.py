@@ -188,3 +188,120 @@ async def test_none_age_unmatched_when_name_not_unique(session_factory):
     assert report.matched == {}
     assert len(report.unmatched) == 1
     assert report.unmatched[0].tm_player_id == 7
+
+
+# --------------------------------------------------------------------------
+# Seconde passe : naissance exacte + club (13/11/2026)
+# --------------------------------------------------------------------------
+
+CLUB = 583
+OTHER_CLUB = 85
+
+
+def _tm_dob(name: str, dob: dt.date, tm_player_id: int) -> TMPlayer:
+    return TMPlayer(name=name, dob=dob, age=None, position="Midfield", tm_player_id=tm_player_id)
+
+
+@pytest.mark.asyncio
+async def test_dob_at_club_matches_name_variant(session_factory):
+    # Bzzoiro "Vitinha" vs TM "Vitor Ferreira Vitinha" : nom different, meme
+    # club, meme naissance -> reconnu.
+    dob = dt.date(2000, 2, 13)
+    await _seed(session_factory, [BzzPlayer(api_id=300, name="Vitinha", date_of_birth=dob, current_team_api_id=CLUB)])
+
+    async with session_factory() as session:
+        report = await match_players(
+            session, [_tm_dob("Vitor Ferreira Vitinha", dob, 30)], TODAY, bzz_team_id=CLUB
+        )
+
+    assert report.matched == {30: 300}
+    assert report.unmatched == []
+
+
+@pytest.mark.asyncio
+async def test_dob_at_club_without_club_context_stays_unmatched(session_factory):
+    dob = dt.date(2000, 2, 13)
+    await _seed(session_factory, [BzzPlayer(api_id=300, name="Vitinha", date_of_birth=dob, current_team_api_id=CLUB)])
+
+    async with session_factory() as session:
+        report = await match_players(session, [_tm_dob("Vitor Ferreira Vitinha", dob, 30)], TODAY)
+
+    assert report.matched == {}
+
+
+@pytest.mark.asyncio
+async def test_dob_at_club_ignores_player_of_another_club(session_factory):
+    dob = dt.date(2000, 2, 13)
+    await _seed(session_factory, [BzzPlayer(api_id=300, name="Vitinha", date_of_birth=dob, current_team_api_id=OTHER_CLUB)])
+
+    async with session_factory() as session:
+        report = await match_players(
+            session, [_tm_dob("Vitor Ferreira Vitinha", dob, 30)], TODAY, bzz_team_id=CLUB
+        )
+
+    assert report.matched == {}
+
+
+@pytest.mark.asyncio
+async def test_dob_at_club_rejects_unrelated_name_same_birthday(session_factory):
+    # Recrue nee le meme jour qu'un joueur Bzzoiro du club, noms sans rapport.
+    dob = dt.date(2001, 6, 1)
+    await _seed(session_factory, [BzzPlayer(api_id=301, name="Kang-in Lee", date_of_birth=dob, current_team_api_id=CLUB)])
+
+    async with session_factory() as session:
+        report = await match_players(session, [_tm_dob("Joao Neves", dob, 31)], TODAY, bzz_team_id=CLUB)
+
+    assert report.matched == {}
+
+
+@pytest.mark.asyncio
+async def test_dob_at_club_ambiguous_twins_stay_unmatched(session_factory):
+    dob = dt.date(1998, 3, 3)
+    await _seed(
+        session_factory,
+        [
+            BzzPlayer(api_id=302, name="R. Mendes", date_of_birth=dob, current_team_api_id=CLUB),
+            BzzPlayer(api_id=303, name="Rafael Mendes Junior", date_of_birth=dob, current_team_api_id=CLUB),
+        ],
+    )
+
+    async with session_factory() as session:
+        report = await match_players(session, [_tm_dob("Rafa Mendes", dob, 32)], TODAY, bzz_team_id=CLUB)
+
+    assert report.matched == {}
+
+
+@pytest.mark.asyncio
+async def test_dob_at_club_never_reuses_a_player_matched_by_name(session_factory):
+    dob = dt.date(1997, 5, 15)
+    await _seed(session_factory, [BzzPlayer(api_id=304, name="Ousmane Dembele", date_of_birth=dob, current_team_api_id=CLUB)])
+
+    async with session_factory() as session:
+        report = await match_players(
+            session,
+            [
+                TMPlayer(name="Ousmane Dembele", dob=dob, age=29, position="Winger", tm_player_id=33),
+                _tm_dob("O. Dembele", dob, 34),
+            ],
+            TODAY,
+            bzz_team_id=CLUB,
+        )
+
+    assert report.matched == {33: 304}
+    assert [t.tm_player_id for t in report.unmatched] == [34]
+
+
+@pytest.mark.asyncio
+async def test_dob_at_club_two_tm_players_claiming_same_candidate_both_rejected(session_factory):
+    dob = dt.date(2003, 9, 9)
+    await _seed(session_factory, [BzzPlayer(api_id=305, name="Senny Mayulu", date_of_birth=dob, current_team_api_id=CLUB)])
+
+    async with session_factory() as session:
+        report = await match_players(
+            session,
+            [_tm_dob("Senny Mayulu Jr", dob, 35), _tm_dob("S. Mayulu", dob, 36)],
+            TODAY,
+            bzz_team_id=CLUB,
+        )
+
+    assert report.matched == {}
