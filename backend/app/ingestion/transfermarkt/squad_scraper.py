@@ -81,6 +81,12 @@ _DOB_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 # dont le contenu est purement numerique (les cellules suivantes contiennent
 # des <img>/du texte non numerique, jamais captees par ce motif).
 _AGE_RE = re.compile(r'<td class="zentriert">\s*(\d{1,3})\s*</td>')
+# Vue "Detailed" (`/kader/verein/<id>/plus/1`, utilisee depuis le 13/11/2026) :
+# naissance + age dans UNE cellule, ex. `<td class="zentriert">25/02/1999 (27)</td>`.
+# Le suffixe "(age)" est obligatoire dans le motif : il distingue la naissance
+# des dates de contrat de la meme ligne (`01/07/2024`, `30/06/2029`), au meme
+# format mais sans age.
+_DOB_AGE_RE = re.compile(r">\s*(\d{2}/\d{2}/\d{4})\s*\((\d{1,2})\)\s*<")
 # Age plausible pour un joueur pro (garde-fou : hors de cette borne -> None,
 # on ne devine jamais).
 _AGE_MIN = 15
@@ -183,10 +189,23 @@ def _parse_row(row_html: str) -> TMPlayer | None:
     # — numero, poste — sont dans le mini-tableau imbrique et ne matchent pas
     # le motif "td.zentriert autonome"), donc a partir de la fin du lien nom.
     age = _parse_age(row_html, hauptlink.end())
+    dob = None
+    dob_age = _DOB_AGE_RE.search(row_html, hauptlink.end())
+    if dob_age:
+        try:
+            dob = datetime.strptime(dob_age.group(1), "%d/%m/%Y").date()
+        except ValueError:
+            dob = None
+        # L'age colle a la naissance fait foi (meme cellule) : prioritaire sur
+        # le motif "td zentriert autonome" de la vue Compact.
+        parsed_age = int(dob_age.group(2))
+        age = parsed_age if _AGE_MIN <= parsed_age <= _AGE_MAX else None
+    if dob is None:
+        dob = _parse_dob(row_html)
 
     return TMPlayer(
         name=name,
-        dob=_parse_dob(row_html),
+        dob=dob,
         age=age,
         position=position or None,
         tm_player_id=tm_player_id,
@@ -224,7 +243,9 @@ async def fetch_club_squad(client: TransfermarktClient, tm_club_id: int) -> Squa
     (timeout, HTTP != 200 apres retries, etc.) est converti en
     `SquadResult(status="structure_error")` plutot que de se propager.
     """
-    url = f"{BASE_URL}/x/kader/verein/{tm_club_id}"
+    # Vue "Detailed" (`/plus/1`) : seule a exposer la date de naissance, dont
+    # depend la seconde passe de matching (naissance + club, voir player_match).
+    url = f"{BASE_URL}/x/kader/verein/{tm_club_id}/plus/1"
     try:
         resp = client.get(url, what=f"la page effectif Transfermarkt du club {tm_club_id}")
     except TransfermarktError as exc:

@@ -1957,6 +1957,63 @@ async def job_seed_tm_ids_wikidata() -> None:
     )
 
 
+def _run_national_tm_ids_blocking():
+    """Récolte hebdomadaire des tm_id via les listes des sélections, dans un
+    thread dédié (client HTTP synchrone, engine NullPool) — même contrainte
+    que `_run_sync_squads_blocking`."""
+
+    async def _run():
+        from app.ingestion.transfermarkt.national_teams import harvest_national_tm_ids
+
+        client = TransfermarktClient()
+        eng = create_async_engine(DATABASE_URL, poolclass=NullPool)
+        sm = async_sessionmaker(eng, expire_on_commit=False)
+        try:
+            async with sm() as session:
+                return await harvest_national_tm_ids(session, client, datetime.now(UTC).date())
+        finally:
+            client.close()
+            await eng.dispose()
+
+    return asyncio.run(_run())
+
+
+async def job_national_tm_ids() -> None:
+    """Hebdomadaire : tm_id des joueurs convoqués en sélection.
+
+    Les listes changent à chaque rassemblement ; écrit uniquement
+    `player_tm_ids` (jamais le club d'un joueur, jamais de
+    `transfermarkt_club_id` sur une sélection — voir `national_teams.py`).
+    """
+    from app.alerts import send_alert
+
+    try:
+        report = await asyncio.to_thread(_run_national_tm_ids_blocking)
+    except Exception as exc:
+        logger.exception("Sélections tm_id : le run a échoué — %s", exc)
+        await send_alert(
+            f"⚠️ Sélections tm_id : le run hebdomadaire a échoué\n<code>{exc}</code>",
+            channel="incidents",
+        )
+        return
+
+    logger.info(
+        "Sélections tm_id : %d/%d sélections lues (%d illisibles), %d/%d joueurs reconnus ; non rapprochées : %s",
+        report.nations_matched - report.nations_failed,
+        report.nations_matched,
+        report.nations_failed,
+        report.players_matched,
+        report.players_listed,
+        report.unmatched_nations,
+    )
+    if report.nations_matched and report.nations_failed > report.nations_matched // 2:
+        await send_alert(
+            f"⚠️ Sélections tm_id : {report.nations_failed}/{report.nations_matched} listes illisibles "
+            "(structure Transfermarkt changée ou blocage ?)",
+            channel="incidents",
+        )
+
+
 def _resolve_clubs_blocking():
     """Resout les `transfermarkt_club_id` manquants, dans un thread dedie.
 
@@ -2658,6 +2715,19 @@ def create_scheduler() -> AsyncIOScheduler:
         CronTrigger(day_of_week="mon", hour=3, minute=0),
         id="seed_tm_ids_wikidata",
         name="Seed Wikidata tm_id (contournement rate-limit Transfermarkt)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Sélections nationales -> tm_id joueurs : hebdo, mardi 03:30 UTC (hors
+    # créneau Wikidata du lundi et avant le lot carrière de 05:00). ~120
+    # pages TM à 2 s = ~5 min.
+    scheduler.add_job(
+        job_national_tm_ids,
+        CronTrigger(day_of_week="tue", hour=3, minute=30),
+        id="national_tm_ids",
+        name="Sélections nationales -> tm_id joueurs (Transfermarkt)",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

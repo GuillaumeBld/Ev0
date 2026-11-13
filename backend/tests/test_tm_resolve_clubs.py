@@ -455,3 +455,60 @@ async def test_resolve_unrelated_name_is_never_guessed_by_fuzzy():
     assert "Zzyzx Rovers FC" in report.unresolved_tm
     # Aucun club canonique ne doit s'etre vu attribuer l'id TM 500008.
     assert all(team.transfermarkt_club_id != 500008 for team in teams)
+
+
+# --------------------------------------------------------------------------
+# Coupes d'Europe : pages "participants" (13/11/2026)
+# --------------------------------------------------------------------------
+
+from datetime import date as _date  # noqa: E402
+
+from app.ingestion.transfermarkt.resolve_clubs import (  # noqa: E402
+    TM_CUP_PARTICIPANT_CODES,
+    current_tm_season,
+)
+
+
+def test_current_tm_season_switches_on_first_of_july():
+    assert current_tm_season(_date(2026, 6, 30)) == 2025
+    assert current_tm_season(_date(2026, 7, 1)) == 2026
+    assert current_tm_season(_date(2027, 1, 15)) == 2026
+
+
+@pytest.mark.asyncio
+async def test_resolve_default_run_also_reads_cup_participant_pages():
+    session = _make_session([_psg()])
+    client = _FakeTmClient(_FAKE_COMPETITION_HTML)
+
+    await resolve_and_store_club_ids(session, client=client, today=_date(2026, 11, 13))
+
+    cup_urls = [u for u in client.requested_urls if "/teilnehmer/pokalwettbewerb/" in u]
+    assert cup_urls == [
+        f"https://www.transfermarkt.com/-/teilnehmer/pokalwettbewerb/{code}/saison_id/2026"
+        for code in TM_CUP_PARTICIPANT_CODES
+    ]
+    assert {"CLQ", "ELQ", "ECLQ"} <= set(TM_CUP_PARTICIPANT_CODES)
+
+
+@pytest.mark.asyncio
+async def test_resolve_targeted_competitions_do_not_read_cups():
+    session = _make_session([_psg()])
+    client = _FakeTmClient(_FAKE_COMPETITION_HTML)
+
+    await resolve_and_store_club_ids(session, client=client, competitions={"ligue_1": "FR1"})
+
+    assert not any("/teilnehmer/" in u for u in client.requested_urls)
+
+
+@pytest.mark.asyncio
+async def test_resolve_cup_participant_is_matched_like_a_league_club():
+    teams = [_psg()]
+    session = _make_session(teams)
+    client = _FakeTmClient(_FAKE_COMPETITION_HTML)
+
+    report = await resolve_and_store_club_ids(
+        session, client=client, competitions={}, cups=("ECLQ",), today=_date(2026, 11, 13)
+    )
+
+    assert teams[0].transfermarkt_club_id == 583
+    assert report.resolved == 1

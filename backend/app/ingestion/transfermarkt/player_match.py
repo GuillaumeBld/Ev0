@@ -49,6 +49,8 @@ tres grande echelle.
 """
 from __future__ import annotations
 
+import difflib
+import re
 from dataclasses import dataclass
 from datetime import date
 
@@ -99,7 +101,10 @@ async def _folded_name_candidates(
 
 
 async def match_players(
-    session: AsyncSession, tm_players: list[TMPlayer], today: date
+    session: AsyncSession,
+    tm_players: list[TMPlayer],
+    today: date,
+    bzz_team_id: int | None = None,
 ) -> MatchReport:
     """Matche chaque `TMPlayer` a une ligne `bzz_players`, par nom complet
     replie (`fold_accents`) + age (+/-1 an, calcule a `today`).
@@ -143,4 +148,77 @@ async def match_players(
         else:
             unmatched.append(tm)
 
+    if bzz_team_id is not None and unmatched:
+        unmatched = await _match_by_dob_at_club(session, unmatched, bzz_team_id, matched)
+
     return MatchReport(matched=matched, unmatched=unmatched)
+
+
+# Seconde passe (13/11/2026) : ~30 % de l'univers restait sans tm_id parce que
+# le nom differe entre Bzzoiro et TM (diminutif, nom compose, translitteration)
+# alors que le joueur EST sur la page effectif de son club. Ancre forte : meme
+# club + date de naissance EXACTE (vue Detailed). Garde-fou nom pour ecarter
+# "recrue nee le meme jour qu'un joueur parti".
+_NAME_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_NAME_SIMILARITY_MIN = 0.6
+_NAME_TOKEN_MIN_LEN = 3
+
+
+def _names_compatible(tm_name: str, bzz_name: str) -> bool:
+    """Au moins un mot (>= 3 lettres) en commun apres repli accents/casse, ou
+    similarite globale >= 0.6. Volontairement large : l'ancre est la date
+    de naissance exacte + le club, ce filtre n'ecarte que les homonymes de
+    date sans aucun rapport de nom."""
+    a, b = fold_accents(tm_name), fold_accents(bzz_name)
+    ta = {t for t in _NAME_TOKEN_RE.findall(a) if len(t) >= _NAME_TOKEN_MIN_LEN}
+    tb = {t for t in _NAME_TOKEN_RE.findall(b) if len(t) >= _NAME_TOKEN_MIN_LEN}
+    if ta & tb:
+        return True
+    return difflib.SequenceMatcher(None, a, b).ratio() >= _NAME_SIMILARITY_MIN
+
+
+async def _match_by_dob_at_club(
+    session: AsyncSession,
+    unmatched: list[TMPlayer],
+    bzz_team_id: int,
+    matched: dict[int, int],
+) -> list[TMPlayer]:
+    """Rattache un `TMPlayer` non reconnu par son nom a un joueur Bzzoiro DEJA
+    rattache a ce club (`current_team_api_id == bzz_team_id`), ne le meme jour
+    exact, au nom compatible. Exactement 1 candidat libre, et pas reclame par
+    un autre `TMPlayer` de la page -> reconnu ; sinon reste non reconnu.
+    Mute `matched` ; renvoie la liste des toujours-non-reconnus."""
+    roster = (
+        await session.execute(
+            select(BzzPlayer.api_id, BzzPlayer.name, BzzPlayer.date_of_birth).where(
+                BzzPlayer.current_team_api_id == bzz_team_id,
+                BzzPlayer.date_of_birth.is_not(None),
+            )
+        )
+    ).all()
+    taken = set(matched.values())
+    proposals: dict[int, int] = {}
+    for tm in unmatched:
+        if tm.dob is None:
+            continue
+        candidates = [
+            row.api_id
+            for row in roster
+            if row.date_of_birth == tm.dob
+            and row.api_id not in taken
+            and _names_compatible(tm.name, row.name)
+        ]
+        if len(candidates) == 1:
+            proposals[tm.tm_player_id] = candidates[0]
+
+    claims: dict[int, int] = {}
+    for api_id in proposals.values():
+        claims[api_id] = claims.get(api_id, 0) + 1
+    still_unmatched: list[TMPlayer] = []
+    for tm in unmatched:
+        api_id = proposals.get(tm.tm_player_id)
+        if api_id is not None and claims[api_id] == 1:
+            matched[tm.tm_player_id] = api_id
+        else:
+            still_unmatched.append(tm)
+    return still_unmatched

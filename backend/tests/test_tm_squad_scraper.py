@@ -284,7 +284,8 @@ async def test_fetch_club_squad_fetches_correct_url_and_parses_response():
 
     result = await fetch_club_squad(client, tm_club_id=583)
 
-    assert client.requested_urls == ["https://www.transfermarkt.com/x/kader/verein/583"]
+    # Vue "Detailed" (/plus/1) : seule a exposer la date de naissance.
+    assert client.requested_urls == ["https://www.transfermarkt.com/x/kader/verein/583/plus/1"]
     assert result.status == "ok"
     assert result.club_id == 583
     assert len(result.players) >= 20
@@ -299,3 +300,37 @@ async def test_fetch_club_squad_never_raises_on_transfermarkt_error():
     assert result.status == "structure_error"
     assert result.players == []
     assert result.club_id == 583
+
+
+# --------------------------------------------------------------------------
+# Vue "Detailed" (/plus/1) — fixture REEL du 13/11/2026 (PSG)
+# --------------------------------------------------------------------------
+
+PSG_PLUS_HTML = (FIXTURES_DIR / "transfermarkt_psg_kader_plus.html").read_text(encoding="utf-8")
+
+
+def test_parse_squad_detailed_view_extracts_dob_and_age_for_every_player():
+    result = parse_squad(PSG_PLUS_HTML, club_id=583)
+
+    assert result.status == "ok"
+    assert len(result.players) >= MIN_SQUAD
+    assert all(p.dob is not None for p in result.players)
+    assert all(p.age is not None for p in result.players)
+
+
+def test_parse_squad_detailed_view_dob_is_birth_not_contract_date():
+    # La ligne porte aussi "01/07/2024" (arrivee) et "30/06/2029" (fin de
+    # contrat) au meme format : seule la date suivie de "(age)" est la naissance.
+    result = parse_squad(PSG_PLUS_HTML, club_id=583)
+    safonov = next(p for p in result.players if p.tm_player_id == 318470)
+
+    assert safonov.dob == date(1999, 2, 25)
+    assert safonov.age == 27
+    assert safonov.name == "Matvey Safonov"
+
+
+def test_parse_squad_detailed_view_handles_leap_day():
+    result = parse_squad(PSG_PLUS_HTML, club_id=583)
+    ferran = next(p for p in result.players if p.name == "Ferran Torres")
+
+    assert ferran.dob == date(2000, 2, 29)
