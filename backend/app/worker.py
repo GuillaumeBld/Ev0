@@ -1978,6 +1978,66 @@ def _run_national_tm_ids_blocking():
     return asyncio.run(_run())
 
 
+def _run_portal_careers_blocking():
+    """Import des carrières du portail CSV (voir `portal_careers.py`), dans un
+    thread dédié (client HTTP synchrone, engine NullPool)."""
+
+    async def _run():
+        import httpx
+
+        from app.ingestion.transfermarkt.portal_careers import import_portal_careers
+
+        eng = create_async_engine(DATABASE_URL, poolclass=NullPool)
+        sm = async_sessionmaker(eng, expire_on_commit=False)
+        try:
+            with httpx.Client(timeout=120, follow_redirects=True) as http:
+                async with sm() as session:
+                    return await import_portal_careers(session, http, datetime.now(UTC).date())
+        finally:
+            await eng.dispose()
+
+    return asyncio.run(_run())
+
+
+async def job_portal_careers() -> None:
+    """Mardi et vendredi : carrières depuis le portail CSV public.
+
+    Crée la carrière des joueurs qui n'en ont pas encore et rafraîchit la
+    saison en cours des autres. Le portail se met à jour chaque lundi (campagne
+    étalée sur plusieurs jours) ; notre collecte Transfermarkt reste le
+    secours pour les joueurs qu'il ne couvre pas.
+    """
+    from app.alerts import send_alert
+
+    try:
+        report = await asyncio.to_thread(_run_portal_careers_blocking)
+    except Exception as exc:
+        logger.exception("Portail carrières : le run a échoué — %s", exc)
+        await send_alert(
+            f"⚠️ Portail carrières : l'import a échoué\n<code>{exc}</code>",
+            channel="incidents",
+        )
+        return
+
+    logger.info(
+        "Portail carrières : %d/%d championnats lus, %d carrières créées (%d lignes), "
+        "%d joueurs rafraîchis (%d lignes) ; illisibles : %s",
+        report.leagues_read,
+        report.leagues_listed,
+        report.careers_created,
+        report.rows_created,
+        report.players_refreshed,
+        report.rows_refreshed,
+        report.leagues_failed,
+    )
+    if not report.leagues_listed or len(report.leagues_failed) > report.leagues_listed // 2:
+        await send_alert(
+            f"⚠️ Portail carrières : {len(report.leagues_failed)}/{report.leagues_listed} championnats "
+            "illisibles (portail déplacé, format changé ou empreintes invalides ?)",
+            channel="incidents",
+        )
+
+
 async def job_national_tm_ids() -> None:
     """Hebdomadaire : tm_id des joueurs convoqués en sélection.
 
@@ -2728,6 +2788,19 @@ def create_scheduler() -> AsyncIOScheduler:
         CronTrigger(day_of_week="tue", hour=3, minute=30),
         id="national_tm_ids",
         name="Sélections nationales -> tm_id joueurs (Transfermarkt)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Carrières depuis le portail CSV public : mardi et vendredi 04:15 UTC
+    # (après les tm_id des sélections, la campagne du portail démarre le lundi
+    # et s'étale). Fichiers GitHub, pas Transfermarkt : aucun risque de blocage.
+    scheduler.add_job(
+        job_portal_careers,
+        CronTrigger(day_of_week="tue,fri", hour=4, minute=15),
+        id="portal_careers",
+        name="Carrières joueurs <- portail CSV (78 championnats)",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
