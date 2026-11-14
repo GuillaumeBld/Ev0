@@ -148,6 +148,8 @@ async def test_job_sync_referentiel_expansion_calls_expected_chain():
     ) as mock_rebuild, patch(
         "app.worker.attach_european", new_callable=AsyncMock, return_value={}
     ) as mock_attach, patch(
+        "app.worker.attach_league_clubs", new_callable=AsyncMock, return_value={}
+    ) as mock_attach_leagues, patch(
         "app.worker.check_coverage", new_callable=AsyncMock, return_value=[]
     ) as mock_coverage, patch(
         "app.alerts.send_alert", new_callable=AsyncMock
@@ -169,6 +171,7 @@ async def test_job_sync_referentiel_expansion_calls_expected_chain():
         mock_session, mock_client, league_ids=expected_domestic_scope
     )
     mock_attach.assert_awaited_once_with(mock_session, mock_client)
+    mock_attach_leagues.assert_awaited_once_with(mock_session, mock_client)
     mock_coverage.assert_awaited_once_with(mock_session, league_ids=expected_ids)
 
     # Jamais l'alerte Telegram "incidents" du controle de coherence paris.

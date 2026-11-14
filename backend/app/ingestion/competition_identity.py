@@ -55,15 +55,15 @@ TM_CODE_TO_LEAGUE: dict[str, int] = {
     "GB1": 1,  # Premier League (England)
     "ES1": 3,  # La Liga / LaLiga (Spain)
     "IT1": 4,  # Serie A (Italy)
-    "L1": 6,  # Ligue 1 (France) — TM code used for Ligue 1 in this source
-    "FR1": 6,  # Ligue 1 (France) — alternate code, same competition
+    "L1": 5,  # Bundesliga (Germany) — L1 est la Bundesliga sur TM, PAS la Ligue 1
+    "FR1": 6,  # Ligue 1 (France)
     # --- Other European top divisions with an unambiguous name match ---
     "TR1": 11,  # Süper Lig / "Super Lig" (Turkey)
     "PO1": 2,  # "Primeira Liga" == Liga Portugal (Portugal), same division
     # --- Second divisions (domestic_2) with an unambiguous name match ---
     "GB2": 12,  # Championship (England)
-    "L2": 89,  # Ligue 2 (France)
-    "FR2": 89,  # Ligue 2 (France) — alternate code, same competition
+    "L2": 94,  # 2. Bundesliga (Germany) — PAS la Ligue 2
+    "FR2": 89,  # Ligue 2 (France)
     # --- UEFA club competitions ---
     "CL": 7,  # Champions League
     "EL": 8,  # Europa League

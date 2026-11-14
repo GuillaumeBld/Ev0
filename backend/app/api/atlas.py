@@ -96,6 +96,9 @@ _COUNTRY_MAP: dict[str, tuple[str, str]] = {
     "Ecuador": ("EC", "SAM"),
     "Bolivia": ("BO", "SAM"),
     "Peru": ("PE", "SAM"),
+    # Extension du 14/11/2026 (championnats Bzzoiro restants).
+    "Nigeria": ("NG", "AFR"),
+    "Angola": ("AO", "AFR"),
     "Uruguay": ("UY", "SAM"),
 }
 
@@ -183,7 +186,18 @@ _KIND_WORLD = "world"
 # ajouter "world" ici suffit à faire réapparaître ces pays sans toucher au
 # routage des deux cas particuliers "world" sans country (Copa Libertadores
 # / Copa Sudamericana, continentales et non nationales).
-_ALL_KINDS = _DOMESTIC_KINDS + _INTL_KINDS + (_KIND_WORLD,)
+# "cup" (coupes nationales) et "women" (championnats féminins) : ajoutés le
+# 14/11/2026, rangés sous leur pays comme les championnats.
+_ALL_KINDS = _DOMESTIC_KINDS + _INTL_KINDS + (_KIND_WORLD, "cup", "women")
+
+# Organisateur affiché des compétitions internationales qui ne suivent pas la
+# règle par kind (sélection -> FIFA, world -> CONMEBOL, sinon UEFA).
+_INTL_ORG: dict[int, str] = {
+    29: "CAF", 79: "Clubs", 30: "CAF", 60: "CAF", 68: "AFC", 61: "AFC",
+    69: "CONCACAF", 71: "UEFA", 31: "FIFA",
+    58: "UEFA", 59: "CONMEBOL", 62: "CONCACAF", 63: "OFC", 64: "UEFA", 65: "CONCACAF",
+    66: "UEFA", 67: "CONMEBOL",
+}
 
 
 class LeagueOut(BaseModel):
@@ -351,7 +365,9 @@ async def atlas_geo(db: AsyncSession = Depends(get_db)) -> GeoOut:
             country_meta.setdefault(code, (continent, league.country or code))
             country_min_rank[code] = min(country_min_rank.get(code, league.rank), league.rank)
         else:
-            if league.kind == "selection":
+            if league.id in _INTL_ORG:
+                org = _INTL_ORG[league.id]
+            elif league.kind == "selection":
                 org = "FIFA"
             elif league.kind == _KIND_WORLD:
                 org = "CONMEBOL"

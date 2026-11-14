@@ -45,7 +45,12 @@ from app.ingestion.bzzoiro.constants import (
     INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST,
     TARGET_LEAGUE_INTERNAL_ID_LIST,
 )
-from app.scripts.rebuild_team_registry import EFFECTIFS_STRICTS, attach_european, rebuild
+from app.scripts.rebuild_team_registry import (
+    EFFECTIFS_STRICTS,
+    attach_european,
+    attach_league_clubs,
+    rebuild,
+)
 from app.ingestion.storage import (
     store_match_events,
     store_recommendation,
@@ -1512,6 +1517,11 @@ async def job_sync_referentiel_expansion():
 
             rattaches = await attach_european(session, client)
             logger.info("Rattachement UEFA (expansion): %s", rattaches)
+
+            # Championnats hors Europe et féminins : rattachement par
+            # identifiant Bzzoiro uniquement (voir attach_league_clubs).
+            hors_strict = await attach_league_clubs(session, client)
+            logger.info("Rattachement championnats non stricts (expansion): %s", hors_strict)
 
             reports = await check_coverage(session, league_ids=league_ids)
             resume = {

@@ -89,10 +89,13 @@ log = logging.getLogger("transfermarkt_career")
 COMPETITION_NAMES: dict[str, str] = {
     "GB1": "Premier League",
     "ES1": "LaLiga",
-    "L1": "Ligue 1",
+    # L1 / L2 = Bundesliga / 2. Bundesliga sur Transfermarkt (et NON Ligue 1 /
+    # Ligue 2, qui sont FR1 / FR2) — erreur corrigée le 14/11/2026 : 4 506
+    # saisons de Bundesliga s'affichaient « Ligue 1 ».
+    "L1": "Bundesliga",
     "FR1": "Ligue 1",
     "IT1": "Serie A",
-    "L2": "Ligue 2",
+    "L2": "2. Bundesliga",
     "FR2": "Ligue 2",
     "GB2": "Championship",
     "PO1": "Primeira Liga",
@@ -103,11 +106,11 @@ COMPETITION_NAMES: dict[str, str] = {
     "ECL": "Conference League",
     "DFB": "DFB-Pokal",
     "FAC": "FA Cup",
-    "LCP": "League Cup (EFL Cup)",
-    "CDR": "Coupe de France",
-    "CDF": "Coupe de la Ligue",
-    "SUC": "Trophee des Champions",
-    "SUP": "Supercoupe",
+    # CDR = Copa del Rey et SUC = Supercopa d'Espagne sur TM (vérifié le
+    # 14/11/2026 via /pokalwettbewerb/) — étaient libellés Coupe de France /
+    # Trophée des Champions. CDF, SUP et LCP n'existent pas sur TM : retirés.
+    "CDR": "Copa del Rey",
+    "SUC": "Supercopa d'Espagne",
     "FIWC": "FIFA Club World Cup",
     "WM": "World Cup",
     "WMQ": "World Cup Qualifying (UEFA)",

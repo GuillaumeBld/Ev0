@@ -104,6 +104,25 @@ TM_COMPETITION_CODES: dict[str, str] = {
     "suisse": "C1",
     "danemark": "DK1",
     "australie": "AUS1",
+    # -- Atlas : toutes les compétitions Bzzoiro (14/11/2026) ----------------
+    # Titres de saison vérifiés le 14/11/2026 sur les pages compétition TM.
+    # Pas de code TM fiable pour Girabola, NPL Queensland ni les féminines.
+    "slovaquie": "SLO1",
+    "belgique_2": "BE2",
+    "league_one": "GB3",
+    "league_two": "GB4",
+    "national_league": "CNAT",
+    "ligue_3": "FR3",
+    "pays_bas_2": "NL2",
+    "turquie_2": "TR2",
+    "suede_2": "SE2",
+    "portugal_3": "PT3A",
+    "bresil_b": "BRA2",
+    "chili": "CLPD",
+    "equateur": "EC1N",
+    "perou": "TDeA",
+    "usl_championship": "USL",
+    "nigeria": "NPFL",
 }
 
 # Les clubs d'une page competition TM apparaissent comme des liens

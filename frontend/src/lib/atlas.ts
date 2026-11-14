@@ -158,8 +158,14 @@ export async function fetchClubs(leagueId: number): Promise<CanonicalTeam[]> {
  *  Même ensemble que `INTL_CLUB_COMP_LEAGUE_IDS` côté backend
  *  (`backend/app/ingestion/bzzoiro/constants.py`) : Ligue des champions (7),
  *  Europa (8), Conference (83), Super Coupe (90), Libertadores (32),
- *  Sudamericana (33). */
-export const INTL_CLUB_COMP_LEAGUE_IDS: ReadonlySet<number> = new Set([7, 8, 83, 90, 32, 33])
+ *  Sudamericana (33).
+ *
+ *  Étendu le 14/11/2026 : coupes nationales (FA Cup, Coupe de France…), Ligue
+ *  des champions CAF (29), amicaux de clubs (79) — mêmes règles. */
+export const INTL_CLUB_COMP_LEAGUE_IDS: ReadonlySet<number> = new Set([
+  7, 8, 83, 90, 32, 33, 29, 79,
+  39, 40, 44, 43, 41, 42, 92, 93, 110, 46, 56, 35, 81, 51, 48,
+])
 
 export interface CompetitionClub {
   bzz_team_id: number

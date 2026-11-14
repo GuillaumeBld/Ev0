@@ -86,7 +86,17 @@ EFFECTIFS_REGLEMENTAIRES: dict[int, int] = {
 # bzz_player_season_stats (agrégées par aggregate_all_leagues). On les sert en
 # résolvant les joueurs « par présence de stats dans la compétition », pas par
 # effectif de club engagé (aucun club n'a league_api_id dans cet ensemble).
-INTL_CLUB_COMP_LEAGUE_IDS: frozenset[int] = frozenset({7, 8, 83, 90, 32, 33})
+# Étendu le 14/11/2026 à toutes les compétitions À ÉLIMINATION / À PARTICIPANTS
+# où aucun club n'est « engagé » au sens du référentiel : coupes nationales
+# (kind `cup` du registre), Ligue des champions CAF (29) et matchs amicaux de
+# clubs (79). Même traitement : joueurs résolus par présence de stats dans la
+# compétition, clubs déduits du calendrier.
+NATIONAL_CUP_LEAGUE_IDS: frozenset[int] = frozenset(
+    {39, 40, 44, 43, 41, 42, 92, 93, 110, 46, 56, 35, 81, 51, 48}
+)
+INTL_CLUB_COMP_LEAGUE_IDS: frozenset[int] = (
+    frozenset({7, 8, 83, 90, 32, 33, 29, 79}) | NATIONAL_CUP_LEAGUE_IDS
+)
 
 # Sélections ayant de vraies stats de match Bzzoiro (les autres sélections du
 # registre n'ont aucune bzz_player_match_stats -> non affichées au Temps 1).

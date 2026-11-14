@@ -26,9 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.bzzoiro.constants import (
-    INTERNATIONAL_LEAGUE_API_IDS,
     INTERNATIONAL_LEAGUE_INTERNAL_IDS,
-    TARGET_LEAGUE_API_IDS,
     TARGET_LEAGUE_INTERNAL_IDS,
 )
 from app.ingestion.fixture_matcher import normalize_team_name
@@ -43,21 +41,18 @@ from app.services.season_service import compute_season
 
 logger = logging.getLogger(__name__)
 
-# Reverse map: bzz league id → our league key.
-# Covers both external api_ids (17 for PL) and internal ids (1 for PL) because
-# sync_events.py stores league.get("api_id") or league.get("id") — newer BzzAPI
-# responses may omit api_id and return only the internal id.
-_LEAGUE_API_ID_TO_KEY: dict[int, str] = {v: k for k, v in TARGET_LEAGUE_API_IDS.items()}
-for _key, _internal_id in TARGET_LEAGUE_INTERNAL_IDS.items():
-    if _internal_id not in _LEAGUE_API_ID_TO_KEY:
-        _LEAGUE_API_ID_TO_KEY[_internal_id] = _key
-
-# International competitions
-for _key, _id in INTERNATIONAL_LEAGUE_API_IDS.items():
-    _LEAGUE_API_ID_TO_KEY[_id] = _key
+# Reverse map: bzz league id (espace INTERNE, celui que `bzz_events` stocke
+# aujourd'hui) -> clé de championnat paris.
+#
+# Les anciens identifiants externes (17 PL, 34 Ligue 1, 35 Bundesliga, 8 Liga,
+# 23 Serie A) ne sont PLUS acceptés : dans l'espace interne ce sont d'autres
+# compétitions (17 Saudi Pro League, 8 Europa League, 23 Superliga roumaine,
+# 34 Brasileirão B, 35 Copa do Brasil). Les mélanger créait des matchs saoudiens
+# étiquetés « premier_league », roumains « serie_a »… (constaté le 14/11/2026).
+# Les compétitions internationales ont le même id dans les deux espaces.
+_LEAGUE_API_ID_TO_KEY: dict[int, str] = {v: k for k, v in TARGET_LEAGUE_INTERNAL_IDS.items()}
 for _key, _id in INTERNATIONAL_LEAGUE_INTERNAL_IDS.items():
-    if _id not in _LEAGUE_API_ID_TO_KEY:
-        _LEAGUE_API_ID_TO_KEY[_id] = _key
+    _LEAGUE_API_ID_TO_KEY.setdefault(_id, _key)
 
 # How far ahead to look for upcoming fixtures
 _DAYS_FORWARD = 30

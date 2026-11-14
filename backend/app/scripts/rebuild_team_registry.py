@@ -370,6 +370,71 @@ async def attach_european(
     return {"engages": len(engages), "sans_championnat": sans_championnat}
 
 
+# Championnats rattachés SANS segmentation stricte : grands championnats hors
+# Europe (`world`, pays renseigné) et championnats féminins (`women`). Ni coupe
+# (n'engage pas un club), ni compétition internationale (pays absent).
+SANS_SEGMENTATION: tuple[int, ...] = tuple(
+    league_id
+    for league_id, meta in LEAGUE_REGISTRY.items()
+    if meta.kind in ("world", "women") and meta.country is not None
+)
+
+
+async def attach_league_clubs(
+    session: AsyncSession,
+    client: Any,
+    league_ids: list[int] | tuple[int, ...] = SANS_SEGMENTATION,
+    season: str | None = None,
+) -> dict[int, dict[str, int]]:
+    """Rattache les clubs engagés dans des championnats non stricts.
+
+    Rattachement par identifiant Bzzoiro UNIQUEMENT, jamais par le nom : un
+    club féminin « Real Madrid » ou un homonyme d'un autre pays ne doit jamais
+    écraser une ligne canonique existante. Un club déjà engagé dans un AUTRE
+    championnat n'est pas déplacé (championnats scindés Apertura/Clausura,
+    double appartenance). Rend {ligue: {"crees": n, "rattaches": n, "deja_ailleurs": n}}.
+    """
+    from app.models.canonical_teams import CanonicalTeam
+
+    if season is None:
+        season = await current_season(session)
+    # `name_fr` est unique : « Real Madrid » (féminin) ou un homonyme d'un autre
+    # pays reçoit un suffixe plutôt que de faire échouer tout le lot.
+    noms_pris = set((await session.execute(select(CanonicalTeam.name_fr))).scalars().all())
+    rapport: dict[int, dict[str, int]] = {}
+    for league_api_id in league_ids:
+        meta = LEAGUE_REGISTRY[league_api_id]
+        engages = await enumerer_engages(client, league_api_id, season)
+        compte = {"crees": 0, "rattaches": 0, "deja_ailleurs": 0}
+        for club_id, nom in engages.items():
+            existant = (await session.execute(
+                select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == club_id)
+            )).scalar_one_or_none()
+            if existant is None:
+                libelle = nom
+                if libelle in noms_pris:
+                    libelle = f"{nom} ({'F' if meta.kind == 'women' else meta.country})"
+                if libelle in noms_pris:
+                    libelle = f"{libelle} #{club_id}"
+                noms_pris.add(libelle)
+                session.add(CanonicalTeam(
+                    name_fr=libelle, name_en=nom, bzz_team_id=club_id,
+                    league_api_id=league_api_id, season=season, country=meta.country,
+                ))
+                compte["crees"] += 1
+            elif existant.league_api_id in (None, league_api_id):
+                existant.league_api_id = league_api_id
+                existant.season = season
+                existant.country = meta.country
+                compte["rattaches"] += 1
+            else:
+                compte["deja_ailleurs"] += 1
+        await session.commit()
+        rapport[league_api_id] = compte
+        logger.info("championnat %s (%s) : %s", league_api_id, meta.name, compte)
+    return rapport
+
+
 async def _main() -> None:
     from app.config import settings
     from app.db import async_session

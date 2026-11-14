@@ -48,9 +48,16 @@ KIND_DOMESTIC_2 = "domestic_2"
 KIND_UEFA_CLUB = "uefa_club"
 KIND_WORLD = "world"
 KIND_SELECTION = "selection"
+# Ajoutés le 14/11/2026 (Atlas : toutes les compétitions Bzzoiro) :
+# - coupes nationales (format knockout, tier 5) : elles n'engagent pas un club
+#   dans un championnat, comme les coupes UEFA ;
+# - championnats féminins (tier 6) : JAMAIS rattachés à une ligne canonique
+#   par le nom (« Real Madrid » féminin écraserait le club masculin).
+KIND_CUP = "cup"
+KIND_WOMEN = "women"
 
 VALID_KINDS = frozenset(
-    {KIND_DOMESTIC_1, KIND_DOMESTIC_2, KIND_UEFA_CLUB, KIND_WORLD, KIND_SELECTION}
+    {KIND_DOMESTIC_1, KIND_DOMESTIC_2, KIND_UEFA_CLUB, KIND_WORLD, KIND_SELECTION, KIND_CUP, KIND_WOMEN}
 )
 
 # Formats a competition's season can take.
@@ -164,13 +171,84 @@ _SELECTIONS: dict[int, LeagueMeta] = {
     67: LeagueMeta("Copa América 2024", None, TIER_SELECTION, KIND_SELECTION, FORMAT_GROUPS, None, 57),
 }
 
+# ---------------------------------------------------------------------------
+# Extension du 14/11/2026 — les 46 compétitions Bzzoiro restantes.
+# Effectifs relevés sur /api/events/ pour la saison en cours de chaque ligue
+# (fenêtre current_season de /api/leagues/), pas devinés.
+# ---------------------------------------------------------------------------
+_EXT_DOMESTIC: dict[int, LeagueMeta] = {
+    96: LeagueMeta("Bundesliga", "Austria", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 12, 58),
+    109: LeagueMeta("Niké liga", "Slovakia", 1, KIND_DOMESTIC_1, FORMAT_ROUND_ROBIN, 12, 59),
+    97: LeagueMeta("Challenger Pro League", "Belgium", 3, KIND_DOMESTIC_2, FORMAT_ROUND_ROBIN, 15, 60),
+    86: LeagueMeta("League One", "England", 3, KIND_DOMESTIC_2, FORMAT_ROUND_ROBIN, 24, 61),
+    87: LeagueMeta("League Two", "England", 3, KIND_DOMESTIC_2, FORMAT_ROUND_ROBIN, 24, 62),
+    91: LeagueMeta("National League", "England", 3, KIND_DOMESTIC_2, FORMAT_ROUND_ROBIN, 24, 63),
+    105: LeagueMeta("Ligue 3", "France", 3, KIND_DOMESTIC_2, FORMAT_ROUND_ROBIN, 18, 64),
+    108: LeagueMeta("Eerste Divisie", "Netherlands", 3, KIND_DOMESTIC_2, FORMAT_ROUND_ROBIN, 20, 65),
+    107: LeagueMeta("1. Lig", "Turkey", 3, KIND_DOMESTIC_2, FORMAT_ROUND_ROBIN, 20, 66),
+    106: LeagueMeta("Superettan", "Sweden", 3, KIND_DOMESTIC_2, FORMAT_ROUND_ROBIN, 18, 67),
+    82: LeagueMeta("Liga 3", "Portugal", 3, KIND_DOMESTIC_2, FORMAT_GROUPS, None, 68),
+    95: LeagueMeta("Campeonato de Portugal", "Portugal", 3, KIND_DOMESTIC_2, FORMAT_GROUPS, None, 69),
+    34: LeagueMeta("Brasileirão Série B", "Brazil", 4, KIND_WORLD, FORMAT_ROUND_ROBIN, 20, 70),
+    111: LeagueMeta("Primera División", "Chile", 4, KIND_WORLD, FORMAT_ROUND_ROBIN, 16, 71),
+    112: LeagueMeta("LigaPro Serie A", "Ecuador", 4, KIND_WORLD, FORMAT_ROUND_ROBIN, 16, 72),
+    113: LeagueMeta("Liga 1", "Peru", 4, KIND_WORLD, FORMAT_ROUND_ROBIN, 18, 73),
+    57: LeagueMeta("USL Championship", "USA", 4, KIND_WORLD, FORMAT_GROUPS, None, 74),
+    28: LeagueMeta("NPFL", "Nigeria", 4, KIND_WORLD, FORMAT_ROUND_ROBIN, 20, 75),
+    98: LeagueMeta("Girabola", "Angola", 4, KIND_WORLD, FORMAT_ROUND_ROBIN, 16, 76),
+    70: LeagueMeta("NPL Queensland", "Australia", 4, KIND_WORLD, FORMAT_ROUND_ROBIN, 12, 77),
+}
+
+_EXT_CUPS: dict[int, LeagueMeta] = {
+    39: LeagueMeta("FA Cup", "England", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 78),
+    40: LeagueMeta("Carabao Cup", "England", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 79),
+    44: LeagueMeta("Coupe de France", "France", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 80),
+    43: LeagueMeta("DFB-Pokal", "Germany", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 81),
+    41: LeagueMeta("Copa del Rey", "Spain", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 82),
+    42: LeagueMeta("Coppa Italia", "Italy", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 83),
+    92: LeagueMeta("Taça de Portugal", "Portugal", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 84),
+    93: LeagueMeta("Taça da Liga", "Portugal", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 85),
+    110: LeagueMeta("Coupe de Turquie", "Turkey", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 86),
+    46: LeagueMeta("Puchar Polski", "Poland", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 87),
+    56: LeagueMeta("Suomen Cup", "Finland", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 88),
+    35: LeagueMeta("Copa do Brasil", "Brazil", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 89),
+    81: LeagueMeta("Copa Colombia", "Colombia", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 90),
+    51: LeagueMeta("Coupe de l'Empereur", "Japan", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 91),
+    48: LeagueMeta("Coupe de Tunisie", "Tunisia", 5, KIND_CUP, FORMAT_KNOCKOUT, None, 92),
+}
+
+_EXT_WOMEN: dict[int, LeagueMeta] = {
+    36: LeagueMeta("Liga F", "Spain", 6, KIND_WOMEN, FORMAT_ROUND_ROBIN, 16, 93),
+    72: LeagueMeta("NWSL", "USA", 6, KIND_WOMEN, FORMAT_ROUND_ROBIN, 16, 94),
+}
+
+_EXT_INTERNATIONAL: dict[int, LeagueMeta] = {
+    29: LeagueMeta("Ligue des champions CAF", None, 4, KIND_WORLD, FORMAT_GROUPS, None, 95),
+    79: LeagueMeta("Matchs amicaux de clubs", None, 4, KIND_WORLD, FORMAT_KNOCKOUT, None, 96),
+    30: LeagueMeta("Coupe d'Afrique des nations", None, TIER_SELECTION, KIND_SELECTION, FORMAT_GROUPS, None, 97),
+    68: LeagueMeta("Coupe d'Asie", None, TIER_SELECTION, KIND_SELECTION, FORMAT_GROUPS, None, 98),
+    69: LeagueMeta("Gold Cup", None, TIER_SELECTION, KIND_SELECTION, FORMAT_GROUPS, None, 99),
+    60: LeagueMeta("Qualifs CM — CAF", None, TIER_SELECTION, KIND_SELECTION, FORMAT_GROUPS, None, 100),
+    61: LeagueMeta("Qualifs CM — AFC", None, TIER_SELECTION, KIND_SELECTION, FORMAT_GROUPS, None, 101),
+    71: LeagueMeta("Euro U19", None, TIER_SELECTION, KIND_SELECTION, FORMAT_GROUPS, None, 102),
+    31: LeagueMeta("Matchs amicaux internationaux", None, TIER_SELECTION, KIND_SELECTION, FORMAT_KNOCKOUT, None, 103),
+}
+
 LEAGUE_REGISTRY: dict[int, LeagueMeta] = {
     **_TIER_1,
     **_TIER_2,
     **_TIER_3,
     **_TIER_4,
     **_SELECTIONS,
+    **_EXT_DOMESTIC,
+    **_EXT_CUPS,
+    **_EXT_WOMEN,
+    **_EXT_INTERNATIONAL,
 }
+
+
+# 57 (registre initial) + 46 (extension du 14/11/2026).
+REGISTRY_SIZE = 103
 
 
 def _validate_registry(registry: dict[int, LeagueMeta]) -> None:
@@ -180,12 +258,12 @@ def _validate_registry(registry: dict[int, LeagueMeta]) -> None:
     expected_count invariant, or re-introduces a duplicate rank, must crash
     on import — not surface three steps later as a wrong club count.
     """
-    if len(registry) != 57:
-        raise ValueError(f"LEAGUE_REGISTRY must have 57 entries, got {len(registry)}")
+    if len(registry) != REGISTRY_SIZE:
+        raise ValueError(f"LEAGUE_REGISTRY must have {REGISTRY_SIZE} entries, got {len(registry)}")
 
     ranks = sorted(meta.rank for meta in registry.values())
     if ranks != list(range(1, len(registry) + 1)):
-        raise ValueError("LEAGUE_REGISTRY ranks must be unique and cover 1..57 with no gaps")
+        raise ValueError(f"LEAGUE_REGISTRY ranks must be unique and cover 1..{REGISTRY_SIZE} with no gaps")
 
     for league_id, meta in registry.items():
         if meta.kind not in VALID_KINDS:
@@ -265,3 +343,9 @@ def seed_rows() -> list[dict]:
         }
         for league_id, meta in LEAGUE_REGISTRY.items()
     ]
+
+
+# Matchs amicaux (sélections 31, clubs 79) : suivis pour l'Atlas, mais exclus
+# des calculs de forme/taux par 90 qui alimentent les cotes (enjeu nul,
+# rotations massives).
+FRIENDLY_LEAGUE_IDS: frozenset[int] = frozenset({31, 79})

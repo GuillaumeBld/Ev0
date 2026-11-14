@@ -17,12 +17,16 @@ from app.ingestion.competition_identity import (
 
 def test_ligue1_both_tm_codes_map_to_bzzoiro_6():
     assert tm_code_to_league_api_id("FR1") == 6
-    assert tm_code_to_league_api_id("L1") == 6
+    assert tm_code_to_league_api_id("L1") == 5  # Bundesliga, pas Ligue 1
+    assert tm_code_to_league_api_id("FR1") == 6
+    assert tm_code_to_league_api_id("L2") == 94
 
 
 def test_same_competition_true_for_ligue1():
     assert same_competition(6, "FR1") is True
-    assert same_competition(6, "L1") is True
+    assert same_competition(6, "FR1") is True
+    assert same_competition(5, "L1") is True
+    assert same_competition(6, "L1") is False
 
 
 def test_same_competition_false_when_competition_differs():
