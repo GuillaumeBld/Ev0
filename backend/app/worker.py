@@ -17,7 +17,7 @@ from datetime import UTC, date, datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -2009,6 +2009,52 @@ def _run_portal_careers_blocking():
     return asyncio.run(_run())
 
 
+def _run_atlas_universe_blocking():
+    """Univers Atlas (voir `atlas_universe.py`) dans un thread dédié :
+    annuaire Bzzoiro complet + effectifs du portail -> clubs, sélections,
+    championnats et joueurs, sans doublon."""
+
+    async def _run():
+        import httpx
+
+        from app.ingestion.atlas_universe import build_universe, fetch_all_bzz_players, fetch_portal_rosters
+        from app.services.season_service import current_season
+
+        eng = create_async_engine(DATABASE_URL, poolclass=NullPool)
+        sm = async_sessionmaker(eng, expire_on_commit=False)
+        try:
+            async with BzzoiroClient(settings.bzzoiro_api_key) as client:
+                bzz_rows = await fetch_all_bzz_players(client)
+            with httpx.Client(timeout=120, follow_redirects=True) as http:
+                portal = fetch_portal_rosters(http)
+            async with sm() as session:
+                season = await current_season(session)
+                return await build_universe(
+                    session, bzz_rows=bzz_rows, portal=portal, season=season,
+                    today=datetime.now(UTC).date(),
+                )
+        finally:
+            await eng.dispose()
+
+    return asyncio.run(_run())
+
+
+async def job_atlas_universe() -> None:
+    """Lundi : tous les clubs, sélections, championnats et joueurs connus
+    (Bzzoiro complet + portail CSV), rattachés sans doublon."""
+    from app.alerts import send_alert
+
+    try:
+        report = await asyncio.to_thread(_run_atlas_universe_blocking)
+    except Exception as exc:
+        logger.exception("Univers Atlas : le run a échoué — %s", exc)
+        await send_alert(f"⚠️ Univers Atlas : la construction a échoué\n<code>{exc}</code>", channel="incidents")
+        return
+    logger.info("Univers Atlas : %s", report)
+    if report.countries_unknown:
+        logger.warning("Univers Atlas : pays inconnus %s", dict(report.countries_unknown.most_common(20)))
+
+
 async def job_portal_careers() -> None:
     """Mardi et vendredi : carrières depuis le portail CSV public.
 
@@ -2159,11 +2205,21 @@ async def job_sync_squads() -> None:
                 "continue sur les clubs deja ancres.", exc, exc_info=True,
             )
 
+        from app.ingestion.atlas_universe import PORTAL_LEAGUE_BASE
+
         async with async_session() as session:
             clubs_result = await session.execute(
                 select(CanonicalTeam).where(
                     CanonicalTeam.transfermarkt_club_id.isnot(None),
                     CanonicalTeam.bzz_team_id.isnot(None),
+                    # Équipes hors Bzzoiro et championnats hors registre : leurs
+                    # effectifs viennent du portail CSV hebdomadaire (pas de
+                    # scraping Transfermarkt quotidien en plus, risque de blocage).
+                    CanonicalTeam.bzz_team_id > 0,
+                    or_(
+                        CanonicalTeam.league_api_id.is_(None),
+                        CanonicalTeam.league_api_id < PORTAL_LEAGUE_BASE,
+                    ),
                 )
             )
             clubs = list(clubs_result.scalars().all())
@@ -2798,6 +2854,19 @@ def create_scheduler() -> AsyncIOScheduler:
         CronTrigger(day_of_week="tue", hour=3, minute=30),
         id="national_tm_ids",
         name="Sélections nationales -> tm_id joueurs (Transfermarkt)",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Univers Atlas : lundi 22:00 UTC (après la synchro quotidienne, avant
+    # les carrières du portail du mardi qui servent les joueurs nouvellement
+    # rattachés). ~2 300 pages Bzzoiro (forfait illimité) + 78 CSV GitHub.
+    scheduler.add_job(
+        job_atlas_universe,
+        CronTrigger(day_of_week="mon", hour=22, minute=0),
+        id="atlas_universe",
+        name="Univers Atlas <- Bzzoiro complet + portail CSV",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.data.countries import COUNTRIES, country_iso, country_meta, country_name_fr
 from app.ingestion.bzzoiro.constants import INTL_CLUB_COMP_LEAGUE_IDS
 from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzPlayerSeasonStat, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
@@ -188,7 +189,9 @@ _KIND_WORLD = "world"
 # / Copa Sudamericana, continentales et non nationales).
 # "cup" (coupes nationales) et "women" (championnats féminins) : ajoutés le
 # 14/11/2026, rangés sous leur pays comme les championnats.
-_ALL_KINDS = _DOMESTIC_KINDS + _INTL_KINDS + (_KIND_WORLD, "cup", "women")
+# "other" : « Autres clubs » d'un pays (clubs sans championnat connu, voir
+# app/ingestion/atlas_universe.py).
+_ALL_KINDS = _DOMESTIC_KINDS + _INTL_KINDS + (_KIND_WORLD, "cup", "women", "other")
 
 # Organisateur affiché des compétitions internationales qui ne suivent pas la
 # règle par kind (sélection -> FIFA, world -> CONMEBOL, sinon UEFA).
@@ -327,7 +330,7 @@ async def atlas_geo(db: AsyncSession = Depends(get_db)) -> GeoOut:
     # code -> [(rank, LeagueOut), ...] pour pouvoir trier par rank sans
     # exposer le rank dans la réponse.
     countries_raw: dict[str, list[tuple[int, LeagueOut]]] = {}
-    country_meta: dict[str, tuple[str, str]] = {}  # code -> (continent, nom brut)
+    country_meta_raw: dict[str, tuple[str, str]] = {}  # code -> (continent, nom brut)
     country_min_rank: dict[str, int] = {}
     intl_raw: list[tuple[int, IntlOut]] = []
 
@@ -341,7 +344,7 @@ async def atlas_geo(db: AsyncSession = Depends(get_db)) -> GeoOut:
         # country (Copa Libertadores/Sudamericana, UEFA, sélections) va dans
         # international. Un country renseigné mais absent de _COUNTRY_MAP
         # est ignoré (log, pas de plantage) — inchangé depuis avant ce fix.
-        mapped = _COUNTRY_MAP.get(league.country) if league.country else None
+        mapped = (_COUNTRY_MAP.get(league.country) or country_meta(league.country)) if league.country else None
 
         if league.country and mapped is None:
             logger.warning(
@@ -362,7 +365,7 @@ async def atlas_geo(db: AsyncSession = Depends(get_db)) -> GeoOut:
                 club_count=club_count,
             )
             countries_raw.setdefault(code, []).append((league.rank, league_out))
-            country_meta.setdefault(code, (continent, league.country or code))
+            country_meta_raw.setdefault(code, (continent, league.country or code))
             country_min_rank[code] = min(country_min_rank.get(code, league.rank), league.rank)
         else:
             if league.id in _INTL_ORG:
@@ -389,8 +392,8 @@ async def atlas_geo(db: AsyncSession = Depends(get_db)) -> GeoOut:
     countries_out = [
         CountryOut(
             code=code,
-            name=_DISPLAY_NAME_OVERRIDES.get(code, country_meta[code][1]),
-            continent=country_meta[code][0],
+            name=_DISPLAY_NAME_OVERRIDES.get(code, country_name_fr(code) if code in COUNTRIES else country_meta_raw[code][1]),
+            continent=country_meta_raw[code][0],
             leagues=[lo for _, lo in sorted(countries_raw[code], key=lambda t: t[0])],
         )
         for code in ordered_codes
@@ -446,14 +449,14 @@ async def _club_cup_country_meta(db: AsyncSession) -> dict[str, tuple[str, str]]
 
     meta: dict[str, tuple[str, str]] = {}
     for raw_country in raw_countries:
-        mapped = _COUNTRY_MAP.get(raw_country)
+        mapped = _COUNTRY_MAP.get(raw_country) or country_meta(raw_country)
         if mapped is None:
             logger.warning(
                 "Atlas: pays de club de coupe sans mapping ignoré: %r", raw_country
             )
             continue
         code, continent = mapped
-        meta.setdefault(code, (continent, raw_country))
+        meta.setdefault(code, (continent, _DISPLAY_NAME_OVERRIDES.get(code, country_name_fr(code) if code in COUNTRIES else raw_country)))
     return meta
 
 
@@ -488,60 +491,52 @@ def _build_countries_clubs(
 
 
 async def _selection_countries(db: AsyncSession) -> list[SelectionCountryOut]:
-    """Pays ayant une équipe nationale avec des stats de sélection.
+    """Toutes les sélections nationales dont on a des joueurs.
 
-    `player_selection_season_stats.national_team_api_id` -> `canonical_teams`
-    (même espace d'identifiants, `bzz_team_id`) filtré sur
-    `league_api_id == _SELECTION_TEAMS_LEAGUE_ID` pour résoudre le nom de
-    nation (`name_en`), puis `_NATION_ISO2` pour l'ISO2. Une nation absente
-    de `_NATION_ISO2`, ou sans `name_en` résolu, est loggée et omise — jamais
-    de code deviné. England et Scotland partagent GB : si les deux ont des
-    stats, England prime (dédoublonnage, une seule entité GB).
+    Une équipe est une sélection si elle a des stats de sélection
+    (`player_selection_season_stats`) OU si des joueurs y sont rattachés
+    (`bzz_players.national_team_api_id`, annuaire Bzzoiro complet). Nom ->
+    ISO2 via `_NATION_ISO2` puis le référentiel des pays (toutes graphies).
+    Angleterre, Écosse, Pays de Galles et Irlande du Nord partagent GB sur la
+    carte : l'Angleterre prime.
     """
-    team_ids = sorted(
-        {
-            tid
-            for tid in (
-                await db.execute(select(PlayerSelectionSeasonStat.national_team_api_id).distinct())
-            ).scalars()
-            if tid is not None
-        }
-    )
+    stats_ids = {
+        tid
+        for tid in (
+            await db.execute(select(PlayerSelectionSeasonStat.national_team_api_id).distinct())
+        ).scalars()
+        if tid is not None
+    }
+    squad_ids = {
+        tid
+        for tid in (await db.execute(select(BzzPlayer.national_team_api_id).distinct())).scalars()
+        if tid is not None
+    }
+    team_ids = sorted(stats_ids | squad_ids)
     if not team_ids:
         return []
 
     nation_rows = (
         await db.execute(
-            select(CanonicalTeam.bzz_team_id, CanonicalTeam.name_en).where(
+            select(CanonicalTeam.bzz_team_id, CanonicalTeam.name_en, CanonicalTeam.name_fr).where(
                 CanonicalTeam.bzz_team_id.in_(team_ids),
-                CanonicalTeam.league_api_id == _SELECTION_TEAMS_LEAGUE_ID,
             )
         )
     ).all()
 
     by_code: dict[str, SelectionCountryOut] = {}
-    for team_id, name_en in nation_rows:
-        if not name_en:
-            logger.warning(
-                "Atlas: equipe nationale sans name_en ignoree (bzz_team_id=%s)", team_id
-            )
-            continue
-        code = _NATION_ISO2.get(name_en)
+    for team_id, name_en, name_fr in nation_rows:
+        name = name_en or name_fr
+        code = _NATION_ISO2.get(name) or country_iso(name)
         if code is None:
-            logger.warning(
-                "Atlas: nation sans mapping ISO2 ignoree: %r (bzz_team_id=%s)",
-                name_en,
-                team_id,
-            )
+            logger.warning("Atlas: nation sans mapping ISO2 ignoree: %r (bzz_team_id=%s)", name, team_id)
             continue
-        # GB : England prime sur Scotland si les deux ont des stats, quel
-        # que soit l'ordre de passage des lignes.
-        if code in by_code and name_en != "England":
+        if code in by_code and name != "England":
             continue
         by_code[code] = SelectionCountryOut(
             code=code,
-            name=name_en,
-            continent=_NATION_CONTINENT.get(code, "EUR"),
+            name=name,
+            continent=_NATION_CONTINENT.get(code) or (COUNTRIES[code][2] if code in COUNTRIES else "EUR"),
             national_team_api_id=team_id,
         )
     return sorted(by_code.values(), key=lambda c: c.name)

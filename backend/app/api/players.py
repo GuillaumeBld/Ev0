@@ -1379,7 +1379,20 @@ async def list_selection_players(
     sel_rows = (await session.execute(
         select(PlayerSelectionSeasonStat).where(*conds)
     )).scalars().all()
-    if not sel_rows:
+
+    # Effectif connu sans stats de sélection (annuaire Bzzoiro complet) : la
+    # sélection s'affiche quand même, stats vides. Uniquement pour la vue
+    # « toutes compétitions » d'une sélection donnée.
+    roster_only: list[BzzPlayer] = []
+    if national_team_api_id is not None and league_api_id is None and season is None:
+        with_stats = {s.player_api_id for s in sel_rows}
+        roster_only = [
+            p for p in (await session.execute(
+                select(BzzPlayer).where(BzzPlayer.national_team_api_id == national_team_api_id)
+            )).scalars().all()
+            if p.api_id not in with_stats
+        ]
+    if not sel_rows and not roster_only:
         return []
 
     by_player: dict[int, list] = defaultdict(list)
@@ -1461,6 +1474,28 @@ async def list_selection_players(
             "form_assists_5": merged["form_assists_5"],
             "rating_trend": merged["rating_trend"],
         })
+
+    if roster_only:
+        roster_crests = await _team_crest_map(session, [p.current_team_api_id for p in roster_only])
+        for player in roster_only:
+            if position is not None and (player.position or "").upper() != position.upper():
+                continue
+            if q and q.lower() not in (player.name or "").lower():
+                continue
+            api_football_id, crest_url = roster_crests.get(player.current_team_api_id) or (None, None)
+            results.append({
+                "player_api_id": player.api_id,
+                "name": player.name,
+                "short_name": player.short_name,
+                "position": player.position,
+                "team_name": player.current_team_name,
+                "api_football_id": api_football_id,
+                "crest_url": crest_url,
+                "nationality": player.nationality,
+                "goals": None, "goal_assist": None, "xg_per_90": None, "xa_per_90": None,
+                "avg_rating": None, "shots_on_target_per_90": None, "form_xg_5": None,
+                "matches_played": 0, "minutes_played": 0, "season": None, "previous": None,
+            })
 
     _python_sort(results, sort_by, sort_order)
     return results[offset: offset + limit]

@@ -349,3 +349,8 @@ def seed_rows() -> list[dict]:
 # des calculs de forme/taux par 90 qui alimentent les cotes (enjeu nul,
 # rotations massives).
 FRIENDLY_LEAGUE_IDS: frozenset[int] = frozenset({31, 79})
+
+# Premier identifiant des championnats hors Bzzoiro (portail CSV 9001+,
+# « Autres clubs » par pays 20000+), tenus par `app.ingestion.atlas_universe`.
+# Jamais dans LEAGUE_REGISTRY ; les jobs Bzzoiro les ignorent.
+EXTERNAL_LEAGUE_BASE = 9000

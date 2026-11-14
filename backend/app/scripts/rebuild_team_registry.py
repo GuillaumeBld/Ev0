@@ -21,10 +21,10 @@ import logging
 import re
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.bzzoiro.league_registry import LEAGUE_REGISTRY
+from app.ingestion.bzzoiro.league_registry import EXTERNAL_LEAGUE_BASE as PORTAL_LEAGUE_BASE, LEAGUE_REGISTRY
 from app.ingestion.ps3838.anchor import _fold
 from app.services.season_service import current_season, season_end, season_start
 
@@ -183,7 +183,11 @@ async def rebuild(
     # Scope restreint a `effectifs` (donc a `league_ids` si fourni) : un
     # rebuild partiel ne doit jamais desengager un club d'une ligue qu'il ne
     # retraite pas (big-5 lors d'un rebuild scope expansion, par exemple).
-    reset_stmt = update(CanonicalTeam).where(CanonicalTeam.season == season)
+    # Les championnats hors Bzzoiro (portail, « Autres clubs », ids >= 9000)
+    # sont tenus par `build_universe` : jamais desengages ici.
+    reset_stmt = update(CanonicalTeam).where(CanonicalTeam.season == season).where(
+        or_(CanonicalTeam.league_api_id.is_(None), CanonicalTeam.league_api_id < PORTAL_LEAGUE_BASE)
+    )
     if league_ids is not None:
         reset_stmt = reset_stmt.where(CanonicalTeam.league_api_id.in_(effectifs.keys()))
     await session.execute(
@@ -422,7 +426,9 @@ async def attach_league_clubs(
                     league_api_id=league_api_id, season=season, country=meta.country,
                 ))
                 compte["crees"] += 1
-            elif existant.league_api_id in (None, league_api_id):
+            elif existant.league_api_id in (None, league_api_id) or existant.league_api_id >= 9000:
+                # >= 9000 : championnat hors registre (portail, « Autres clubs »),
+                # supplanté par un championnat Bzzoiro suivi.
                 existant.league_api_id = league_api_id
                 existant.season = season
                 existant.country = meta.country

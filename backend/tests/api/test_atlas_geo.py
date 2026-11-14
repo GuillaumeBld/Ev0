@@ -20,7 +20,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import get_db
 from app.main import app
 from app.models.app_config import AppConfig
-from app.models.bzzoiro import BzzEvent
+from app.models.bzzoiro import BzzEvent, BzzPlayer
 from app.models.canonical_teams import CanonicalTeam
 from app.models.data_coverage import DataCoverageRun
 from app.models.leagues import League
@@ -55,6 +55,7 @@ async def client():
             CanonicalTeam.__table__,
             DataCoverageRun.__table__,
             BzzEvent.__table__,
+            BzzPlayer.__table__,
             PlayerSelectionSeasonStat.__table__,
             AppConfig.__table__,
         ):
