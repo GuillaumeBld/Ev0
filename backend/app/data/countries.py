@@ -141,7 +141,7 @@ _ALIASES: dict[str, str] = {
     "republic of ireland": "IE", "korea republic": "KR", "korea, south": "KR",
     "republic of korea": "KR", "korea dpr": "KP", "korea, north": "KP",
     "dr congo": "CD", "congo dr": "CD", "democratic republic of the congo": "CD",
-    "congo-kinshasa": "CD", "congo-brazzaville": "CG", "republic of the congo": "CG",
+    "congo-kinshasa": "CD", "congo-brazzaville": "CG", "republic of the congo": "CG", "congo republic": "CG",
     "cabo verde": "CV", "cape verde islands": "CV", "macedonia": "MK", "fyr macedonia": "MK",
     "ir iran": "IR", "china pr": "CN", "taiwan": "TW", "kyrgyz republic": "KG",
     "the gambia": "GM", "swaziland": "SZ", "east timor": "TL", "burma": "MM",

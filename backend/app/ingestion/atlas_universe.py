@@ -132,6 +132,7 @@ class UniverseReport:
     portal_players_linked: int = 0
     portal_players_created: int = 0
     portal_clubs_reconciled: int = 0
+    bzz_shadow_duplicates: int = 0
     portal_duplicates_merged: int = 0
     countries_unknown: Counter = field(default_factory=Counter)
 
@@ -184,6 +185,29 @@ def vote_bzz_team(
         return None
     team, n = votes.most_common(1)[0]
     return team if n >= min_players and n / known >= min_share else None
+
+
+def squad_country(nationalities: Counter | None, *, min_players: int = 3, min_share: float = 0.5) -> str | None:
+    """ISO2 de la nationalité majoritaire d'un effectif (au moins la moitié,
+    au moins `min_players` joueurs), sinon None."""
+    if not nationalities:
+        return None
+    by_iso: Counter = Counter()
+    for nat, n in nationalities.items():
+        iso = country_iso(nat)
+        if iso:
+            by_iso[iso] += n
+    if not by_iso:
+        return None
+    ranked = by_iso.most_common(2)
+    iso, n = ranked[0]
+    second = ranked[1][1] if len(ranked) > 1 else 0
+    total = sum(nationalities.values())
+    if n < min_players:
+        return None
+    # Majorité, ou effectif très international : la nationalité la plus
+    # représentée l'emporte si elle pèse au moins le double de la suivante.
+    return iso if n / total >= min_share or (n / total >= 0.2 and n >= 2 * second) else None
 
 
 def age_at(dob: date | None, today: date) -> int | None:
@@ -377,10 +401,51 @@ async def build_universe(
     await session.commit()
 
     # 4. « Autres clubs » : tout club sans championnat va sous son pays.
+    #    Pays absent chez Bzzoiro -> nationalité majoritaire de l'effectif.
+    squad_nats: dict[int, Counter] = defaultdict(Counter)
+    for team_id, nat, n in (await session.execute(
+        select(BzzPlayer.current_team_api_id, BzzPlayer.nationality, func.count())
+        .where(BzzPlayer.current_team_api_id.is_not(None))
+        .group_by(BzzPlayer.current_team_api_id, BzzPlayer.nationality)
+    )).all():
+        squad_nats[team_id][nat] += n
+    # Doublons internes à Bzzoiro (deux identifiants, même nom, même pays) :
+    # seul l'enregistrement à l'effectif le plus fourni figure au menu.
+    squad_size = {tid: sum(c.values()) for tid, c in squad_nats.items()}
+    women = {lid for lid, m in LEAGUE_REGISTRY.items() if m.kind == KIND_WOMEN}
+    main_of: dict[tuple[str | None, str], CanonicalTeam] = {}
+    for row in teams.rows:
+        if not row.name_en or row.bzz_team_id is None or row.bzz_team_id <= 0:
+            continue
+        if row.league_api_id in women:
+            continue  # l'équipe féminine homonyme n'éclipse jamais le club
+        key = (country_iso(row.country), fold_accents(row.name_en).strip().lower())
+        cur = main_of.get(key)
+        if cur is None or squad_size.get(row.bzz_team_id, 0) > squad_size.get(cur.bzz_team_id, 0):
+            main_of[key] = row
+    for row in teams.rows:
+        if not row.name_en or row.bzz_team_id is None or row.bzz_team_id <= 0:
+            continue
+        main = main_of.get((country_iso(row.country), fold_accents(row.name_en).strip().lower()))
+        if main is not None and main is not row and row.transfermarkt_club_id is None and (
+            row.league_api_id is None or row.league_api_id >= OTHER_LEAGUE_BASE
+        ):
+            row.league_api_id = None  # hors menu ; ses joueurs restent consultables
+            row.season = None
+            report.bzz_shadow_duplicates += 1
+
     for row in teams.rows:
         if row.league_api_id is not None or row.bzz_team_id in nation_ids:
             continue
+        if row.name_en and row.bzz_team_id and row.bzz_team_id > 0 and main_of.get(
+            (country_iso(row.country), fold_accents(row.name_en).strip().lower())
+        ) not in (None, row):
+            continue
         iso = country_iso(row.country)
+        if iso is None and not row.country:
+            iso = squad_country(squad_nats.get(row.bzz_team_id))
+            if iso is not None:
+                row.country = COUNTRIES[iso][0]
         if iso is None:
             report.countries_unknown[row.country or "?"] += 1
             continue
