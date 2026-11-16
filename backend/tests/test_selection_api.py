@@ -10,7 +10,7 @@ genres, pour que les champs lus par `_merge_season_stats` existent vraiment.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
 
@@ -96,24 +96,28 @@ async def test_selection_endpoint_filters_by_national_team():
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(side_effect=[sel_res, roster_res, players_res, crest_res, crest_res])
 
-    response = await list_selection_players(
-        session=mock_db,
-        national_team_api_id=FRANCE_TEAM_ID,
-        league_api_id=None,
-        position=None,
-        q=None,
-        season=None,
-        sort_by="avg_rating",
-        sort_order="desc",
-        limit=50,
-        offset=0,
-    )
+    with patch("app.services.season_service.current_season", new=AsyncMock(return_value="2026-2027")):
+        response = await list_selection_players(
+            session=mock_db,
+            national_team_api_id=FRANCE_TEAM_ID,
+            league_api_id=None,
+            position=None,
+            q=None,
+            season=None,
+            sort_by="avg_rating",
+            sort_order="desc",
+            limit=50,
+            offset=0,
+        )
 
     assert len(response) == 3
     assert all("goals" in p for p in response)
     assert {p["player_api_id"] for p in response} == {50, 51, 52}
     # le joueur sans stats est rendu avec des stats vides, classe en dernier
     assert response[-1]["player_api_id"] == 52 and response[-1]["goals"] is None
+    # validable par le modèle de réponse (season obligatoire)
+    from app.api.players import PlayerSummary
+    assert all(PlayerSummary(**p) for p in response)
 
 
 @pytest.mark.asyncio

@@ -415,7 +415,7 @@ async def attach_league_clubs(
                 select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == club_id)
             )).scalar_one_or_none()
             if existant is None:
-                libelle = nom
+                libelle = f"{nom} (F)" if meta.kind == "women" else nom
                 if libelle in noms_pris:
                     libelle = f"{nom} ({'F' if meta.kind == 'women' else meta.country})"
                 if libelle in noms_pris:
@@ -432,9 +432,9 @@ async def attach_league_clubs(
                 existant.league_api_id = league_api_id
                 existant.season = season
                 existant.country = meta.country
-                # Homonyme féminin nommé par l'univers Atlas « Nom (Pays) » :
-                # on affiche « Nom (F) », plus parlant.
-                if meta.kind == "women" and existant.name_en and existant.name_fr != existant.name_en:
+                # Équipe féminine : toujours « Nom (F) », sans confusion possible
+                # avec le club masculin homonyme.
+                if meta.kind == "women" and existant.name_en and not existant.name_fr.endswith(" (F)"):
                     libelle = f"{existant.name_en} (F)"
                     if libelle not in noms_pris:
                         noms_pris.discard(existant.name_fr)
