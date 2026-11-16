@@ -41,7 +41,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.data.countries import COUNTRIES, country_iso
-from app.ingestion.bzzoiro.league_registry import EXTERNAL_LEAGUE_BASE, LEAGUE_REGISTRY
+from app.ingestion.bzzoiro.league_registry import EXTERNAL_LEAGUE_BASE, KIND_WOMEN, LEAGUE_REGISTRY
 from app.ingestion.bzzoiro.sync_players import build_player_values
 from app.ingestion.transfermarkt.player_match import _names_compatible
 from app.ingestion.transfermarkt.portal_careers import PORTAL_DATA_URL, PORTAL_INDEX_URL, list_league_codes
@@ -131,6 +131,9 @@ class UniverseReport:
     clubs_placed_other: int = 0
     portal_players_linked: int = 0
     portal_players_created: int = 0
+    portal_clubs_reconciled: int = 0
+    bzz_shadow_duplicates: int = 0
+    portal_duplicates_merged: int = 0
     countries_unknown: Counter = field(default_factory=Counter)
 
 
@@ -182,6 +185,29 @@ def vote_bzz_team(
         return None
     team, n = votes.most_common(1)[0]
     return team if n >= min_players and n / known >= min_share else None
+
+
+def squad_country(nationalities: Counter | None, *, min_players: int = 3, min_share: float = 0.5) -> str | None:
+    """ISO2 de la nationalité majoritaire d'un effectif (au moins la moitié,
+    au moins `min_players` joueurs), sinon None."""
+    if not nationalities:
+        return None
+    by_iso: Counter = Counter()
+    for nat, n in nationalities.items():
+        iso = country_iso(nat)
+        if iso:
+            by_iso[iso] += n
+    if not by_iso:
+        return None
+    ranked = by_iso.most_common(2)
+    iso, n = ranked[0]
+    second = ranked[1][1] if len(ranked) > 1 else 0
+    total = sum(nationalities.values())
+    if n < min_players:
+        return None
+    # Majorité, ou effectif très international : la nationalité la plus
+    # représentée l'emporte si elle pèse au moins le double de la suivante.
+    return iso if n / total >= min_share or (n / total >= 0.2 and n >= 2 * second) else None
 
 
 def age_at(dob: date | None, today: date) -> int | None:
@@ -316,6 +342,7 @@ async def build_universe(
     tm_to_player = dict((await session.execute(text("SELECT tm_id, player_api_id FROM player_tm_ids"))).all())
     player_team = dict((await session.execute(select(BzzPlayer.api_id, BzzPlayer.current_team_api_id))).all())
     portal_club_rows: dict[int, CanonicalTeam] = {}
+    portal_clubs: dict[int, tuple[str, str | None, list[int], int]] = {}
     leagues_needed: dict[int, tuple[str, str, int, str]] = {}
     for code, rows in portal.items():
         if code in PORTAL_TO_REGISTRY:
@@ -362,6 +389,10 @@ async def build_universe(
                 teams.by_tm[tm_club_id] = row
             report.portal_clubs_linked[how] += 1
             portal_club_rows[tm_club_id] = row
+            if league_id is not None:
+                portal_clubs[tm_club_id] = (
+                    club_name, country, [int(m["player_id"]) for m in members], league_id,
+                )
             if league_id is not None and (row.league_api_id is None or is_external_league(row.league_api_id)):
                 row.league_api_id = league_id
                 row.season = season
@@ -370,10 +401,51 @@ async def build_universe(
     await session.commit()
 
     # 4. « Autres clubs » : tout club sans championnat va sous son pays.
+    #    Pays absent chez Bzzoiro -> nationalité majoritaire de l'effectif.
+    squad_nats: dict[int, Counter] = defaultdict(Counter)
+    for team_id, nat, n in (await session.execute(
+        select(BzzPlayer.current_team_api_id, BzzPlayer.nationality, func.count())
+        .where(BzzPlayer.current_team_api_id.is_not(None))
+        .group_by(BzzPlayer.current_team_api_id, BzzPlayer.nationality)
+    )).all():
+        squad_nats[team_id][nat] += n
+    # Doublons internes à Bzzoiro (deux identifiants, même nom, même pays) :
+    # seul l'enregistrement à l'effectif le plus fourni figure au menu.
+    squad_size = {tid: sum(c.values()) for tid, c in squad_nats.items()}
+    women = {lid for lid, m in LEAGUE_REGISTRY.items() if m.kind == KIND_WOMEN}
+    main_of: dict[tuple[str | None, str], CanonicalTeam] = {}
+    for row in teams.rows:
+        if not row.name_en or row.bzz_team_id is None or row.bzz_team_id <= 0:
+            continue
+        if row.league_api_id in women:
+            continue  # l'équipe féminine homonyme n'éclipse jamais le club
+        key = (country_iso(row.country), fold_accents(row.name_en).strip().lower())
+        cur = main_of.get(key)
+        if cur is None or squad_size.get(row.bzz_team_id, 0) > squad_size.get(cur.bzz_team_id, 0):
+            main_of[key] = row
+    for row in teams.rows:
+        if not row.name_en or row.bzz_team_id is None or row.bzz_team_id <= 0:
+            continue
+        main = main_of.get((country_iso(row.country), fold_accents(row.name_en).strip().lower()))
+        if main is not None and main is not row and row.transfermarkt_club_id is None and (
+            row.league_api_id is None or row.league_api_id >= OTHER_LEAGUE_BASE
+        ):
+            row.league_api_id = None  # hors menu ; ses joueurs restent consultables
+            row.season = None
+            report.bzz_shadow_duplicates += 1
+
     for row in teams.rows:
         if row.league_api_id is not None or row.bzz_team_id in nation_ids:
             continue
+        if row.name_en and row.bzz_team_id and row.bzz_team_id > 0 and main_of.get(
+            (country_iso(row.country), fold_accents(row.name_en).strip().lower())
+        ) not in (None, row):
+            continue
         iso = country_iso(row.country)
+        if iso is None and not row.country:
+            iso = squad_country(squad_nats.get(row.bzz_team_id))
+            if iso is not None:
+                row.country = COUNTRIES[iso][0]
         if iso is None:
             report.countries_unknown[row.country or "?"] += 1
             continue
@@ -395,7 +467,7 @@ async def build_universe(
                 "domestic_2" if kind == "portal" else "other"),
             format="round_robin" if kind == "portal" else "groups",
             expected_count=None, rank=league_id,
-        ))
+        ))  # même forme que `_other_league` pour « Autres clubs »
         report.leagues_created += 1
     await session.commit()
 
@@ -483,7 +555,155 @@ async def build_universe(
             "VALUES (:player_api_id, :tm_id, :source) ON CONFLICT (player_api_id) DO NOTHING"
         ), chunk)
     await session.commit()
+
+    # 7. Réconciliation des clubs du portail, une fois tous les joueurs reliés.
+    await _reconcile_portal_clubs(session, teams, portal_clubs, season, report)
     return report
+
+
+def _other_league(iso: str) -> League:
+    league_id = other_league_id(iso)
+    return League(
+        id=league_id, name="Autres clubs", country=COUNTRIES[iso][0], tier="9",
+        kind="other", format="groups", expected_count=None, rank=league_id,
+    )
+
+
+def plan_portal_reconciliation(
+    portal_clubs: dict[int, tuple[str, str | None, list[int], int]],
+    rows_by_exact: dict[tuple[str | None, str], list[CanonicalTeam]],
+    tm_to_player: dict[int, int],
+    player_team: dict[int, int | None],
+    by_bzz: dict[int, CanonicalTeam],
+    *,
+    min_votes: int = 5,
+    lead: float = 1.5,
+) -> dict[int, CanonicalTeam]:
+    """Club canonique voulu pour chaque club TM du portail (hors registre).
+
+    1. Nom complet identique dans le même pays (ligne Bzzoiro unique).
+    2. Sinon vote net des joueurs reliés : au moins `min_votes`, majorité, et
+       `lead` fois le second — Bzzoiro range parfois des joueurs d'un club
+       sous un homonyme, un vote serré ne tranche rien.
+    Une ligne n'est voulue que par un seul club TM.
+    """
+    wanted: dict[int, CanonicalTeam] = {}
+    used: set[int] = set()
+    for tm_club, (name, country, _, _) in sorted(portal_clubs.items()):
+        exact = rows_by_exact.get((country_iso(country), fold_accents(name).strip().lower()), [])
+        exact = [r for r in exact if r.bzz_team_id and r.bzz_team_id > 0]
+        if len(exact) == 1 and id(exact[0]) not in used:
+            wanted[tm_club] = exact[0]
+            used.add(id(exact[0]))
+    for tm_club, (_, _, members, _) in sorted(portal_clubs.items()):
+        if tm_club in wanted:
+            continue
+        votes: Counter = Counter()
+        known = 0
+        for tm_id in members:
+            pid = tm_to_player.get(tm_id)
+            if pid is None:
+                continue
+            team = player_team.get(pid)
+            if team in by_bzz and id(by_bzz[team]) in used:
+                continue  # joueur déjà compté pour le club d'une autre ligne
+            known += 1
+            if team and team > 0 and team in by_bzz:
+                votes[team] += 1
+        ranked = votes.most_common(2)
+        if not ranked:
+            continue
+        team, n = ranked[0]
+        runner = ranked[1][1] if len(ranked) > 1 else 0
+        if n >= min_votes and n / known >= 0.5 and n >= lead * runner:
+            wanted[tm_club] = by_bzz[team]
+            used.add(id(by_bzz[team]))
+    return wanted
+
+
+async def _reconcile_portal_clubs(
+    session: AsyncSession,
+    teams: "_Teams",
+    portal_clubs: dict[int, tuple[str, str | None, list[int], int]],
+    season: str,
+    report: UniverseReport,
+) -> None:
+    if not portal_clubs:
+        return
+    tm_to_player = dict((await session.execute(text("SELECT tm_id, player_api_id FROM player_tm_ids"))).all())
+    player_team = dict((await session.execute(select(BzzPlayer.api_id, BzzPlayer.current_team_api_id))).all())
+    women = {lid for lid, m in LEAGUE_REGISTRY.items() if m.kind == KIND_WOMEN}
+    rows_by_exact: dict[tuple[str | None, str], list[CanonicalTeam]] = defaultdict(list)
+    for r in teams.rows:
+        if r.league_api_id in women:
+            continue
+        for label in {r.name_en, r.name_fr}:
+            if label:
+                rows_by_exact[(country_iso(r.country), fold_accents(label).strip().lower())].append(r)
+    by_bzz = {k: v for k, v in teams.by_bzz.items() if v.league_api_id not in women}
+    wanted = plan_portal_reconciliation(portal_clubs, rows_by_exact, tm_to_player, player_team, by_bzz)
+
+    # Seuls changent les clubs dont la ligne voulue est libre (sans TM, ou
+    # avec un TM du portail lui-même réattribué) : jamais un club du registre.
+    moves = {}
+    for tm_club, row in wanted.items():
+        holder = teams.by_tm.get(tm_club)
+        if holder is row:
+            continue
+        if row.transfermarkt_club_id is not None and row.transfermarkt_club_id not in portal_clubs:
+            continue
+        moves[tm_club] = (holder, row)
+    if not moves:
+        return
+
+    for tm_club, (holder, row) in moves.items():
+        if holder is not None:
+            holder.transfermarkt_club_id = None
+        if row.transfermarkt_club_id is not None:
+            teams.by_tm.pop(row.transfermarkt_club_id, None)
+            row.transfermarkt_club_id = None
+        teams.by_tm.pop(tm_club, None)
+    await session.flush()
+
+    other_needed: set[str] = set()
+    for tm_club, (holder, row) in moves.items():
+        _, country, _, league_id = portal_clubs[tm_club]
+        row.transfermarkt_club_id = tm_club
+        teams.by_tm[tm_club] = row
+        if row.league_api_id is None or is_external_league(row.league_api_id):
+            row.league_api_id = league_id
+            row.season = season
+        report.portal_clubs_reconciled += 1
+        if holder is None or holder is row:
+            continue
+        has_fixtures = holder.id is not None and (await session.execute(text(
+            "SELECT 1 FROM fixtures WHERE home_canonical_team_id = :i OR away_canonical_team_id = :i LIMIT 1"
+        ), {"i": holder.id})).first() is not None
+        if holder.bzz_team_id is not None and holder.bzz_team_id < 0 and not has_fixtures:
+            # Doublon vide créé faute de correspondance : ses joueurs
+            # rejoignent le vrai club, la ligne disparaît.
+            await session.execute(
+                update(BzzPlayer).where(BzzPlayer.current_team_api_id == holder.bzz_team_id)
+                .values(current_team_api_id=row.bzz_team_id)
+            )
+            teams.by_bzz.pop(holder.bzz_team_id, None)
+            teams.rows.remove(holder)
+            await session.delete(holder)
+            report.portal_duplicates_merged += 1
+        elif holder.league_api_id == league_id and holder.transfermarkt_club_id is None:
+            # Le club Bzzoiro mal relié quitte ce championnat pour les
+            # « Autres clubs » de son pays.
+            iso = country_iso(holder.country)
+            holder.league_api_id = other_league_id(iso) if iso else None
+            if iso:
+                other_needed.add(iso)
+    existing = set((await session.execute(
+        select(League.id).where(League.id.in_([other_league_id(i) for i in other_needed]))
+    )).scalars().all()) if other_needed else set()
+    for iso in other_needed:
+        if other_league_id(iso) not in existing:
+            session.add(_other_league(iso))
+    await session.commit()
 
 
 # ---------------------------------------------------------------------------

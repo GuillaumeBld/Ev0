@@ -1476,6 +1476,10 @@ async def list_selection_players(
         })
 
     if roster_only:
+        # `season` est obligatoire (PlayerSummary) : saison en cours.
+        from app.services.season_service import current_season
+
+        roster_season = await current_season(session)
         roster_crests = await _team_crest_map(session, [p.current_team_api_id for p in roster_only])
         for player in roster_only:
             if position is not None and (player.position or "").upper() != position.upper():
@@ -1494,7 +1498,7 @@ async def list_selection_players(
                 "nationality": player.nationality,
                 "goals": None, "goal_assist": None, "xg_per_90": None, "xa_per_90": None,
                 "avg_rating": None, "shots_on_target_per_90": None, "form_xg_5": None,
-                "matches_played": 0, "minutes_played": 0, "season": None, "previous": None,
+                "matches_played": 0, "minutes_played": 0, "season": roster_season, "previous": None,
             })
 
     _python_sort(results, sort_by, sort_order)

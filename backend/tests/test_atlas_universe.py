@@ -67,3 +67,54 @@ def test_countries_resolve_every_spelling_to_one_iso_code():
     assert country_meta("Nigeria") == ("NG", "AFR")
     assert country_name_fr("DE") == "Allemagne"
     assert fold("  Ñandú Équipe ") == fold("nandu equipe")
+
+
+def test_reconciliation_prefers_exact_name_then_a_clear_vote():
+    from types import SimpleNamespace as T
+
+    ourense_cf = T(bzz_team_id=1453, name_en="Ourense CF")
+    ud_ourense = T(bzz_team_id=1481, name_en="Unión Deportiva Ourense")
+    shakhtar = T(bzz_team_id=402, name_en="Shakhtar Donetsk")
+    homonyme = T(bzz_team_id=3313, name_en="Shakhtar")
+    exact = {
+        ("ES", "ourense cf"): [ourense_cf],
+        ("UA", "shakhtar donetsk"): [shakhtar],
+        ("UA", "shakhtar"): [homonyme],
+    }
+    by_bzz = {r.bzz_team_id: r for r in (ourense_cf, ud_ourense, shakhtar, homonyme)}
+    # UD Ourense : 17 joueurs rangés par Bzzoiro sous Ourense CF, 15 sous UD Ourense
+    tm_to_player = {i: i for i in range(1, 40)}
+    team = {**{i: 1453 for i in range(1, 18)}, **{i: 1481 for i in range(18, 33)}}
+    clubs = {
+        55398: ("Ourense CF", "Spain", [], 9006),
+        60225: ("UD Ourense", "Spain", list(range(1, 33)), 9006),
+        660: ("Shakhtar Donetsk", "Ukraine", [], 9027),
+    }
+    wanted = u.plan_portal_reconciliation(clubs, exact, tm_to_player, team, by_bzz)
+    assert wanted[55398] is ourense_cf  # nom identique
+    assert wanted[60225] is ud_ourense  # vote net une fois Ourense CF attribué
+    assert wanted[660] is shakhtar  # nom complet, pas l'homonyme
+
+
+def test_reconciliation_ignores_a_tight_vote():
+    from types import SimpleNamespace as T
+
+    a, b = T(bzz_team_id=1, name_en="A"), T(bzz_team_id=2, name_en="B")
+    team = {**{i: 1 for i in range(6)}, **{i: 2 for i in range(6, 11)}}
+    wanted = u.plan_portal_reconciliation(
+        {9: ("Club", "Spain", list(range(11)), 9006)}, {}, {i: i for i in range(11)}, team, {1: a, 2: b},
+    )
+    assert wanted == {}
+
+
+def test_squad_country_takes_a_clear_majority_only():
+    from collections import Counter
+
+    assert u.squad_country(Counter({"Bahrain": 20, "Brazil": 5, None: 3})) == "BH"
+    assert u.squad_country(Counter({"England": 3, "Scotland": 2})) == "GB"  # même code carte
+    assert u.squad_country(Counter({"France": 4, "Spain": 4, "Italy": 4})) is None
+    assert u.squad_country(Counter({"Bahrain": 2})) is None  # trop peu de joueurs
+    # effectif international : Thaïlande 8, puis 3 Brésiliens, 1 de chaque ailleurs
+    buriram = Counter({"Thailand": 8, "Brazil": 3, **{c: 1 for c in ("Iran", "Ghana", "Spain", "Serbia", "Romania", "Germany", "Japan", "Australia", "Philippines", "Montenegro")}})
+    assert u.squad_country(buriram) == "TH"
+    assert u.squad_country(None) is None
