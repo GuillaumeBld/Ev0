@@ -432,6 +432,14 @@ async def attach_league_clubs(
                 existant.league_api_id = league_api_id
                 existant.season = season
                 existant.country = meta.country
+                # Homonyme féminin nommé par l'univers Atlas « Nom (Pays) » :
+                # on affiche « Nom (F) », plus parlant.
+                if meta.kind == "women" and existant.name_en and existant.name_fr != existant.name_en:
+                    libelle = f"{existant.name_en} (F)"
+                    if libelle not in noms_pris:
+                        noms_pris.discard(existant.name_fr)
+                        existant.name_fr = libelle
+                        noms_pris.add(libelle)
                 compte["rattaches"] += 1
             else:
                 compte["deja_ailleurs"] += 1
