@@ -88,8 +88,13 @@ async def test_selection_endpoint_filters_by_national_team():
     crest_res = MagicMock()
     crest_res.all.return_value = []  # aucun club canonique dans ce test
 
+    # effectif connu : les 2 joueurs avec stats + un 3e sans stats de selection
+    p_fr3 = _player(api_id=52, name="Joueur France Sans Stats")
+    roster_res = MagicMock()
+    roster_res.scalars.return_value.all.return_value = [p_fr1, p_fr2, p_fr3]
+
     mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(side_effect=[sel_res, players_res, crest_res])
+    mock_db.execute = AsyncMock(side_effect=[sel_res, roster_res, players_res, crest_res, crest_res])
 
     response = await list_selection_players(
         session=mock_db,
@@ -104,14 +109,16 @@ async def test_selection_endpoint_filters_by_national_team():
         offset=0,
     )
 
-    assert len(response) == 2
+    assert len(response) == 3
     assert all("goals" in p for p in response)
-    assert {p["player_api_id"] for p in response} == {50, 51}
+    assert {p["player_api_id"] for p in response} == {50, 51, 52}
+    # le joueur sans stats est rendu avec des stats vides, classe en dernier
+    assert response[-1]["player_api_id"] == 52 and response[-1]["goals"] is None
 
 
 @pytest.mark.asyncio
 async def test_selection_endpoint_empty_when_no_rows():
-    """Aucune ligne pour l'equipe demandee -> liste vide, pas d'autre requete."""
+    """Ni stats ni effectif pour l'equipe demandee -> liste vide."""
     sel_res = MagicMock()
     sel_res.scalars.return_value.all.return_value = []
 
@@ -132,7 +139,7 @@ async def test_selection_endpoint_empty_when_no_rows():
     )
 
     assert response == []
-    assert mock_db.execute.await_count == 1  # pas de lookup joueur/ecusson inutile
+    assert mock_db.execute.await_count == 2  # stats + effectif, pas de lookup ecusson
 
 
 # ---------------------------------------------------------------------------

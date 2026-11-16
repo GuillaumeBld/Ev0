@@ -116,8 +116,11 @@ def test_effectifs_stricts_derive_du_registre():
     assert EFFECTIFS_STRICTS == attendu
 
 
-def test_effectifs_stricts_contient_les_29_domestic_round_robin():
-    assert len(EFFECTIFS_STRICTS) == 29
+def test_effectifs_stricts_contient_les_39_domestic_round_robin():
+    # 29 initiaux + 10 championnats européens ajoutés le 14/11/2026 ;
+    # jamais les féminins (rattachement par nom interdit).
+    assert len(EFFECTIFS_STRICTS) == 39
+    assert not {36, 72} & set(EFFECTIFS_STRICTS)
     for league_id in EFFECTIFS_STRICTS:
         meta = LEAGUE_REGISTRY[league_id]
         assert meta.kind in ("domestic_1", "domestic_2")
@@ -397,3 +400,57 @@ async def test_rebuild_scope_league_ids_ecart_affecte_seulement_le_subset(sessio
 
         total = (await session.execute(select(CanonicalTeam))).scalars().all()
         assert len(total) == 1
+
+
+class _FakeEventsClient:
+    def __init__(self, engages: dict[int, dict[int, str]]) -> None:
+        self.engages = engages
+
+    async def get_all(self, path, params):
+        teams = self.engages[params["league"]]
+        ids = list(teams)
+        return [
+            {"home_team_obj": {"id": ids[i], "name": teams[ids[i]]},
+             "away_team_obj": {"id": ids[i + 1], "name": teams[ids[i + 1]]}}
+            for i in range(0, len(ids) - 1, 2)
+        ]
+
+
+@pytest.mark.asyncio
+async def test_attach_league_clubs_matches_by_id_only_and_suffixes_homonyms():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.scripts.rebuild_team_registry import SANS_SEGMENTATION, attach_league_clubs
+
+    assert 36 in SANS_SEGMENTATION and 72 in SANS_SEGMENTATION and 34 in SANS_SEGMENTATION
+    assert 39 not in SANS_SEGMENTATION and 29 not in SANS_SEGMENTATION  # coupe / international
+
+    men = MagicMock(bzz_team_id=2829, league_api_id=3, name_fr="Real Madrid")
+    elsewhere = MagicMock(bzz_team_id=500, league_api_id=9)
+
+    by_id = {2829: None, 9001: None, 500: elsewhere}  # le club féminin a un AUTRE id
+    added = []
+    session = MagicMock()
+    session.add.side_effect = added.append
+    session.commit = AsyncMock()
+
+    names = MagicMock()
+    names.scalars.return_value.all.return_value = ["Real Madrid"]
+
+    def _result(club_id):
+        r = MagicMock()
+        r.scalar_one_or_none.return_value = by_id.get(club_id)
+        return r
+
+    calls = iter([names, _result(9001), _result(9002), _result(500), _result(9003)])
+    session.execute = AsyncMock(side_effect=lambda *_a, **_k: next(calls))
+    client = _FakeEventsClient({36: {9001: "Real Madrid", 9002: "Madrid CFF", 500: "X", 9003: "Y"}})
+
+    rapport = await attach_league_clubs(session, client, league_ids=[36], season="2026-2027")
+
+    assert rapport[36] == {"crees": 3, "rattaches": 0, "deja_ailleurs": 1}
+    assert men.league_api_id == 3  # jamais touché
+    assert elsewhere.league_api_id == 9  # pas déplacé
+    women = next(t for t in added if t.bzz_team_id == 9001)
+    assert women.name_fr == "Real Madrid (F)" and women.name_en == "Real Madrid"
+    assert women.league_api_id == 36 and women.country == "Spain"

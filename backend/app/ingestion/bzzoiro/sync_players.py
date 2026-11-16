@@ -98,12 +98,17 @@ async def sync_players(session: AsyncSession, client: BzzoiroClient) -> int:
     rafraichis depuis leur premiere ecriture. Le referentiel compte 96 clubs —
     96 appels suffisent, et ne ramenent que des joueurs du perimetre.
     """
+    from app.ingestion.atlas_universe import PORTAL_LEAGUE_BASE
     from app.models.canonical_teams import CanonicalTeam
 
     clubs = (await session.execute(
         select(CanonicalTeam.bzz_team_id)
         .where(CanonicalTeam.league_api_id.is_not(None))
-        .where(CanonicalTeam.bzz_team_id.is_not(None))
+        # Championnats hors registre (portail, « Autres clubs ») : rafraîchis
+        # par l'annuaire hebdomadaire complet, pas un appel par club ici.
+        .where(CanonicalTeam.league_api_id < PORTAL_LEAGUE_BASE)
+        # Identifiant négatif = équipe hors Bzzoiro : rien à demander à l'API.
+        .where(CanonicalTeam.bzz_team_id > 0)
     )).scalars().all()
 
     if not clubs:

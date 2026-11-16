@@ -21,10 +21,10 @@ import logging
 import re
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.bzzoiro.league_registry import LEAGUE_REGISTRY
+from app.ingestion.bzzoiro.league_registry import EXTERNAL_LEAGUE_BASE as PORTAL_LEAGUE_BASE, LEAGUE_REGISTRY
 from app.ingestion.ps3838.anchor import _fold
 from app.services.season_service import current_season, season_end, season_start
 
@@ -183,7 +183,11 @@ async def rebuild(
     # Scope restreint a `effectifs` (donc a `league_ids` si fourni) : un
     # rebuild partiel ne doit jamais desengager un club d'une ligue qu'il ne
     # retraite pas (big-5 lors d'un rebuild scope expansion, par exemple).
-    reset_stmt = update(CanonicalTeam).where(CanonicalTeam.season == season)
+    # Les championnats hors Bzzoiro (portail, « Autres clubs », ids >= 9000)
+    # sont tenus par `build_universe` : jamais desengages ici.
+    reset_stmt = update(CanonicalTeam).where(CanonicalTeam.season == season).where(
+        or_(CanonicalTeam.league_api_id.is_(None), CanonicalTeam.league_api_id < PORTAL_LEAGUE_BASE)
+    )
     if league_ids is not None:
         reset_stmt = reset_stmt.where(CanonicalTeam.league_api_id.in_(effectifs.keys()))
     await session.execute(
@@ -368,6 +372,73 @@ async def attach_european(
         len(engages), sans_championnat,
     )
     return {"engages": len(engages), "sans_championnat": sans_championnat}
+
+
+# Championnats rattachés SANS segmentation stricte : grands championnats hors
+# Europe (`world`, pays renseigné) et championnats féminins (`women`). Ni coupe
+# (n'engage pas un club), ni compétition internationale (pays absent).
+SANS_SEGMENTATION: tuple[int, ...] = tuple(
+    league_id
+    for league_id, meta in LEAGUE_REGISTRY.items()
+    if meta.kind in ("world", "women") and meta.country is not None
+)
+
+
+async def attach_league_clubs(
+    session: AsyncSession,
+    client: Any,
+    league_ids: list[int] | tuple[int, ...] = SANS_SEGMENTATION,
+    season: str | None = None,
+) -> dict[int, dict[str, int]]:
+    """Rattache les clubs engagés dans des championnats non stricts.
+
+    Rattachement par identifiant Bzzoiro UNIQUEMENT, jamais par le nom : un
+    club féminin « Real Madrid » ou un homonyme d'un autre pays ne doit jamais
+    écraser une ligne canonique existante. Un club déjà engagé dans un AUTRE
+    championnat n'est pas déplacé (championnats scindés Apertura/Clausura,
+    double appartenance). Rend {ligue: {"crees": n, "rattaches": n, "deja_ailleurs": n}}.
+    """
+    from app.models.canonical_teams import CanonicalTeam
+
+    if season is None:
+        season = await current_season(session)
+    # `name_fr` est unique : « Real Madrid » (féminin) ou un homonyme d'un autre
+    # pays reçoit un suffixe plutôt que de faire échouer tout le lot.
+    noms_pris = set((await session.execute(select(CanonicalTeam.name_fr))).scalars().all())
+    rapport: dict[int, dict[str, int]] = {}
+    for league_api_id in league_ids:
+        meta = LEAGUE_REGISTRY[league_api_id]
+        engages = await enumerer_engages(client, league_api_id, season)
+        compte = {"crees": 0, "rattaches": 0, "deja_ailleurs": 0}
+        for club_id, nom in engages.items():
+            existant = (await session.execute(
+                select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == club_id)
+            )).scalar_one_or_none()
+            if existant is None:
+                libelle = nom
+                if libelle in noms_pris:
+                    libelle = f"{nom} ({'F' if meta.kind == 'women' else meta.country})"
+                if libelle in noms_pris:
+                    libelle = f"{libelle} #{club_id}"
+                noms_pris.add(libelle)
+                session.add(CanonicalTeam(
+                    name_fr=libelle, name_en=nom, bzz_team_id=club_id,
+                    league_api_id=league_api_id, season=season, country=meta.country,
+                ))
+                compte["crees"] += 1
+            elif existant.league_api_id in (None, league_api_id) or existant.league_api_id >= 9000:
+                # >= 9000 : championnat hors registre (portail, « Autres clubs »),
+                # supplanté par un championnat Bzzoiro suivi.
+                existant.league_api_id = league_api_id
+                existant.season = season
+                existant.country = meta.country
+                compte["rattaches"] += 1
+            else:
+                compte["deja_ailleurs"] += 1
+        await session.commit()
+        rapport[league_api_id] = compte
+        logger.info("championnat %s (%s) : %s", league_api_id, meta.name, compte)
+    return rapport
 
 
 async def _main() -> None:

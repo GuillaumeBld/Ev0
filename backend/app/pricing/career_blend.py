@@ -26,9 +26,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ingestion.bzzoiro.league_registry import FRIENDLY_LEAGUE_IDS
 from app.models.bzzoiro import BzzPlayerSeasonStat
 from app.models.player_career import PlayerCareerSeason
 from app.services.season_service import current_season, season_start
@@ -109,7 +110,14 @@ async def blended_rhythms_for(
             BzzPlayerSeasonStat.minutes_played,
             BzzPlayerSeasonStat.expected_goals,
             BzzPlayerSeasonStat.expected_assists,
-        ).where(BzzPlayerSeasonStat.player_api_id.in_(ids))
+        ).where(
+            BzzPlayerSeasonStat.player_api_id.in_(ids),
+            # Amicaux exclus : enjeu nul, ils fausseraient les taux par 90.
+            or_(
+                BzzPlayerSeasonStat.league_api_id.is_(None),
+                BzzPlayerSeasonStat.league_api_id.not_in(FRIENDLY_LEAGUE_IDS),
+            ),
+        )
     )).all()
 
     bzz: dict[int, dict[str, dict[str, float]]] = {}

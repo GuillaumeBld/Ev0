@@ -86,8 +86,11 @@ export function Explorer({ context, onBack, onSwitchLeague, onOpenPlayer, onOpen
   // `fetchCompetitionClubs`, pas de `fetchCanonicalTeams` (qui ne porte que
   // l'engagement domestique d'un club, jamais l'id d'une coupe — voir
   // `INTL_CLUB_COMP_LEAGUE_IDS` dans `lib/atlas.ts`).
-  const isIntlClubComp = context.kind === 'intl' && context.intl.kind !== 'selection'
-    && INTL_CLUB_COMP_LEAGUE_IDS.has(context.intl.league_api_id)
+  // Coupes nationales (menu d'un pays) : même traitement, clubs déduits du
+  // calendrier de la coupe.
+  const isIntlClubComp = (context.kind === 'intl' && context.intl.kind !== 'selection'
+    && INTL_CLUB_COMP_LEAGUE_IDS.has(context.intl.league_api_id))
+    || (context.kind === 'league' && INTL_CLUB_COMP_LEAGUE_IDS.has(context.league.league_api_id))
 
   const [position, setPosition] = useState<'' | 'G' | 'D' | 'M' | 'F'>('')
   const [query, setQuery] = useState('')

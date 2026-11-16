@@ -22,7 +22,7 @@ import pytest
 
 from app.ingestion.bzzoiro.sync_fixtures_from_bzz import sync_fixtures_from_bzz
 
-_PL_LEAGUE_API_ID = 17  # premier_league, see app/ingestion/bzzoiro/constants.py
+_PL_LEAGUE_API_ID = 1  # premier_league (espace interne stocké par bzz_events)
 
 
 def _bzz_event(
@@ -342,3 +342,16 @@ async def test_team_name_fallback_requires_same_match_day():
 
     assert created == 1
     assert far.external_id == "odds_abc"
+
+
+def test_internal_ids_of_other_competitions_never_map_to_big5():
+    """17 = Saudi Pro League, 8 = Europa League, 23 = Superliga roumaine,
+    34 = Brasileirão B, 35 = Copa do Brasil dans l'espace interne : jamais
+    des matchs Premier League / Liga / Serie A / Ligue 1 / Bundesliga."""
+    from app.ingestion.bzzoiro.sync_fixtures_from_bzz import _LEAGUE_API_ID_TO_KEY
+
+    for league_id in (17, 8, 23, 34, 35):
+        assert _LEAGUE_API_ID_TO_KEY.get(league_id) is None
+    assert _LEAGUE_API_ID_TO_KEY[1] == "premier_league"
+    assert _LEAGUE_API_ID_TO_KEY[6] == "ligue_1"
+    assert _LEAGUE_API_ID_TO_KEY[7] == "champions_league"

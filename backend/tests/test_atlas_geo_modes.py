@@ -21,7 +21,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import get_db
 from app.main import app
 from app.models.app_config import AppConfig
-from app.models.bzzoiro import BzzEvent
+from app.models.bzzoiro import BzzEvent, BzzPlayer
 from app.models.canonical_teams import CanonicalTeam
 from app.models.data_coverage import DataCoverageRun
 from app.models.leagues import League
@@ -43,6 +43,7 @@ _TABLES = (
     CanonicalTeam.__table__,
     DataCoverageRun.__table__,
     BzzEvent.__table__,
+    BzzPlayer.__table__,
     PlayerSelectionSeasonStat.__table__,
     AppConfig.__table__,
 )
@@ -301,4 +302,12 @@ def test_club_cup_league_ids_no_divergence():
     from app.api.atlas import _CLUB_CUP_LEAGUE_IDS
     from app.ingestion.bzzoiro.constants import INTL_CLUB_COMP_LEAGUE_IDS
 
-    assert _CLUB_CUP_LEAGUE_IDS == INTL_CLUB_COMP_LEAGUE_IDS == frozenset({7, 8, 83, 90, 32, 33})
+    assert _CLUB_CUP_LEAGUE_IDS == INTL_CLUB_COMP_LEAGUE_IDS
+    assert {7, 8, 83, 90, 32, 33, 29, 79} <= INTL_CLUB_COMP_LEAGUE_IDS
+
+
+def test_national_cups_mirror_the_registry_cup_kind():
+    from app.ingestion.bzzoiro.constants import NATIONAL_CUP_LEAGUE_IDS
+    from app.ingestion.bzzoiro.league_registry import LEAGUE_REGISTRY
+
+    assert NATIONAL_CUP_LEAGUE_IDS == {lid for lid, m in LEAGUE_REGISTRY.items() if m.kind == "cup"}

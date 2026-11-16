@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from app.ingestion.bzzoiro.league_registry import LeagueMeta, LEAGUE_REGISTRY
 
-_VALID_KINDS = {"domestic_1", "domestic_2", "uefa_club", "world", "selection"}
+_VALID_KINDS = {"domestic_1", "domestic_2", "uefa_club", "world", "selection", "cup", "women"}
 _VALID_FORMATS = {"round_robin", "groups", "knockout"}
 
 _EXPECTED_IDS = {
@@ -31,13 +31,21 @@ _EXPECTED_IDS = {
     9, 17, 18, 19, 20, 49, 50, 52, 53, 47, 80, 85, 32, 33, 104,
     # Selections (9)
     27, 58, 59, 62, 63, 64, 65, 66, 67,
+    # Extension du 14/11/2026 — championnats (20)
+    96, 109, 97, 86, 87, 91, 105, 108, 107, 106, 82, 95, 34, 111, 112, 113, 57, 28, 98, 70,
+    # coupes nationales (15)
+    39, 40, 44, 43, 41, 42, 92, 93, 110, 46, 56, 35, 81, 51, 48,
+    # féminins (2)
+    36, 72,
+    # international (9)
+    29, 79, 30, 68, 69, 60, 61, 71, 31,
 }
 
 _UEFA_CLUB_IDS = {7, 8, 83, 90}
 
 
-def test_registry_has_exactly_57_entries():
-    assert len(LEAGUE_REGISTRY) == 57
+def test_registry_has_exactly_103_entries():
+    assert len(LEAGUE_REGISTRY) == 103
 
 
 def test_registry_has_exactly_the_validated_ids():
@@ -78,7 +86,7 @@ def test_country_is_none_for_uefa_club_competitions():
 
 def test_country_is_none_for_every_selection():
     selections = [m for m in LEAGUE_REGISTRY.values() if m.kind == "selection"]
-    assert len(selections) == 9
+    assert len(selections) == 16
     for meta in selections:
         assert meta.country is None, f"selection {meta.name} must have country=None"
         assert meta.tier == "selection"
@@ -90,12 +98,12 @@ def test_tier_is_selection_string_only_for_selection_kind():
             assert meta.tier == "selection"
         else:
             assert isinstance(meta.tier, int)
-            assert 1 <= meta.tier <= 4
+            assert 1 <= meta.tier <= 6
 
 
-def test_ranks_are_unique_and_cover_1_to_57():
+def test_ranks_are_unique_and_cover_1_to_103():
     ranks = sorted(meta.rank for meta in LEAGUE_REGISTRY.values())
-    assert ranks == list(range(1, 58))
+    assert ranks == list(range(1, 104))
 
 
 def test_spot_check_known_values():
@@ -128,3 +136,10 @@ def test_spot_check_known_values():
     assert world_cup.country is None
     assert world_cup.format == "groups"
     assert world_cup.expected_count is None
+
+
+def test_new_kinds_cups_and_women_are_never_strict_by_name():
+    cups = [m for m in LEAGUE_REGISTRY.values() if m.kind == "cup"]
+    assert len(cups) == 15 and all(m.format == "knockout" and m.country for m in cups)
+    women = {lid for lid, m in LEAGUE_REGISTRY.items() if m.kind == "women"}
+    assert women == {36, 72}
