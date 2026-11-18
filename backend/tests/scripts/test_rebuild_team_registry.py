@@ -143,3 +143,28 @@ async def test_reconstruction_nominale():
     assert comptes == EFFECTIFS_STRICTS
     assert session.add.call_count == sum(EFFECTIFS_STRICTS.values())
     session.commit.assert_awaited_once()
+
+
+def test_barragistes_ecartes_seulement_si_la_coupure_est_nette():
+    from app.scripts.rebuild_team_registry import ecarter_barragistes
+
+    engages = {i: f"Club {i}" for i in range(1, 19)}
+    # 16 clubs avec ~30 matchs, 2 barragistes avec 2 matchs (Eliteserien 18/11)
+    matchs = {**{i: 30 for i in range(1, 17)}, 17: 2, 18: 2}
+    garde = ecarter_barragistes(engages, matchs, 16)
+    assert garde is not None and set(garde) == set(range(1, 17))
+    # début de saison : tout le monde a 2 matchs -> rien n'est deviné
+    assert ecarter_barragistes(engages, {i: 2 for i in engages}, 16) is None
+    # pas de surnombre -> rien à faire
+    assert ecarter_barragistes({1: "A"}, {1: 5}, 16) is None
+
+
+async def test_enumeration_ecarte_les_barragistes_avec_l_effectif_attendu():
+    evs = _events_pour(16) * 30  # saison régulière : ~30 matchs par club
+    evs += [_event(901, "Barragiste A", 15, "Club 15"), _event(902, "Barragiste B", 16, "Club 16")] * 2
+    client = MagicMock()
+    client.get_all = AsyncMock(return_value=evs)
+    sans = await enumerer_engages(client, 54, "2026-2027")
+    avec = await enumerer_engages(client, 54, "2026-2027", attendu=16)
+    assert len(sans) == 18
+    assert 901 not in avec and 902 not in avec
