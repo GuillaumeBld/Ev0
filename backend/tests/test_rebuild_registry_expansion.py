@@ -209,7 +209,10 @@ async def test_club_existant_recupere_aussi_le_country(session_factory):
 # ---------------------------------------------------------------------------
 
 
-async def test_ecart_de_compte_sur_une_ligue_interrompt_sans_rien_ecrire(session_factory):
+async def test_ecart_de_compte_sur_une_ligue_n_ecrit_pas_cette_ligue_mais_les_autres(session_factory):
+    """Un effectif hors norme (Ligue 1 a 17) : Ligue 1 garde ses engagements
+    d'hier et est signalee ; les autres championnats sont reecrits — le
+    tout-ou-rien global bloquait 20 championnats le 18/11/2026."""
     decalages = {lid: i * 1000 for i, lid in enumerate(EFFECTIFS_STRICTS)}
 
     async def _get_all(path, params=None):
@@ -223,39 +226,52 @@ async def test_ecart_de_compte_sur_une_ligue_interrompt_sans_rien_ecrire(session
     client.get_all = AsyncMock(side_effect=_get_all)
 
     async with session_factory() as session:
-        # Pre-existant : une ligne deja engagee pour CETTE saison, qui
-        # servirait de preuve si le remplacement en bloc (reset) s'etait
-        # execute malgre l'erreur.
         session.add(CanonicalTeam(
             name_fr="Ancien engage",
             name_en="Ancien engage",
             bzz_team_id=999999,
-            league_api_id=5,
+            league_api_id=6,
             season=SEASON,
-            country="Germany",
+            country="France",
         ))
         await session.commit()
 
-        with pytest.raises(SegmentationError) as exc:
-            await rebuild(session, client, season=SEASON)
+        ecarts: dict[int, str] = {}
+        comptes = await rebuild(session, client, season=SEASON, ecarts=ecarts)
 
-        assert "17" in str(exc.value) and "18" in str(exc.value)
+        assert set(ecarts) == {6} and "17" in ecarts[6] and "18" in ecarts[6]
+        assert 6 not in comptes and len(comptes) == len(EFFECTIFS_STRICTS) - 1
 
-        # Rien n'a ete ecrit : la ligne preexistante garde son engagement.
+        # Ligue 1 non reecrite : l'engagement d'hier reste en place.
         ligne = (
             await session.execute(
                 select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == 999999)
             )
         ).scalar_one()
-        assert ligne.league_api_id == 5
-        assert ligne.season == SEASON
-        assert ligne.country == "Germany"
+        assert (ligne.league_api_id, ligne.season, ligne.country) == (6, SEASON, "France")
 
-        total = (await session.execute(select(CanonicalTeam))).scalars().all()
-        assert len(total) == 1
+        # Les autres championnats sont ecrits.
+        autre = next(lid for lid in EFFECTIFS_STRICTS if lid != 6)
+        engages = (await session.execute(
+            select(CanonicalTeam).where(CanonicalTeam.league_api_id == autre)
+        )).scalars().all()
+        assert len(engages) == EFFECTIFS_STRICTS[autre]
 
 
-async def test_club_engage_dans_deux_championnats_interrompt_sans_rien_ecrire(session_factory):
+async def test_aucun_championnat_conforme_interrompt_sans_rien_ecrire(session_factory):
+    async def _get_all(path, params=None):
+        return _events_pour(EFFECTIFS_STRICTS[params["league"]] - 1, params["league"] * 1000)
+
+    client = MagicMock()
+    client.get_all = AsyncMock(side_effect=_get_all)
+
+    async with session_factory() as session:
+        with pytest.raises(SegmentationError):
+            await rebuild(session, client, season=SEASON)
+        assert (await session.execute(select(CanonicalTeam))).scalars().all() == []
+
+
+async def test_club_engage_dans_deux_championnats_ecarte_les_deux(session_factory):
     decalages = {lid: i * 1000 for i, lid in enumerate(EFFECTIFS_STRICTS)}
     leagues = list(EFFECTIFS_STRICTS)
     premiere, deuxieme = leagues[0], leagues[1]
@@ -272,13 +288,16 @@ async def test_club_engage_dans_deux_championnats_interrompt_sans_rien_ecrire(se
     client.get_all = AsyncMock(side_effect=_get_all)
 
     async with session_factory() as session:
-        with pytest.raises(SegmentationError) as exc:
-            await rebuild(session, client, season=SEASON)
+        ecarts: dict[int, str] = {}
+        comptes = await rebuild(session, client, season=SEASON, ecarts=ecarts)
 
-        assert "deux championnats" in str(exc.value)
-
-        total = (await session.execute(select(CanonicalTeam))).scalars().all()
-        assert total == []
+        assert set(ecarts) == {premiere, deuxieme}
+        assert all("deux championnats" in m for m in ecarts.values())
+        assert premiere not in comptes and deuxieme not in comptes
+        ecrits = (await session.execute(
+            select(CanonicalTeam.league_api_id).distinct()
+        )).scalars().all()
+        assert premiere not in ecrits and deuxieme not in ecrits
 
 
 # ---------------------------------------------------------------------------
@@ -349,9 +368,9 @@ async def test_rebuild_scope_league_ids_preserves_engagement_hors_subset(session
 
 
 async def test_rebuild_scope_league_ids_ecart_affecte_seulement_le_subset(session_factory):
-    """Un ecart d'effectif sur UNE ligue DU subset interrompt la reconstruction
-    (rien ecrit pour le subset), mais une ligue engagee hors subset n'est ni
-    inspectee ni affectee par cet echec."""
+    """Un ecart d'effectif sur UNE ligue DU subset : cette ligue n'est pas
+    reecrite, l'autre ligue du subset l'est, et une ligue engagee hors subset
+    n'est ni inspectee ni affectee."""
     decalages = {lid: i * 1000 for i, lid in enumerate(EFFECTIFS_STRICTS)}
     leagues = list(EFFECTIFS_STRICTS)
     subset = leagues[:2]
@@ -380,15 +399,17 @@ async def test_rebuild_scope_league_ids_ecart_affecte_seulement_le_subset(sessio
         ))
         await session.commit()
 
-        with pytest.raises(SegmentationError):
-            await rebuild(session, client, season=SEASON, league_ids=subset)
+        ecarts: dict[int, str] = {}
+        comptes = await rebuild(session, client, season=SEASON, league_ids=subset, ecarts=ecarts)
+        assert set(ecarts) == {ligue_en_defaut}
+        assert set(comptes) == {subset[1]}
 
         # Le client n'a jamais ete interroge pour la ligue hors subset : un
         # ecart dans le subset n'a pas declenche d'enumeration hors scope.
         appels = [c.args[1]["league"] for c in client.get_all.await_args_list]
         assert hors_subset not in appels
 
-        # Rien n'a ete ecrit : l'engagement hors subset reste intact.
+        # L'engagement hors subset reste intact.
         ligne = (
             await session.execute(
                 select(CanonicalTeam).where(CanonicalTeam.bzz_team_id == 999999)
@@ -398,8 +419,9 @@ async def test_rebuild_scope_league_ids_ecart_affecte_seulement_le_subset(sessio
         assert ligne.season == SEASON
         assert ligne.country == pays_hors_subset
 
+        # Seule l'autre ligue du subset est ecrite, en plus de la ligne hors subset.
         total = (await session.execute(select(CanonicalTeam))).scalars().all()
-        assert len(total) == 1
+        assert len(total) == 1 + EFFECTIFS_STRICTS[subset[1]]
 
 
 class _FakeEventsClient:
@@ -454,3 +476,16 @@ async def test_attach_league_clubs_matches_by_id_only_and_suffixes_homonyms():
     women = next(t for t in added if t.bzz_team_id == 9001)
     assert women.name_fr == "Real Madrid (F)" and women.name_en == "Real Madrid"
     assert women.league_api_id == 36 and women.country == "Spain"
+
+
+def test_tout_championnat_domestique_a_un_circuit_de_rattachement():
+    """Chaque championnat domestique du registre est segmenté (effectif
+    strict) ou rattaché par identifiant — Liga 3 et Campeonato de Portugal
+    (en poules) n'avaient aucun circuit (18/11/2026)."""
+    from app.scripts.rebuild_team_registry import SANS_SEGMENTATION
+
+    domestiques = {
+        lid for lid, m in LEAGUE_REGISTRY.items() if m.kind in ("domestic_1", "domestic_2")
+    }
+    assert domestiques <= set(EFFECTIFS_STRICTS) | set(SANS_SEGMENTATION)
+    assert not set(EFFECTIFS_STRICTS) & set(SANS_SEGMENTATION)

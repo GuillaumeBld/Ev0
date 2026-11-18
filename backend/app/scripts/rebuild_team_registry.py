@@ -81,13 +81,32 @@ class SegmentationError(RuntimeError):
     """L'effectif d'un championnat ne correspond pas a son format."""
 
 
+def ecarter_barragistes(
+    engages: dict[int, str], matchs: dict[int, int], attendu: int
+) -> dict[int, str] | None:
+    """Plus de clubs que l'effectif : les barrages de fin de saison sont
+    rangés dans le championnat (Eliteserien, Allsvenskan : 18 pour 16).
+    On garde les `attendu` clubs qui ont le plus de matchs si la coupure est
+    nette — le dernier gardé a au moins 3 fois plus de matchs que le premier
+    écarté (≈ 30 contre 2). Sinon None : rien n'est deviné."""
+    if len(engages) <= attendu:
+        return None
+    ordre = sorted(engages, key=lambda c: matchs.get(c, 0), reverse=True)
+    garde, ecarte = ordre[:attendu], ordre[attendu:]
+    if matchs.get(garde[-1], 0) < 3 * max(matchs.get(c, 0) for c in ecarte):
+        return None
+    return {c: engages[c] for c in garde}
+
+
 async def enumerer_engages(
-    client: Any, league_api_id: int, season: str
+    client: Any, league_api_id: int, season: str, attendu: int | None = None
 ) -> dict[int, str]:
     """Rend {identifiant: nom} des clubs engages dans ce championnat.
 
     L'enumeration passe par une fenetre de dates : le parametre season= de
     l'API est inoperant (il rend 408 110 evenements remontant a 1930).
+    Avec `attendu`, les barragistes en surnombre sont ecartes quand la
+    coupure est nette (voir `ecarter_barragistes`).
     """
     events = await client.get_all(
         "/api/events/",
@@ -98,11 +117,21 @@ async def enumerer_engages(
         },
     )
     engages: dict[int, str] = {}
+    matchs: dict[int, int] = {}
     for e in events:
         for cle in ("home_team_obj", "away_team_obj"):
             obj = e.get(cle) or {}
             if obj.get("id"):
                 engages[obj["id"]] = obj.get("name") or ""
+                matchs[obj["id"]] = matchs.get(obj["id"], 0) + 1
+    if attendu is not None and len(engages) > attendu:
+        filtres = ecarter_barragistes(engages, matchs, attendu)
+        if filtres is not None:
+            logger.info(
+                "championnat %s : %d barragiste(s) ecarte(s) : %s", league_api_id,
+                len(engages) - attendu, sorted(engages[c] for c in engages if c not in filtres),
+            )
+            return filtres
     return engages
 
 
@@ -111,6 +140,7 @@ async def rebuild(
     client: Any,
     season: str | None = None,
     league_ids: list[int] | None = None,
+    ecarts: dict[int, str] | None = None,
 ) -> dict[int, int]:
     """Reconstruit le referentiel. Rend {championnat: nombre d'engages}.
 
@@ -153,45 +183,53 @@ async def rebuild(
         }
 
     # --- Phase 1 : enumerer et CONTROLER, sans rien ecrire ---
+    # Le controle est PAR CHAMPIONNAT : un championnat douteux n'ecrit rien
+    # (ses engagements d'hier restent en place) et est signale dans
+    # `ecarts` ; il ne bloque plus les autres. Le tout-ou-rien global
+    # laissait 20 nouveaux championnats sans clubs pour deux ligues
+    # scandinaves en barrages (18/11/2026).
+    if ecarts is None:
+        ecarts = {}
     par_championnat: dict[int, dict[int, str]] = {}
     for league_api_id, attendu in effectifs.items():
-        engages = await enumerer_engages(client, league_api_id, season)
+        engages = await enumerer_engages(client, league_api_id, season, attendu)
         if len(engages) != attendu:
-            raise SegmentationError(
-                f"championnat {league_api_id} : {len(engages)} clubs engages, "
-                f"{attendu} attendus — reconstruction interrompue, "
-                f"rien n'a ete ecrit"
-            )
+            ecarts[league_api_id] = f"{len(engages)} clubs engages, {attendu} attendus"
+            logger.error("championnat %s : %s — non reecrit", league_api_id, ecarts[league_api_id])
+            continue
         par_championnat[league_api_id] = engages
         logger.info("championnat %s : %d engages", league_api_id, len(engages))
 
+    # Un club dans deux championnats : les deux sont douteux, aucun n'est ecrit.
     vus: dict[int, int] = {}
+    doublons: set[int] = set()
     for league_api_id, engages in par_championnat.items():
         for club_id in engages:
-            if club_id in vus:
-                raise SegmentationError(
-                    f"club {club_id} engage dans deux championnats "
-                    f"({vus[club_id]} et {league_api_id}) — "
-                    f"reconstruction interrompue, rien n'a ete ecrit"
-                )
+            if club_id in vus and vus[club_id] != league_api_id:
+                doublons |= {vus[club_id], league_api_id}
+                ecarts.setdefault(vus[club_id], f"club {club_id} engage dans deux championnats")
+                ecarts.setdefault(league_api_id, f"club {club_id} engage dans deux championnats")
             vus[club_id] = league_api_id
+    for league_api_id in doublons:
+        par_championnat.pop(league_api_id, None)
+    if not par_championnat:
+        raise SegmentationError(
+            f"aucun championnat conforme — reconstruction interrompue, rien n'a ete ecrit : {ecarts}"
+        )
 
     # --- Phase 2 : ecrire ---
     # Remplacement en bloc : un club absent de la nouvelle liste perd son
     # engagement du seul fait de son absence. Sans cela un relegue resterait
     # engage indefiniment et polluerait le filtre de son ancien championnat.
-    # Scope restreint a `effectifs` (donc a `league_ids` si fourni) : un
-    # rebuild partiel ne doit jamais desengager un club d'une ligue qu'il ne
-    # retraite pas (big-5 lors d'un rebuild scope expansion, par exemple).
-    # Les championnats hors Bzzoiro (portail, « Autres clubs », ids >= 9000)
-    # sont tenus par `build_universe` : jamais desengages ici.
-    reset_stmt = update(CanonicalTeam).where(CanonicalTeam.season == season).where(
-        or_(CanonicalTeam.league_api_id.is_(None), CanonicalTeam.league_api_id < PORTAL_LEAGUE_BASE)
-    )
-    if league_ids is not None:
-        reset_stmt = reset_stmt.where(CanonicalTeam.league_api_id.in_(effectifs.keys()))
+    # Scope restreint aux championnats CONFORMES de cette passe : un rebuild
+    # ne desengage jamais un club d'une ligue qu'il ne reecrit pas (big-5 lors
+    # d'un rebuild scope expansion, ligue ecartee pour ecart d'effectif,
+    # championnats hors Bzzoiro >= 9000 tenus par `build_universe`).
     await session.execute(
-        reset_stmt.values(league_api_id=None, season=None, country=None)
+        update(CanonicalTeam)
+        .where(CanonicalTeam.season == season)
+        .where(CanonicalTeam.league_api_id.in_(par_championnat.keys()))
+        .values(league_api_id=None, season=None, country=None)
     )
 
     # Index des lignes existantes par cle d'appariement : une ligne canonique
@@ -380,7 +418,12 @@ async def attach_european(
 SANS_SEGMENTATION: tuple[int, ...] = tuple(
     league_id
     for league_id, meta in LEAGUE_REGISTRY.items()
-    if meta.kind in ("world", "women") and meta.country is not None
+    if meta.country is not None and (
+        meta.kind in ("world", "women")
+        # Championnat domestique en poules (Liga 3, Campeonato de Portugal) :
+        # pas d'effectif fixe, donc hors segmentation stricte.
+        or (meta.kind in ("domestic_1", "domestic_2") and meta.format == "groups")
+    )
 )
 
 

@@ -45,8 +45,10 @@ from app.ingestion.bzzoiro.constants import (
     INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST,
     TARGET_LEAGUE_INTERNAL_ID_LIST,
 )
+from app.ingestion.bzzoiro.league_registry import LEAGUE_REGISTRY
 from app.scripts.rebuild_team_registry import (
     EFFECTIFS_STRICTS,
+    SegmentationError,
     attach_european,
     attach_league_clubs,
     rebuild,
@@ -1512,8 +1514,25 @@ async def job_sync_referentiel_expansion():
                 "Expansion events synced: %s (%d ligues)", events_count, len(league_ids)
             )
 
-            comptes = await rebuild(session, client, league_ids=domestic_scope)
-            logger.info("Referentiel reconstruit (expansion): %s", comptes)
+            # Un championnat douteux (effectif hors norme) n'est pas reecrit
+            # et n'empeche plus ni les autres ni les rattachements suivants.
+            ecarts: dict[int, str] = {}
+            try:
+                comptes = await rebuild(session, client, league_ids=domestic_scope, ecarts=ecarts)
+                logger.info("Referentiel reconstruit (expansion): %s", comptes)
+            except SegmentationError as exc:
+                await session.rollback()
+                logger.error("Referentiel (expansion) : aucun championnat reecrit — %s", exc)
+            if ecarts:
+                from app.alerts import send_alert
+
+                lignes = "\n".join(
+                    f"• {LEAGUE_REGISTRY[lid].name} ({lid}) : {motif}" for lid, motif in sorted(ecarts.items())
+                )
+                await send_alert(
+                    "⚠️ Référentiel clubs : championnats non mis à jour (clubs d'hier conservés)\n" + lignes,
+                    channel="incidents",
+                )
 
             rattaches = await attach_european(session, client)
             logger.info("Rattachement UEFA (expansion): %s", rattaches)
@@ -2698,7 +2717,13 @@ async def job_daily_health_report() -> None:
 
 def create_scheduler() -> AsyncIOScheduler:
     """Create and configure the scheduler."""
-    scheduler = AsyncIOScheduler()
+    # misfire_grace_time : par défaut APScheduler SAUTE un job lancé avec plus
+    # d'une seconde de retard. Un job long qui occupe la boucle (import
+    # carrières de 05:00) faisait ainsi sauter le référentiel d'expansion de
+    # 05:15 (constaté le 18/11 : « missed by 0:00:09 ») — clubs des nouveaux
+    # championnats jamais rattachés. Une heure de tolérance ; `coalesce`
+    # évite de rejouer plusieurs fois un job en retard.
+    scheduler = AsyncIOScheduler(job_defaults={"misfire_grace_time": 3600, "coalesce": True})
 
     # Fixtures: Every 30 min (Bzzoiro — create missing + fix placeholders).
     # Frequent interval needed during knockout stages so team names are resolved

@@ -167,9 +167,10 @@ async def test_job_sync_referentiel_expansion_calls_expected_chain():
     # CRITIQUE : rebuild() ne doit JAMAIS etre appele sans scope ici — un
     # appel league_ids=None resegmenterait big-5/C1 au meme rythme que les
     # 45 ligues d'expansion, recouplant leur fiabilite au pipeline paris.
-    mock_rebuild.assert_awaited_once_with(
-        mock_session, mock_client, league_ids=expected_domestic_scope
-    )
+    mock_rebuild.assert_awaited_once()
+    assert mock_rebuild.await_args.args == (mock_session, mock_client)
+    assert mock_rebuild.await_args.kwargs["league_ids"] == expected_domestic_scope
+    assert mock_rebuild.await_args.kwargs["ecarts"] == {}
     mock_attach.assert_awaited_once_with(mock_session, mock_client)
     mock_attach_leagues.assert_awaited_once_with(mock_session, mock_client)
     mock_coverage.assert_awaited_once_with(mock_session, league_ids=expected_ids)
@@ -469,3 +470,52 @@ def test_build_full_referentiel_cli_flags():
     args_default = _parse_args([])
     assert args_default.include_historical is False
     assert args_default.dry_run is False
+
+
+def test_scheduler_runs_late_jobs_instead_of_skipping_them():
+    """Un job retardé de quelques secondes (boucle occupée) doit tourner, pas
+    être sauté — régression du 18/11 (référentiel d'expansion « missed »)."""
+    from app.worker import create_scheduler
+
+    scheduler = create_scheduler()
+    # Valeur par défaut appliquée à chaque job à l'ajout effectif (démarrage).
+    assert scheduler._job_defaults["misfire_grace_time"] >= 3600
+    assert scheduler._job_defaults["coalesce"] is True
+
+
+@pytest.mark.asyncio
+async def test_expansion_alerts_on_skipped_leagues_and_still_attaches_clubs():
+    """Un championnat non reecrit (barrages, effectif hors norme) est signale
+    sur « incidents », et les rattachements suivants tournent quand meme."""
+    mock_session = AsyncMock()
+    mock_client = AsyncMock()
+
+    async def _rebuild(session, client, league_ids=None, ecarts=None):
+        ecarts[54] = "18 clubs engages, 16 attendus"
+        return {}
+
+    with patch("app.worker.settings") as mock_settings, patch(
+        "app.worker.async_session", return_value=_session_ctx(mock_session)
+    ), patch(
+        "app.worker.BzzoiroClient", return_value=_client_ctx(mock_client)
+    ), patch(
+        "app.worker.sync_events", new_callable=AsyncMock, return_value=0
+    ), patch(
+        "app.worker.rebuild", side_effect=_rebuild
+    ), patch(
+        "app.worker.attach_european", new_callable=AsyncMock, return_value={}
+    ) as mock_attach, patch(
+        "app.worker.attach_league_clubs", new_callable=AsyncMock, return_value={}
+    ) as mock_attach_leagues, patch(
+        "app.worker.check_coverage", new_callable=AsyncMock, return_value=[]
+    ), patch("app.alerts.send_alert", new_callable=AsyncMock) as mock_alert:
+        mock_settings.bzzoiro_api_key = "cle-test"
+        from app.worker import job_sync_referentiel_expansion
+
+        await job_sync_referentiel_expansion()
+
+    mock_alert.assert_awaited_once()
+    assert "Eliteserien" in mock_alert.await_args.args[0]
+    assert mock_alert.await_args.kwargs["channel"] == "incidents"
+    mock_attach.assert_awaited_once()
+    mock_attach_leagues.assert_awaited_once()
