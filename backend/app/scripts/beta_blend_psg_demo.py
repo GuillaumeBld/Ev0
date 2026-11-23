@@ -82,7 +82,7 @@ MIN_SEASON_MINUTES = 90  # ignore seasons with < 90 minutes (noise)
 # compute_player_shares' denominator is `max(sum(weights over the passed
 # players), lambda_team)`. Passing a smaller player list is exactly how
 # the production code (load_match_pricing) does per-lineup redistribution
-# for home_starters / away_starters).
+# for home_starter_ids / away_starter_ids).
 STARTING_XI = [
     "Marquinhos",
     "Willian Pacho",

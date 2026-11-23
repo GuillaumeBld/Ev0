@@ -279,6 +279,9 @@ class MatchPricingResult:
     # Optional redistributed pricing when caller supplies a starter list
     home_lineup_players: list[PlayerAllocation] | None = None
     away_lineup_players: list[PlayerAllocation] | None = None
+    # Signalements de la compo (titulaire inconnu, trop peu de titulaires)
+    home_lineup_warnings: list[str] = field(default_factory=list)
+    away_lineup_warnings: list[str] = field(default_factory=list)
     last_scraped_at: datetime | None = None
     # Match-level derived probabilities
     p00: float = 0.0   # P(0-0) = e^(-(lambda_h + lambda_a)) under independent Poisson
@@ -1316,84 +1319,115 @@ def _blend_tournament_stats(
     return players
 
 
-# ── Lineup pricing (optional redistribution) ─────────────────────
+# ── Lineup pricing (compo) ───────────────────────────────────────
+#
+# Les titulaires sont désignés par IDENTIFIANT (bzz_players.api_id), jamais
+# par nom : source unique.
+#
+# Le xG du match est réparti ENTIÈREMENT entre les titulaires. Sur
+# l'effectif complet, compute_player_shares divise par max(Σ poids, λ_équipe)
+# — garde-fou pensé pour un vivier incomplet. Appliqué tel quel à une compo,
+# il la rendait sans effet dès que la somme des poids des titulaires restait
+# sous le xG du match : même dénominateur (λ_équipe) que pour l'effectif,
+# donc mêmes parts, mêmes cotes, et une partie du xG attribuée à personne.
+# Constaté le 23/11 sur Man City – Napoli : Haaland 2,13 → 2,13 côté City
+# (xG élevé) alors que Napoli bougeait. Onze joueurs sur le terrain
+# produisent tout le xG de l'équipe : leurs parts somment à 1.
 
-def _match_tokens(name: str | None) -> list[str]:
-    """Tokens de nom, accents/ponctuation retirés (pour matching tolérant)."""
-    n = unicodedata.normalize("NFD", (name or "").strip().lower())
-    n = "".join(c for c in n if unicodedata.category(c) != "Mn")
-    for ch in "-'.,":
-        n = n.replace(ch, " ")
-    return [t for t in n.split() if t]
+MIN_LINEUP_STARTERS = 5
 
 
-def _lineup_name_compatible(a: list[str], b: list[str]) -> bool:
-    """True si deux listes de tokens désignent plausiblement le même joueur.
+def select_lineup_starters(
+    players: list[dict[str, Any]],
+    starter_ids: set[int] | list[int],
+    team: str,
+) -> tuple[list[dict[str, Any]], list[InputWarning]]:
+    """Titulaires du vivier désignés par identifiant, et signalements.
 
-    Gère le format abrégé de la source compo Bzzoiro (« T. Hernández ») que le
-    matching exact ratait → 1-2 titulaires exclus par équipe. Le prénom abrégé
-    doit correspondre à l'initiale du prénom complet, ce qui désambiguïse
-    « T. Hernández » (Theo) de « L. Hernández » (Lucas).
+    Un identifiant absent du vivier est ignoré, signalé (InputWarning) et
+    remonté en alerte ; il ne fait jamais échouer le calcul.
     """
-    if not a or not b:
-        return False
-    # Nom mononyme (Vinícius) : match si le token apparaît dans l'autre nom
-    if len(a) == 1:
-        return a[0] in b
-    if len(b) == 1:
-        return b[0] in a
-    # Multi-tokens : même nom de famille + prénom compatible (égal ou initiale)
-    if a[-1] != b[-1]:
-        return False
-    fa, fb = a[0], b[0]
-    if fa == fb:
-        return True
-    if len(fa) == 1 and fb.startswith(fa):
-        return True
-    if len(fb) == 1 and fa.startswith(fb):
-        return True
-    return False
+    wanted = {int(i) for i in starter_ids}
+    starters = [p for p in players if p.get("player_id") in wanted]
+    found = {p["player_id"] for p in starters}
+    warnings: list[InputWarning] = []
+    for pid in sorted(wanted - found):
+        warnings.append(InputWarning(
+            "UNKNOWN_STARTER_ID", pid, None,
+            f"team={team}: titulaire {pid} absent de l'effectif — ignoré",
+        ))
+    if len(starters) < MIN_LINEUP_STARTERS:
+        warnings.append(InputWarning(
+            "TOO_FEW_STARTERS", None, None,
+            f"team={team}: {len(starters)} titulaire(s) reconnu(s) sur {len(wanted)} "
+            f"— compo non appliquée (minimum {MIN_LINEUP_STARTERS})",
+        ))
+    if warnings:
+        for w in warnings:
+            logger.warning("compo [%s]: %s — %s", team, w.code, w.detail)
+        alert_bg(
+            f"Calculateur, compo {team} : " + " ; ".join(w.detail for w in warnings),
+            "incidents",
+        )
+    return starters, warnings
+
+
+def lineup_pen_taker(starters: list[dict[str, Any]], override: int | None) -> int | None:
+    """Tireur de penalty de la compo : le forçage s'il est titulaire, sinon détecté."""
+    ids = {p["player_id"] for p in starters}
+    if override is not None and override in ids:
+        return override
+    return detect_penalty_taker(starters)
+
+
+def lineup_shares(
+    starters: list[dict[str, Any]], team: str, match_xg: float,
+) -> list[PlayerShare]:
+    """Parts des titulaires, renormalisées pour sommer à 1 (tout le xG réparti)."""
+    shares = compute_player_shares(starters, team, lambda_team=match_xg)
+    sum_goal = sum(s.npxg_share for s in shares)
+    sum_assist = sum(s.xa_share for s in shares)
+    for s in shares:
+        s.npxg_share = s.npxg_share / sum_goal if sum_goal > 0 else 0.0
+        s.xa_share = s.xa_share / sum_assist if sum_assist > 0 else 0.0
+    return shares
 
 
 def compute_lineup_allocation(
     players: list[dict[str, Any]],
-    starter_names: list[str],
+    starter_ids: set[int] | list[int],
     team: str,
-    match_xg: float,
+    team_xg: float,
+    pen_taker_id: int | None = None,
+    sub_by_id: dict[int, tuple[float, float]] | None = None,
+    warnings_out: list[InputWarning] | None = None,
 ) -> list[PlayerAllocation]:
-    """Compute redistributed allocations for a specific set of starters.
+    """Cotes de la compo : le xG de l'équipe réparti entre les seuls titulaires.
 
-    The team xG is split only among the named starters → each player gets a
-    larger share than in the full-squad calculation, giving a more accurate
-    probability when the lineup is known.
+    Méthode Alpha inchangée (rythmes, minutes attendues, multiplicateurs) ;
+    seule la compo restreint qui se partage le xG. `sub_by_id` reporte
+    p_sub / avg_sub_time calculés pour l'effectif.
 
-    Returns [] if fewer than 5 starters matched in the DB (name mismatch /
-    missing data safety fallback).
+    Rend [] si moins de MIN_LINEUP_STARTERS titulaires sont reconnus (signalé).
+    Les signalements sont aussi ajoutés à `warnings_out` quand il est fourni.
     """
-    exact = {_name_key(n) for n in starter_names}
-    starter_tokens = [_match_tokens(n) for n in starter_names]
-
-    def _is_starter(player_name: str) -> bool:
-        if _name_key(player_name) in exact:
-            return True
-        pt = _match_tokens(player_name)
-        return any(_lineup_name_compatible(st, pt) for st in starter_tokens)
-
-    starters = [p for p in players if _is_starter(p["player_name"])]
-    if len(starters) < 5:
+    starters, warnings = select_lineup_starters(players, starter_ids, team)
+    if warnings_out is not None:
+        warnings_out.extend(warnings)
+    if len(starters) < MIN_LINEUP_STARTERS:
         return []
 
-    shares = compute_player_shares(starters, team, lambda_team=match_xg)
-    pen_id = detect_penalty_taker(starters)
-    for s in shares:
+    pen_id = lineup_pen_taker(starters, pen_taker_id)
+    budget_assists = team_xg * ASSIST_GOAL_RATE
+    allocs = []
+    for s in lineup_shares(starters, team, team_xg):
         s.is_pen_taker = s.player_id == pen_id
-
-    budget_assists = match_xg * ASSIST_GOAL_RATE
-    return sorted(
-        [allocate_player(s, match_xg, s.is_pen_taker, budget_assists) for s in shares],
-        key=lambda a: a.prob_goal,
-        reverse=True,
-    )
+        p_sub, avg_sub_time = (sub_by_id or {}).get(s.player_id, (0.35, 65.0))
+        allocs.append(allocate_player(
+            s, team_xg, s.is_pen_taker, budget_assists,
+            p_sub=p_sub, avg_sub_time=avg_sub_time,
+        ))
+    return sorted(allocs, key=lambda a: a.prob_goal, reverse=True)
 
 
 # ── Orchestration ─────────────────────────────────────────────────
@@ -1405,14 +1439,15 @@ async def load_match_pricing(
     away_xg_override: float | None = None,
     home_pen_taker_override: int | None = None,
     away_pen_taker_override: int | None = None,
-    home_starters: list[str] | None = None,
-    away_starters: list[str] | None = None,
+    home_starter_ids: list[int] | None = None,
+    away_starter_ids: list[int] | None = None,
 ) -> MatchPricingResult | None:
     """Full Top-Down pricing pipeline for one fixture (Model C).
 
-    home_starters / away_starters: optional list of player names. When
-    provided, the response also contains home_lineup_players /
-    away_lineup_players with xG redistributed among those starters only.
+    home_starter_ids / away_starter_ids: optional starters, by identifier
+    (bzz_players.api_id). When provided, the response also contains
+    home_lineup_players / away_lineup_players with the team xG split among
+    those starters only.
     The main home_players / away_players always contains the full squad.
     """
     home_team = fixture.home_team
@@ -1652,13 +1687,25 @@ async def load_match_pricing(
             alloc.p_goal_supersub = round(p_goal_ss, 4)
             alloc.fair_odds_goal_supersub = round(1.0 / p_goal_ss, 2) if p_goal_ss > 0 else 99.0
 
+    home_lineup_warnings: list[InputWarning] = []
+    away_lineup_warnings: list[InputWarning] = []
     home_lineup = (
-        compute_lineup_allocation(home_players_for_lineup, home_starters, home_team, home_match_xg)
-        if home_starters else None
+        compute_lineup_allocation(
+            home_players_for_lineup, set(home_starter_ids), home_team, home_match_xg,
+            pen_taker_id=home_pen_taker_override,
+            sub_by_id={a.player_id: (a.p_sub, a.avg_sub_time) for a in home_allocs},
+            warnings_out=home_lineup_warnings,
+        )
+        if home_starter_ids else None
     )
     away_lineup = (
-        compute_lineup_allocation(away_players_for_lineup, away_starters, away_team, away_match_xg)
-        if away_starters else None
+        compute_lineup_allocation(
+            away_players_for_lineup, set(away_starter_ids), away_team, away_match_xg,
+            pen_taker_id=away_pen_taker_override,
+            sub_by_id={a.player_id: (a.p_sub, a.avg_sub_time) for a in away_allocs},
+            warnings_out=away_lineup_warnings,
+        )
+        if away_starter_ids else None
     )
 
     p00 = round(math.exp(-(home_match_xg + away_match_xg)), 4)
@@ -1674,6 +1721,8 @@ async def load_match_pricing(
         away_players=away_allocs,
         home_lineup_players=home_lineup or None,
         away_lineup_players=away_lineup or None,
+        home_lineup_warnings=[w.detail for w in home_lineup_warnings],
+        away_lineup_warnings=[w.detail for w in away_lineup_warnings],
         last_scraped_at=market_result.last_snapshot_at if market_result is not None else None,
         p00=p00,
     )

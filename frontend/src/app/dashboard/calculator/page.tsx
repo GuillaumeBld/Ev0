@@ -570,9 +570,9 @@ function CalculatorInner() {
   const [homePenTaker, setHomePenTaker] = useState<number | null>(null)
   const [awayPenTaker, setAwayPenTaker] = useState<number | null>(null)
 
-  // Lineup starters for compo redistribution (sent to priceMatch)
-  const homeStartersRef = useRef<string[] | null>(null)
-  const awayStartersRef = useRef<string[] | null>(null)
+  // Compo : titulaires par identifiant (player_id), envoyés à priceMatch
+  const homeStartersRef = useRef<number[] | null>(null)
+  const awayStartersRef = useRef<number[] | null>(null)
 
   // Auto-apply BZZ lineup state
   const [lineupAutoApplied, setLineupAutoApplied] = useState<{ home: boolean; away: boolean }>({ home: false, away: false })
@@ -625,9 +625,8 @@ function CalculatorInner() {
         away_xg_override: awayXgRef.current ? Number(awayXgRef.current) : null,
         home_pen_taker_override: homePenTaker,
         away_pen_taker_override: awayPenTaker,
-        home_starters: homeStartersRef.current,
-        away_starters: awayStartersRef.current,
-
+        home_starter_ids: homeStartersRef.current,
+        away_starter_ids: awayStartersRef.current,
       })
       setPricing(result)
       setLastScrapedAt(result.last_scraped_at ?? null)
@@ -657,12 +656,9 @@ function CalculatorInner() {
           const r = await fetch(`/api/v1/lineups/fixture/${selectedFixtureId}`)
           if (r.ok) {
             const d = await r.json()
-            const homeS: string[] = (d.home?.players ?? [])
-              .filter((p: { is_starter: boolean; position?: string }) => p.is_starter && p.position !== 'GK')
-              .map((p: { player_name: string }) => p.player_name)
-            const awayS: string[] = (d.away?.players ?? [])
-              .filter((p: { is_starter: boolean; position?: string }) => p.is_starter && p.position !== 'GK')
-              .map((p: { player_name: string }) => p.player_name)
+            // Titulaires par identifiant (compo Bzzoiro) — jamais par nom.
+            const homeS: number[] = d.home?.starter_ids ?? []
+            const awayS: number[] = d.away?.starter_ids ?? []
             if (homeS.length >= 5) homeStartersRef.current = homeS
             if (awayS.length >= 5) awayStartersRef.current = awayS
             setLineupAutoApplied({ home: homeS.length >= 5, away: awayS.length >= 5 })
@@ -720,7 +716,7 @@ function CalculatorInner() {
     })
   }
 
-  function handleCalculateWithLineup(side: 'home' | 'away', starters: string[]) {
+  function handleCalculateWithLineup(side: 'home' | 'away', starters: number[]) {
     if (!selectedFixtureId) return
     if (side === 'home') homeStartersRef.current = starters.length >= 5 ? starters : null
     else awayStartersRef.current = starters.length >= 5 ? starters : null

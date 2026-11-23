@@ -17,7 +17,7 @@ interface LineupPricingWidgetProps {
   lineupPlayers: PlayerAllocationOut[] | null  // redistributed result from backend
   isHome: boolean
   autoApplied?: boolean  // true when lineup was auto-fetched from BZZ on load
-  onCalculate: (starters: string[]) => void
+  onCalculate: (starterIds: number[]) => void  // titulaires par identifiant (player_id)
   viewMode: ViewMode
 }
 
@@ -82,7 +82,7 @@ export function LineupPricingWidget({
       setOpen(true)
     }
   }, [autoApplied, lineupPlayers])
-  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [selected, setSelected] = useState<Set<number>>(new Set())
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
 
@@ -95,12 +95,11 @@ export function LineupPricingWidget({
       const d = await r.json()
       const side = isHome ? d.home : d.away
       if (!side) return
-      const starters: string[] = side.players
-        .filter((p: { is_starter: boolean; position?: string; player_name: string }) => p.is_starter && p.position !== 'GK')
-        .map((p: { player_name: string }) => p.player_name)
-      if (starters.length >= 5) {
-        setSelected(new Set(starters))
-        onCalculate(starters)
+      // Titulaires par identifiant (compo Bzzoiro) — jamais par nom.
+      const starterIds: number[] = side.starter_ids ?? []
+      if (starterIds.length >= 5) {
+        setSelected(new Set(starterIds))
+        onCalculate(starterIds)
       }
     } catch {
       // non-fatal
@@ -112,11 +111,13 @@ export function LineupPricingWidget({
     setSaving(true)
     setSaveMsg(null)
     try {
-      const players = Array.from(selected).map((name) => ({
-        player_name: name,
-        position: teamPlayers.find((p) => p.player_name === name)?.position ?? 'MF',
-        is_starter: true,
-      }))
+      const players = teamPlayers
+        .filter((p) => selected.has(p.player_id))
+        .map((p) => ({
+          player_name: p.player_name,
+          position: p.position ?? 'MF',
+          is_starter: true,
+        }))
       const r = await fetch('/api/v1/lineups', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -130,11 +131,11 @@ export function LineupPricingWidget({
     }
   }
 
-  function togglePlayer(name: string) {
+  function togglePlayer(playerId: number) {
     setSelected((prev) => {
       const next = new Set(prev)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
+      if (next.has(playerId)) next.delete(playerId)
+      else next.add(playerId)
       return next
     })
   }
@@ -224,15 +225,15 @@ export function LineupPricingWidget({
                                 key={p.player_id}
                                 className={clsx(
                                   'flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-xs transition-colors',
-                                  selected.has(p.player_name)
+                                  selected.has(p.player_id)
                                     ? (isHome ? 'bg-orange-500/20 text-orange-200' : 'bg-blue-500/20 text-blue-200')
                                     : 'hover:bg-ev-surface2 text-gray-300',
                                 )}
                               >
                                 <input
                                   type="checkbox"
-                                  checked={selected.has(p.player_name)}
-                                  onChange={() => togglePlayer(p.player_name)}
+                                  checked={selected.has(p.player_id)}
+                                  onChange={() => togglePlayer(p.player_id)}
                                   className="accent-orange-400 shrink-0"
                                 />
                                 <span className="truncate">{p.player_name}</span>

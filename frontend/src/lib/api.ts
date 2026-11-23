@@ -67,9 +67,9 @@ export interface MatchPriceRequest {
   away_xg_override?: number | null
   home_pen_taker_override?: number | null
   away_pen_taker_override?: number | null
-  home_starters?: string[] | null
-  away_starters?: string[] | null
-
+  // Compo : titulaires par identifiant (player_id = bzz_players.api_id)
+  home_starter_ids?: number[] | null
+  away_starter_ids?: number[] | null
 }
 
 export interface PlayerAllocationOut {
@@ -116,6 +116,9 @@ export interface MatchPriceResponse {
   away_players: PlayerAllocationOut[]
   home_lineup_players: PlayerAllocationOut[] | null
   away_lineup_players: PlayerAllocationOut[] | null
+  // Signalements de la compo (titulaire inconnu de l'effectif, trop peu de titulaires)
+  home_lineup_warnings?: string[]
+  away_lineup_warnings?: string[]
   last_scraped_at?: string | null
   p00?: number
 }

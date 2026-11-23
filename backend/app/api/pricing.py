@@ -23,9 +23,10 @@ class MatchPriceRequest(BaseModel):
     away_xg_override: float | None = None
     home_pen_taker_override: int | None = None  # player_id
     away_pen_taker_override: int | None = None  # player_id
-    # Optional: redistribute xG among these starters only
-    home_starters: list[str] | None = None
-    away_starters: list[str] | None = None
+    # Compo : titulaires par identifiant (bzz_players.api_id). Le xG de
+    # l'équipe est alors réparti entre ces seuls joueurs, Alpha et Beta.
+    home_starter_ids: list[int] | None = None
+    away_starter_ids: list[int] | None = None
 
 
 class PlayerAllocationOut(BaseModel):
@@ -80,6 +81,10 @@ class MatchPriceResponse(MatchBadges):
     # Populated only when starters were supplied in the request
     home_lineup_players: list[PlayerAllocationOut] | None = None
     away_lineup_players: list[PlayerAllocationOut] | None = None
+    # Signalements de la compo : titulaire inconnu de l'effectif (ignoré),
+    # trop peu de titulaires reconnus (compo non appliquée).
+    home_lineup_warnings: list[str] = []
+    away_lineup_warnings: list[str] = []
     last_scraped_at: str | None = None  # ISO timestamp of freshest bookmaker odds snapshot
     p00: float = 0.0  # P(0-0) under independent Poisson; used for FR 'remboursé si 0-0' guarantee
 
@@ -111,9 +116,8 @@ async def price_match(
         away_xg_override=request.away_xg_override,
         home_pen_taker_override=request.home_pen_taker_override,
         away_pen_taker_override=request.away_pen_taker_override,
-        home_starters=request.home_starters,
-        away_starters=request.away_starters,
-
+        home_starter_ids=request.home_starter_ids,
+        away_starter_ids=request.away_starter_ids,
     )
     if pricing is None:
         snap_result = await db.execute(
@@ -136,7 +140,7 @@ async def price_match(
     # fall back to empty maps, which makes every player's beta_* fields
     # mirror their Alpha fields below (same fallback as "no career data").
     try:
-        home_beta, away_beta = await compute_beta_allocations(
+        home_beta, away_beta, home_lineup_beta, away_lineup_beta = await compute_beta_allocations(
             db,
             fixture,
             pricing.home_players,
@@ -145,13 +149,17 @@ async def price_match(
             pricing.away_match_xg,
             home_pen_taker_override=request.home_pen_taker_override,
             away_pen_taker_override=request.away_pen_taker_override,
+            home_starter_ids=request.home_starter_ids if pricing.home_lineup_players else None,
+            away_starter_ids=request.away_starter_ids if pricing.away_lineup_players else None,
+            alpha_home_lineup=pricing.home_lineup_players,
+            alpha_away_lineup=pricing.away_lineup_players,
         )
     except Exception:
         logger.exception(
             "compute_beta_allocations failed for fixture %s — falling back to Alpha for beta_* fields",
             request.fixture_id,
         )
-        home_beta, away_beta = {}, {}
+        home_beta, away_beta, home_lineup_beta, away_lineup_beta = {}, {}, {}, {}
 
     # Saison courante (season_service) pour signaler des stats d'une saison
     # passee. Lue seulement si au moins un joueur porte une saison de stats.
@@ -234,11 +242,15 @@ async def price_match(
         home_players=_to_out(pricing.home_players, home_beta),
         away_players=_to_out(pricing.away_players, away_beta),
         home_lineup_players=(
-            _to_out(pricing.home_lineup_players, home_beta) if pricing.home_lineup_players else None
+            _to_out(pricing.home_lineup_players, home_lineup_beta)
+            if pricing.home_lineup_players else None
         ),
         away_lineup_players=(
-            _to_out(pricing.away_lineup_players, away_beta) if pricing.away_lineup_players else None
+            _to_out(pricing.away_lineup_players, away_lineup_beta)
+            if pricing.away_lineup_players else None
         ),
+        home_lineup_warnings=list(getattr(pricing, "home_lineup_warnings", []) or []),
+        away_lineup_warnings=list(getattr(pricing, "away_lineup_warnings", []) or []),
         last_scraped_at=pricing.last_scraped_at.isoformat() if pricing.last_scraped_at else None,
         p00=pricing.p00,
         **badge_map[fixture.id],

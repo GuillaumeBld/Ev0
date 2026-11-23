@@ -242,7 +242,7 @@ async def test_price_match_ne_casse_pas_si_saison_courante_indisponible():
     res.scalar_one_or_none.return_value = MagicMock(id=42)
     db.execute = AsyncMock(return_value=res)
     with patch("app.pricing.team_xg.load_match_pricing", new=AsyncMock(return_value=pricing)), \
-         patch("app.pricing.beta_pricing.compute_beta_allocations", new=AsyncMock(return_value=({}, {}))), \
+         patch("app.pricing.beta_pricing.compute_beta_allocations", new=AsyncMock(return_value=({}, {}, {}, {}))), \
          patch("app.services.season_service.current_season", new=AsyncMock(side_effect=RuntimeError("db"))):
         out = await price_match(MatchPriceRequest(fixture_id=42), db=db)
     assert out.home_players[0].stats_season == "2025-2026"
@@ -282,7 +282,7 @@ async def test_price_match_signale_des_stats_d_une_saison_passee():
     res.scalar_one_or_none.return_value = fx
     db.execute = AsyncMock(return_value=res)
     with patch("app.pricing.team_xg.load_match_pricing", new=AsyncMock(return_value=pricing)), \
-         patch("app.pricing.beta_pricing.compute_beta_allocations", new=AsyncMock(return_value=({}, {}))), \
+         patch("app.pricing.beta_pricing.compute_beta_allocations", new=AsyncMock(return_value=({}, {}, {}, {}))), \
          patch("app.services.season_service.current_season", new=AsyncMock(return_value="2026-2027")):
         out = await price_match(MatchPriceRequest(fixture_id=42), db=db)
     h0, h1 = out.home_players
