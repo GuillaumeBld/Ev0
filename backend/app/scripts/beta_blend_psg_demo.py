@@ -77,12 +77,12 @@ MIN_SEASON_MINUTES = 90  # ignore seasons with < 90 minutes (noise)
 # realistic starting XI (10 outfield + GK excluded, same as Alpha's own
 # _load_team_players convention) using team_xg.py's OWN dedicated lineup
 # function `compute_lineup_allocation`, which redistributes the full team
-# xG budget only among the named starters (xG/xA shares are recomputed —
-# i.e. renormalized to sum to 1 — over just this subset, since
-# compute_player_shares' denominator is `max(sum(weights over the passed
-# players), lambda_team)`. Passing a smaller player list is exactly how
-# the production code (load_match_pricing) does per-lineup redistribution
-# for home_starters / away_starters).
+# xG budget only among the starters, designated by identifier
+# (home_starter_ids / away_starter_ids in load_match_pricing). Since 23/11
+# (Task 13) it renormalizes the starters' xG/xA shares to sum to 1
+# (team_xg.lineup_shares) instead of keeping compute_player_shares'
+# `max(sum(weights), lambda_team)` denominator — the same renormalization
+# this demo applies below in _allocate_lineup_renormalized.
 STARTING_XI = [
     "Marquinhos",
     "Willian Pacho",

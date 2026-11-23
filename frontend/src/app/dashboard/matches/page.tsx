@@ -4,19 +4,10 @@ import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { clsx } from 'clsx'
 import { AlertCircle, RefreshCw } from 'lucide-react'
+import { TeamBadge } from '@/components/TeamBadge'
+import type { MatchBadges } from '@/lib/api'
 
-/** Championnats du périmètre. La Ligue des champions est absente : elle attend
- *  les tirages de la phase de ligue. */
-const LEAGUES: { id: number | null; label: string; flag: string }[] = [
-  { id: null, label: 'Tous', flag: '' },
-  { id: 1, label: 'Premier League', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
-  { id: 3, label: 'La Liga', flag: '🇪🇸' },
-  { id: 4, label: 'Serie A', flag: '🇮🇹' },
-  { id: 5, label: 'Bundesliga', flag: '🇩🇪' },
-  { id: 6, label: 'Ligue 1', flag: '🇫🇷' },
-]
-
-interface MatchListItem {
+interface MatchListItem extends MatchBadges {
   event_api_id: number
   event_date: string | null
   status: string | null
@@ -38,6 +29,7 @@ function fmtDate(iso: string | null): string {
 export default function MatchesPage() {
   const [matches, setMatches] = useState<MatchListItem[]>([])
   const [league, setLeague] = useState<number | null>(null)
+  const [leagues, setLeagues] = useState<[number, string][]>([])
   const [loading, setLoading] = useState(true)
   const [erreur, setErreur] = useState<string | null>(null)
 
@@ -45,6 +37,8 @@ export default function MatchesPage() {
     setLoading(true)
     setErreur(null)
     try {
+      // « Tous » = les matchs les plus récents ; un championnat choisi est
+      // filtré côté serveur, avec sa propre limite.
       const params = new URLSearchParams({ limit: '100' })
       if (league !== null) params.set('league_api_id', league.toString())
       const r = await fetch(`/api/v1/matches?${params}`)
@@ -60,6 +54,20 @@ export default function MatchesPage() {
 
   useEffect(() => { charger() }, [charger])
 
+  // Boutons de championnat : liste de TOUTES les compétitions présentes
+  // (endpoint dédié), indépendante des matchs affichés.
+  useEffect(() => {
+    fetch('/api/v1/matches/competitions')
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json()
+      })
+      .then((d: { competition_api_id: number; competition_name: string }[]) =>
+        setLeagues(d.map((c) => [c.competition_api_id, c.competition_name] as [number, string])),
+      )
+      .catch((e) => setErreur(`Impossible de charger les championnats : ${(e as Error).message}`))
+  }, [])
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -73,7 +81,7 @@ export default function MatchesPage() {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {LEAGUES.map(({ id, label, flag }) => (
+        {[[null, 'Tous'] as const, ...leagues].map(([id, label]) => (
           <button
             key={id ?? 'all'}
             onClick={() => setLeague(id)}
@@ -84,7 +92,7 @@ export default function MatchesPage() {
                 : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white',
             )}
           >
-            {flag} {label}
+            {label}
           </button>
         ))}
       </div>
@@ -117,8 +125,10 @@ export default function MatchesPage() {
                 <tr key={m.event_api_id} className="border-b border-gray-700/50 hover:bg-ev-surface2">
                   <td className="px-4 py-2 text-gray-400 whitespace-nowrap">{fmtDate(m.event_date)}</td>
                   <td className="px-3 py-2">
-                    <Link href={`/dashboard/matches/${m.event_api_id}`} className="text-white hover:text-brand-400">
+                    <Link href={`/dashboard/matches/${m.event_api_id}`} className="inline-flex items-center gap-2 text-white hover:text-brand-400">
+                      <TeamBadge badge={m.home_badge} name={m.home_team} size={20} />
                       {m.home_team} — {m.away_team}
+                      <TeamBadge badge={m.away_badge} name={m.away_team} size={20} />
                     </Link>
                   </td>
                   <td className="px-3 py-2 text-center font-mono text-white">

@@ -46,6 +46,8 @@ class Fixture(Base, TimestampMixin):
     )
     home_bzz_team_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     away_bzz_team_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # Id interne Bzzoiro de la ligue (cle du registre Atlas)
+    competition_api_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
     # Timing
     kickoff_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

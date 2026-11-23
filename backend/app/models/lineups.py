@@ -58,6 +58,9 @@ class TeamLineupPlayer(Base, TimestampMixin):
     position: Mapped[str] = mapped_column(String(10))  # GK | DEF | MID | FWD
     is_starter: Mapped[bool] = mapped_column(Boolean, default=True)
     jersey_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Identifiant Atlas (bzz_players.api_id). NULL pour les compos enregistrées
+    # avant la migration 069 : elles sont ignorées par la résolution de compo.
+    player_api_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
     lineup: Mapped[TeamLineup] = relationship(back_populates="players")
 

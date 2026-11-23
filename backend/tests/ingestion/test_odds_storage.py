@@ -29,7 +29,7 @@ async def test_store_complete_result():
     session.execute = AsyncMock(return_value=MagicMock(rowcount=7))
     session.commit = AsyncMock()
 
-    match_rows, player_rows = await store_match_scrape_result(result, session)
+    match_rows, player_rows = await store_match_scrape_result(result, session, squad_cache={42: []})
     assert match_rows >= 0
     assert player_rows >= 0
     assert session.commit.called
@@ -49,5 +49,5 @@ async def test_store_incomplete_result_still_stores_player_props():
     session = AsyncMock()
     session.execute = AsyncMock(return_value=MagicMock(rowcount=1))
     session.commit = AsyncMock()
-    _, player_rows = await store_match_scrape_result(result, session)
+    _, player_rows = await store_match_scrape_result(result, session, squad_cache={42: []})
     assert player_rows >= 0

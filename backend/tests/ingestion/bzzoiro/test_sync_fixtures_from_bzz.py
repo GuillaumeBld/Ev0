@@ -68,6 +68,8 @@ def _existing_fixture(
     f.home_team = home_team
     f.away_team = away_team
     f.season = season
+    f.league = "premier_league"
+    f.competition_api_id = _PL_LEAGUE_API_ID
     f.home_bzz_team_id = home_bzz_team_id
     f.away_bzz_team_id = away_bzz_team_id
     f.home_canonical_team_id = home_canonical_team_id
@@ -348,10 +350,10 @@ def test_internal_ids_of_other_competitions_never_map_to_big5():
     """17 = Saudi Pro League, 8 = Europa League, 23 = Superliga roumaine,
     34 = Brasileirão B, 35 = Copa do Brasil dans l'espace interne : jamais
     des matchs Premier League / Liga / Serie A / Ligue 1 / Bundesliga."""
-    from app.ingestion.bzzoiro.sync_fixtures_from_bzz import _LEAGUE_API_ID_TO_KEY
+    from app.services.competitions import league_key_for
 
     for league_id in (17, 8, 23, 34, 35):
-        assert _LEAGUE_API_ID_TO_KEY.get(league_id) is None
-    assert _LEAGUE_API_ID_TO_KEY[1] == "premier_league"
-    assert _LEAGUE_API_ID_TO_KEY[6] == "ligue_1"
-    assert _LEAGUE_API_ID_TO_KEY[7] == "champions_league"
+        assert league_key_for(league_id) == f"comp_{league_id}"
+    assert league_key_for(1) == "premier_league"
+    assert league_key_for(6) == "ligue_1"
+    assert league_key_for(7) == "champions_league"

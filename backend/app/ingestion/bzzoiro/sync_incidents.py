@@ -11,6 +11,7 @@ Flow:
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -82,6 +83,28 @@ def _nom(valeur: Any) -> str:
     if isinstance(valeur, dict):
         return (valeur.get("name") or valeur.get("shortName") or "").strip()
     return ""
+
+
+def _id_passeur(inc: dict[str, Any], passeur: str) -> int | None:
+    """Identifiant Bzzoiro du passeur d'un but.
+
+    Bzzoiro n'envoie que le NOM du passeur (`"assist": "L. Yamal"`), jamais
+    d'`assist_id`. L'identifiant se lit dans `sequence`, la liste des actions
+    menant au but : l'element du passeur porte `"assist": true`, et son `pid`.
+    A defaut, l'element dont `player` egale le nom du passeur ; a defaut,
+    `assist_id` (compatibilite ascendante). Sinon None -- jamais invente.
+    """
+    sequence = inc.get("sequence")
+    if isinstance(sequence, list):
+        elements = [e for e in sequence if isinstance(e, dict)]
+        for e in elements:
+            if e.get("assist") is True and isinstance(e.get("pid"), int):
+                return e["pid"]
+        for e in elements:
+            if _nom(e.get("player")) == passeur and isinstance(e.get("pid"), int):
+                return e["pid"]
+    aid = inc.get("assist_id")
+    return aid if isinstance(aid, int) else None
 
 
 def _parse_incidents(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -167,7 +190,7 @@ def _parse_incidents(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if passeur:
                 rows.append({
                     "player_name": passeur,
-                    "player_id": inc.get("assist_id"),
+                    "player_id": _id_passeur(inc, passeur),
                     "event_type": "assist",
                     "minute": minute,
                     "related_player_name": None,
@@ -391,3 +414,63 @@ async def sync_incidents(
 
     logger.info("sync_incidents: processed %d/%d fixtures", processed, len(fixtures))
     return processed
+
+
+async def backfill_assist_player_ids(session: AsyncSession) -> int:
+    """Renseigne `match_events.player_id` des passes decisives deja stockees.
+
+    Les passes ingerees avant la lecture de `sequence` n'ont aucun identifiant.
+    On relit les incidents conserves dans `bzz_events.incidents` et on apparie
+    sur la minute + le nom du passeur. Idempotent : ne touche que les lignes
+    `assist` dont `player_id` est NULL, et seulement quand un identifiant est
+    trouve. Rend le nombre de lignes mises a jour (sans commit).
+    """
+    from sqlalchemy import text as sa_text
+
+    rows = (await session.execute(sa_text("""
+        SELECT DISTINCT f.id, be.incidents
+        FROM match_events me
+        JOIN fixtures f ON f.id = me.fixture_id
+        JOIN bzz_events be ON f.external_id = 'bzz_' || be.api_id
+        WHERE me.event_type = 'assist'
+          AND me.player_id IS NULL
+          AND be.incidents IS NOT NULL
+    """))).all()
+
+    mis_a_jour = 0
+    lues = 0
+    for fixture_id, incidents in rows:
+        if isinstance(incidents, str):
+            try:
+                incidents = json.loads(incidents)
+            except ValueError:
+                logger.debug("backfill passes: incidents illisibles (fixture %s)", fixture_id)
+                continue
+        if not isinstance(incidents, list):
+            continue
+        ids = {
+            (ev["minute"], ev["player_name"]): ev["player_id"]
+            for ev in _parse_incidents(incidents)
+            if ev["event_type"] == "assist" and ev.get("player_id") is not None
+        }
+        if not ids:
+            continue
+        manquants = (await session.execute(sa_text("""
+            SELECT id, minute, player_name FROM match_events
+            WHERE fixture_id = :fid AND event_type = 'assist' AND player_id IS NULL
+        """), {"fid": fixture_id})).all()
+        lues += len(manquants)
+        for ev_id, minute, nom in manquants:
+            pid = ids.get((minute, nom))
+            if pid is None:
+                continue
+            res = await session.execute(sa_text(
+                "UPDATE match_events SET player_id = :pid "
+                "WHERE id = :id AND player_id IS NULL"
+            ), {"pid": pid, "id": ev_id})
+            mis_a_jour += res.rowcount or 0
+    logger.info(
+        "backfill passes: %d lignes examinees, %d remplies, %d laissees NULL",
+        lues, mis_a_jour, lues - mis_a_jour,
+    )
+    return mis_a_jour

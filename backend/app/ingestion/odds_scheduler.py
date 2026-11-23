@@ -793,8 +793,12 @@ class OddsScheduler:
         from app.models.canonical_teams import CanonicalTeam
         from app.models.fixtures import Fixture
         from app.models.odds_scrape_state import OddsScrapeState
+        from app.services.player_identity import SquadPlayer
 
         now = datetime.now(UTC)
+        # Effectif Atlas par match, chargé une seule fois par passage et
+        # partagé entre bookmakers pour relier chaque cote à son joueur.
+        squad_cache: dict[int, list[SquadPlayer]] = {}
         # +11 days so that matches on the 10th day (which may kick off late in
         # the day) are always included regardless of the current time of day.
         cutoff = now + timedelta(days=11)
@@ -937,7 +941,7 @@ class OddsScheduler:
                 )
                 continue
             r.fixture_id = fixture_id
-            await store_match_scrape_result(r, session)
+            await store_match_scrape_result(r, session, squad_cache=squad_cache)
             stored_fixture_ids.add(fixture_id)
             scraped += 1
 
@@ -951,7 +955,7 @@ class OddsScheduler:
             ps_results = []
 
         for r in ps_results:
-            await store_match_scrape_result(r, session)
+            await store_match_scrape_result(r, session, squad_cache=squad_cache)
             stored_fixture_ids.add(r.fixture_id)
             scraped += 1
 

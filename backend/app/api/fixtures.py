@@ -9,11 +9,20 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._badges import MatchBadges, badge_fields_for_fixtures
 from app.db import get_db
-from app.ingestion.bzzoiro.constants import INTERNATIONAL_LEAGUE_INTERNAL_IDS
 from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
 from app.models.player_odds_snapshot import PlayerOddsSnapshot
+from app.services.competitions import (
+    DEFAULT_MANUAL_COMPETITION_API_ID,
+    SELECTION_COMPETITION_IDS,
+    clubs_only_clause,
+    UEFA_SUPER_CUP_COMPETITION_API_ID,
+    competition_clause,
+    competition_id_for_league,
+    league_key_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +34,14 @@ logger = logging.getLogger(__name__)
 # les premiers echappent au pricing ; la Supercoupe se price comme n'importe
 # quel match de clubs.
 COMPETITIONS_DE_CLUBS_HORS_CHAMPIONNAT: frozenset[str] = frozenset({
-    "uefa_super_cup",
+    league_key_for(UEFA_SUPER_CUP_COMPETITION_API_ID),
 })
 
 # Cles de competition portees par `fixtures.league` qui opposent des selections
 # nationales. Derivees du referentiel d'ingestion plutot que recopiees : une
 # competition de selections ajoutee la-bas est automatiquement exclue ici.
-COMPETITIONS_DE_SELECTIONS: frozenset[str] = (
-    frozenset(INTERNATIONAL_LEAGUE_INTERNAL_IDS) - COMPETITIONS_DE_CLUBS_HORS_CHAMPIONNAT
+COMPETITIONS_DE_SELECTIONS: frozenset[str] = frozenset(
+    league_key_for(cid) for cid in SELECTION_COMPETITION_IDS
 )
 
 router = APIRouter()
@@ -51,7 +60,7 @@ class OddsSnapshotOut(BaseModel):
     snapshot_utc: str  # maps to scraped_at
 
 
-class FixtureOut(BaseModel):
+class FixtureOut(MatchBadges):
     id: int
     external_id: str
     league: str
@@ -85,7 +94,8 @@ class FixtureCreate(BaseModel):
     time: str
     home_team: str
     away_team: str
-    league: str = "ligue_1"
+    league: str | None = None
+    competition_api_id: int | None = None
     season: str = "2024-25"
 
 
@@ -107,7 +117,10 @@ def _apply_upcoming_only_filter(stmt, upcoming_only: bool):
 @router.get("/fixtures", response_model=FixturesResponse)
 async def list_fixtures(
     db: AsyncSession = Depends(get_db),
-    league: str | None = Query(None),
+    league: str | None = Query(None, description="Etiquette historique (ancien filtre)"),
+    competition_api_id: int | None = Query(
+        None, description="Identifiant de competition Atlas (prime sur league)"
+    ),
     status: str | None = Query(None),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
@@ -162,8 +175,11 @@ async def list_fixtures(
         .limit(limit)
     )
 
-    if league:
-        stmt = stmt.where(Fixture.league == league)
+    clause = competition_clause(
+        Fixture.league, Fixture.competition_api_id, league, competition_api_id
+    )
+    if clause is not None:
+        stmt = stmt.where(clause)
     if status:
         # Map frontend filter values to DB status
         status_map = {"upcoming": "scheduled", "finished": "finished", "live": "live"}
@@ -185,7 +201,7 @@ async def list_fixtures(
     # peut rien produire. Le 07/09/2026, 178 matchs de Ligue des Nations et
     # d'amicaux noyaient les 109 vrais matchs de championnat.
     if clubs_only:
-        stmt = stmt.where(Fixture.league.notin_(COMPETITIONS_DE_SELECTIONS))
+        stmt = stmt.where(clubs_only_clause(Fixture.league, Fixture.competition_api_id))
 
     # Exclure les fixtures dont un nom d'équipe est un placeholder
     # Patterns : W83, L101, 1A, 2B, R32 TBD 7, R16 TBD 1, QF TBD…
@@ -221,6 +237,8 @@ async def list_fixtures(
             return canonical_data[ct_id].api_football_id
         return None
 
+    badge_map = await badge_fields_for_fixtures(db, [r.Fixture for r in rows])
+
     items = [
         FixtureOut(
             id=row.Fixture.id,
@@ -242,6 +260,7 @@ async def list_fixtures(
             goalscorer_count=row.goalscorer_count,
             assist_count=row.assist_count,
             odds=[],
+            **badge_map[row.Fixture.id],
         )
         for row in rows
     ]
@@ -256,11 +275,21 @@ async def create_fixture(
 ):
     """Create a fixture manually."""
     kickoff = datetime.fromisoformat(f"{body.date}T{body.time}:00+00:00")
+    cid = body.competition_api_id
+    if cid is None:
+        cid = (
+            competition_id_for_league(body.league)
+            if body.league
+            else DEFAULT_MANUAL_COMPETITION_API_ID
+        )
+    # Etiquette libre non reconnue : conservee telle quelle, sans competition Atlas.
+    league_label = league_key_for(cid) if cid is not None else body.league
     external_id = f"manual_{uuid.uuid4().hex[:12]}"
 
     fixture = Fixture(
         external_id=external_id,
-        league=body.league,
+        league=league_label,
+        competition_api_id=cid,
         season=body.season,
         home_team=body.home_team,
         away_team=body.away_team,
@@ -291,6 +320,7 @@ async def create_fixture(
         goalscorer_count=0,
         assist_count=0,
         odds=[],
+        **(await badge_fields_for_fixtures(db, [fixture]))[fixture.id],
     )
 
 
@@ -301,6 +331,7 @@ async def delete_fixture(
 ):
     """Delete a fixture and all related records (odds, recommendations, lineups, etc.)."""
     from sqlalchemy import delete as sa_delete
+
     from app.models.lineups import TeamLineup
     from app.models.match_events import MatchEvent
     from app.models.match_odds import MatchOddsSnapshot
@@ -348,6 +379,61 @@ async def get_fixture_odds(
         )
         for o in snapshots
     ]
+
+
+# Marches de player_odds_snapshots.market_type -> nom expose au calculateur.
+_PLAYER_ODDS_MARKETS: dict[str, str] = {"goalscorer": "goal", "assist": "assist"}
+
+
+class FixturePlayerOddOut(BaseModel):
+    player_api_id: int
+    market: str  # "goal" | "assist"
+    bookmaker: str
+    odds: float
+    scraped_at: str
+
+
+def _player_odds_stmt(fixture_id: int):
+    """Derniere cote par joueur x marche x book, en une requete (DISTINCT ON).
+
+    Uniquement les lignes reliees a un joueur Atlas : une cote dont le nom n'a
+    pas ete resolu (player_api_id NULL) n'est jamais rapprochee par nom ici.
+    """
+    pos = PlayerOddsSnapshot
+    book = func.lower(pos.bookmaker)
+    return (
+        select(pos.player_api_id, pos.market_type, book, pos.odds, pos.scraped_at)
+        .where(
+            pos.fixture_id == fixture_id,
+            pos.player_api_id.is_not(None),
+            pos.market_type.in_(list(_PLAYER_ODDS_MARKETS)),
+        )
+        .distinct(pos.player_api_id, pos.market_type, book)
+        .order_by(pos.player_api_id, pos.market_type, book, pos.scraped_at.desc())
+    )
+
+
+def player_odds_rows_out(rows) -> list[FixturePlayerOddOut]:
+    return [
+        FixturePlayerOddOut(
+            player_api_id=pid,
+            market=_PLAYER_ODDS_MARKETS[market],
+            bookmaker=bookmaker,
+            odds=odds,
+            scraped_at=scraped_at.isoformat(),
+        )
+        for pid, market, bookmaker, odds, scraped_at in rows
+    ]
+
+
+@router.get("/fixtures/{fixture_id}/player-odds", response_model=list[FixturePlayerOddOut])
+async def get_fixture_player_odds(
+    fixture_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Cotes books buteur/passeur par joueur Atlas (bzz_players.api_id)."""
+    result = await db.execute(_player_odds_stmt(fixture_id))
+    return player_odds_rows_out(result.all())
 
 
 @router.post("/fixtures/{fixture_id}/odds", response_model=OddsSnapshotOut, status_code=201)

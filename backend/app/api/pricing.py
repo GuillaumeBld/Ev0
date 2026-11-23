@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._badges import MatchBadges, badge_fields_for_fixtures
 from app.db import get_db
 
 logger = logging.getLogger(__name__)
@@ -22,9 +23,10 @@ class MatchPriceRequest(BaseModel):
     away_xg_override: float | None = None
     home_pen_taker_override: int | None = None  # player_id
     away_pen_taker_override: int | None = None  # player_id
-    # Optional: redistribute xG among these starters only
-    home_starters: list[str] | None = None
-    away_starters: list[str] | None = None
+    # Compo : titulaires par identifiant (bzz_players.api_id). Le xG de
+    # l'équipe est alors réparti entre ces seuls joueurs, Alpha et Beta.
+    home_starter_ids: list[int] | None = None
+    away_starter_ids: list[int] | None = None
 
 
 class PlayerAllocationOut(BaseModel):
@@ -60,9 +62,14 @@ class PlayerAllocationOut(BaseModel):
     beta_fair_odds_goal_supersub: float = 99.0
     beta_p_assist_supersub: float = 0.0
     beta_fair_odds_assist_supersub: float = 99.0
+    # Saison d'ou viennent les stats (toutes competitions fusionnees) ;
+    # None = joueur sans aucune stat (cote issue du poste).
+    stats_season: str | None = None
+    # Vrai quand ces stats datent d'une saison anterieure a la saison courante.
+    stats_stale: bool = False
 
 
-class MatchPriceResponse(BaseModel):
+class MatchPriceResponse(MatchBadges):
     fixture_id: int
     home_team: str
     away_team: str
@@ -74,8 +81,11 @@ class MatchPriceResponse(BaseModel):
     # Populated only when starters were supplied in the request
     home_lineup_players: list[PlayerAllocationOut] | None = None
     away_lineup_players: list[PlayerAllocationOut] | None = None
+    # Signalements de la compo : titulaire inconnu de l'effectif (ignoré),
+    # trop peu de titulaires reconnus (compo non appliquée).
+    home_lineup_warnings: list[str] = []
+    away_lineup_warnings: list[str] = []
     last_scraped_at: str | None = None  # ISO timestamp of freshest bookmaker odds snapshot
-    p00: float = 0.0  # P(0-0) under independent Poisson; used for FR 'remboursé si 0-0' guarantee
 
 
 @router.post("/price/match", response_model=MatchPriceResponse)
@@ -105,9 +115,8 @@ async def price_match(
         away_xg_override=request.away_xg_override,
         home_pen_taker_override=request.home_pen_taker_override,
         away_pen_taker_override=request.away_pen_taker_override,
-        home_starters=request.home_starters,
-        away_starters=request.away_starters,
-
+        home_starter_ids=request.home_starter_ids,
+        away_starter_ids=request.away_starter_ids,
     )
     if pricing is None:
         snap_result = await db.execute(
@@ -130,7 +139,7 @@ async def price_match(
     # fall back to empty maps, which makes every player's beta_* fields
     # mirror their Alpha fields below (same fallback as "no career data").
     try:
-        home_beta, away_beta = await compute_beta_allocations(
+        home_beta, away_beta, home_lineup_beta, away_lineup_beta = await compute_beta_allocations(
             db,
             fixture,
             pricing.home_players,
@@ -139,18 +148,43 @@ async def price_match(
             pricing.away_match_xg,
             home_pen_taker_override=request.home_pen_taker_override,
             away_pen_taker_override=request.away_pen_taker_override,
+            home_starter_ids=request.home_starter_ids if pricing.home_lineup_players else None,
+            away_starter_ids=request.away_starter_ids if pricing.away_lineup_players else None,
+            alpha_home_lineup=pricing.home_lineup_players,
+            alpha_away_lineup=pricing.away_lineup_players,
         )
     except Exception:
         logger.exception(
             "compute_beta_allocations failed for fixture %s — falling back to Alpha for beta_* fields",
             request.fixture_id,
         )
-        home_beta, away_beta = {}, {}
+        home_beta, away_beta, home_lineup_beta, away_lineup_beta = {}, {}, {}, {}
+
+    # Saison courante (season_service) pour signaler des stats d'une saison
+    # passee. Lue seulement si au moins un joueur porte une saison de stats.
+    all_allocs = [
+        *pricing.home_players, *pricing.away_players,
+        *(pricing.home_lineup_players or []), *(pricing.away_lineup_players or []),
+    ]
+    saison_courante: str | None = None
+    if any(getattr(a, "stats_season", None) for a in all_allocs):
+        from app.services.season_service import current_season
+
+        try:
+            saison_courante = await current_season(db)
+        except Exception:
+            # Jamais d'echec du prix pour un simple signalement : stats_stale
+            # reste False pour tout le monde.
+            logger.warning(
+                "current_season indisponible pour fixture %s — stats_stale=False",
+                request.fixture_id, exc_info=True,
+            )
 
     def _to_out(allocs: list, beta_by_id: dict) -> list[PlayerAllocationOut]:
         out = []
         for a in allocs:
             beta = beta_by_id.get(a.player_id)
+            stats_season = getattr(a, "stats_season", None)
             out.append(
                 PlayerAllocationOut(
                     player_id=a.player_id,
@@ -185,9 +219,17 @@ async def price_match(
                     beta_fair_odds_assist_supersub=getattr(
                         beta, "fair_odds_assist_supersub", a.fair_odds_assist_supersub
                     ),
+                    stats_season=stats_season,
+                    stats_stale=(
+                        stats_season is not None
+                        and saison_courante is not None
+                        and stats_season < saison_courante
+                    ),
                 )
             )
         return out
+
+    badge_map = await badge_fields_for_fixtures(db, [fixture])
 
     return MatchPriceResponse(
         fixture_id=pricing.fixture_id,
@@ -199,11 +241,15 @@ async def price_match(
         home_players=_to_out(pricing.home_players, home_beta),
         away_players=_to_out(pricing.away_players, away_beta),
         home_lineup_players=(
-            _to_out(pricing.home_lineup_players, home_beta) if pricing.home_lineup_players else None
+            _to_out(pricing.home_lineup_players, home_lineup_beta)
+            if pricing.home_lineup_players else None
         ),
         away_lineup_players=(
-            _to_out(pricing.away_lineup_players, away_beta) if pricing.away_lineup_players else None
+            _to_out(pricing.away_lineup_players, away_lineup_beta)
+            if pricing.away_lineup_players else None
         ),
+        home_lineup_warnings=list(getattr(pricing, "home_lineup_warnings", []) or []),
+        away_lineup_warnings=list(getattr(pricing, "away_lineup_warnings", []) or []),
         last_scraped_at=pricing.last_scraped_at.isoformat() if pricing.last_scraped_at else None,
-        p00=pricing.p00,
+        **badge_map[fixture.id],
     )

@@ -12,7 +12,9 @@ import {
   ResponsiveContainer, Cell, ReferenceLine,
 } from 'recharts'
 import { getHistory, getAutoflatHistory, patchRecommendation, triggerAutoSettle } from '@/lib/api'
-import type { HistoryItem } from '@/lib/api'
+import type { HistoryItem, TeamBadgeOut } from '@/lib/api'
+import { TeamBadge } from '@/components/TeamBadge'
+import { PlayerLink } from '@/components/PlayerLink'
 
 type BetStatus = 'won' | 'lost' | 'running' | 'void'
 
@@ -21,6 +23,7 @@ interface HistoricalBet {
   date: string
   fixture: string
   player: string
+  playerId: number | null
   market: 'goalscorer' | 'assist'
   odds: number
   fairOdds: number | null
@@ -29,6 +32,9 @@ interface HistoricalBet {
   status: BetStatus
   pnl: number | null
   decidedUtc: string | null
+  homeBadge: TeamBadgeOut | null
+  awayBadge: TeamBadgeOut | null
+  competitionName: string | null
 }
 
 function historyItemToBet(item: HistoryItem): HistoricalBet {
@@ -37,6 +43,7 @@ function historyItemToBet(item: HistoryItem): HistoricalBet {
     date: item.date,
     fixture: item.fixture_name,
     player: item.player_name,
+    playerId: item.player_id ?? null,
     market: item.market_type as 'goalscorer' | 'assist',
     odds: item.best_odds,
     fairOdds: item.fair_odds ?? null,
@@ -45,6 +52,9 @@ function historyItemToBet(item: HistoryItem): HistoricalBet {
     status: (item.status || 'running') as BetStatus,
     pnl: item.pnl ?? null,
     decidedUtc: item.decided_utc ?? null,
+    homeBadge: item.home_badge ?? null,
+    awayBadge: item.away_badge ?? null,
+    competitionName: item.competition_name ?? null,
   }
 }
 
@@ -413,8 +423,21 @@ export default function HistoryPage() {
                     <td className="px-4 py-3 text-sm text-gray-400 font-mono hidden lg:table-cell">
                       {formatTime(bet.decidedUtc)}
                     </td>
-                    <td className="px-4 py-3 text-sm text-white hidden md:table-cell">{bet.fixture}</td>
-                    <td className="px-4 py-3 text-sm text-white font-medium">{bet.player}</td>
+                    <td className="px-4 py-3 text-sm text-white hidden md:table-cell">
+                      <span className="inline-flex items-center gap-1.5">
+                        {(bet.homeBadge || bet.awayBadge) && (
+                          <>
+                            <TeamBadge badge={bet.homeBadge} size={18} />
+                            <TeamBadge badge={bet.awayBadge} size={18} />
+                          </>
+                        )}
+                        <span>{bet.fixture}</span>
+                      </span>
+                      {bet.competitionName && (
+                        <span className="block text-[10px] text-gray-500">{bet.competitionName}</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-white font-medium"><PlayerLink playerId={bet.playerId} name={bet.player} /></td>
                     <td className="px-4 py-3 hidden md:table-cell">
                       <span className={clsx(
                         'px-2 py-0.5 rounded text-xs',

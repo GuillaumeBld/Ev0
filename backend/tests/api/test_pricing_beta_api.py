@@ -73,7 +73,6 @@ def _make_pricing_result(fixture) -> MatchPricingResult:
         xg_source="market_implied",
         home_players=[_alloc(1, "Home FC", fair_odds_goal_supersub=6.0, p_goal_supersub=0.15)],
         away_players=[_alloc(2, "Away FC", fair_odds_goal_supersub=9.0, p_goal_supersub=0.10)],
-        p00=0.10,
     )
 
 
@@ -90,7 +89,7 @@ class TestPriceMatchBetaFields:
         with patch("app.pricing.team_xg.load_match_pricing", new=AsyncMock(return_value=pricing)), \
              patch(
                  "app.pricing.beta_pricing.compute_beta_allocations",
-                 new=AsyncMock(return_value=({1: beta_home_alloc}, {2: beta_away_alloc})),
+                 new=AsyncMock(return_value=({1: beta_home_alloc}, {2: beta_away_alloc}, {}, {})),
              ):
             response = await price_match(MatchPriceRequest(fixture_id=42), db=db)
 
@@ -111,7 +110,7 @@ class TestPriceMatchBetaFields:
         pricing = _make_pricing_result(fixture)
 
         with patch("app.pricing.team_xg.load_match_pricing", new=AsyncMock(return_value=pricing)), \
-             patch("app.pricing.beta_pricing.compute_beta_allocations", new=AsyncMock(return_value=({}, {}))):
+             patch("app.pricing.beta_pricing.compute_beta_allocations", new=AsyncMock(return_value=({}, {}, {}, {}))):
             response = await price_match(MatchPriceRequest(fixture_id=42), db=db)
 
         home = response.home_players[0]
@@ -145,7 +144,7 @@ class TestPriceMatchBetaFields:
         pricing = _make_pricing_result(fixture)
 
         with patch("app.pricing.team_xg.load_match_pricing", new=AsyncMock(return_value=pricing)), \
-             patch("app.pricing.beta_pricing.compute_beta_allocations", new=AsyncMock(return_value=({}, {}))):
+             patch("app.pricing.beta_pricing.compute_beta_allocations", new=AsyncMock(return_value=({}, {}, {}, {}))):
             response = await price_match(MatchPriceRequest(fixture_id=42), db=db)
 
         assert response.home_players[0].fair_odds_goal == pytest.approx(3.85)

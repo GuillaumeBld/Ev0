@@ -1,7 +1,7 @@
 """Tests for bzz_player_season_stats integration in pricing engine.
 
 Covers:
-  1. _load_team_players returns [] when no BzzTeam found
+  1. _load_team_players returns [] when no bzz_team_id (equipe non reliee)
   2. _load_team_players returns player dicts with correct fields when team + stats exist
   3. Quality multiplier formula (goalscorer.py)
   4. Creation multiplier formula (assist.py)
@@ -9,10 +9,19 @@ Covers:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.models.bzzoiro import BzzPlayerSeasonStat
+
+_STAT_COLS = [c.key for c in BzzPlayerSeasonStat.__table__.columns]
+
+
+def _stat_row() -> SimpleNamespace:
+    """Ligne bzz_player_season_stats : vraies colonnes du modele, None par defaut."""
+    return SimpleNamespace(**dict.fromkeys(_STAT_COLS))
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -26,14 +35,6 @@ def _make_session_no_team() -> AsyncMock:
     execute_result.scalar_one_or_none.return_value = None
     session.execute.return_value = execute_result
     return session
-
-
-def _make_bzz_team(api_id: int = 10, name: str = "Paris Saint-Germain") -> MagicMock:
-    team = MagicMock()
-    team.id = 1
-    team.api_id = api_id
-    team.name = name
-    return team
 
 
 def _make_bzz_player(
@@ -64,7 +65,7 @@ def _make_bzz_season_stat(
     expected_goals: float = 2.5,
     goals: int = 3,
 ) -> MagicMock:
-    stat = MagicMock()
+    stat = _stat_row()
     stat.player_api_id = player_api_id
     stat.minutes_played = minutes_played
     stat.xg_per_90 = xg_per_90
@@ -80,6 +81,14 @@ def _make_bzz_season_stat(
     stat.matches_played = 10
     stat.starts = 8
     stat.shots_on_target_per_90 = 0.0
+    stat.season = "2026-2027"
+    # Les per-90 sont recalcules depuis les totaux (fusion de toutes les
+    # competitions) : on fournit les totaux de comptage. shot_accuracy et
+    # xg_per_shot restent les valeurs STOCKEES (aucun total de tirs fourni).
+    n90 = minutes_played / 90
+    stat.key_pass = key_pass_per_90 * n90
+    stat.expected_assists = xa_per_90 * n90
+    stat.accurate_cross = accurate_cross_per_90 * n90
     return stat
 
 
@@ -105,7 +114,6 @@ class TestLoadTeamPlayersBasic:
         """With 1 team + 2 players with season stats, returns 2 player dicts with correct fields."""
         from app.pricing.team_xg import _load_team_players
 
-        team = _make_bzz_team(api_id=10, name="Paris Saint-Germain")
 
         player1 = _make_bzz_player(api_id=101, name="Kylian Mbappé", position="F")
         stat1 = _make_bzz_season_stat(
@@ -145,11 +153,7 @@ class TestLoadTeamPlayersBasic:
 
         session = AsyncMock()
 
-        # First execute: team lookup → returns team
-        team_exec_result = MagicMock()
-        team_exec_result.scalar_one_or_none.return_value = team
-
-        # Second execute: player season stats JOIN → returns rows
+        # First execute: player season stats JOIN → returns rows
         players_exec_result = MagicMock()
         players_exec_result.all.return_value = [row1, row2]
 
@@ -159,22 +163,22 @@ class TestLoadTeamPlayersBasic:
         roster_exec_result = MagicMock()
         roster_exec_result.scalars.return_value = roster_scalars
 
-        session.execute = AsyncMock(side_effect=[team_exec_result, players_exec_result, roster_exec_result])
+        session.execute = AsyncMock(side_effect=[players_exec_result, roster_exec_result])
 
-        result = await _load_team_players(session, "Paris Saint-Germain", "ligue_1")
+        result = await _load_team_players(session, "Paris Saint-Germain", "ligue_1", bzz_team_id=77)
 
         assert len(result) == 2
 
         # Check player 1 fields
         p1 = next(p for p in result if p["name"] == "Kylian Mbappé")
         assert p1["minutes_played"] == 900
-        assert p1["xg_per_90"] == 0.50
+        assert p1["xg_per_90"] == pytest.approx(0.50)
         assert p1["shot_accuracy"] == 0.55
         assert p1["xg_per_shot"] == 0.18
         assert abs(p1["avg_rating"] - 8.2) < 1e-6  # brut (0-10)
-        assert p1["key_pass_per_90"] == 1.2
-        assert p1["xa_per_90"] == 0.20
-        assert p1["accurate_cross_per_90"] == 0.1
+        assert p1["key_pass_per_90"] == pytest.approx(1.2)
+        assert p1["xa_per_90"] == pytest.approx(0.20)
+        assert p1["accurate_cross_per_90"] == pytest.approx(0.1)
         assert p1["form_xg_5"] == 2.0
         assert abs(p1["finishing_delta"] - 1.0) < 1e-6  # goals(6) - xG(5.0)
 
@@ -182,7 +186,7 @@ class TestLoadTeamPlayersBasic:
         p2 = next(p for p in result if p["name"] == "Ousmane Dembélé")
         assert p2["minutes_played"] == 720
         assert abs(p2["avg_rating"] - 7.5) < 1e-6  # brut (0-10)
-        assert p2["xa_per_90"] == 0.25
+        assert p2["xa_per_90"] == pytest.approx(0.25)
         assert abs(p2["finishing_delta"] - 0.4) < 1e-6  # goals(2) - xG(1.6)
 
         assert p1["has_bzz_stats"] is True
@@ -192,8 +196,8 @@ class TestLoadTeamPlayersBasic:
 # ── Finishing multiplier, conversion, λ top-down tests ──────────────────────
 
 from app.pricing.goalscorer import (
-    calculate_finishing_multiplier,
     calculate_conversion_rate,
+    calculate_finishing_multiplier,
     calculate_goalscorer_lambda,
 )
 

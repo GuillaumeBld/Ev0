@@ -274,7 +274,7 @@ async def test_list_players_includes_api_football_id_when_canonical_match():
     stats_res.scalars.return_value.all.return_value = [s1]
     crest_res = MagicMock()
     # canonical_teams.bzz_team_id=100 (= p1.current_team_api_id) -> api_football_id=541
-    crest_res.all.return_value = [(100, 541, None)]
+    crest_res.all.return_value = [(100, None, None, 541, None)]
 
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(side_effect=[players_res, stats_res, crest_res])
@@ -517,7 +517,7 @@ async def test_get_player_includes_api_football_id_when_canonical_match():
 
     crest_result = MagicMock()
     # canonical_teams.bzz_team_id=100 (= player.current_team_api_id) -> 541
-    crest_result.all.return_value = [(100, 541, None)]
+    crest_result.all.return_value = [(100, None, None, 541, None)]
 
     sel_result = MagicMock()
     sel_result.scalars.return_value.all.return_value = []  # pas de stats de selection

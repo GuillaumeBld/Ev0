@@ -137,6 +137,67 @@ def journee_surchargee(matchs: list[MatchAControler]) -> list[Violation]:
     return violations
 
 
+@dataclass(frozen=True)
+class MatchRange:
+    """Un match tel que le site le range, face a la competition de la source."""
+
+    identifiant: int
+    league: str
+    competition_api_id: int | None
+    competition_source: int | None
+
+
+def competition_mal_rangee(matchs: list[MatchRange]) -> list[Violation]:
+    """La competition affichee doit etre celle que la source donne.
+
+    Le 14/11/2026 des matchs saoudiens portaient l'etiquette premier_league
+    sans qu'aucune alerte ne parte : les garde-fous verifiaient que les donnees
+    arrivent, pas qu'elles sont rangees au bon endroit. Une ligne est fautive
+    si sa competition manque, differe de la source, ou si l'etiquette
+    historique ne correspond plus a la competition de la source.
+    """
+    from app.services.competitions import competition_name, league_key_for
+
+    violations: list[Violation] = []
+    for m in sorted(matchs, key=lambda x: x.identifiant):
+        source = m.competition_source
+        if source is None:
+            violations.append(
+                Violation(
+                    regle="competition_mal_rangee",
+                    motif=(
+                        f"match {m.identifiant} : competition source introuvable "
+                        f"(match absent de la source ou sans competition)"
+                    ),
+                    identifiants=frozenset({m.identifiant}),
+                )
+            )
+            continue
+        nom = competition_name(source) or f"competition {source}"
+        if m.competition_api_id is None:
+            motif = f"match {m.identifiant} : competition non renseignee (la source dit {nom})"
+        elif m.competition_api_id != source:
+            motif = (
+                f"match {m.identifiant} : range dans la competition {m.competition_api_id} "
+                f"alors que la source dit {nom}"
+            )
+        elif m.league != league_key_for(source):
+            motif = (
+                f"match {m.identifiant} : etiquette {m.league} alors que la source "
+                f"dit {nom}"
+            )
+        else:
+            continue
+        violations.append(
+            Violation(
+                regle="competition_mal_rangee",
+                motif=motif,
+                identifiants=frozenset({m.identifiant}),
+            )
+        )
+    return violations
+
+
 REGLES = (equipe_dedoublee, journee_surchargee)
 
 # Seules ces regles servent a ECARTER un match. Distinction volontaire :

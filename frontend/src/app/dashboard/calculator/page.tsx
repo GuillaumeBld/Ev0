@@ -1,949 +1,389 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'react'
-import { useSearchParams, useRouter } from 'next/navigation'
-import { Calculator, RefreshCw, ChevronDown } from 'lucide-react'
-import { clsx } from 'clsx'
-import { getFixtures, priceMatch, getPenTakers, setPenTakers, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
-import { LineupPricingWidget } from '@/components/calculator/LineupPricingWidget'
-import { XgSourceBadge } from '@/components/XgSourceBadge'
-import { getTeamId } from '@/lib/teamLogos'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import {
+  getFixtureLineups,
+  getFixturePlayerOdds,
+  getFixtures,
+  getPenTakers,
+  priceMatch,
+  setPenTakers,
+  type FixtureOut,
+  type FixtureTeamLineup,
+  type MatchPriceResponse,
+} from '@/lib/api'
+import { MatchRail, compName, dayKey, kickoffTime } from '@/components/calculator/MatchRail'
+import { TeamOddsTable, type TeamMode } from '@/components/calculator/TeamOddsTable'
+import { fmtXg, indexBookOdds, type BookOddsByPlayer } from '@/components/calculator/format'
+import s from '@/components/calculator/calculateur.module.css'
 
-// ── Helpers ────────────────────────────────────────────────────────
+type Side = 'home' | 'away'
+type PerSide<T> = Record<Side, T>
 
-function fmtOdds(o: number): string {
-  return o >= 100 ? '—' : o.toFixed(2)
-}
+/** Minimum de titulaires reconnus pour que le moteur applique une compo (team_xg.MIN_LINEUP_STARTERS). */
+const MIN_STARTERS = 5
 
-function fmtAge(isoTs: string | null | undefined): string {
-  if (!isoTs) return 'inconnu'
-  const diffMs = Date.now() - new Date(isoTs).getTime()
-  const mins = Math.floor(diffMs / 60000)
+const isPlaceholder = (t: string) => /^[WL]\d+|TBD/i.test(t)
+
+/** Âge des cotes du marché, comme l'ancien bandeau de fraîcheur (« il y a 12 min », « il y a 2h05 »). */
+function fmtAge(iso: string): string {
+  const mins = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000))
   if (mins < 60) return `il y a ${mins} min`
-  const hours = Math.floor(mins / 60)
+  const h = Math.floor(mins / 60)
   const rem = mins % 60
-  return rem > 0 ? `il y a ${hours}h${String(rem).padStart(2, '0')}` : `il y a ${hours}h`
+  return rem > 0 ? `il y a ${h}h${String(rem).padStart(2, '0')}` : `il y a ${h}h`
 }
 
-function fmtPct(p: number): string {
-  return `${(p * 100).toFixed(1)}%`
+/** Pas et plancher de l'ajustement manuel du xG. */
+const XG_STEP = 0.1
+const XG_MIN = 0.1
+
+/** Signalement API sans le préfixe technique « team=X: ». */
+const cleanWarning = (w: string) => w.replace(/^team=[^:]*:\s*/, '')
+
+function lineupNote(
+  lineup: FixtureTeamLineup | null | undefined,
+  lineupFailed: boolean,
+  checked: number,
+  warnings: string[],
+): string {
+  const parts: string[] = []
+  if (lineupFailed) parts.push('Compo indisponible (erreur de chargement) : coche les titulaires.')
+  else if (!lineup?.starter_ids?.length) parts.push('Pas de compo connue : coche les titulaires.')
+  else if (lineup.lineup_type === 'official') parts.push('Compo officielle.')
+  else parts.push('Compo probable — à confirmer à l’annonce officielle.')
+  parts.push('Gardien non coté.')
+  if (checked < MIN_STARTERS) parts.push(`Coche au moins ${MIN_STARTERS} titulaires pour recalculer.`)
+  return [...parts, ...warnings.map(cleanWarning)].join(' ')
 }
-
-function fmtMins(m: number): string {
-  return `${Math.round(m)}'`
-}
-
-const POS_COLOR: Record<string, string> = {
-  FW: 'text-orange-400',
-  MF: 'text-blue-400',
-  DF: 'text-gray-400',
-}
-
-// ── Ancien vs Nouveau modèle — réévaluation ─────────────────────────
-// "up"  = nouveau modèle juge le joueur PLUS probable (proba ↑, cote ↓) → vert
-// "dn"  = nouveau modèle juge le joueur MOINS probable (proba ↓, cote ↑) → ambre
-// "st"  = quasi inchangé
-type ReevalClass = 'up' | 'dn' | 'st'
-
-function reevalClass(oldP: number | null | undefined, newP: number | null | undefined): ReevalClass {
-  if (oldP == null || newP == null || oldP <= 0 || newP <= 0) return 'st'
-  const r = newP / oldP
-  if (r >= 1.11) return 'up'
-  if (r <= 0.90) return 'dn'
-  return 'st'
-}
-
-function reevalArrow(c: ReevalClass, showProba: boolean): string {
-  if (c === 'st') return ''
-  // La flèche suit la valeur AFFICHÉE : en cote, "plus probable" = cote qui baisse (↓) ;
-  // en probabilité, "plus probable" = proba qui monte (↑).
-  if (showProba) return c === 'up' ? '↑' : '↓'
-  return c === 'up' ? '↓' : '↑'
-}
-
-function reevalColorClass(c: ReevalClass): string {
-  return c === 'up' ? 'text-green-400' : c === 'dn' ? 'text-amber-400' : 'text-gray-200'
-}
-
-// ── Signaux — réévaluations les plus fortes entre ancien et nouveau ─
-interface SignalItem {
-  playerId: number
-  playerName: string
-  position: string | null
-  team: string
-  market: 'Buteur' | 'Passeur'
-  oldP: number
-  newP: number
-  oldOdds: number
-  newOdds: number
-  cls: ReevalClass
-  magnitude: number
-}
-
-function buildSignals(
-  homePlayers: PlayerAllocationOut[],
-  awayPlayers: PlayerAllocationOut[],
-  homeTeam: string,
-  awayTeam: string,
-): SignalItem[] {
-  const all = [
-    ...homePlayers.map((p) => ({ p, team: homeTeam })),
-    ...awayPlayers.map((p) => ({ p, team: awayTeam })),
-  ]
-  const items: SignalItem[] = []
-  for (const { p, team } of all) {
-    const candidates: {
-      market: 'Buteur' | 'Passeur'
-      oldP?: number
-      newP?: number
-      oldOdds?: number
-      newOdds?: number
-    }[] = [
-      {
-        market: 'Buteur',
-        oldP: p.p_goal_supersub,
-        newP: p.beta_p_goal_supersub,
-        oldOdds: p.fair_odds_goal_supersub,
-        newOdds: p.beta_fair_odds_goal_supersub,
-      },
-      {
-        market: 'Passeur',
-        oldP: p.p_assist_supersub,
-        newP: p.beta_p_assist_supersub,
-        oldOdds: p.fair_odds_assist_supersub,
-        newOdds: p.beta_fair_odds_assist_supersub,
-      },
-    ]
-    let best: SignalItem | null = null
-    for (const c of candidates) {
-      if (c.oldP == null || c.newP == null || c.oldP <= 0 || c.newP <= 0) continue
-      const magnitude = Math.abs(Math.log(c.newP / c.oldP))
-      if (magnitude < 0.12) continue
-      if (!best || magnitude > best.magnitude) {
-        best = {
-          playerId: p.player_id,
-          playerName: p.player_name,
-          position: p.position,
-          team,
-          market: c.market,
-          oldP: c.oldP,
-          newP: c.newP,
-          oldOdds: c.oldOdds ?? 99,
-          newOdds: c.newOdds ?? 99,
-          cls: reevalClass(c.oldP, c.newP),
-          magnitude,
-        }
-      }
-    }
-    if (best) items.push(best)
-  }
-  return items.sort((a, b) => b.magnitude - a.magnitude).slice(0, 15)
-}
-
-// ── Mode d'affichage : probabilités ou cotes (persisté) ────────────
-export type ViewMode = 'proba' | 'cote'
-const VIEW_MODE_KEY = 'ev0.calculator.viewMode'
-
-function ViewModeSwitch({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode) => void }) {
-  return (
-    <div className="inline-flex rounded-lg border border-gray-600 overflow-hidden text-xs font-medium">
-      {(['proba', 'cote'] as ViewMode[]).map((m) => (
-        <button
-          key={m}
-          onClick={() => onChange(m)}
-          className={clsx(
-            'px-3 py-1.5 transition-colors',
-            mode === m
-              ? 'bg-orange-500 text-white'
-              : 'bg-gray-800 text-gray-400 hover:text-white',
-          )}
-        >
-          {m === 'proba' ? 'Probabilités' : 'Cotes'}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-// ── Team table ─────────────────────────────────────────────────────
-
-interface TeamTableProps {
-  teamName: string
-  matchXg: number
-  xgSource?: string | null
-  players: PlayerAllocationOut[]
-  xgOverride: string
-  onXgOverride: (v: string) => void
-  penTakerOverride: number | null
-  onPenTakerClick: (playerId: number) => void
-  isHome: boolean
-  viewMode: ViewMode
-}
-
-/** Colonnes triables du tableau d'allocation. */
-type ColonneTri = 'nom' | 'position' | 'minutes' | 'ancien_but' | 'ancien_passe' | 'nouveau_but' | 'nouveau_passe'
-
-/** Valeur servant au tri pour une colonne donnee.
- *  Les probabilites absentes valent -1 pour finir en bas en decroissant,
- *  plutot que d'etre confondues avec un zero legitime. */
-function valeurTri(p: PlayerAllocationOut, col: ColonneTri): number | string {
-  switch (col) {
-    case 'nom':           return p.player_name
-    case 'position':      return p.position ?? ''
-    case 'minutes':       return p.expected_minutes ?? -1
-    case 'ancien_but':    return p.p_goal_supersub ?? -1
-    case 'ancien_passe':  return p.p_assist_supersub ?? -1
-    case 'nouveau_but':   return p.beta_p_goal_supersub ?? -1
-    case 'nouveau_passe': return p.beta_p_assist_supersub ?? -1
-  }
-}
-
-function trierJoueurs(
-  joueurs: PlayerAllocationOut[], col: ColonneTri, sens: 'asc' | 'desc',
-): PlayerAllocationOut[] {
-  const signe = sens === 'asc' ? 1 : -1
-  return [...joueurs].sort((a, b) => {
-    const va = valeurTri(a, col)
-    const vb = valeurTri(b, col)
-    if (typeof va === 'string' || typeof vb === 'string') {
-      return signe * String(va).localeCompare(String(vb), 'fr')
-    }
-    return signe * (va - vb)
-  })
-}
-
-function TeamTable({
-  teamName,
-  matchXg,
-  xgSource,
-  players,
-  xgOverride,
-  onXgOverride,
-  penTakerOverride,
-  onPenTakerClick,
-  isHome,
-  viewMode,
-}: TeamTableProps) {
-  const showProba = viewMode === 'proba'
-  const [logoFailed, setLogoFailed] = useState(false)
-
-  // Tri du tableau. Par defaut la probabilite de but du nouveau calcul, du
-  // plus fort au plus faible : c'est la colonne qu'on lit en premier.
-  const [triCol, setTriCol] = useState<ColonneTri>('nouveau_but')
-  const [triSens, setTriSens] = useState<'asc' | 'desc'>('desc')
-
-  const basculerTri = (col: ColonneTri) => {
-    if (col === triCol) {
-      setTriSens((s) => (s === 'desc' ? 'asc' : 'desc'))
-    } else {
-      setTriCol(col)
-      // Un nom se lit de A a Z, un chiffre du plus fort au plus faible.
-      setTriSens(col === 'nom' || col === 'position' ? 'asc' : 'desc')
-    }
-  }
-
-  const joueursTries = useMemo(
-    () => trierJoueurs(players, triCol, triSens),
-    [players, triCol, triSens],
-  )
-
-  /** En-tete cliquable : une fleche indique la colonne et le sens actifs. */
-  const ThTri = ({ col, children, className, rowSpan }: {
-    col: ColonneTri; children: React.ReactNode; className?: string; rowSpan?: number
-  }) => (
-    <th
-      rowSpan={rowSpan}
-      onClick={() => basculerTri(col)}
-      title="Cliquer pour trier — un second clic inverse l'ordre"
-      className={clsx('cursor-pointer select-none hover:text-white transition-colors', className)}
-    >
-      <span className="inline-flex items-center gap-1">
-        {children}
-        <span className={clsx('text-[9px]', triCol === col ? 'opacity-100' : 'opacity-25')}>
-          {triCol === col ? (triSens === 'desc' ? '▼' : '▲') : '▼'}
-        </span>
-      </span>
-    </th>
-  )
-  const logoId = getTeamId(teamName)
-
-  return (
-    <div className="bg-gray-800 rounded-xl overflow-hidden">
-      {/* Header */}
-      <div className={clsx(
-        'px-4 py-3 flex items-center justify-between',
-        isHome ? 'bg-orange-500/10 border-b border-orange-500/20' : 'bg-blue-500/10 border-b border-blue-500/20',
-      )}>
-        <div className="flex items-center gap-2 flex-wrap">
-          {logoId && !logoFailed && (
-            <img
-              src={`https://media.api-sports.io/football/teams/${logoId}.png`}
-              alt={teamName}
-              className="w-7 h-7 object-contain shrink-0"
-              onError={() => setLogoFailed(true)}
-            />
-          )}
-          <span className="font-semibold text-white text-sm">{teamName}</span>
-          <span className={clsx(
-            'text-xs font-medium px-2 py-0.5 rounded',
-            isHome ? 'bg-orange-500/20 text-orange-300' : 'bg-blue-500/20 text-blue-300',
-          )}>
-            {isHome ? 'DOM.' : 'EXT.'}
-          </span>
-        </div>
-        {/* xG display + override */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400">Match xG</span>
-          <span className={clsx(
-            'text-sm font-bold',
-            isHome ? 'text-orange-300' : 'text-blue-300',
-          )}>
-            {matchXg.toFixed(2)}
-          </span>
-          <XgSourceBadge source={xgSource} />
-          <input
-            type="number"
-            step="0.05"
-            min="0"
-            max="5"
-            placeholder="override"
-            value={xgOverride}
-            onChange={(e) => onXgOverride(e.target.value)}
-            className="w-20 text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1 text-white placeholder-ev-t3 focus:outline-none focus:border-orange-500"
-          />
-        </div>
-      </div>
-
-      {/* Table */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="text-gray-400">
-              <ThTri col="nom" rowSpan={2} className="text-left px-3 py-2 font-medium align-bottom">Joueur</ThTri>
-              <ThTri col="position" rowSpan={2} className="px-2 py-2 font-medium align-bottom">Pos</ThTri>
-              <ThTri col="minutes" rowSpan={2} className="px-2 py-2 font-medium align-bottom">Min</ThTri>
-              <th colSpan={2} className="px-3 pt-2 pb-1 font-semibold text-gray-500 border-l border-gray-700 text-center uppercase tracking-wide text-[10px]">
-                Ancien calcul
-              </th>
-              <th colSpan={2} className="px-3 pt-2 pb-1 font-semibold text-orange-400 border-l border-gray-700 text-center uppercase tracking-wide text-[10px]">
-                Nouveau calcul
-              </th>
-            </tr>
-            <tr className="border-b border-gray-700 text-gray-400">
-              <ThTri col="ancien_but" className="px-3 pb-2 font-medium text-gray-500 border-l border-gray-700">Buteur</ThTri>
-              <ThTri col="ancien_passe" className="px-3 pb-2 font-medium text-gray-500">Passeur</ThTri>
-              <ThTri col="nouveau_but" className="px-3 pb-2 font-medium text-orange-400 border-l border-gray-700">Buteur</ThTri>
-              <ThTri col="nouveau_passe" className="px-3 pb-2 font-medium text-orange-400">Passeur</ThTri>
-            </tr>
-          </thead>
-          <tbody>
-            {joueursTries.map((p) => {
-              const isPenTaker = penTakerOverride
-                ? p.player_id === penTakerOverride
-                : p.is_pen_taker
-              const goalCls = reevalClass(p.p_goal_supersub, p.beta_p_goal_supersub)
-              const assistCls = reevalClass(p.p_assist_supersub, p.beta_p_assist_supersub)
-              const goalArrow = reevalArrow(goalCls, showProba)
-              const assistArrow = reevalArrow(assistCls, showProba)
-              const hasSub = (p.p_sub ?? 0) > 0.01
-              return (
-                <tr
-                  key={p.player_id}
-                  onClick={() => onPenTakerClick(p.player_id)}
-                  className={clsx(
-                    'border-b border-gray-700/50 cursor-pointer transition-colors',
-                    isPenTaker
-                      ? 'bg-amber-500/10 hover:bg-amber-500/15'
-                      : 'hover:bg-ev-surface2',
-                  )}
-                  title="Cliquer pour désigner comme tireur de penalty"
-                >
-                  {/* Player name + pen taker indicator */}
-                  <td className="px-3 py-2">
-                    <div className="flex items-center gap-1.5">
-                      {isPenTaker && (
-                        <span
-                          title="Tireur de penalty"
-                          className="text-amber-400 text-[10px] leading-none font-bold"
-                        >
-                          ⬡P
-                        </span>
-                      )}
-                      <span className={clsx(
-                        'font-medium',
-                        isPenTaker ? 'text-amber-200' : 'text-white',
-                      )}>
-                        {p.player_name}
-                      </span>
-                    </div>
-                  </td>
-
-                  {/* Position */}
-                  <td className="px-2 py-2 text-center">
-                    <span className={clsx(
-                      'font-medium',
-                      POS_COLOR[p.position ?? ''] ?? 'text-gray-400',
-                    )}>
-                      {p.position ?? '—'}
-                    </span>
-                  </td>
-
-                  {/* Minutes + P(sub)/t̄sub (hover + petit sous-texte) */}
-                  <td
-                    className="px-2 py-2 text-center text-gray-400"
-                    title={`P(sub) ${((p.p_sub ?? 0) * 100).toFixed(0)}% · t̄sub ${(p.avg_sub_time ?? 65).toFixed(0)}'`}
-                  >
-                    <div>{fmtMins(p.expected_minutes)}</div>
-                    {hasSub && (
-                      <div className="text-[9px] text-gray-600 mt-0.5 whitespace-nowrap">
-                        {((p.p_sub ?? 0) * 100).toFixed(0)}% · {(p.avg_sub_time ?? 65).toFixed(0)}&apos;
-                      </div>
-                    )}
-                  </td>
-
-                  {/* Ancien — Buteur (gris, discret) */}
-                  <td className="px-3 py-2 text-center border-l border-gray-700/50 text-gray-500 font-mono">
-                    {showProba
-                      ? fmtPct(p.p_goal_supersub ?? 0)
-                      : fmtOdds(p.fair_odds_goal_supersub ?? 99)}
-                  </td>
-
-                  {/* Ancien — Passeur (gris, discret) */}
-                  <td className="px-3 py-2 text-center text-gray-500 font-mono">
-                    {showProba
-                      ? fmtPct(p.p_assist_supersub ?? 0)
-                      : fmtOdds(p.fair_odds_assist_supersub ?? 99)}
-                  </td>
-
-                  {/* Nouveau — Buteur (coloré selon l'écart) */}
-                  <td className={clsx(
-                    'px-3 py-2 text-center border-l border-gray-700/50 font-mono font-semibold',
-                    reevalColorClass(goalCls),
-                  )}>
-                    {p.beta_p_goal_supersub == null ? (
-                      <span className="text-gray-600">—</span>
-                    ) : (
-                      <>
-                        {showProba ? fmtPct(p.beta_p_goal_supersub) : fmtOdds(p.beta_fair_odds_goal_supersub ?? 99)}
-                        {goalArrow && <span className="text-[10px] ml-0.5">{goalArrow}</span>}
-                      </>
-                    )}
-                  </td>
-
-                  {/* Nouveau — Passeur (coloré selon l'écart) */}
-                  <td className={clsx(
-                    'px-3 py-2 text-center font-mono font-semibold',
-                    reevalColorClass(assistCls),
-                  )}>
-                    {p.beta_p_assist_supersub == null ? (
-                      <span className="text-gray-600">—</span>
-                    ) : (
-                      <>
-                        {showProba ? fmtPct(p.beta_p_assist_supersub) : fmtOdds(p.beta_fair_odds_assist_supersub ?? 99)}
-                        {assistArrow && <span className="text-[10px] ml-0.5">{assistArrow}</span>}
-                      </>
-                    )}
-                  </td>
-                </tr>
-              )
-            })}
-            {players.length === 0 && (
-              <tr>
-                <td colSpan={7} className="px-4 py-6 text-center text-gray-500 italic">
-                  Aucun joueur trouvé pour cette équipe
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-// ── Signals section — réévaluations les plus fortes ─────────────────
-
-interface SignalsSectionProps {
-  items: SignalItem[]
-  viewMode: ViewMode
-}
-
-function SignalsSection({ items, viewMode }: SignalsSectionProps) {
-  const showProba = viewMode === 'proba'
-
-  return (
-    <div className="mt-8">
-      <h2 className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-1">
-        Signaux — réévaluations les plus fortes
-      </h2>
-      <p className="text-xs text-gray-500 mb-3">
-        Joueurs triés par ampleur d&apos;écart entre l&apos;ancien et le nouveau calcul. C&apos;est là que le nouveau
-        modèle voit les choses différemment — donc là qu&apos;il peut y avoir un coup.
-      </p>
-      {items.length === 0 ? (
-        <div className="text-xs text-gray-600 italic px-1">Aucune réévaluation significative sur ce match.</div>
-      ) : (
-        <div className="space-y-2">
-          {items.map((item) => {
-            const pct = Math.min(46, Math.abs(item.newP / item.oldP - 1) * 100)
-            return (
-              <div
-                key={`${item.playerId}-${item.market}`}
-                className="grid grid-cols-[minmax(140px,180px)_1fr_auto] items-center gap-4 px-4 py-3 bg-gray-800 border border-gray-700 rounded-xl"
-              >
-                {/* Who */}
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-white truncate">{item.playerName}</div>
-                  <div className="text-[11px] text-gray-500 truncate">
-                    {item.team}
-                    {item.position ? ` · ${item.position}` : ''}
-                  </div>
-                </div>
-
-                {/* Bar: sens + force de l'écart */}
-                <div className="relative h-6">
-                  <div className="absolute left-1/2 top-0 bottom-0 w-px bg-gray-700" />
-                  <div
-                    className={clsx(
-                      'absolute top-1.5 h-3.5 rounded',
-                      item.cls === 'up' ? 'bg-green-500/70' : 'bg-amber-500/70',
-                    )}
-                    style={
-                      item.cls === 'up'
-                        ? { right: '50%', width: `${pct}%` }
-                        : { left: '50%', width: `${pct}%` }
-                    }
-                  />
-                </div>
-
-                {/* Nums */}
-                <div className="font-mono text-xs whitespace-nowrap text-right">
-                  <span className="text-[10px] text-gray-500 uppercase tracking-wide mr-2 font-sans">
-                    {item.market}
-                  </span>
-                  <span className="text-gray-500">
-                    {showProba ? fmtPct(item.oldP) : fmtOdds(item.oldOdds)}
-                  </span>
-                  <span className="text-gray-600 mx-1.5">→</span>
-                  <span className={clsx('font-bold', reevalColorClass(item.cls))}>
-                    {showProba ? fmtPct(item.newP) : fmtOdds(item.newOdds)}
-                  </span>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── Main page ─────────────────────────────────────────────────────
 
 function CalculatorInner() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const matchParam = searchParams.get('match')
 
+  // ── Bande gauche ──
   const [fixtures, setFixtures] = useState<FixtureOut[]>([])
-  const [selectedFixtureId, setSelectedFixtureId] = useState<number | null>(null)
+  const [fixturesError, setFixturesError] = useState(false)
+  const [day, setDay] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState<Record<string, boolean>>({})
+  const [selectedId, setSelectedId] = useState<number | null>(matchParam ? Number(matchParam) || null : null)
+
+  // ── Match choisi ──
+  const [ready, setReady] = useState(false)
+  const [pens, setPens] = useState<PerSide<number | null>>({ home: null, away: null })
+  const [lineups, setLineups] = useState<PerSide<FixtureTeamLineup | null>>({ home: null, away: null })
+  const [lineupFailed, setLineupFailed] = useState(false)
+  const [mode, setMode] = useState<PerSide<TeamMode>>({ home: 'squad', away: 'squad' })
+  const [starters, setStarters] = useState<PerSide<number[]>>({ home: [], away: [] })
+  const [bookOdds, setBookOdds] = useState<BookOddsByPlayer>(new Map())
+  const [bookError, setBookError] = useState(false)
   const [pricing, setPricing] = useState<MatchPriceResponse | null>(null)
   const [loading, setLoading] = useState(false)
-  const [loadingFixtures, setLoadingFixtures] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [lastScrapedAt, setLastScrapedAt] = useState<string | null>(null)
+  // xG ajusté à la main (null = xG du marché) et cotes du marché trop anciennes (503 du calcul).
+  const [xgOv, setXgOv] = useState<PerSide<number | null>>({ home: null, away: null })
+  const [staleSince, setStaleSince] = useState<string | null>(null)
+  const reqSeq = useRef(0)
+  const selectedIdRef = useRef(selectedId)
+  selectedIdRef.current = selectedId
 
-  // Mode d'affichage proba / cote — persisté entre visites
-  const [viewMode, setViewMode] = useState<ViewMode>('cote')
+  // Lien direct (?match=) depuis une autre page alors que le calculateur est ouvert.
   useEffect(() => {
-    const saved = localStorage.getItem(VIEW_MODE_KEY)
-    if (saved === 'proba' || saved === 'cote') setViewMode(saved)
-  }, [])
-  const handleViewModeChange = useCallback((m: ViewMode) => {
-    setViewMode(m)
-    localStorage.setItem(VIEW_MODE_KEY, m)
-  }, [])
-
-  // Overrides
-  const [homeXgOverride, setHomeXgOverride] = useState('')
-  const [awayXgOverride, setAwayXgOverride] = useState('')
-  const [homePenTaker, setHomePenTaker] = useState<number | null>(null)
-  const [awayPenTaker, setAwayPenTaker] = useState<number | null>(null)
-
-  // Lineup starters for compo redistribution (sent to priceMatch)
-  const homeStartersRef = useRef<string[] | null>(null)
-  const awayStartersRef = useRef<string[] | null>(null)
-
-  // Auto-apply BZZ lineup state
-  const [lineupAutoApplied, setLineupAutoApplied] = useState<{ home: boolean; away: boolean }>({ home: false, away: false })
-  const lastLineupFetchedForRef = useRef<number | null>(null)
-
-  // xG refs so fetchPricing doesn't need them as deps (avoids re-fetch on each keystroke)
-  const homeXgRef = useRef(homeXgOverride)
-  const awayXgRef = useRef(awayXgOverride)
-  useEffect(() => { homeXgRef.current = homeXgOverride }, [homeXgOverride])
-  useEffect(() => { awayXgRef.current = awayXgOverride }, [awayXgOverride])
-
-  // Load upcoming + live fixtures, auto-select if ?match= param present
-  useEffect(() => {
-    setLoadingFixtures(true)
-    // Fetch scheduled (upcoming) and live matches together
-    Promise.all([
-      // clubs_only : le calculateur price des joueurs de club à partir de leurs
-      // statistiques de championnat et de l'effectif de leur équipe. Une
-      // sélection nationale n'a ni l'un ni l'autre — 178 matchs de Ligue des
-      // Nations et d'amicaux noyaient les 109 vrais matchs de championnat.
-      getFixtures({ status: 'scheduled', limit: 150, upcoming_only: false, clubs_only: true }),
-      getFixtures({ status: 'live', limit: 50, clubs_only: true }),
-    ])
-      .then(([scheduledRes, liveRes]) => {
-        // Merge, deduplicate by id, keep live at the top
-        const seen = new Set<number>()
-        const merged: FixtureOut[] = []
-        for (const f of [...liveRes.fixtures, ...scheduledRes.fixtures]) {
-          if (!seen.has(f.id)) { seen.add(f.id); merged.push(f) }
-        }
-        setFixtures(merged)
-        if (matchParam) {
-          const id = Number(matchParam)
-          // Auto-select whether or not the fixture is in the loaded list
-          // (user might have a direct link to a fixture that's not yet live)
-          setSelectedFixtureId(id)
-        }
-      })
-      .catch(() => setFixtures([]))
-      .finally(() => setLoadingFixtures(false))
+    const id = matchParam ? Number(matchParam) || null : null
+    if (id != null) setSelectedId(id)
   }, [matchParam])
 
-  const fetchPricing = useCallback(async (fixtureId: number) => {
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await priceMatch({
-        fixture_id: fixtureId,
-        home_xg_override: homeXgRef.current ? Number(homeXgRef.current) : null,
-        away_xg_override: awayXgRef.current ? Number(awayXgRef.current) : null,
-        home_pen_taker_override: homePenTaker,
-        away_pen_taker_override: awayPenTaker,
-        home_starters: homeStartersRef.current,
-        away_starters: awayStartersRef.current,
-
-      })
-      setPricing(result)
-      setLastScrapedAt(result.last_scraped_at ?? null)
-    } catch (e: any) {
-      const detail = e?.response?.data?.detail
-      if (detail && typeof detail === 'object' && detail.message) {
-        setError(detail.message)
-        setLastScrapedAt(detail.last_scraped_at ?? null)
-      } else {
-        setError(typeof detail === 'string' ? detail : 'Erreur lors du chargement du pricing')
-        setLastScrapedAt(null)
-      }
-    } finally {
-      setLoading(false)
-    }
-  }, [homePenTaker, awayPenTaker])
-
-  // Auto-fetch pricing. On fixture change, try to auto-apply BZZ lineup first.
-  // On pen taker change only, skip lineup re-fetch (starters refs already set).
+  // Matchs à venir et en cours (compétitions de clubs : une sélection n'a ni effectif ni stats).
   useEffect(() => {
-    if (selectedFixtureId === null) return
-
-    const run = async () => {
-      if (lastLineupFetchedForRef.current !== selectedFixtureId) {
-        lastLineupFetchedForRef.current = selectedFixtureId
-        try {
-          const r = await fetch(`/api/v1/lineups/fixture/${selectedFixtureId}`)
-          if (r.ok) {
-            const d = await r.json()
-            const homeS: string[] = (d.home?.players ?? [])
-              .filter((p: { is_starter: boolean; position?: string }) => p.is_starter && p.position !== 'GK')
-              .map((p: { player_name: string }) => p.player_name)
-            const awayS: string[] = (d.away?.players ?? [])
-              .filter((p: { is_starter: boolean; position?: string }) => p.is_starter && p.position !== 'GK')
-              .map((p: { player_name: string }) => p.player_name)
-            if (homeS.length >= 5) homeStartersRef.current = homeS
-            if (awayS.length >= 5) awayStartersRef.current = awayS
-            setLineupAutoApplied({ home: homeS.length >= 5, away: awayS.length >= 5 })
-          }
-        } catch {
-          // pas de compo disponible, on price sans
+    Promise.all([
+      getFixtures({ status: 'scheduled', limit: 200, upcoming_only: false, clubs_only: true }),
+      getFixtures({ status: 'live', limit: 50, clubs_only: true }),
+    ])
+      .then(([sched, live]) => {
+        const seen = new Set<number>()
+        const merged: FixtureOut[] = []
+        for (const f of [...live.fixtures, ...sched.fixtures]) {
+          if (seen.has(f.id) || isPlaceholder(f.home_team) || isPlaceholder(f.away_team)) continue
+          seen.add(f.id)
+          merged.push(f)
         }
-      }
-      fetchPricing(selectedFixtureId)
-    }
-    run()
-  }, [selectedFixtureId, homePenTaker, awayPenTaker, fetchPricing])
-
-  function handleFixtureSelect(e: React.ChangeEvent<HTMLSelectElement>) {
-    const id = Number(e.target.value)
-    // Persist fixture in URL so page reload auto-restores + re-fetches fresh data
-    router.replace(id ? `?match=${id}` : '?', { scroll: false })
-    setSelectedFixtureId(id || null)
+        setFixtures(merged)
+        const sel = merged.find((f) => f.id === selectedIdRef.current)
+        const today = dayKey(new Date().toISOString())
+        const days = Array.from(new Set(merged.map((f) => dayKey(f.kickoff_utc)))).sort()
+        const d = sel ? dayKey(sel.kickoff_utc) : days.find((k) => k >= today) ?? days[0] ?? null
+        setDay(d)
+        const first = sel ?? merged.filter((f) => dayKey(f.kickoff_utc) === d).sort((a, b) => compName(a).localeCompare(compName(b), 'fr'))[0]
+        if (first) setOpen({ [compName(first)]: true })
+      })
+      .catch(() => setFixturesError(true))
+  }, [])
+  // Nouveau match : compo, tireurs de penalty enregistrés et cotes books, en parallèle.
+  useEffect(() => {
+    // Invalide tout calcul encore en vol pour l'ancien match : sa réponse sera ignorée.
+    reqSeq.current++
+    setLoading(false)
+    setReady(false)
     setPricing(null)
-    setHomeXgOverride('')
-    setAwayXgOverride('')
-    setHomePenTaker(null)
-    setAwayPenTaker(null)
-    setLastScrapedAt(null)
     setError(null)
-    homeStartersRef.current = null
-    awayStartersRef.current = null
-    setLineupAutoApplied({ home: false, away: false })
-    lastLineupFetchedForRef.current = null
-    if (id) {
-      getPenTakers(id).then(data => {
-        setHomePenTaker(data.home_pen_taker_id)
-        setAwayPenTaker(data.away_pen_taker_id)
-      }).catch(() => {})
+    setBookOdds(new Map())
+    setBookError(false)
+    setLineups({ home: null, away: null })
+    setLineupFailed(false)
+    setMode({ home: 'squad', away: 'squad' })
+    setStarters({ home: [], away: [] })
+    setPens({ home: null, away: null })
+    setXgOv({ home: null, away: null })
+    setStaleSince(null)
+    if (selectedId == null) return
+    let cancelled = false
+    Promise.allSettled([getFixtureLineups(selectedId), getPenTakers(selectedId), getFixturePlayerOdds(selectedId)]).then(
+      ([lu, pt, bo]) => {
+        if (cancelled) return
+        if (lu.status === 'fulfilled') {
+          setLineups({ home: lu.value.home, away: lu.value.away })
+          setStarters({ home: lu.value.home?.starter_ids ?? [], away: lu.value.away?.starter_ids ?? [] })
+        } else setLineupFailed(true)
+        if (pt.status === 'fulfilled') setPens({ home: pt.value.home_pen_taker_id, away: pt.value.away_pen_taker_id })
+        if (bo.status === 'fulfilled') setBookOdds(indexBookOdds(bo.value))
+        else setBookError(true)
+        setReady(true)
+      },
+    )
+    return () => {
+      cancelled = true
     }
+  }, [selectedId])
+
+  // Calcul : à chaque changement de mode ou de titulaires (légère temporisation entre deux clics).
+  // Le seuil compte les mêmes titulaires que le compteur « N / 10 » : ceux présents dans l'effectif.
+  // Les identifiants inconnus restent envoyés pour que l'API les signale.
+  const inSquad = (side: Side) => {
+    const squad = side === 'home' ? pricing?.home_players : pricing?.away_players
+    const ids = new Set((squad ?? []).map((p) => p.player_id))
+    return starters[side].filter((id) => ids.has(id)).length
+  }
+  const homeIds = mode.home === 'xi' && inSquad('home') >= MIN_STARTERS ? starters.home : null
+  const awayIds = mode.away === 'xi' && inSquad('away') >= MIN_STARTERS ? starters.away : null
+  const homeKey = homeIds?.join(',') ?? ''
+  const awayKey = awayIds?.join(',') ?? ''
+  useEffect(() => {
+    if (!ready || selectedId == null) return
+    const seq = ++reqSeq.current
+    const t = setTimeout(() => {
+      setLoading(true)
+      priceMatch({
+        fixture_id: selectedId,
+        home_xg_override: xgOv.home,
+        away_xg_override: xgOv.away,
+        home_pen_taker_override: pens.home,
+        away_pen_taker_override: pens.away,
+        home_starter_ids: homeKey ? homeKey.split(',').map(Number) : null,
+        away_starter_ids: awayKey ? awayKey.split(',').map(Number) : null,
+      })
+        .then((res) => {
+          if (seq !== reqSeq.current || res.fixture_id !== selectedId) return
+          setPricing(res)
+          setError(null)
+          setStaleSince(null)
+        })
+        .catch((e: any) => {
+          if (seq !== reqSeq.current) return
+          const detail = e?.response?.data?.detail
+          if (e?.response?.status === 503) {
+            // Même règle que l'ancienne page : 503 = pas de cotes du marché assez récentes
+            // pour en tirer le xG (MarketXgService.MAX_SNAPSHOT_AGE) ; plus de calcul affiché.
+            setPricing(null)
+            if (detail?.last_scraped_at) {
+              setStaleSince(detail.last_scraped_at)
+              setError(null)
+            } else {
+              setStaleSince(null)
+              setError('Pas de cotes du marché pour ce match.')
+            }
+            return
+          }
+          setError(
+            typeof detail === 'string'
+              ? detail
+              : detail?.message ?? 'Erreur lors du calcul des cotes',
+          )
+        })
+        .finally(() => {
+          if (seq === reqSeq.current) setLoading(false)
+        })
+    }, 250)
+    return () => clearTimeout(t)
+  }, [ready, selectedId, pens.home, pens.away, homeKey, awayKey, xgOv.home, xgOv.away])
+
+  // Tireur de penalty : un par équipe ; re-cliquer le tireur choisi revient à la détection automatique.
+  const choosePen = (side: Side) => (playerId: number) => {
+    if (selectedId == null) return
+    const next = { ...pens, [side]: pens[side] === playerId ? null : playerId }
+    setPens(next)
+    setPenTakers(selectedId, next.home, next.away).catch(() =>
+      setError('Tireur de penalty non enregistré (erreur) : appliqué à ce calcul seulement.'),
+    )
   }
 
-  function handleHomePenClick(playerId: number) {
-    setHomePenTaker(prev => {
-      const next = prev === playerId ? null : playerId
-      if (selectedFixtureId) {
-        setPenTakers(selectedFixtureId, next, awayPenTaker).catch(() => {})
-      }
-      return next
-    })
+  const bumpXg = (side: Side, delta: number) => {
+    if (!pricing) return
+    const base = xgOv[side] ?? (side === 'home' ? pricing.home_match_xg : pricing.away_match_xg)
+    const next = Math.max(XG_MIN, Math.round((base + delta) * 100) / 100)
+    setXgOv((cur) => ({ ...cur, [side]: next }))
   }
+  const adjusted = xgOv.home != null || xgOv.away != null
 
-  function handleAwayPenClick(playerId: number) {
-    setAwayPenTaker(prev => {
-      const next = prev === playerId ? null : playerId
-      if (selectedFixtureId) {
-        setPenTakers(selectedFixtureId, homePenTaker, next).catch(() => {})
-      }
-      return next
-    })
-  }
+  const pick = useCallback(
+    (f: FixtureOut) => {
+      router.replace(`?match=${f.id}`, { scroll: false })
+      setSelectedId(f.id)
+    },
+    [router],
+  )
 
-  function handleCalculateWithLineup(side: 'home' | 'away', starters: string[]) {
-    if (!selectedFixtureId) return
-    if (side === 'home') homeStartersRef.current = starters.length >= 5 ? starters : null
-    else awayStartersRef.current = starters.length >= 5 ? starters : null
-    fetchPricing(selectedFixtureId)
-  }
+  const toggleStarter = (side: Side) => (playerId: number) =>
+    setStarters((cur) => ({
+      ...cur,
+      [side]: cur[side].includes(playerId) ? cur[side].filter((id) => id !== playerId) : [...cur[side], playerId],
+    }))
 
-  const selectedFixture = fixtures.find(f => f.id === selectedFixtureId)
+  const fixture = useMemo(() => fixtures.find((f) => f.id === selectedId) ?? null, [fixtures, selectedId])
 
-  const signals = useMemo(() => {
-    if (!pricing) return []
-    return buildSignals(pricing.home_players, pricing.away_players, pricing.home_team, pricing.away_team)
-  }, [pricing])
+  const homeName = pricing ? pricing.home_badge?.name_fr ?? pricing.home_team : fixture?.home_badge?.name_fr ?? fixture?.home_team
+  const awayName = pricing ? pricing.away_badge?.name_fr ?? pricing.away_team : fixture?.away_badge?.name_fr ?? fixture?.away_team
+  const competition = pricing?.competition_name ?? fixture?.competition_name ?? null
+  const kickoff = fixture
+    ? `${new Date(fixture.kickoff_utc).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} · ${kickoffTime(fixture.kickoff_utc)}`
+    : null
+  const scrapedAt = pricing?.last_scraped_at ? kickoffTime(pricing.last_scraped_at) : null
+
+  const sides: Side[] = ['home', 'away']
 
   return (
-    <div className="p-4 md:p-6 max-w-7xl">
-      {/* Header */}
-      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-            <Calculator className="w-6 h-6" />
-            Calculateur Ev0
-          </h1>
-          <p className="text-gray-400 mt-1 text-sm">
-            Modèle Top-Down — Team xG → allocation joueurs → Poisson
-          </p>
-        </div>
-        <div className="flex flex-col items-end gap-1">
-          <ViewModeSwitch mode={viewMode} onChange={handleViewModeChange} />
-          <span className="text-[10px] text-gray-500">Affichage {viewMode === 'proba' ? 'en probabilités' : 'en cotes'}</span>
-        </div>
-      </div>
+    <div className={s.ev}>
+      <div className={s.wrap}>
+        <MatchRail
+          fixtures={fixtures}
+          day={day}
+          onDay={setDay}
+          query={query}
+          onQuery={setQuery}
+          open={open}
+          onToggle={(c) => setOpen((o) => ({ ...o, [c]: !o[c] }))}
+          selectedId={selectedId}
+          onPick={pick}
+        />
 
-      {/* xG source reminder */}
-      <div className="mb-5 flex items-center gap-3 px-3 py-2 rounded-lg bg-gray-800/60 border border-gray-700/50 text-xs text-gray-400 w-fit">
-        <span className="font-medium text-gray-300">xG source</span>
-        <span className="w-px h-4 bg-gray-700" />
-        <span className="flex items-center gap-1.5">
-          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-blue-500 text-white">API</span>
-          Bzzoiro — xG live scrappés
-        </span>
-        <span className="w-px h-4 bg-gray-700" />
-        <span className="flex items-center gap-1.5">
-          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-semibold bg-orange-500 text-white">MODEL</span>
-          Modèle interne Ev0 (stats historiques)
-        </span>
-        <span className="w-px h-4 bg-gray-700" />
-        <span className="text-gray-500 italic">Basculer via le bouton en haut à droite</span>
-      </div>
-
-      {/* Match selector */}
-      <div className="mb-6">
-        <label className="block text-sm text-gray-400 mb-2">Sélectionner un match</label>
-        <div className="relative">
-          <select
-            value={selectedFixtureId ?? ''}
-            onChange={handleFixtureSelect}
-            disabled={loadingFixtures}
-            className="w-full max-w-xl bg-gray-800 border border-gray-600 rounded-lg px-4 py-3 text-white appearance-none cursor-pointer focus:outline-none focus:border-orange-500 disabled:opacity-50"
-          >
-            <option value="">
-              {loadingFixtures ? 'Chargement…' : '— Choisir un match —'}
-            </option>
-            {fixtures.filter(f => !/^[WL]\d+|TBD/i.test(f.home_team) && !/^[WL]\d+|TBD/i.test(f.away_team)).map(f => (
-              <option key={f.id} value={f.id}>
-                {f.status === 'live' ? '🔴 ' : ''}{f.home_team} vs {f.away_team}
-                {' · '}
-                {new Date(f.kickoff_utc).toLocaleDateString('fr-FR', {
-                  day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
-                })}
-                {' · '}{f.league.replace(/_/g, ' ').toUpperCase()}
-              </option>
-            ))}
-          </select>
-          <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-        </div>
-      </div>
-
-      {/* Recalculate button (shown when a match is selected) */}
-      {selectedFixtureId && (
-        <div className="mb-4 flex items-center gap-3">
-          <button
-            onClick={() => fetchPricing(selectedFixtureId)}
-            disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            Recalculer
-          </button>
-          {pricing?.p00 != null && (
-            <span className="text-xs text-gray-400">
-              P(0-0) = <span className="font-mono text-white">{(pricing.p00 * 100).toFixed(1)}%</span>
-              <span className="text-gray-600 ml-1">(remboursé si 0-0)</span>
-            </span>
+        <div className={s.main}>
+          {fixturesError && (
+            <div className={s.faint} style={{ fontSize: 13 }}>
+              Liste des matchs indisponible (erreur de chargement).
+            </div>
           )}
-        </div>
-      )}
-
-      {/* Scrape freshness banner — shown whenever we have the timestamp */}
-      {lastScrapedAt && !loading && (
-        <div className={clsx(
-          'mb-4 flex items-center gap-2 px-3 py-2 rounded-lg border text-xs w-fit',
-          error
-            ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
-            : 'bg-gray-800/60 border-gray-700/50 text-gray-400',
-        )}>
-          <span className={error ? 'text-amber-400' : 'text-gray-500'}>⏱</span>
-          <span>Dernier scraping des cotes :</span>
-          <span className="font-medium text-white">{fmtAge(lastScrapedAt)}</span>
-          {error && <span className="text-amber-400">· cotes trop anciennes, calcul impossible</span>}
-        </div>
-      )}
-
-      {/* Error (only when no lastScrapedAt to show context) */}
-      {error && !lastScrapedAt && (
-        <div className="mb-6 bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-red-400 text-sm">
-          {error}
-        </div>
-      )}
-
-      {/* Legend */}
-      {pricing && !loading && (
-        <div className="mb-4 flex items-center gap-4 text-xs text-gray-500 flex-wrap">
-          <span className="flex items-center gap-1">
-            <span className="text-amber-400 font-bold">⬡P</span>
-            Tireur de penalty (auto-détecté · cliquer pour changer)
-          </span>
-          <span className="w-px h-3 bg-gray-700" />
-          <span className="flex items-center gap-1">
-            <span className="text-orange-300">FW</span> ·
-            <span className="text-blue-400">MF</span> ·
-            <span className="text-gray-400">DF</span>
-          </span>
-          <span className="w-px h-3 bg-gray-700" />
-          <span className="flex items-center gap-3">
-            <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-sm bg-green-500/70" />
-              nouveau plus probable (cote ↓)
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-sm bg-amber-500/70" />
-              nouveau moins probable (cote ↑)
-            </span>
-          </span>
-          {pricing.xg_source === 'bzzoiro' && lastScrapedAt && (
+          {selectedId == null ? (
+            <div className={s.faint} style={{ fontSize: 14 }}>
+              Choisis un match dans la liste.
+            </div>
+          ) : (
             <>
-              <span className="w-px h-3 bg-gray-700" />
-              <span className="text-amber-400/80">
-                ⚠ xG via Bzzoiro · cotes {fmtAge(lastScrapedAt)}
-              </span>
+              <div>
+                <div className={s.faint} style={{ fontSize: 13 }}>
+                  {[competition, kickoff].filter(Boolean).join(' · ')}
+                </div>
+                <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>
+                  {homeName && awayName ? `${homeName} – ${awayName}` : 'Chargement…'}
+                </div>
+                {pricing && (
+                  <div className={s.faint} style={{ fontSize: 14, marginTop: 6 }}>
+                    xG du match :{' '}
+                    {sides.map((side, i) => (
+                      <span key={side}>
+                        {i > 0 && ' · '}
+                        {side === 'home' ? homeName : awayName}{' '}
+                        <button className={s.xgBtn} onClick={() => bumpXg(side, -XG_STEP)} aria-label={`Baisser le xG de ${side === 'home' ? homeName : awayName}`}>
+                          −
+                        </button>
+                        <b style={{ color: '#e6edf3' }}>
+                          {fmtXg(xgOv[side] ?? (side === 'home' ? pricing.home_match_xg : pricing.away_match_xg))}
+                        </b>
+                        <button className={s.xgBtn} onClick={() => bumpXg(side, XG_STEP)} aria-label={`Monter le xG de ${side === 'home' ? homeName : awayName}`}>
+                          +
+                        </button>
+                      </span>
+                    ))}
+                    {adjusted ? (
+                      <>
+                        {' — ajusté à la main · '}
+                        <button className={s.linkBtn} onClick={() => setXgOv({ home: null, away: null })}>
+                          Revenir au marché
+                        </button>
+                      </>
+                    ) : (
+                      scrapedAt && ` — cotes du marché à ${scrapedAt}`
+                    )}
+                  </div>
+                )}
+                {staleSince && (
+                  <div style={{ fontSize: 13, marginTop: 6, color: '#ffc98a' }}>
+                    Cotes du marché anciennes ({fmtAge(staleSince)})
+                  </div>
+                )}
+                {error && (
+                  <div style={{ fontSize: 13, marginTop: 6, color: '#ffc98a' }}>{error}</div>
+                )}
+                {bookError && (
+                  <div style={{ fontSize: 13, marginTop: 6, color: '#ffc98a' }}>
+                    Cotes Betclic, Unibet et PMU indisponibles (erreur de chargement).
+                  </div>
+                )}
+              </div>
+
+              {pricing && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 24, opacity: loading ? 0.6 : 1, transition: 'opacity .15s' }}>
+                  {sides.map((side) => {
+                    const squad = side === 'home' ? pricing.home_players : pricing.away_players
+                    const squadIds = new Set(squad.map((p) => p.player_id))
+                    const checked = starters[side].filter((id) => squadIds.has(id)).length
+                    return (
+                      <TeamOddsTable
+                        key={side}
+                        name={(side === 'home' ? homeName : awayName) ?? ''}
+                        badge={side === 'home' ? pricing.home_badge : pricing.away_badge}
+                        xg={side === 'home' ? pricing.home_match_xg : pricing.away_match_xg}
+                        mode={mode[side]}
+                        onMode={(m) => setMode((cur) => ({ ...cur, [side]: m }))}
+                        squad={squad}
+                        lineup={side === 'home' ? pricing.home_lineup_players : pricing.away_lineup_players}
+                        starterIds={starters[side]}
+                        onToggleStarter={toggleStarter(side)}
+                        note={lineupNote(
+                          lineups[side],
+                          lineupFailed,
+                          checked,
+                          (side === 'home' ? pricing.home_lineup_warnings : pricing.away_lineup_warnings) ?? [],
+                        )}
+                        bookOdds={bookOdds}
+                        penTakerId={pens[side]}
+                        onPenTaker={choosePen(side)}
+                      />
+                    )
+                  })}
+                </div>
+              )}
+
+              <div className={s.faint} style={{ fontSize: 12, lineHeight: 1.6 }}>
+                Alpha = calcul actuel (saison), Beta = saison + carrière. Cotes Betclic, Unibet et PMU telles que
+                récupérées ; — = cote non proposée. En vert : cote book au-dessus des deux cotes Ev0 de plus de 5 %.
+                Mode Compo : l’xG de l’équipe est réparti entre les titulaires cochés.
+              </div>
             </>
           )}
         </div>
-      )}
-
-      {/* Tables + lineup widgets */}
-      {pricing && !loading && (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          {/* Home */}
-          <div>
-            <TeamTable
-              teamName={pricing.home_team}
-              matchXg={pricing.home_match_xg}
-              xgSource={pricing.xg_source}
-              players={pricing.home_players}
-              xgOverride={homeXgOverride}
-              onXgOverride={setHomeXgOverride}
-              penTakerOverride={homePenTaker}
-              onPenTakerClick={handleHomePenClick}
-              isHome={true}
-              viewMode={viewMode}
-            />
-            <LineupPricingWidget
-              fixtureId={pricing.fixture_id}
-              team={pricing.home_team}
-              teamPlayers={pricing.home_players}
-              lineupPlayers={pricing.home_lineup_players ?? null}
-              isHome={true}
-              autoApplied={lineupAutoApplied.home}
-              onCalculate={(starters) => handleCalculateWithLineup('home', starters)}
-              viewMode={viewMode}
-            />
-          </div>
-
-          {/* Away */}
-          <div>
-            <TeamTable
-              teamName={pricing.away_team}
-              matchXg={pricing.away_match_xg}
-              xgSource={pricing.xg_source}
-              players={pricing.away_players}
-              xgOverride={awayXgOverride}
-              onXgOverride={setAwayXgOverride}
-              penTakerOverride={awayPenTaker}
-              onPenTakerClick={handleAwayPenClick}
-              isHome={false}
-              viewMode={viewMode}
-            />
-            <LineupPricingWidget
-              fixtureId={pricing.fixture_id}
-              team={pricing.away_team}
-              teamPlayers={pricing.away_players}
-              lineupPlayers={pricing.away_lineup_players ?? null}
-              isHome={false}
-              autoApplied={lineupAutoApplied.away}
-              onCalculate={(starters) => handleCalculateWithLineup('away', starters)}
-              viewMode={viewMode}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Signaux — réévaluations les plus fortes entre ancien et nouveau calcul */}
-      {pricing && !loading && (
-        <SignalsSection items={signals} viewMode={viewMode} />
-      )}
-
-      {/* Empty state */}
-      {!selectedFixtureId && !loading && (
-        <div className="text-center py-20 text-gray-600">
-          <Calculator className="w-12 h-12 mx-auto mb-3 opacity-30" />
-          <p className="text-sm">Sélectionne un match pour calculer les cotes Ev0</p>
-        </div>
-      )}
+      </div>
     </div>
   )
 }

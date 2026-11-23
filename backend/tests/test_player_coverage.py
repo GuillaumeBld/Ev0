@@ -7,22 +7,23 @@ the fallback query, with zero stats and has_bzz_stats=False.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.models.bzzoiro import BzzPlayerSeasonStat
+
+_STAT_COLS = [c.key for c in BzzPlayerSeasonStat.__table__.columns]
+
+
+def _stat_row() -> SimpleNamespace:
+    """Ligne bzz_player_season_stats : vraies colonnes du modele, None par defaut."""
+    return SimpleNamespace(**dict.fromkeys(_STAT_COLS))
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_bzz_team(api_id: int = 10, name: str = "Test FC") -> MagicMock:
-    team = MagicMock()
-    team.id = 1
-    team.api_id = api_id
-    team.name = name
-    return team
 
 
 def _make_bzz_player(
@@ -53,7 +54,7 @@ def _make_bzz_season_stat(
     expected_goals: float = 2.5,
     goals: int = 3,
 ) -> MagicMock:
-    stat = MagicMock()
+    stat = _stat_row()
     stat.player_api_id = player_api_id
     stat.minutes_played = minutes_played
     stat.xg_per_90 = xg_per_90
@@ -68,6 +69,7 @@ def _make_bzz_season_stat(
     stat.goals = goals
     stat.matches_played = 10
     stat.starts = 8
+    stat.season = "2026-2027"
     stat.shots_on_target_per_90 = 0.0
     stat.expected_assists = 1.2
     stat.form_assists_5 = None
@@ -76,34 +78,28 @@ def _make_bzz_season_stat(
 
 
 def _build_session(
-    team: MagicMock,
     stat_rows: list,
     roster_players: list,
 ) -> AsyncMock:
-    """Build a mock async session with 3 execute calls:
+    """Build a mock async session with 2 execute calls (plus de recherche par nom) :
 
-    1. team lookup → scalar_one_or_none returns team
-    2. season-stats JOIN → all() returns stat_rows
-    3. fallback roster query → scalars().all() returns roster_players
+    1. season-stats JOIN → all() returns stat_rows
+    2. fallback roster query → scalars().all() returns roster_players
     """
     session = AsyncMock()
 
-    # Execute 1: team lookup
-    team_exec = MagicMock()
-    team_exec.scalar_one_or_none.return_value = team
-
-    # Execute 2: season stats JOIN
+    # Execute 1: season stats JOIN
     stats_exec = MagicMock()
     stats_exec.all.return_value = stat_rows
 
-    # Execute 3: fallback roster
+    # Execute 2: fallback roster
     roster_scalars = MagicMock()
     roster_scalars.all.return_value = roster_players
     roster_exec = MagicMock()
     roster_exec.scalars.return_value = roster_scalars
 
     session.execute = AsyncMock(
-        side_effect=[team_exec, stats_exec, roster_exec]
+        side_effect=[stats_exec, roster_exec]
     )
     return session
 
@@ -118,8 +114,6 @@ async def test_load_team_players_includes_players_without_stats():
     """Players with no BzzPlayerSeasonStat must still appear with zero stats."""
     from app.pricing.team_xg import _load_team_players
 
-    team = _make_bzz_team(api_id=10, name="Test FC")
-
     # Player WITH stats
     player_with_stats = _make_bzz_player(api_id=101, name="Alice Forward", position="F")
     stat = _make_bzz_season_stat(player_api_id=101)
@@ -129,12 +123,11 @@ async def test_load_team_players_includes_players_without_stats():
     player_no_stats = _make_bzz_player(api_id=202, name="Bob Striker", position="F")
 
     session = _build_session(
-        team=team,
         stat_rows=[stat_row],
         roster_players=[player_with_stats, player_no_stats],
     )
 
-    result = await _load_team_players(session, "Test FC", "ligue_1")
+    result = await _load_team_players(session, "Test FC", "ligue_1", bzz_team_id=10)
 
     assert len(result) == 2
 
@@ -160,18 +153,15 @@ async def test_load_team_players_skips_gk_in_fallback():
     """GK players must be excluded even when added via the fallback query."""
     from app.pricing.team_xg import _load_team_players
 
-    team = _make_bzz_team(api_id=10, name="Test FC")
-
     # GK player without stats
     gk_player = _make_bzz_player(api_id=301, name="Carlos Keeper", position="G")
 
     session = _build_session(
-        team=team,
         stat_rows=[],  # no season stats at all
         roster_players=[gk_player],
     )
 
-    result = await _load_team_players(session, "Test FC", "ligue_1")
+    result = await _load_team_players(session, "Test FC", "ligue_1", bzz_team_id=10)
 
     assert result == []
 
@@ -181,8 +171,6 @@ async def test_load_team_players_no_duplicate_in_fallback():
     """A player already loaded via season stats must NOT appear twice."""
     from app.pricing.team_xg import _load_team_players
 
-    team = _make_bzz_team(api_id=10, name="Test FC")
-
     # Player WITH stats
     player = _make_bzz_player(api_id=101, name="Alice Forward", position="F")
     stat = _make_bzz_season_stat(player_api_id=101)
@@ -190,12 +178,11 @@ async def test_load_team_players_no_duplicate_in_fallback():
 
     # Same player appears in roster fallback
     session = _build_session(
-        team=team,
         stat_rows=[stat_row],
         roster_players=[player],  # same player, same api_id
     )
 
-    result = await _load_team_players(session, "Test FC", "ligue_1")
+    result = await _load_team_players(session, "Test FC", "ligue_1", bzz_team_id=10)
 
     assert len(result) == 1
     assert result[0]["name"] == "Alice Forward"

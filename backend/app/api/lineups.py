@@ -9,14 +9,17 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._badges import MatchBadges, badge_fields_for_fixtures
 from app.db import get_db
-from app.ingestion.lineup_resolver import resolve_lineup
+from app.ingestion.lineup_resolver import MANUAL_TYPES, resolve_lineup
 from app.ingestion.ps3838.anchor import _fold
-from app.models.bzzoiro import BzzPlayer
+from app.models.bzz_lineup_slots import BzzLineupSlot
+from app.models.bzzoiro import BzzEvent, BzzPlayer
 from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
 from app.models.lineups import TeamLineup, TeamLineupPlayer
 from app.models.wc2026_lineups import WC2026ExpectedLineup, WC2026ExpectedLineupPlayer
+from app.services.competitions import is_wc2026_fixture
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +104,9 @@ class LineupPlayerIn(BaseModel):
     position: str       # GK | DEF | MID | FWD
     is_starter: bool = True
     jersey_number: int | None = None
+    # Identifiant Atlas (bzz_players.api_id) : c'est lui qui désigne le
+    # titulaire pour le calcul. Une compo sans identifiants est ignorée.
+    player_api_id: int | None = None
 
 
 class LineupIn(BaseModel):
@@ -115,6 +121,8 @@ class LineupPlayerOut(BaseModel):
     is_starter: bool
     jersey_number: int | None
     is_striker: bool = False
+    # Identifiant Atlas (bzz_players.api_id) ; None = joueur non relié, pas de lien fiche.
+    player_api_id: int | None = None
 
 
 class LineupOut(BaseModel):
@@ -122,9 +130,14 @@ class LineupOut(BaseModel):
     lineup_type: str
     team: str
     players: list[LineupPlayerOut]
+    # Titulaires de champ par identifiant (bzz_players.api_id), lus sur la
+    # compo Bzzoiro du match. C'est ce que le calculateur envoie au moteur de
+    # compo : jamais les noms. None quand la compo n'a pas d'origine Bzzoiro
+    # (compo saisie à la main) ; le gardien est exclu (pas coté buteur).
+    starter_ids: list[int] | None = None
 
 
-class FixtureLineupsOut(BaseModel):
+class FixtureLineupsOut(MatchBadges):
     fixture_id: int
     home_team: str
     away_team: str
@@ -150,12 +163,13 @@ async def _hydrate_strikers(
             is_starter=p.is_starter,
             jersey_number=p.jersey_number,
             is_striker=striker_map.get(p.player_name, False),
+            player_api_id=getattr(p, "player_api_id", None),
         )
         for p in players
     ]
 
 
-async def _resolve_wc2026_lineup(team: str, session: AsyncSession) -> "LineupOut | None":
+async def _resolve_wc2026_lineup(team: str, session: AsyncSession) -> LineupOut | None:
     """Fallback WC2026 : lit wc2026_expected_lineups pour la nation correspondant à team.
 
     Choisit le contexte le plus récent disponible (final > sf > qf > … > matchday_1).
@@ -201,6 +215,80 @@ async def _resolve_wc2026_lineup(team: str, session: AsyncSession) -> "LineupOut
     )
 
 
+async def _starter_ids_for_lineup(
+    lineup_id: int | None, session: AsyncSession
+) -> list[int] | None:
+    """Identifiants des titulaires de champ d'une compo.
+
+    Compo enregistrée (saisie manuelle) : team_lineup_players.player_api_id.
+    Compo d'origine Bzzoiro : bzz_lineup_slots (compo de bzz_events.lineups
+    résolue joueur par joueur), à défaut les "id" bruts de bzz_events.lineups.
+    Une place sans identifiant est journalisée, jamais rapprochée par nom.
+    Pas d'alerte ici (simple chargement de page) : les alertes restent sur le
+    chemin du calcul.
+    """
+    if lineup_id is None:
+        return None
+    lineup = await session.get(TeamLineup, lineup_id)
+    if lineup is None:
+        return None
+    if lineup.lineup_type in MANUAL_TYPES:
+        res = await session.execute(
+            select(TeamLineupPlayer).where(TeamLineupPlayer.lineup_id == lineup_id)
+        )
+        starters = [
+            p for p in res.scalars().all() if p.is_starter and p.position != "GK"
+        ]
+        ids = [p.player_api_id for p in starters if p.player_api_id is not None]
+        if len(ids) < len(starters):
+            logger.warning(
+                "compo %s %s : %d titulaire(s) sans identifiant",
+                lineup.lineup_type, lineup.team, len(starters) - len(ids),
+            )
+        return ids or None
+    if lineup.lineup_type not in ("official", "bzzoiro"):
+        return None
+    fx = await session.get(Fixture, lineup.fixture_id)
+    ext = (getattr(fx, "external_id", None) or "").removeprefix("bzz_")
+    if fx is None or not ext.isdigit():
+        return None
+    event_api_id = int(ext)
+    is_home = lineup.team == fx.home_team
+
+    slots_res = await session.execute(
+        select(BzzLineupSlot)
+        .where(
+            BzzLineupSlot.event_api_id == event_api_id,
+            BzzLineupSlot.is_home.is_(is_home),
+            BzzLineupSlot.is_starter.is_(True),
+        )
+        .order_by(BzzLineupSlot.slot)
+    )
+    places = [
+        (s.player_api_id, s.position, s.player_name) for s in slots_res.scalars().all()
+    ]
+    if not places:
+        event = (
+            await session.execute(select(BzzEvent).where(BzzEvent.api_id == event_api_id))
+        ).scalar_one_or_none()
+        side = ((getattr(event, "lineups", None) or {}).get("home" if is_home else "away")) or {}
+        places = [
+            (int(p["id"]) if p.get("id") else None, p.get("position"), p.get("name"))
+            for p in side.get("players") or []
+        ]
+    if not places:
+        return None
+
+    champ = [p for p in places if (p[1] or "").strip().upper() not in ("G", "GK")]
+    unresolved = [name for pid, _pos, name in champ if pid is None]
+    if unresolved:
+        logger.warning(
+            "compo %s (match %s) : %d titulaire(s) sans identifiant : %s",
+            lineup.team, fx.id, len(unresolved), unresolved,
+        )
+    return [pid for pid, _pos, _name in champ if pid is not None]
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────
 # NOTE: route ordering matters — static segments (e.g. "team-players") must
 # be declared before dynamic segments (e.g. {lineup_id}) on the same prefix
@@ -234,6 +322,7 @@ async def get_fixture_lineups(
             lineup_type=home_res.lineup_type,
             team=home_res.team,
             players=home_players,
+            starter_ids=await _starter_ids_for_lineup(home_res.lineup_id, session),
         )
 
     away_out = None
@@ -244,11 +333,12 @@ async def get_fixture_lineups(
             lineup_type=away_res.lineup_type,
             team=away_res.team,
             players=away_players,
+            starter_ids=await _starter_ids_for_lineup(away_res.lineup_id, session),
         )
 
     # Fallback WC2026 : si resolve_lineup n'a rien trouvé, on tire la dernière
     # compo connue depuis wc2026_expected_lineups (peuplée par sync_bzzoiro_lineups).
-    if fx.league == "world_cup_2026":
+    if is_wc2026_fixture(fx):
         if home_out is None:
             home_out = await _resolve_wc2026_lineup(fx.home_team, session)
         if away_out is None:
@@ -260,6 +350,7 @@ async def get_fixture_lineups(
         away_team=fx.away_team,
         home=home_out,
         away=away_out,
+        **(await badge_fields_for_fixtures(session, [fx]))[fx.id],
     )
 
 
@@ -361,7 +452,14 @@ async def create_lineup(body: LineupIn, session: AsyncSession = Depends(get_db))
                 position=p.position,
                 is_starter=p.is_starter,
                 jersey_number=p.jersey_number,
+                player_api_id=p.player_api_id,
             )
+        )
+    if any(p.is_starter and p.player_api_id is None for p in body.players):
+        logger.warning(
+            "create_lineup : compo %s (match %s) enregistrée sans identifiants "
+            "— elle sera ignorée par la résolution de compo",
+            body.team, body.fixture_id,
         )
 
     await session.commit()

@@ -35,12 +35,29 @@ api.interceptors.response.use(
 )
 
 // Types
-export interface Recommendation {
+/** Écusson Atlas d'une équipe (source unique : canonical_teams). null = équipe non reliée. */
+export interface TeamBadgeOut {
+  name_fr: string | null
+  crest_url: string | null
+  api_football_id: number | null
+  country_iso: string | null
+}
+
+/** Champs additifs de toute réponse « match » (écussons + compétition). */
+export interface MatchBadges {
+  home_badge?: TeamBadgeOut | null
+  away_badge?: TeamBadgeOut | null
+  competition_api_id?: number | null
+  competition_name?: string | null
+}
+
+export interface Recommendation extends MatchBadges {
   id: string
   fixture_id: string
   fixture_name: string
   kickoff_utc: string
   player_name: string
+  player_id?: number | null
   team: string
   market_type: 'goalscorer' | 'assist'
   bet_type?: 'goal' | 'assist'
@@ -67,9 +84,9 @@ export interface MatchPriceRequest {
   away_xg_override?: number | null
   home_pen_taker_override?: number | null
   away_pen_taker_override?: number | null
-  home_starters?: string[] | null
-  away_starters?: string[] | null
-
+  // Compo : titulaires par identifiant (player_id = bzz_players.api_id)
+  home_starter_ids?: number[] | null
+  away_starter_ids?: number[] | null
 }
 
 export interface PlayerAllocationOut {
@@ -103,9 +120,13 @@ export interface PlayerAllocationOut {
   beta_fair_odds_goal_supersub?: number
   beta_p_assist_supersub?: number
   beta_fair_odds_assist_supersub?: number
+  // Saison d'où viennent les stats ; null = joueur sans stat
+  stats_season?: string | null
+  // Stats d'une saison antérieure à la saison courante
+  stats_stale?: boolean
 }
 
-export interface MatchPriceResponse {
+export interface MatchPriceResponse extends MatchBadges {
   fixture_id: number
   home_team: string
   away_team: string
@@ -116,8 +137,10 @@ export interface MatchPriceResponse {
   away_players: PlayerAllocationOut[]
   home_lineup_players: PlayerAllocationOut[] | null
   away_lineup_players: PlayerAllocationOut[] | null
+  // Signalements de la compo (titulaire inconnu de l'effectif, trop peu de titulaires)
+  home_lineup_warnings?: string[]
+  away_lineup_warnings?: string[]
   last_scraped_at?: string | null
-  p00?: number
 }
 
 export async function priceMatch(request: MatchPriceRequest): Promise<MatchPriceResponse> {
@@ -192,7 +215,7 @@ export interface OddsSnapshotOut {
   snapshot_utc: string
 }
 
-export interface FixtureOut {
+export interface FixtureOut extends MatchBadges {
   id: number
   external_id: string
   league: string
@@ -243,6 +266,42 @@ export async function getFixtures(params?: {
   return data
 }
 
+/** Dernière cote book d'un joueur Atlas (bzz_players.api_id) sur un marché. */
+export interface FixturePlayerOdd {
+  player_api_id: number
+  market: 'goal' | 'assist'
+  bookmaker: string
+  odds: number
+  scraped_at: string
+}
+
+export async function getFixturePlayerOdds(fixtureId: number): Promise<FixturePlayerOdd[]> {
+  const { data } = await api.get(`/api/v1/fixtures/${fixtureId}/player-odds`)
+  return data
+}
+
+/** Compo résolue d'une équipe (GET /lineups/fixture/{id}), champs lus par le calculateur. */
+export interface FixtureTeamLineup {
+  lineup_id: number | null
+  lineup_type: string
+  team: string
+  // Titulaires de champ par identifiant (gardien exclu) ; null = compo sans identifiants
+  starter_ids: number[] | null
+}
+
+export interface FixtureLineupsOut extends MatchBadges {
+  fixture_id: number
+  home_team: string
+  away_team: string
+  home: FixtureTeamLineup | null
+  away: FixtureTeamLineup | null
+}
+
+export async function getFixtureLineups(fixtureId: number): Promise<FixtureLineupsOut> {
+  const { data } = await api.get(`/api/v1/lineups/fixture/${fixtureId}`)
+  return data
+}
+
 export async function createFixture(body: FixtureCreateData): Promise<FixtureOut> {
   const { data } = await api.post('/api/v1/fixtures', body)
   return data
@@ -271,11 +330,12 @@ export async function createOdds(fixtureId: number, body: OddsCreateData): Promi
 
 // ── History & Stats ─────────────────────────────────────────────
 
-export interface HistoryItem {
+export interface HistoryItem extends MatchBadges {
   id: number
   date: string
   fixture_name: string
   player_name: string
+  player_id?: number | null
   market_type: string
   best_odds: number
   fair_odds: number | null
@@ -1244,7 +1304,7 @@ export async function getWCRankings(): Promise<WCPlayerRanking[]> {
 
 // ── WC2026 Match Center ──────────────────────────────────────────────────────
 
-export interface WCMatchListItem {
+export interface WCMatchListItem extends MatchBadges {
   bzz_id: number
   home_team: string
   away_team: string
@@ -1354,7 +1414,7 @@ export interface WCTeamLineup {
   substitutes: WCMatchLineupPlayer[]
 }
 
-export interface WCMatchDetail {
+export interface WCMatchDetail extends MatchBadges {
   bzz_id: number
   home_team: string
   away_team: string

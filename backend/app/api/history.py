@@ -7,11 +7,17 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._badges import MatchBadges, badge_fields_for_fixtures
 from app.db import get_db
 from app.ingestion.auto_settle import settle_approved_recommendations
 from app.models.bankroll import BankrollEntry
 from app.models.fixtures import Fixture
 from app.models.recommendations import Recommendation
+from app.services.competitions import (
+    competition_name,
+    fixture_competition_id,
+    league_key_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +27,13 @@ router = APIRouter()
 # ── Response models ──────────────────────────────────────────────
 
 
-class HistoryItem(BaseModel):
+class HistoryItem(MatchBadges):
     id: int
     date: str
     fixture_name: str
     player_name: str
+    # Identifiant Atlas (bzz_players.api_id), None si non relie.
+    player_id: int | None = None
     market_type: str
     best_odds: float
     fair_odds: float | None
@@ -55,6 +63,8 @@ class StatsResponse(BaseModel):
 
 class BreakdownItem(BaseModel):
     label: str
+    competition_api_id: int | None = None
+    competition_name: str | None = None
     bets: int
     wins: int
     losses: int
@@ -85,7 +95,7 @@ async def get_history(
 ):
     """List betting history from settled/executed recommendations."""
     stmt = (
-        select(Recommendation, Fixture.home_team, Fixture.away_team)
+        select(Recommendation, Fixture)
         .join(Fixture, Recommendation.fixture_id == Fixture.id)
         .where(Recommendation.status == "approved")
         .order_by(Recommendation.generated_utc.desc())
@@ -116,9 +126,11 @@ async def get_history(
             if rid is not None:
                 stake_map[rid] = stake or 10.0
 
+    badge_map = await badge_fields_for_fixtures(db, [fx for _, fx in rows])
+
     bets = []
-    for rec, home_team, away_team in rows:
-        fixture_name = f"{home_team} vs {away_team}"
+    for rec, fx in rows:
+        fixture_name = f"{fx.home_team} vs {fx.away_team}"
         display_status = rec.result if rec.result else "running"
 
         bets.append(
@@ -127,6 +139,7 @@ async def get_history(
                 date=str(rec.generated_utc.date()) if rec.generated_utc else "",
                 fixture_name=fixture_name,
                 player_name=rec.player_name,
+                player_id=rec.player_id,
                 market_type=rec.market_type,
                 best_odds=rec.best_odds,
                 fair_odds=rec.fair_odds,
@@ -137,6 +150,7 @@ async def get_history(
                 pnl=rec.pnl if rec.result else None,
                 stake=stake_map.get(rec.id),
                 decided_utc=rec.decided_utc.isoformat() if rec.decided_utc else None,
+                **badge_map[fx.id],
             )
         )
 
@@ -166,6 +180,8 @@ async def get_autoflat_history(
     )
     result = await db.execute(stmt)
     rows = result.all()
+
+    badge_map = await badge_fields_for_fixtures(db, [fx for _, fx in rows])
 
     bets = []
     for rec, fixture in rows:
@@ -199,6 +215,7 @@ async def get_autoflat_history(
                 date=str(rec.generated_utc.date()) if rec.generated_utc else "",
                 fixture_name=fixture_name,
                 player_name=rec.player_name,
+                player_id=rec.player_id,
                 market_type=rec.market_type,
                 best_odds=rec.best_odds,
                 fair_odds=rec.fair_odds,
@@ -209,6 +226,7 @@ async def get_autoflat_history(
                 pnl=computed_pnl,
                 stake=10.0,
                 decided_utc=None,
+                **badge_map[fixture.id],
             )
         )
 
@@ -284,7 +302,7 @@ async def get_stats_breakdown(
     """Performance breakdown by market type, league, and P&L trend."""
     # Fetch all settled recommendations with fixture info
     result = await db.execute(
-        select(Recommendation, Fixture.home_team, Fixture.away_team, Fixture.league)
+        select(Recommendation, Fixture)
         .join(Fixture, Recommendation.fixture_id == Fixture.id)
         .where(Recommendation.result.in_(["won", "lost"]))
         .order_by(Recommendation.settled_utc.asc())
@@ -311,7 +329,8 @@ async def get_stats_breakdown(
     pnl_trend: list[PnlPoint] = []
     cumulative = 0.0
 
-    for rec, _home, _away, league in rows:
+    for rec, fx in rows:
+        comp_id = fixture_competition_id(fx)
         pnl = rec.pnl or 0.0
         is_win = rec.result == "won"
         stake = stake_map.get(rec.id, 10.0)
@@ -326,9 +345,9 @@ async def get_stats_breakdown(
         market_buckets[mt]["staked"] += stake
 
         # League breakdown
-        lg = league or "unknown"
+        lg = league_key_for(comp_id) if comp_id is not None else (fx.league or "unknown")
         if lg not in league_buckets:
-            league_buckets[lg] = {"bets": 0, "wins": 0, "losses": 0, "pnl": 0.0, "staked": 0.0}
+            league_buckets[lg] = {"competition_api_id": comp_id, "bets": 0, "wins": 0, "losses": 0, "pnl": 0.0, "staked": 0.0}
         league_buckets[lg]["bets"] += 1
         league_buckets[lg]["wins" if is_win else "losses"] += 1
         league_buckets[lg]["pnl"] += pnl
@@ -352,6 +371,8 @@ async def get_stats_breakdown(
             items.append(
                 BreakdownItem(
                     label=label,
+                    competition_api_id=b.get("competition_api_id"),
+                    competition_name=competition_name(b.get("competition_api_id")),
                     bets=b["bets"],
                     wins=b["wins"],
                     losses=b["losses"],

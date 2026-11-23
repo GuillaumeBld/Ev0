@@ -4,7 +4,8 @@ import { useState, useEffect, useMemo } from 'react'
 import { RefreshCw, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 import { clsx } from 'clsx'
 import { type WCPlayerRanking, getWCRankings } from '@/lib/api'
-import { FlagImg } from '@/components/FlagImg'
+import { TeamBadge } from '@/components/TeamBadge'
+import { flagBadge } from '@/lib/flags'
 
 type SortKey = 'goals' | 'assists' | 'xg' | 'xa' | 'finishing_delta' | 'creation_delta' | 'xg_per_90' | 'xa_per_90' | 'minutes' | 'shots' | 'xg_tournoi' | 'xg_left' | 'xa_left' | 'team_xg_share'
 type PosFilter = '' | 'GK' | 'DEF' | 'MID' | 'FWD'
@@ -219,7 +220,7 @@ export default function WC2026StatsPage() {
                 <td className="px-3 py-2 whitespace-nowrap">
                   {r.nation ? (
                     <span className="flex items-center gap-1">
-                      {r.flag_emoji && <FlagImg emoji={r.flag_emoji} size={14} />}
+                      {flagBadge(r.flag_emoji) && <TeamBadge badge={flagBadge(r.flag_emoji)} size={14} />}
                       <span className="text-gray-300 text-[11px]">{r.nation}</span>
                     </span>
                   ) : (

@@ -4,7 +4,6 @@ import logging
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from math import ceil
-
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -12,12 +11,15 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._badges import MatchBadges, badge_fields_for_fixtures
 from app.db import get_db
+from app.ingestion.odds import normalize_selection_name
 from app.models.bankroll import BankrollEntry
 from app.models.bzzoiro import BzzPlayer
 from app.models.fixtures import Fixture as FixtureModel
 from app.models.recommendations import Recommendation as RecommendationModel
 from app.rate_limit import limiter
+from app.services.competitions import competition_clause, league_key_for
 from app.services.recommendation_service import get_recommendations_for_date
 from app.strategy.selector import RecommendationFilter
 
@@ -115,7 +117,7 @@ class RecommendationStatus(StrEnum):
     EXPIRED = "expired"
 
 
-class Recommendation(BaseModel):
+class Recommendation(MatchBadges):
     """A betting recommendation."""
 
     id: int
@@ -123,6 +125,8 @@ class Recommendation(BaseModel):
     fixture_name: str
     kickoff_utc: str
     player_name: str
+    # Identifiant Atlas (bzz_players.api_id), None si non relie : pas de lien fiche.
+    player_id: int | None = None
     team: str
     market_type: MarketType
     fair_odds: float
@@ -159,7 +163,8 @@ async def get_recommendations(
     db: Annotated[AsyncSession, Depends(get_db)],
     target_date: Annotated[date | None, Query(description="Date for recommendations (default: today)")] = None,
     market_type: Annotated[MarketType | None, Query(description="Filter by market type")] = None,
-    league: Annotated[str | None, Query(description="Filter by league (ligue_1, premier_league)")] = None,
+    league: Annotated[str | None, Query(description="Etiquette historique de competition (ancien filtre)")] = None,
+    competition_api_id: Annotated[int | None, Query(description="Identifiant de competition Atlas (prime sur league)")] = None,
     min_edge: Annotated[float, Query(description="Minimum edge threshold")] = 0.05,
     status_filter: Annotated[str | None, Query(description="Filter by status: pending, approved, rejected, all")] = None,
     page: Annotated[int, Query(ge=1, description="Page number (view-all only)")] = 1,
@@ -184,8 +189,11 @@ async def get_recommendations(
             filters.append(kickoff_clause)
         if market_type:
             filters.append(RecommendationModel.market_type == market_type.value)
-        if league:
-            filters.append(FixtureModel.league == league)
+        clause = competition_clause(
+            FixtureModel.league, FixtureModel.competition_api_id, league, competition_api_id
+        )
+        if clause is not None:
+            filters.append(clause)
         if min_edge > 0:
             filters.append(RecommendationModel.edge >= min_edge)
 
@@ -216,6 +224,7 @@ async def get_recommendations(
         rows = result.all()
 
         bzz_teams = await _batch_player_teams(db, [rec.player_name for rec, _ in rows])
+        badge_map = await badge_fields_for_fixtures(db, [fix for _, fix in rows])
 
         recommendations = [
             Recommendation(
@@ -224,6 +233,7 @@ async def get_recommendations(
                 fixture_name=f"{fix.home_team} vs {fix.away_team}",
                 kickoff_utc=fix.kickoff_utc.isoformat(),
                 player_name=rec.player_name,
+                player_id=rec.player_id,
                 team=_resolve_team(rec.player_name, fix.home_team, fix.away_team, bzz_teams, rec.explanation or {}),
                 market_type=rec.market_type,
                 fair_odds=rec.fair_odds,
@@ -239,6 +249,7 @@ async def get_recommendations(
                 is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
                 supersub_market_type=rec.market_type.value if rec.market_type else None,
                 bet_type=getattr(rec, "bet_type", None),
+                **badge_map[fix.id],
             )
             for rec, fix in rows
         ]
@@ -259,8 +270,11 @@ async def get_recommendations(
         filter_config = RecommendationFilter(min_edge=min_edge)
         if market_type:
             filter_config.markets = [market_type.value]
-        if league:
-            filter_config.leagues = [league]
+        effective_league = (
+            league_key_for(competition_api_id) if competition_api_id is not None else league
+        )
+        if effective_league:
+            filter_config.leagues = [effective_league]
         raw_recs, _ = await get_recommendations_for_date(dt, db, filter_config)
     except Exception as exc:
         logger.error("Failed to generate recommendations: %s", exc, exc_info=True)
@@ -288,10 +302,16 @@ async def get_recommendations(
                     RecommendationModel.fixture_id.in_(fixture_db_ids)
                 )
             )
-            existing_by_key: dict[tuple, int] = {
-                (r.fixture_id, r.player_name, r.market_type): r.id
-                for r in existing_result.scalars()
-            }
+            # Nom normalisé : les recos d'avant la tâche 8 portent la graphie
+            # bookmaker, les nouvelles le nom Atlas — même joueur, même clé.
+            # Par identifiant joueur d'abord (graphies différentes du même
+            # joueur), le nom normalisé restant pour les recos sans identifiant.
+            existing_by_key: dict[tuple, int] = {}
+            existing_by_pid: dict[tuple, int] = {}
+            for r in existing_result.scalars():
+                existing_by_key[(r.fixture_id, normalize_selection_name(r.player_name), r.market_type)] = r.id
+                if r.player_id is not None:
+                    existing_by_pid[(r.fixture_id, r.player_id, r.market_type)] = r.id
 
             now = datetime.now(UTC)
             new_db_recs: list[tuple[dict, RecommendationModel]] = []
@@ -299,13 +319,17 @@ async def get_recommendations(
                 fix_db_id = fixture_map.get(rec.get("fixture_id", ""))
                 if fix_db_id is None:
                     continue
-                key = (fix_db_id, rec["player_name"], rec["market_type"])
-                if key in existing_by_key:
+                key = (fix_db_id, normalize_selection_name(rec["player_name"]), rec["market_type"])
+                pid_key = (fix_db_id, rec.get("player_id"), rec["market_type"])
+                if rec.get("player_id") is not None and pid_key in existing_by_pid:
+                    rec["_db_id"] = existing_by_pid[pid_key]
+                elif key in existing_by_key:
                     rec["_db_id"] = existing_by_key[key]
                 else:
                     expl = rec.get("explanation") or {}
                     db_rec = RecommendationModel(
                         fixture_id=fix_db_id,
+                        player_id=rec.get("player_id"),
                         player_name=rec["player_name"],
                         market_type=rec["market_type"],
                         lambda_intensity=float(expl.get("lambda", 0) or 0),
@@ -340,12 +364,12 @@ async def get_recommendations(
                         )
                     )
                     refetched: dict[tuple, int] = {
-                        (r.fixture_id, r.player_name, r.market_type): r.id
+                        (r.fixture_id, normalize_selection_name(r.player_name), r.market_type): r.id
                         for r in refetch_result.scalars()
                     }
                     for rec, _ in new_db_recs:
                         fix_db_id = fixture_map.get(rec.get("fixture_id", ""))
-                        key = (fix_db_id, rec["player_name"], rec["market_type"])
+                        key = (fix_db_id, normalize_selection_name(rec["player_name"]), rec["market_type"])
                         if key in refetched:
                             rec["_db_id"] = refetched[key]
         except Exception as exc:
@@ -362,6 +386,16 @@ async def get_recommendations(
         )
         status_map = {row.id: row.status for row in status_rows}
 
+    # Ecussons/competition : une requete pour tout le lot (fixtures par external_id)
+    badge_by_ext: dict[str, dict] = {}
+    ext_for_badges = {r.get("fixture_id", "") for r in raw_recs if r.get("fixture_id")}
+    if ext_for_badges:
+        fx_rows = (await db.execute(
+            select(FixtureModel).where(FixtureModel.external_id.in_(ext_for_badges))
+        )).scalars().all()
+        by_id = await badge_fields_for_fixtures(db, fx_rows)
+        badge_by_ext = {fx.external_id: by_id[fx.id] for fx in fx_rows}
+
     # Transform to response models
     recommendations = []
     for rec in raw_recs:
@@ -375,6 +409,7 @@ async def get_recommendations(
                 fixture_name=rec.get("fixture_name", ""),
                 kickoff_utc=str(rec.get("kickoff_utc", "")),
                 player_name=rec.get("player_name", ""),
+                player_id=rec.get("player_id"),
                 team=rec.get("team", ""),
                 market_type=rec.get("market_type", "goalscorer"),
                 fair_odds=rec.get("fair_odds", 0.0),
@@ -389,6 +424,7 @@ async def get_recommendations(
                 is_pen_taker=rec.get("is_pen_taker", False) or False,
                 supersub_market_type=rec.get("market_type"),
                 bet_type=rec.get("bet_type"),
+                **badge_by_ext.get(rec.get("fixture_id", ""), {}),
             )
         )
 
@@ -436,6 +472,7 @@ async def get_expired_recommendations(
         rows = result.all()
 
         bzz_teams_exp = await _batch_player_teams(db, [rec.player_name for rec, _ in rows])
+        badge_map = await badge_fields_for_fixtures(db, [fix for _, fix in rows])
 
         recommendations = [
             Recommendation(
@@ -444,6 +481,7 @@ async def get_expired_recommendations(
                 fixture_name=f"{fix.home_team} vs {fix.away_team}",
                 kickoff_utc=fix.kickoff_utc.isoformat(),
                 player_name=rec.player_name,
+                player_id=rec.player_id,
                 team=_resolve_team(rec.player_name, fix.home_team, fix.away_team, bzz_teams_exp, rec.explanation or {}),
                 market_type=rec.market_type,
                 fair_odds=rec.fair_odds,
@@ -459,6 +497,7 @@ async def get_expired_recommendations(
                 is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
                 supersub_market_type=rec.market_type.value if rec.market_type else None,
                 bet_type=getattr(rec, "bet_type", None),
+                **badge_map[fix.id],
             )
             for rec, fix in rows
         ]
@@ -486,6 +525,7 @@ async def get_expired_recommendations(
         .order_by(FixtureModel.kickoff_utc.asc())
     )
     rows = result.all()
+    badge_map = await badge_fields_for_fixtures(db, [fix for _, fix in rows])
 
     recommendations = [
         Recommendation(
@@ -494,6 +534,7 @@ async def get_expired_recommendations(
             fixture_name=f"{fix.home_team} vs {fix.away_team}",
             kickoff_utc=fix.kickoff_utc.isoformat(),
             player_name=rec.player_name,
+            player_id=rec.player_id,
             team="",
             market_type=rec.market_type,
             fair_odds=rec.fair_odds,
@@ -509,6 +550,7 @@ async def get_expired_recommendations(
             is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
             supersub_market_type=rec.market_type.value if rec.market_type else None,
             bet_type=getattr(rec, "bet_type", None),
+            **badge_map[fix.id],
         )
         for rec, fix in rows
     ]

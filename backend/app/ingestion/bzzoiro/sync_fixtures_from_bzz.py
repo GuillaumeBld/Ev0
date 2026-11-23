@@ -25,14 +25,11 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.bzzoiro.constants import (
-    INTERNATIONAL_LEAGUE_INTERNAL_IDS,
-    TARGET_LEAGUE_INTERNAL_IDS,
-)
 from app.ingestion.fixture_matcher import normalize_team_name
 from app.models.bzzoiro import BzzEvent, BzzTeam
 from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
+from app.services.competitions import SYNCED_COMPETITION_IDS, league_key_for
 from app.services.coherence_calendrier import (
     MatchAControler,
     identifiants_incoherents,
@@ -41,18 +38,10 @@ from app.services.season_service import compute_season
 
 logger = logging.getLogger(__name__)
 
-# Reverse map: bzz league id (espace INTERNE, celui que `bzz_events` stocke
-# aujourd'hui) -> clé de championnat paris.
-#
-# Les anciens identifiants externes (17 PL, 34 Ligue 1, 35 Bundesliga, 8 Liga,
-# 23 Serie A) ne sont PLUS acceptés : dans l'espace interne ce sont d'autres
-# compétitions (17 Saudi Pro League, 8 Europa League, 23 Superliga roumaine,
-# 34 Brasileirão B, 35 Copa do Brasil). Les mélanger créait des matchs saoudiens
-# étiquetés « premier_league », roumains « serie_a »… (constaté le 14/11/2026).
-# Les compétitions internationales ont le même id dans les deux espaces.
-_LEAGUE_API_ID_TO_KEY: dict[int, str] = {v: k for k, v in TARGET_LEAGUE_INTERNAL_IDS.items()}
-for _key, _id in INTERNATIONAL_LEAGUE_INTERNAL_IDS.items():
-    _LEAGUE_API_ID_TO_KEY.setdefault(_id, _key)
+# La competition d'un match vient de l'Atlas (app/services/competitions.py) :
+# `fixtures.competition_api_id` = `BzzEvent.league_api_id` (id INTERNE Bzzoiro),
+# `fixtures.league` en est derive par `league_key_for`. Voir le bug du 14/11/2026
+# decrit dans ce module (ids externes melanges avec les ids internes).
 
 # How far ahead to look for upcoming fixtures
 _DAYS_FORWARD = 30
@@ -103,7 +92,7 @@ async def sync_fixtures_from_bzz(
         select(BzzEvent).where(
             BzzEvent.event_date >= lookback,
             BzzEvent.event_date <= horizon,
-            BzzEvent.league_api_id.in_(list(_LEAGUE_API_ID_TO_KEY.keys())),
+            BzzEvent.league_api_id.in_(sorted(SYNCED_COMPETITION_IDS)),
         ).order_by(BzzEvent.event_date)
     )
     bzz_events = list(events_result.scalars().all())
@@ -207,10 +196,10 @@ async def sync_fixtures_from_bzz(
             logger.debug("sync_fixtures_from_bzz: skipping event %s (missing team names)", ev.api_id)
             continue
 
-        league_key = _LEAGUE_API_ID_TO_KEY.get(ev.league_api_id or -1)
-        if not league_key:
-            logger.debug("sync_fixtures_from_bzz: skipping event %s (unknown league %s)", ev.api_id, ev.league_api_id)
+        if ev.league_api_id is None:
+            logger.debug("sync_fixtures_from_bzz: skipping event %s (no league)", ev.api_id)
             continue
+        league_key = league_key_for(ev.league_api_id)
 
         ext_id = f"bzz_{ev.api_id}"
 
@@ -239,6 +228,19 @@ async def sync_fixtures_from_bzz(
                     fixture.kickoff_utc, ev.event_date, fixture.id,
                 )
                 fixture.kickoff_utc = ev.event_date
+                changed = True
+
+            # La competition vient de l'Atlas, a chaque passage : un match
+            # mal etiquete par le passe se corrige ici.
+            if fixture.competition_api_id != ev.league_api_id:
+                fixture.competition_api_id = ev.league_api_id
+                changed = True
+            if fixture.league != league_key:
+                logger.info(
+                    "sync_fixtures_from_bzz: fix league %r → %r (fixture %s)",
+                    fixture.league, league_key, fixture.id,
+                )
+                fixture.league = league_key
                 changed = True
 
             # Re-stamp season from the match date — self-heals fixtures that
@@ -303,6 +305,7 @@ async def sync_fixtures_from_bzz(
             new_fixture = Fixture(
                 external_id=ext_id,
                 league=league_key,
+                competition_api_id=ev.league_api_id,
                 season=compute_season(ev.event_date.date()),
                 home_team=home_name,
                 away_team=away_name,

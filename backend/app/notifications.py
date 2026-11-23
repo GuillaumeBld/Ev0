@@ -4,6 +4,7 @@ import logging
 import httpx
 
 from app.config import settings
+from app.services.competitions import competition_name
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,9 @@ def _format_movement(m: dict) -> str:
     head = "▲ NOUVELLE VALUE\n" if m["kind"] == "new" else "▲ "
     name_line = f"<b>{m['player']}</b> — {label}"
     fixture_line = f"{m['fixture']} ({m['kickoff']})"
+    comp = competition_name(m.get("competition_api_id")) or m.get("league")
+    if comp:
+        fixture_line = f"{fixture_line} · {comp}"
 
     if m["kind"] == "new":
         odds_line = f"{m['odds']:.2f} {m['bookmaker']} | edge {m['edge']:+.1%}"

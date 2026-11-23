@@ -13,18 +13,18 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.odds import normalize_selection_name
+from app.alerts import alert_bg
 from app.models.match_odds import MatchOddsSnapshot
 from app.models.recommendations import MarketType
 from app.pricing.goalscorer import (
     calculate_edge,
     ev_anytime,
-    ev_anytime_p00_guarantee,
     devig_implied_prob,
     GOALSCORER_MARKET_MARGIN,
 )
 from app.pricing.team_xg import load_match_pricing
 from app.services.market_xg import p_poisson_away_win, p_poisson_draw, p_poisson_home_win
+from app.services.player_identity import SquadPlayer, resolve_odds_player
 from app.services.recommendations_service import build_recommendations_for_player
 from app.strategy.selector import RecommendationFilter, select_bets
 
@@ -38,6 +38,41 @@ _ODDS_MAX_AGE_HOURS = 24
 # sur laquelle l'utilisateur a été alerté. Évite le flood : le scraping
 # réévalue toutes les recos toutes les 60 secondes.
 ALERT_RISE_RATIO = 1.05
+
+# Au-delà de cette part de cotes joueur non reliées à un joueur Atlas sur un
+# match, une alerte « incidents » liste les noms : ces cotes ne produisent
+# aucune reco, il faut le voir.
+UNRESOLVED_ODDS_ALERT_RATIO = 0.10
+
+
+# Dernier lot de noms non reliés signalé par match : on ne réalerte que
+# quand ce lot change (les compteurs n'entrent pas dans la clé). Mémoire du
+# process — un redémarrage du worker réémet au plus une alerte par match.
+_unresolved_alerted: dict[int, frozenset[str]] = {}
+
+
+def alert_unresolved_odds(
+    fixture_id: int, fixture_label: str, total: int, unresolved: int, names: set[str],
+) -> bool:
+    """Alerte `incidents` si plus de 10 % des cotes du match sont non reliées.
+
+    Une seule alerte par (match, lot de noms) : le scraping repasse toutes les
+    60 s, l'alerte ne repart que si de nouveaux noms apparaissent ou changent.
+    Appelée uniquement par le worker (process_scraped_fixtures).
+    """
+    if total <= 0 or unresolved <= 0 or unresolved / total <= UNRESOLVED_ODDS_ALERT_RATIO:
+        return False
+    key = frozenset(names)
+    if _unresolved_alerted.get(fixture_id) == key:
+        return False
+    _unresolved_alerted[fixture_id] = key
+    alert_bg(
+        f"Cotes joueurs non reliées à l'Atlas — {fixture_label} : "
+        f"{unresolved}/{total} ({unresolved / total:.0%}), aucune reco pour : "
+        f"{', '.join(sorted(names))}",
+        "incidents",
+    )
+    return True
 
 
 def should_alert(alerted_odds: float | None, market_odds: float) -> bool:
@@ -101,6 +136,7 @@ async def generate_recommendations(
     all_recommendations = []
     _matched = 0
     _unmatched = 0
+    _unresolved = 0
     _skipped_position = 0
     _skipped_no_signal = 0
 
@@ -134,17 +170,19 @@ async def generate_recommendations(
         xg_source = pricing.xg_source
         home_match_xg = pricing.home_match_xg
         away_match_xg = pricing.away_match_xg
-        match_p00 = pricing.p00
 
-        # Build player allocation lookup (normalized name → allocation)
-        alloc_by_norm: dict[str, Any] = {}
-        for alloc in pricing.home_players + pricing.away_players:
-            norm_key = normalize_selection_name(alloc.player_name)
-            alloc_by_norm[norm_key] = alloc
+        # Cote ↔ allocation par identifiant Atlas (allocation.player_id ==
+        # bzz_players.api_id == player_odds_snapshots.player_api_id).
+        alloc_by_id: dict[int, Any] = {
+            alloc.player_id: alloc for alloc in pricing.home_players + pricing.away_players
+        }
 
         fixture_odds = odds_data.get(fixture_id, [])
+        _fx_unresolved: set[str] = set()
+        _fx_unresolved_count = 0
         for odds_entry in fixture_odds:
             player_name = odds_entry.get("player_name")
+            player_api_id = odds_entry.get("player_api_id")
             market_type = odds_entry.get("market_type", "goalscorer")
             market_odds = odds_entry.get("odds", 0)
             bookmaker = odds_entry.get("bookmaker", "unknown")
@@ -152,8 +190,13 @@ async def generate_recommendations(
             if not player_name or market_odds <= 1:
                 continue
 
-            norm_key = normalize_selection_name(player_name)
-            alloc = alloc_by_norm.get(norm_key)
+            if player_api_id is None:
+                _unresolved += 1
+                _fx_unresolved_count += 1
+                _fx_unresolved.add(player_name)
+                continue
+
+            alloc = alloc_by_id.get(player_api_id)
             if not alloc:
                 _unmatched += 1
                 continue
@@ -186,7 +229,6 @@ async def generate_recommendations(
 
             edge = calculate_edge(fair_odds, market_odds)
             ev = round(ev_anytime(probability, market_odds), 4)
-            ev_p00 = round(ev_anytime_p00_guarantee(probability, market_odds, match_p00), 4)
             market_devigged_prob = round(devig_implied_prob(market_odds, GOALSCORER_MARKET_MARGIN), 4)
 
             # Confidence
@@ -216,7 +258,9 @@ async def generate_recommendations(
                 "fixture_name": f"{home_team} vs {away_team}",
                 "kickoff_utc": kickoff,
                 "league": league,
-                "player_name": player_name,
+                "player_name": alloc.player_name,
+                "player_id": alloc.player_id,
+                "bookmaker_player_name": player_name,
                 "team": alloc.team,
                 "market_type": market_type,
                 "fair_probability": round(probability, 4),
@@ -226,9 +270,7 @@ async def generate_recommendations(
                 "best_bookmaker": bookmaker,
                 "edge": edge,
                 "ev_anytime": ev,
-                "ev_p00_guarantee": ev_p00,
                 "market_devigged_prob": market_devigged_prob,
-                "p00": match_p00,
                 "classification": classification,
                 "confidence": confidence,
                 "xg_source": xg_source,
@@ -246,9 +288,18 @@ async def generate_recommendations(
             }
             all_recommendations.append(recommendation)
 
+        # Pas d'alerte ici (chemin API, à chaque affichage) : le worker
+        # (process_scraped_fixtures) est la seule source de l'alerte.
+        if _fx_unresolved_count:
+            logger.warning(
+                "rec_service: %s vs %s — %d cote(s) non reliée(s) à l'Atlas : %s",
+                home_team, away_team, _fx_unresolved_count, sorted(_fx_unresolved),
+            )
+
     logger.info(
-        "Player matching: %d matched, %d unmatched, %d skipped (GK), %d skipped (sans signal)",
-        _matched, _unmatched, _skipped_position, _skipped_no_signal,
+        "Player matching: %d matched, %d non reliées Atlas, %d sans allocation, "
+        "%d skipped (GK), %d skipped (sans signal)",
+        _matched, _unresolved, _unmatched, _skipped_position, _skipped_no_signal,
     )
 
     selection = select_bets(all_recommendations, filter_config)
@@ -321,14 +372,21 @@ async def get_recommendations_for_date(
             if bk_key not in latest_per_book:
                 latest_per_book[bk_key] = {
                     "player_name": o.player_name,
+                    "player_api_id": o.player_api_id,
                     "market_type": o.market_type,
                     "odds": o.odds,
                     "bookmaker": o.bookmaker,
                 }
         # Puis meilleure cote ACTUELLE entre bookmakers
-        best_odds: dict[tuple[str, str], dict[str, Any]] = {}
+        # regroupée par joueur Atlas (les graphies diffèrent d'un bookmaker à
+        # l'autre) ; une cote non reliée reste seule, sous son nom.
+        best_odds: dict[tuple, dict[str, Any]] = {}
         for entry in latest_per_book.values():
-            key = (entry["player_name"], entry["market_type"])
+            who = (
+                ("id", entry["player_api_id"]) if entry["player_api_id"] is not None
+                else ("nom", entry["player_name"], entry["bookmaker"])
+            )
+            key = (who, entry["market_type"])
             existing = best_odds.get(key)
             if existing is None or entry["odds"] > existing["odds"]:
                 best_odds[key] = entry
@@ -498,6 +556,8 @@ async def process_scraped_fixtures(
             "player": rec.player_name,
             "fixture": f"{fixture_orm.home_team} vs {fixture_orm.away_team}",
             "kickoff": fixture_orm.kickoff_utc.strftime("%H:%M"),
+            "competition_api_id": fixture_orm.competition_api_id,
+            "league": fixture_orm.league,
             "bet_type": bet_type,
             "odds": market_odds,
             "previous_odds": previous_odds,
@@ -555,20 +615,65 @@ async def process_scraped_fixtures(
             logger.debug("process_scraped: no pricing for fixture %d — skipping", fixture_orm.id)
             continue
 
-        match_p00 = pricing.p00
-        alloc_by_norm: dict[str, Any] = {}
-        for alloc in pricing.home_players + pricing.away_players:
-            alloc_by_norm[normalize_selection_name(alloc.player_name)] = alloc
+        # Cote ↔ allocation par identifiant Atlas, plus par nom.
+        allocs = pricing.home_players + pricing.away_players
+        alloc_by_id: dict[int, Any] = {alloc.player_id: alloc for alloc in allocs}
+        # Recos d'avant la tâche 8 : player_id vide, nom au format bookmaker
+        # (« K. Mbappé », « Samba, Floyd »). On les relie avec le même résolveur
+        # que les cotes et on ENREGISTRE l'identifiant, sinon le passage suivant
+        # recréerait la reco sous le nom Atlas (doublon + nouvelle alerte Telegram).
+        alloc_squad = [SquadPlayer(api_id=a.player_id, name=a.player_name) for a in allocs]
 
-        # Best odds per (player_name, market_type) across all bookmakers
+        def _rec_pid(rec, alloc_squad=alloc_squad) -> int | None:
+            pid = getattr(rec, "player_id", None)
+            if pid is not None:
+                return pid
+            pid = resolve_odds_player(rec.player_name or "", alloc_squad)
+            if pid is not None:
+                rec.player_id = pid
+            return pid
+
+        # Recos joueur existantes de ce match, par (joueur Atlas, marché, pari).
+        rec_by_pid: dict[tuple, Recommendation] = {}
+        for r in all_recs:
+            if r.fixture_id != fixture_orm.id or r.market_type == MarketType.H2H:
+                continue
+            pid = _rec_pid(r)
+            if pid is None:
+                continue
+            k = (pid, r.market_type, getattr(r, "bet_type", "goal"))
+            current = rec_by_pid.get(k)
+            # Doublon hérité (deux graphies bookmaker) : garder la reco active.
+            if current is None or (
+                current.status not in ("pending", "approved")
+                and r.status in ("pending", "approved")
+            ):
+                rec_by_pid[k] = r
+
+        # Meilleure cote par (joueur Atlas, marché) tous bookmakers confondus.
+        # Une cote non reliée (player_api_id vide) ne produit aucune reco.
         odds_result = await session.execute(
             select(PlayerOddsSnapshot).where(
                 PlayerOddsSnapshot.fixture_id == fixture_orm.id
             )
         )
-        best_odds_map: dict[tuple[str, str], dict] = {}
+        best_odds_map: dict[tuple[int, str], dict] = {}
+        odds_total = 0
+        odds_unresolved = 0
+        unresolved_names: set[str] = set()
+        # Le taux d'alerte ne compte que les cotes fraîches : une vieille ligne
+        # d'un bookmaker qui ne cote plus ce match n'est pas un incident actuel.
+        fresh_cutoff = now - timedelta(hours=_ODDS_MAX_AGE_HOURS)
         for o in odds_result.scalars().all():
-            key = (o.player_name, o.market_type)
+            is_fresh = o.scraped_at is not None and o.scraped_at >= fresh_cutoff
+            if is_fresh:
+                odds_total += 1
+            if o.player_api_id is None:
+                if is_fresh:
+                    odds_unresolved += 1
+                    unresolved_names.add(o.player_name)
+                continue
+            key = (o.player_api_id, o.market_type)
             existing = best_odds_map.get(key)
             if existing is None or o.odds > existing["odds"]:
                 best_odds_map[key] = {
@@ -577,18 +682,28 @@ async def process_scraped_fixtures(
                     "odds": o.odds,
                     "bookmaker": o.bookmaker,
                 }
+        if odds_unresolved:
+            logger.warning(
+                "process_scraped: fixture %d — %d/%d cotes joueur non reliées à l'Atlas",
+                fixture_orm.id, odds_unresolved, odds_total,
+            )
+        alert_unresolved_odds(
+            fixture_orm.id,
+            f"{fixture_orm.home_team} vs {fixture_orm.away_team}",
+            odds_total, odds_unresolved, unresolved_names,
+        )
 
         seen_value_keys: set[tuple] = set()
+        seen_player_keys: set[tuple] = set()
 
-        for (player_name, bet_type), odds_entry in best_odds_map.items():
+        for (player_api_id, bet_type), odds_entry in best_odds_map.items():
             market_odds = odds_entry["odds"]
             bookmaker = odds_entry["bookmaker"]
 
             if market_odds <= 1 or market_odds < min_odds or market_odds > max_odds:
                 continue
 
-            norm_key = normalize_selection_name(player_name)
-            alloc = alloc_by_norm.get(norm_key)
+            alloc = alloc_by_id.get(player_api_id)
             if not alloc or alloc.position == "GK":
                 continue
 
@@ -634,19 +749,19 @@ async def process_scraped_fixtures(
 
                 edge = calculate_edge(fair_odds, market_odds)
                 ev = round(ev_anytime(probability, market_odds), 4)
-                ev_p00 = round(ev_anytime_p00_guarantee(probability, market_odds, match_p00), 4)
                 is_value = edge >= min_edge
 
-                rec_key = (fixture_orm.id, player_name, mkt_type, bet_type)
-                existing_rec = rec_by_key.get(rec_key)
+                rec_key = (player_api_id, mkt_type, bet_type)
+                existing_rec = rec_by_pid.get(rec_key)
 
                 if is_value:
-                    seen_value_keys.add(rec_key)
+                    seen_player_keys.add(rec_key)
 
                     if existing_rec is None:
                         new_rec = Recommendation(
                             fixture_id=fixture_orm.id,
-                            player_name=player_name,
+                            player_id=alloc.player_id,
+                            player_name=alloc.player_name,
                             market_type=mkt_type,
                             bet_type=bet_type,
                             lambda_intensity=round(lambda_val, 4),
@@ -667,14 +782,12 @@ async def process_scraped_fixtures(
                                 "bet_type": bet_type,
                                 "market_type": mkt_type.value,
                                 "ev_anytime": ev,
-                                "ev_p00_guarantee": ev_p00,
-                                "p00": match_p00,
                             },
                             generated_utc=now,
                             status="pending",
                         )
                         session.add(new_rec)
-                        rec_by_key[rec_key] = new_rec
+                        rec_by_pid[rec_key] = new_rec
                         stats["created"] += 1
                         _record_movement(
                             "new", new_rec, fixture_orm, bet_type,
@@ -683,6 +796,7 @@ async def process_scraped_fixtures(
                         )
 
                     elif existing_rec.status == "expired":
+                        existing_rec.player_id = alloc.player_id
                         # Réactive le pari (il réapparaît dans l'UI). Ne notifie
                         # que si la cote constitue un nouveau plus haut : une
                         # micro-variation autour du seuil n'est pas actionnable.
@@ -715,6 +829,7 @@ async def process_scraped_fixtures(
                             )
 
                     else:
+                        existing_rec.player_id = alloc.player_id
                         # pending or approved — update if odds/edge changed
                         if (
                             abs(market_odds - existing_rec.best_odds) > 0.001
@@ -744,23 +859,33 @@ async def process_scraped_fixtures(
                                 )
 
         # Expire pending/approved recs for players that appeared in fresh odds but are no longer EV+
-        # Build set of (player_name, bet_type) pairs present in fresh odds
-        active_player_bets: set[str] = {pname for (pname, _) in best_odds_map}
+        active_pids: set[int] = {pid for (pid, _) in best_odds_map}
         for rec in all_recs:
-            if rec.fixture_id != fixture_orm.id:
+            if rec.fixture_id != fixture_orm.id or rec.market_type == MarketType.H2H:
                 continue
             if rec.status not in ("pending", "approved"):
                 continue
-            # Clé à 4 éléments — DOIT correspondre à seen_value_keys (bug corrigé
-            # le 12/07 : la clé à 3 éléments ne matchait jamais → tout value bet
-            # stable était expiré puis ressuscité à chaque tick, ~23 notifs/cycle).
-            rec_key = (rec.fixture_id, rec.player_name, rec.market_type, getattr(rec, "bet_type", "goal"))
-            if rec_key in seen_value_keys:
+            pid = _rec_pid(rec)
+            if pid is None:
+                # Reco d'avant la tâche 8 que le résolveur ne relie à aucun
+                # joueur coté (nom ambigu ou joueur absent de l'effectif) :
+                # plus suivable, elle resterait « en attente » figée jusqu'au
+                # coup d'envoi. On l'expire dès que le match a des cotes fraîches.
+                if active_pids:
+                    rec.status = "expired"
+                    stats["expired"] += 1
                 continue
-            # Expire if player was seen in fresh odds (not value) or still present
-            if rec.player_name in active_player_bets:
-                rec.status = "expired"
-                stats["expired"] += 1
+            if pid not in active_pids:
+                continue
+            # Clé (joueur, marché, pari) — DOIT correspondre à seen_player_keys
+            # (bug du 12/07 : une clé qui ne matchait jamais expirait puis
+            # ressuscitait tout value bet stable à chaque tick).
+            rec_key = (pid, rec.market_type, getattr(rec, "bet_type", "goal"))
+            if rec_key in seen_player_keys and rec_by_pid.get(rec_key) is rec:
+                continue
+            # Plus value — ou doublon hérité d'une autre graphie bookmaker.
+            rec.status = "expired"
+            stats["expired"] += 1
 
         # --- H2H recommendations (Poisson / team xG) ---
         h2h_recs = await _generate_h2h_recs(

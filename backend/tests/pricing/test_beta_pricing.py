@@ -286,7 +286,7 @@ class TestComputeBetaAllocationsFullFlow:
 
         with patch(f"{MODULE}._load_team_players", new=AsyncMock(side_effect=fake_load_team_players)), \
              patch(f"{MODULE}.blended_rhythm", new=AsyncMock(side_effect=fake_blended_rhythm)):
-            home_beta, away_beta = await compute_beta_allocations(
+            home_beta, away_beta, _hl, _al = await compute_beta_allocations(
                 db, fixture, alpha_home, alpha_away,
                 home_match_xg=1.6, away_match_xg=1.2,
             )
@@ -309,7 +309,7 @@ class TestComputeBetaAllocationsFullFlow:
 
         with patch(f"{MODULE}._load_team_players", new=AsyncMock(side_effect=fake_load_team_players)), \
              patch(f"{MODULE}.blended_rhythm", new=AsyncMock(return_value=None)):
-            home_beta, _away_beta = await compute_beta_allocations(
+            home_beta, _away_beta, _hl, _al = await compute_beta_allocations(
                 db, fixture, [_alpha_alloc(1)], [_alpha_alloc(2)],
                 home_match_xg=1.5, away_match_xg=1.0,
                 home_pen_taker_override=2,

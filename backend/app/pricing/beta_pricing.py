@@ -38,14 +38,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.pricing.assist import ASSIST_GOAL_RATE
 from app.pricing.career_blend import blended_rhythm
 from app.pricing.team_xg import (
-    INTERNATIONAL_LEAGUES,
+    MIN_LINEUP_STARTERS,
     PlayerAllocation,
     _load_national_team_players,
     _load_team_players,
     allocate_player,
     compute_player_shares,
     detect_penalty_taker,
+    lineup_pen_taker,
+    lineup_shares,
 )
+from app.services.competitions import is_international_fixture
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +66,7 @@ async def _load_players_matching_alpha(
     club roster (_load_team_players) otherwise — identical to Alpha for the
     (much more common) club-match path.
     """
-    if fixture.league in INTERNATIONAL_LEAGUES:
+    if is_international_fixture(fixture):
         from app.models.bzzoiro import BzzEvent
 
         bzz_api_id_str = (getattr(fixture, "external_id", None) or "").removeprefix("bzz_")
@@ -117,12 +120,17 @@ def _build_beta_allocations(
     pen_id: int | None,
     budget_assists: float,
     alpha_by_id: dict[int, PlayerAllocation],
+    shares: list | None = None,
 ) -> dict[int, PlayerAllocation]:
     """Run the pure Alpha engine (compute_player_shares + allocate_player) over
     a team's beta-rate player pool, falling back to the literal Alpha
     allocation for any player without a blended rhythm.
+
+    `shares` : parts déjà calculées (compo : parts renormalisées des seuls
+    titulaires, cf. team_xg.lineup_shares) ; par défaut, l'effectif complet.
     """
-    shares = compute_player_shares(players_beta, team, lambda_team=lambda_team)
+    if shares is None:
+        shares = compute_player_shares(players_beta, team, lambda_team=lambda_team)
     out: dict[int, PlayerAllocation] = {}
     for s in shares:
         alpha_alloc = alpha_by_id.get(s.player_id)
@@ -151,8 +159,21 @@ async def compute_beta_allocations(
     away_match_xg: float,
     home_pen_taker_override: int | None = None,
     away_pen_taker_override: int | None = None,
-) -> tuple[dict[int, PlayerAllocation], dict[int, PlayerAllocation]]:
+    home_starter_ids: list[int] | set[int] | None = None,
+    away_starter_ids: list[int] | set[int] | None = None,
+    alpha_home_lineup: list[PlayerAllocation] | None = None,
+    alpha_away_lineup: list[PlayerAllocation] | None = None,
+) -> tuple[
+    dict[int, PlayerAllocation], dict[int, PlayerAllocation],
+    dict[int, PlayerAllocation], dict[int, PlayerAllocation],
+]:
     """Compute Beta (career-blended rhythm) allocations, keyed by player_id.
+
+    Rend (home, away, home_compo, away_compo). Les allocations de compo
+    reprennent la méthode de la compo Alpha (team_xg.compute_lineup_allocation) :
+    même compo par identifiant, xG de l'équipe réparti entre les seuls
+    titulaires ; repli littéral sur l'allocation de compo Alpha pour un
+    joueur sans rythme mélangé. Vides quand aucune compo n'est fournie.
 
     Reuses the exact same team_match_xg / pen-taker / p_sub / avg_sub_time
     context as Alpha (via alpha_home_allocs / alpha_away_allocs) so the two
@@ -193,4 +214,49 @@ async def compute_beta_allocations(
         away_match_xg, away_pen_id, budget_assists_away, alpha_away_by_id,
     )
 
-    return home_beta, away_beta
+    home_lineup_beta = _build_lineup_beta(
+        home_players_beta, home_ids_with_career, home_starter_ids, fixture.home_team,
+        home_match_xg, home_pen_taker_override, alpha_home_by_id, alpha_home_lineup,
+    )
+    away_lineup_beta = _build_lineup_beta(
+        away_players_beta, away_ids_with_career, away_starter_ids, fixture.away_team,
+        away_match_xg, away_pen_taker_override, alpha_away_by_id, alpha_away_lineup,
+    )
+
+    return home_beta, away_beta, home_lineup_beta, away_lineup_beta
+
+
+def _build_lineup_beta(
+    players_beta: list[dict[str, Any]],
+    ids_with_career: set[int],
+    starter_ids: list[int] | set[int] | None,
+    team: str,
+    lambda_team: float,
+    pen_override: int | None,
+    alpha_full_by_id: dict[int, PlayerAllocation],
+    alpha_lineup: list[PlayerAllocation] | None,
+) -> dict[int, PlayerAllocation]:
+    """Beta de la compo : mêmes titulaires, mêmes parts renormalisées qu'Alpha."""
+    if not starter_ids:
+        return {}
+    # Les identifiants inconnus sont déjà signalés côté Alpha (même vivier pour
+    # un match de club) : pas de second signalement ici.
+    wanted = {int(i) for i in starter_ids}
+    starters = [p for p in players_beta if p.get("player_id") in wanted]
+    if len(starters) < MIN_LINEUP_STARTERS:
+        return {}
+    pen_id = lineup_pen_taker(starters, pen_override)
+    alpha_lineup_by_id = {a.player_id: a for a in (alpha_lineup or [])}
+    # p_sub / avg_sub_time : ceux de l'allocation Alpha (compo, sinon effectif).
+    context = {**alpha_full_by_id, **alpha_lineup_by_id}
+    out = _build_beta_allocations(
+        starters, ids_with_career, team, lambda_team, pen_id,
+        lambda_team * ASSIST_GOAL_RATE, context,
+        shares=lineup_shares(starters, team, lambda_team),
+    )
+    # Repli littéral : un titulaire sans carrière reçoit la compo Alpha, pas
+    # l'allocation Alpha de l'effectif complet.
+    for pid in list(out):
+        if pid not in ids_with_career and pid not in alpha_lineup_by_id:
+            out.pop(pid)
+    return out

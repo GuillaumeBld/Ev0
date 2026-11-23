@@ -7,10 +7,14 @@ import { clsx } from 'clsx'
 import { patchRecommendation } from '@/lib/api'
 import { LineupDisplay, LineupData } from '@/components/lineups/LineupDisplay'
 import { XgSourceBadge } from './XgSourceBadge'
+import { TeamBadge } from '@/components/TeamBadge'
+import { PlayerLink } from '@/components/PlayerLink'
+import type { TeamBadgeOut } from '@/lib/api'
 
 interface Recommendation {
   id: number
   player: string
+  playerId?: number | null
   team: string
   opponent: string
   fixtureName?: string
@@ -29,6 +33,9 @@ interface Recommendation {
   lineup?: LineupData | null
   xg_source?: string | null
   is_pen_taker?: boolean
+  homeBadge?: TeamBadgeOut | null
+  awayBadge?: TeamBadgeOut | null
+  competitionName?: string | null
 }
 
 
@@ -125,7 +132,7 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
               <span className="text-[10px] text-ev-t5 font-mono">{timeStr}</span>
             </div>
             <h3 className="text-base font-semibold text-white mt-2 leading-tight flex items-center gap-1.5">
-              {rec.player}
+              <PlayerLink playerId={rec.playerId} name={rec.player} />
               {rec.is_pen_taker && (
                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 tracking-wide">
                   PEN
@@ -141,6 +148,16 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
                 </span>
               ) : null}
             </h3>
+            {(rec.homeBadge || rec.awayBadge) && (
+              <p className="flex items-center gap-1.5 mt-1">
+                <TeamBadge badge={rec.homeBadge} size={18} />
+                <span className="text-ev-t5 text-[10px]">-</span>
+                <TeamBadge badge={rec.awayBadge} size={18} />
+                {rec.competitionName && (
+                  <span className="text-[10px] text-ev-t5 ml-1">{rec.competitionName}</span>
+                )}
+              </p>
+            )}
             {rec.market === 'h2h' ? (
               <p className="text-xs text-ev-t4 mt-0.5">{rec.fixtureName}</p>
             ) : (

@@ -5,8 +5,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { LineupDisplay, LineupData } from "@/components/lineups/LineupDisplay"
 import { LineupEditor } from "@/components/lineups/LineupEditor"
+import { TeamBadge } from "@/components/TeamBadge"
+import type { MatchBadges } from "@/lib/api"
 
-type Fixture = {
+type Fixture = MatchBadges & {
   id: number
   home_team: string
   away_team: string
@@ -14,7 +16,7 @@ type Fixture = {
   league: string
 }
 
-type FixtureLineups = {
+type FixtureLineups = MatchBadges & {
   fixture_id: number
   home_team: string
   away_team: string
@@ -83,7 +85,9 @@ export default function LineupsAdminPage() {
             size="sm"
             onClick={() => loadLineups(fx)}
           >
-            {fx.home_team} vs {fx.away_team}
+            <TeamBadge badge={fx.home_badge} name={fx.home_team} size={18} />
+            <span className="mx-1">{fx.home_team} vs {fx.away_team}</span>
+            <TeamBadge badge={fx.away_badge} name={fx.away_team} size={18} />
             <span className="ml-1 text-xs opacity-70">
               {new Date(fx.kickoff_utc).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })}
             </span>
@@ -96,11 +100,15 @@ export default function LineupsAdminPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {(["home", "away"] as const).map(side => {
             const team   = side === "home" ? lineups.home_team : lineups.away_team
+            const badge  = side === "home" ? lineups.home_badge : lineups.away_badge
             const lineup = side === "home" ? lineups.home : lineups.away
             return (
               <Card key={side}>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-base">{team}</CardTitle>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <TeamBadge badge={badge} name={team} size={24} />
+                    {team}
+                  </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {lineup ? (

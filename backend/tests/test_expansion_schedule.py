@@ -309,9 +309,10 @@ async def test_job_sync_bzzoiro_events_coherence_check_scoped_to_paris_leagues()
 
     # sync_events et sync_fixture_status_from_bzz sont mockes : la SEULE
     # requete reelle executee contre la session mockee est celle du controle
-    # de coherence.
-    assert mock_session.execute.await_count == 1
-    stmt = mock_session.execute.await_args.args[0]
+    # de coherence : le calendrier source d'abord, puis la justesse des
+    # competitions (garde-fou competition_mal_rangee, meme message d'alerte).
+    assert mock_session.execute.await_count == 2
+    stmt = mock_session.execute.await_args_list[0].args[0]
     compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
 
     assert "league_api_id IN" in compiled

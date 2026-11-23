@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from app.ingestion.bzzoiro.sync_events import PART_MINIMALE_RENDUE
 from app.services.coherence_calendrier import (
     MatchAControler,
+    MatchRange,
+    competition_mal_rangee,
     controler,
     equipe_dedoublee,
     identifiants_incoherents,
@@ -274,3 +276,55 @@ def test_le_filtre_est_optionnel_et_desactive_par_defaut():
     signature = inspect.signature(list_fixtures)
     assert "clubs_only" in signature.parameters
     assert signature.parameters["clubs_only"].default.default is False
+
+
+# --- competition_mal_rangee : la competition affichee doit etre celle de la source ---
+
+def _range(identifiant, league, api_id, source):
+    return MatchRange(
+        identifiant=identifiant,
+        league=league,
+        competition_api_id=api_id,
+        competition_source=source,
+    )
+
+
+def test_competition_mal_rangee_ligne_juste_ne_signale_rien():
+    assert competition_mal_rangee([_range(1, "premier_league", 1, 1)]) == []
+
+
+def test_competition_mal_rangee_mauvais_identifiant():
+    violations = competition_mal_rangee([_range(1, "premier_league", 1, 99)])
+    assert len(violations) == 1
+    assert violations[0].regle == "competition_mal_rangee"
+    assert violations[0].identifiants == frozenset({1})
+
+
+def test_competition_mal_rangee_etiquette_incoherente():
+    violations = competition_mal_rangee([_range(2, "ligue_1", 1, 1)])
+    assert len(violations) == 1
+    assert violations[0].identifiants == frozenset({2})
+
+
+def test_competition_mal_rangee_non_renseignee():
+    violations = competition_mal_rangee([_range(3, "premier_league", None, 1)])
+    assert len(violations) == 1
+    assert "competition non renseignee" in violations[0].motif
+
+
+def test_competition_mal_rangee_resumer_cite_le_nom_de_la_competition():
+    from app.services.competitions import competition_name
+
+    source = 17
+    assert competition_name(source) == "Saudi Pro League"
+    violations = competition_mal_rangee([_range(4, "premier_league", 17, source)])
+    assert "Saudi Pro League" in resumer(violations)
+
+
+def test_competition_mal_rangee_source_introuvable():
+    """Match sans evenement source (jointure externe) ou sans league_api_id."""
+    violations = competition_mal_rangee([_range(5, "premier_league", 1, None)])
+    assert len(violations) == 1
+    assert violations[0].identifiants == frozenset({5})
+    assert "competition source introuvable" in violations[0].motif
+    assert "competition source introuvable" in resumer(violations)

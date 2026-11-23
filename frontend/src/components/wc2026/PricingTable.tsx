@@ -3,15 +3,16 @@
 import { useState } from 'react'
 import { clsx } from 'clsx'
 import { type WCPlayerPricing } from '@/lib/api'
-import { FlagImg } from '@/components/FlagImg'
+import { TeamBadge } from '@/components/TeamBadge'
+import { flagBadge } from '@/lib/flags'
 
 type Mode = 'goals' | 'assists' | 'decisive'
 type SortDir = 'asc' | 'desc'
 
 interface PricingTableProps {
+  nationFlags: Record<string, string | null>
   players: WCPlayerPricing[]
   mode: Mode
-  nationFlags: Record<string, string | null>
 }
 
 // ── Cells ────────────────────────────────────────────────────────────────────
@@ -275,7 +276,7 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
             const bkBet   = isGoals ? p.bk_top_scorer_betclic : p.bk_top_assister_betclic
             const bkPmu   = isGoals ? p.bk_top_scorer_pmu     : p.bk_top_assister_pmu
             const edgeOut = isGoals ? p.edge_top_scorer   : p.edge_top_assister
-            const flag    = nationFlags[p.nation]
+            const flag    = flagBadge(nationFlags[p.nation])
 
             // Meilleure cote parmi les 3 books pour highlight
             const bkValues = [bkUni, bkBet, bkPmu].filter((v): v is number => v !== null)
@@ -292,7 +293,7 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
                 <td className="py-1.5 px-2 font-medium text-white text-xs">{p.player_name}</td>
                 <td className="py-1.5 px-2">
                   <span className="flex items-center gap-1">
-                    <FlagImg emoji={flag} size={13} />
+                    {flag && <TeamBadge badge={flag} size={13} />}
                     <span className="text-gray-500 text-[10px]">{p.nation}</span>
                   </span>
                 </td>

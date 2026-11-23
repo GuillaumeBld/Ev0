@@ -84,6 +84,7 @@ def _fixture(fid, home="Home", away="Away", league="ligue1", kickoff=None):
         home_team=home,
         away_team=away,
         league=league,
+        competition_api_id=None,
         kickoff_utc=kickoff or datetime(2026, 8, 20, tzinfo=timezone.utc),
     )
 

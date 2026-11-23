@@ -1348,8 +1348,11 @@ async def job_sync_bzzoiro_events():
     try:
         from app.alerts import send_alert
         from app.models.bzzoiro import BzzEvent
+        from app.models.fixtures import Fixture
         from app.services.coherence_calendrier import (
             MatchAControler,
+            MatchRange,
+            competition_mal_rangee,
             controler,
             resumer,
         )
@@ -1369,6 +1372,25 @@ async def job_sync_bzzoiro_events():
                     ),
                 )
             )).all()
+            # Justesse de la competition : tous les matchs a venir issus de
+            # Bzzoiro, SANS restreindre aux competitions synchronisees (on
+            # cherche justement ceux ranges hors de leur vraie competition).
+            rangees = (await session.execute(
+                select(
+                    Fixture.id,
+                    Fixture.league,
+                    Fixture.competition_api_id,
+                    BzzEvent.league_api_id,
+                )
+                .outerjoin(
+                    BzzEvent,
+                    Fixture.external_id == func.concat("bzz_", BzzEvent.api_id),
+                )
+                .where(
+                    Fixture.kickoff_utc >= datetime.now(UTC),
+                    Fixture.external_id.like("bzz\\_%", escape="\\"),
+                )
+            )).all()
 
         violations = controler([
             MatchAControler(
@@ -1380,6 +1402,15 @@ async def job_sync_bzzoiro_events():
             )
             for api_id, league, dom, ext, quand in lignes
             if quand is not None
+        ])
+        violations = violations + competition_mal_rangee([
+            MatchRange(
+                identifiant=fid,
+                league=league,
+                competition_api_id=comp,
+                competition_source=source,
+            )
+            for fid, league, comp, source in rangees
         ])
         if violations:
             message = resumer(violations)
@@ -2644,9 +2675,9 @@ async def job_daily_health_report() -> None:
     aille bien ou mal finit par ne plus être lu — donc à ne plus alerter."""
     try:
         from app.alerts import send_alert
-        from app.ingestion.bzzoiro.sync_fixtures_from_bzz import _LEAGUE_API_ID_TO_KEY
+        from app.services.competitions import SYNCED_COMPETITION_IDS
 
-        ligues_calendrier = list(_LEAGUE_API_ID_TO_KEY)
+        ligues_calendrier = sorted(SYNCED_COMPETITION_IDS)
         async with async_session() as session:
             row = (await session.execute(text("""
                 SELECT

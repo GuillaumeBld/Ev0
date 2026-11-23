@@ -1,0 +1,45 @@
+"""La competition d'un match vient de l'Atlas (id interne Bzzoiro)."""
+from __future__ import annotations
+
+import inspect
+
+from app.ingestion.bzzoiro import sync_fixtures_from_bzz as sync_mod
+from app.services.competitions import (
+    SYNCED_COMPETITION_IDS,
+    competition_name,
+    league_key_for,
+)
+
+
+def test_etiquettes_historiques():
+    assert league_key_for(1) == "premier_league"
+    assert league_key_for(7) == "champions_league"
+    assert league_key_for(27) == "world_cup_2026"
+
+
+def test_ids_internes_pieges_ne_sont_plus_des_championnats():
+    assert league_key_for(8) == "comp_8"
+    assert league_key_for(17) == "comp_17"
+    assert league_key_for(23) == "comp_23"
+
+
+def test_noms():
+    assert competition_name(8) == "Europa League"
+    assert competition_name(17) == "Saudi Pro League"
+    assert competition_name(999999) is None
+    assert competition_name(None) is None
+
+
+def test_perimetre_de_synchro_inchange():
+    assert SYNCED_COMPETITION_IDS == {1, 3, 4, 5, 6, 7, 27, 31, 64, 65, 90}
+
+
+def test_synchro_utilise_l_atlas():
+    src = inspect.getsource(sync_mod)
+    assert "_LEAGUE_API_ID_TO_KEY" not in src
+    corps = inspect.getsource(sync_mod.sync_fixtures_from_bzz)
+    # branche "match existant" : avant le `else:` de creation
+    existant, creation = corps.split("# Create new Fixture")
+    for branche in (existant, creation):
+        assert "competition_api_id" in branche
+        assert "league_key" in branche
