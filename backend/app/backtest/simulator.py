@@ -20,6 +20,7 @@ from app.models.match_events import MatchEvent
 from app.models.player_odds_snapshot import PlayerOddsSnapshot as OddsSnapshot
 from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat
 from app.pricing.goalscorer import calculate_edge
+from app.services.competitions import competition_clause
 from app.pricing.team_xg import (
     PENS_PER_MATCH,
     POSITION_NPXG_PRIORS,
@@ -44,6 +45,7 @@ async def simulate_historical(
     league: str | None = None,
     min_date: date | None = None,
     max_date: date | None = None,
+    competition_api_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """Re-run the pricing engine on past finished fixtures.
 
@@ -57,7 +59,8 @@ async def simulate_historical(
 
     Args:
         db: Database session
-        league: Filter by league (e.g. ``"ligue_1"``)
+        league: Etiquette historique de competition (ancien filtre, toujours accepte)
+        competition_api_id: Identifiant de competition Atlas (prime sur `league`)
         min_date: Earliest fixture date to include
         max_date: Latest fixture date to include
 
@@ -68,7 +71,9 @@ async def simulate_historical(
         ``confidence``, ``outcome``
     """
     # 1. Find finished fixtures that have both odds AND match events
-    fixtures = await _load_eligible_fixtures(db, league, min_date, max_date)
+    fixtures = await _load_eligible_fixtures(
+        db, league, min_date, max_date, competition_api_id
+    )
 
     if not fixtures:
         logger.info("No eligible fixtures found for simulation")
@@ -234,6 +239,7 @@ async def simulate_historical(
                     "home_team": fixture.home_team,
                     "away_team": fixture.away_team,
                     "league": fixture.league,
+                    "competition_api_id": fixture.competition_api_id,
                 }
             )
 
@@ -286,6 +292,7 @@ async def _load_eligible_fixtures(
     league: str | None,
     min_date: date | None,
     max_date: date | None,
+    competition_api_id: int | None = None,
 ) -> list[Fixture]:
     """Load finished fixtures that have both odds snapshots and match events."""
     # Subqueries for fixtures with odds and events
@@ -300,8 +307,11 @@ async def _load_eligible_fixtures(
         .order_by(Fixture.kickoff_utc)
     )
 
-    if league:
-        stmt = stmt.where(Fixture.league == league)
+    clause = competition_clause(
+        Fixture.league, Fixture.competition_api_id, league, competition_api_id
+    )
+    if clause is not None:
+        stmt = stmt.where(clause)
     if min_date:
         stmt = stmt.where(Fixture.kickoff_utc >= datetime.combine(min_date, datetime.min.time()))
     if max_date:

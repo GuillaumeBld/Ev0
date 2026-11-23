@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import re
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -21,6 +23,7 @@ from app.db import get_db
 from app.ingestion.ps3838.anchor import _fold as _fold_anchor
 from app.models.fixtures import Fixture
 from app.models.team_xg import TeamXgEstimate
+from app.services.competitions import competition_clause, competition_name, league_key_for
 
 router = APIRouter(tags=["sanctuary"])
 
@@ -77,6 +80,8 @@ class SanctuaryMatchOut(BaseModel):
     home_team: str
     away_team: str
     league: str | None
+    competition_api_id: int | None = None
+    competition_name: str | None = None
     kickoff_utc: str
     opening: PhaseOut | None
     closing: PhaseOut | None
@@ -108,9 +113,12 @@ async def list_leagues(db: AsyncSession = Depends(get_db)) -> list[str]:
 @router.get("/sanctuary/matches", response_model=list[SanctuaryMatchOut])
 async def list_matches(
     team: str | None = Query(None, description="Nom d'equipe, les deux cotes"),
-    league: str | None = Query(None),
+    league: str | None = Query(None, description="Etiquette historique (ancien filtre)"),
     with_closing: bool = Query(False, description="Seulement les archives completes"),
     min_move: float | None = Query(None, ge=0, description="Amplitude minimale en %"),
+    competition_api_id: Annotated[
+        int | None, Query(description="Identifiant de competition Atlas (prime sur league)")
+    ] = None,
     db: AsyncSession = Depends(get_db),
 ) -> list[SanctuaryMatchOut]:
     """Matchs archives, du plus recent au plus ancien.
@@ -123,8 +131,11 @@ async def list_matches(
         .join(Fixture, Fixture.id == TeamXgEstimate.fixture_id)
         .order_by(Fixture.kickoff_utc.desc())
     )
-    if league:
-        stmt = stmt.where(Fixture.league == league)
+    clause = competition_clause(
+        Fixture.league, Fixture.competition_api_id, league, competition_api_id
+    )
+    if clause is not None:
+        stmt = stmt.where(clause)
 
     rows = (await db.execute(stmt)).all()
 
@@ -156,9 +167,46 @@ async def list_matches(
             home_team=fx.home_team,
             away_team=fx.away_team,
             league=fx.league,
+            competition_api_id=fx.competition_api_id,
+            competition_name=competition_name(fx.competition_api_id),
             kickoff_utc=fx.kickoff_utc.isoformat(),
             opening=_phase(ouv) if ouv else None,
             closing=_phase(clo) if clo else None,
             max_move_pct=move,
         ))
     return sortie
+
+
+class SanctuaryCompetitionOut(BaseModel):
+    competition_api_id: int | None
+    competition_name: str | None
+    league: str  # ancien champ : etiquette historique, conserve
+
+
+@router.get("/sanctuary/competitions", response_model=list[SanctuaryCompetitionOut])
+async def list_competitions(
+    db: AsyncSession = Depends(get_db),
+) -> list[SanctuaryCompetitionOut]:
+    """Competitions reellement presentes dans la bibliotheque (id Atlas + nom).
+
+    Meme perimetre que `/sanctuary/leagues`, regroupe par competition ; l'ancienne
+    etiquette reste fournie pour les clients qui filtrent encore par `league`.
+    """
+    rows = (await db.execute(
+        select(Fixture.competition_api_id, Fixture.league)
+        .join(TeamXgEstimate, TeamXgEstimate.fixture_id == Fixture.id)
+        .where(Fixture.league.isnot(None))
+        .distinct()
+        .order_by(Fixture.league)
+    )).all()
+    sortie: dict[int | str, SanctuaryCompetitionOut] = {}
+    for cid, league in rows:
+        if not league:
+            continue
+        cle = cid if cid is not None else league
+        sortie.setdefault(cle, SanctuaryCompetitionOut(
+            competition_api_id=cid,
+            competition_name=competition_name(cid),
+            league=league_key_for(cid) if cid is not None else league,
+        ))
+    return list(sortie.values())

@@ -38,7 +38,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.pricing.assist import ASSIST_GOAL_RATE
 from app.pricing.career_blend import blended_rhythm
 from app.pricing.team_xg import (
-    INTERNATIONAL_LEAGUES,
     PlayerAllocation,
     _load_national_team_players,
     _load_team_players,
@@ -46,6 +45,7 @@ from app.pricing.team_xg import (
     compute_player_shares,
     detect_penalty_taker,
 )
+from app.services.competitions import is_international
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ async def _load_players_matching_alpha(
     club roster (_load_team_players) otherwise — identical to Alpha for the
     (much more common) club-match path.
     """
-    if fixture.league in INTERNATIONAL_LEAGUES:
+    if is_international(fixture.competition_api_id):
         from app.models.bzzoiro import BzzEvent
 
         bzz_api_id_str = (getattr(fixture, "external_id", None) or "").removeprefix("bzz_")

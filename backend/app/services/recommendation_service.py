@@ -561,6 +561,8 @@ async def process_scraped_fixtures(
             "player": rec.player_name,
             "fixture": f"{fixture_orm.home_team} vs {fixture_orm.away_team}",
             "kickoff": fixture_orm.kickoff_utc.strftime("%H:%M"),
+            "competition_api_id": fixture_orm.competition_api_id,
+            "league": fixture_orm.league,
             "bet_type": bet_type,
             "odds": market_odds,
             "previous_odds": previous_odds,

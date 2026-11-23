@@ -6,15 +6,22 @@ from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._badges import MatchBadges, badge_fields_for_fixtures
 from app.db import get_db
-from app.ingestion.bzzoiro.constants import INTERNATIONAL_LEAGUE_INTERNAL_IDS
 from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
 from app.models.player_odds_snapshot import PlayerOddsSnapshot
+from app.services.competitions import (
+    DEFAULT_MANUAL_COMPETITION_API_ID,
+    SELECTION_COMPETITION_IDS,
+    UEFA_SUPER_CUP_COMPETITION_API_ID,
+    competition_clause,
+    competition_id_for_league,
+    league_key_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,14 +33,14 @@ logger = logging.getLogger(__name__)
 # les premiers echappent au pricing ; la Supercoupe se price comme n'importe
 # quel match de clubs.
 COMPETITIONS_DE_CLUBS_HORS_CHAMPIONNAT: frozenset[str] = frozenset({
-    "uefa_super_cup",
+    league_key_for(UEFA_SUPER_CUP_COMPETITION_API_ID),
 })
 
 # Cles de competition portees par `fixtures.league` qui opposent des selections
 # nationales. Derivees du referentiel d'ingestion plutot que recopiees : une
 # competition de selections ajoutee la-bas est automatiquement exclue ici.
-COMPETITIONS_DE_SELECTIONS: frozenset[str] = (
-    frozenset(INTERNATIONAL_LEAGUE_INTERNAL_IDS) - COMPETITIONS_DE_CLUBS_HORS_CHAMPIONNAT
+COMPETITIONS_DE_SELECTIONS: frozenset[str] = frozenset(
+    league_key_for(cid) for cid in SELECTION_COMPETITION_IDS
 )
 
 router = APIRouter()
@@ -86,7 +93,8 @@ class FixtureCreate(BaseModel):
     time: str
     home_team: str
     away_team: str
-    league: str = "ligue_1"
+    league: str | None = None
+    competition_api_id: int | None = None
     season: str = "2024-25"
 
 
@@ -108,7 +116,10 @@ def _apply_upcoming_only_filter(stmt, upcoming_only: bool):
 @router.get("/fixtures", response_model=FixturesResponse)
 async def list_fixtures(
     db: AsyncSession = Depends(get_db),
-    league: str | None = Query(None),
+    league: str | None = Query(None, description="Etiquette historique (ancien filtre)"),
+    competition_api_id: int | None = Query(
+        None, description="Identifiant de competition Atlas (prime sur league)"
+    ),
     status: str | None = Query(None),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
@@ -163,8 +174,11 @@ async def list_fixtures(
         .limit(limit)
     )
 
-    if league:
-        stmt = stmt.where(Fixture.league == league)
+    clause = competition_clause(
+        Fixture.league, Fixture.competition_api_id, league, competition_api_id
+    )
+    if clause is not None:
+        stmt = stmt.where(clause)
     if status:
         # Map frontend filter values to DB status
         status_map = {"upcoming": "scheduled", "finished": "finished", "live": "live"}
@@ -186,7 +200,12 @@ async def list_fixtures(
     # peut rien produire. Le 07/09/2026, 178 matchs de Ligue des Nations et
     # d'amicaux noyaient les 109 vrais matchs de championnat.
     if clubs_only:
-        stmt = stmt.where(Fixture.league.notin_(COMPETITIONS_DE_SELECTIONS))
+        stmt = stmt.where(
+            or_(
+                Fixture.competition_api_id.is_(None),
+                Fixture.competition_api_id.notin_(SELECTION_COMPETITION_IDS),
+            )
+        )
 
     # Exclure les fixtures dont un nom d'équipe est un placeholder
     # Patterns : W83, L101, 1A, 2B, R32 TBD 7, R16 TBD 1, QF TBD…
@@ -260,11 +279,21 @@ async def create_fixture(
 ):
     """Create a fixture manually."""
     kickoff = datetime.fromisoformat(f"{body.date}T{body.time}:00+00:00")
+    cid = body.competition_api_id
+    if cid is None:
+        cid = (
+            competition_id_for_league(body.league)
+            if body.league
+            else DEFAULT_MANUAL_COMPETITION_API_ID
+        )
+    # Etiquette libre non reconnue : conservee telle quelle, sans competition Atlas.
+    league_label = league_key_for(cid) if cid is not None else body.league
     external_id = f"manual_{uuid.uuid4().hex[:12]}"
 
     fixture = Fixture(
         external_id=external_id,
-        league=body.league,
+        league=league_label,
+        competition_api_id=cid,
         season=body.season,
         home_team=body.home_team,
         away_team=body.away_team,

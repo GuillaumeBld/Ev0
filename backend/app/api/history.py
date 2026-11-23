@@ -12,6 +12,7 @@ from app.db import get_db
 from app.ingestion.auto_settle import settle_approved_recommendations
 from app.models.bankroll import BankrollEntry
 from app.models.fixtures import Fixture
+from app.services.competitions import competition_name, league_key_for
 from app.models.recommendations import Recommendation
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,8 @@ class StatsResponse(BaseModel):
 
 class BreakdownItem(BaseModel):
     label: str
+    competition_api_id: int | None = None
+    competition_name: str | None = None
     bets: int
     wins: int
     losses: int
@@ -291,7 +294,8 @@ async def get_stats_breakdown(
     """Performance breakdown by market type, league, and P&L trend."""
     # Fetch all settled recommendations with fixture info
     result = await db.execute(
-        select(Recommendation, Fixture.home_team, Fixture.away_team, Fixture.league)
+        select(Recommendation, Fixture.home_team, Fixture.away_team, Fixture.league,
+               Fixture.competition_api_id)
         .join(Fixture, Recommendation.fixture_id == Fixture.id)
         .where(Recommendation.result.in_(["won", "lost"]))
         .order_by(Recommendation.settled_utc.asc())
@@ -318,7 +322,7 @@ async def get_stats_breakdown(
     pnl_trend: list[PnlPoint] = []
     cumulative = 0.0
 
-    for rec, _home, _away, league in rows:
+    for rec, _home, _away, league, comp_id in rows:
         pnl = rec.pnl or 0.0
         is_win = rec.result == "won"
         stake = stake_map.get(rec.id, 10.0)
@@ -333,9 +337,9 @@ async def get_stats_breakdown(
         market_buckets[mt]["staked"] += stake
 
         # League breakdown
-        lg = league or "unknown"
+        lg = league_key_for(comp_id) if comp_id is not None else (league or "unknown")
         if lg not in league_buckets:
-            league_buckets[lg] = {"bets": 0, "wins": 0, "losses": 0, "pnl": 0.0, "staked": 0.0}
+            league_buckets[lg] = {"competition_api_id": comp_id, "bets": 0, "wins": 0, "losses": 0, "pnl": 0.0, "staked": 0.0}
         league_buckets[lg]["bets"] += 1
         league_buckets[lg]["wins" if is_win else "losses"] += 1
         league_buckets[lg]["pnl"] += pnl
@@ -359,6 +363,8 @@ async def get_stats_breakdown(
             items.append(
                 BreakdownItem(
                     label=label,
+                    competition_api_id=b.get("competition_api_id"),
+                    competition_name=competition_name(b.get("competition_api_id")),
                     bets=b["bets"],
                     wins=b["wins"],
                     losses=b["losses"],

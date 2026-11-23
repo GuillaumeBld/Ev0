@@ -11,7 +11,7 @@ from app.ingestion.bzzoiro.constants import (
     INTERNATIONAL_LEAGUE_INTERNAL_IDS,
     TARGET_LEAGUE_INTERNAL_IDS,
 )
-from app.ingestion.bzzoiro.league_registry import LEAGUE_REGISTRY
+from app.ingestion.bzzoiro.league_registry import KIND_SELECTION, LEAGUE_REGISTRY
 
 # id interne -> etiquette historique (6 championnats + internationales).
 _ETIQUETTE_HISTORIQUE: dict[int, str] = {
@@ -35,3 +35,68 @@ def competition_name(competition_api_id: int | None) -> str | None:
         return None
     meta = LEAGUE_REGISTRY.get(competition_api_id)
     return meta.name if meta else None
+
+
+# ── Raisonnement par competition (et non par etiquette) ───────────────────────
+
+WC2026_COMPETITION_API_ID: int = INTERNATIONAL_LEAGUE_INTERNAL_IDS["world_cup_2026"]
+UEFA_SUPER_CUP_COMPETITION_API_ID: int = INTERNATIONAL_LEAGUE_INTERNAL_IDS["uefa_super_cup"]
+
+# Competitions de selections nationales. La Supercoupe d'UEFA, rangee parmi les
+# internationales cote ingestion, oppose deux clubs : elle se price comme un
+# match de clubs. Les competitions de selections de l'Atlas (qualifs, coupes
+# continentales) en font partie.
+SELECTION_COMPETITION_IDS: frozenset[int] = (
+    frozenset(INTERNATIONAL_LEAGUE_INTERNAL_IDS.values())
+    - {UEFA_SUPER_CUP_COMPETITION_API_ID}
+) | frozenset(
+    cid for cid, meta in LEAGUE_REGISTRY.items() if meta.kind == KIND_SELECTION
+)
+
+
+def is_international(competition_api_id: int | None) -> bool:
+    """Le match oppose-t-il deux selections nationales ?"""
+    return competition_api_id in SELECTION_COMPETITION_IDS
+
+
+def is_wc2026(competition_api_id: int | None) -> bool:
+    return competition_api_id == WC2026_COMPETITION_API_ID
+
+
+# Competition proposee par defaut a la creation manuelle d'un match.
+DEFAULT_MANUAL_COMPETITION_API_ID: int = TARGET_LEAGUE_INTERNAL_IDS["ligue_1"]
+
+_ID_DEPUIS_ETIQUETTE: dict[str, int] = {v: k for k, v in _ETIQUETTE_HISTORIQUE.items()}
+
+
+def competition_id_for_league(league: str | None) -> int | None:
+    """Reciproque de `league_key_for` ; None si l'etiquette est inconnue."""
+    if not league:
+        return None
+    if league in _ID_DEPUIS_ETIQUETTE:
+        return _ID_DEPUIS_ETIQUETTE[league]
+    if league.startswith("comp_") and league[5:].isdigit():
+        return int(league[5:])
+    return None
+
+
+def competition_clause(league_col, competition_col, league: str | None,
+                       competition_api_id: int | None):
+    """Clause SQL de filtre par competition, None si aucun filtre demande.
+
+    `competition_api_id` prime ; l'etiquette (ancien parametre) reste acceptee
+    et est traduite en identifiant. Un match sans identifiant garde le repli
+    sur son etiquette, pour ne pas perdre les lignes anterieures.
+    """
+    from sqlalchemy import and_, or_
+
+    cid = competition_api_id
+    if cid is None:
+        cid = competition_id_for_league(league)
+        if cid is None:
+            return league_col == league if league else None
+        return or_(
+            competition_col == cid,
+            and_(competition_col.is_(None), league_col == league),
+        )
+    return competition_col == cid

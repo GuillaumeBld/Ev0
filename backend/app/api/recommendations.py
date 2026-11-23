@@ -19,6 +19,7 @@ from app.models.bzzoiro import BzzPlayer
 from app.models.fixtures import Fixture as FixtureModel
 from app.models.recommendations import Recommendation as RecommendationModel
 from app.rate_limit import limiter
+from app.services.competitions import competition_clause, league_key_for
 from app.services.recommendation_service import get_recommendations_for_date
 from app.strategy.selector import RecommendationFilter
 
@@ -160,7 +161,8 @@ async def get_recommendations(
     db: Annotated[AsyncSession, Depends(get_db)],
     target_date: Annotated[date | None, Query(description="Date for recommendations (default: today)")] = None,
     market_type: Annotated[MarketType | None, Query(description="Filter by market type")] = None,
-    league: Annotated[str | None, Query(description="Filter by league (ligue_1, premier_league)")] = None,
+    league: Annotated[str | None, Query(description="Etiquette historique de competition (ancien filtre)")] = None,
+    competition_api_id: Annotated[int | None, Query(description="Identifiant de competition Atlas (prime sur league)")] = None,
     min_edge: Annotated[float, Query(description="Minimum edge threshold")] = 0.05,
     status_filter: Annotated[str | None, Query(description="Filter by status: pending, approved, rejected, all")] = None,
     page: Annotated[int, Query(ge=1, description="Page number (view-all only)")] = 1,
@@ -185,8 +187,11 @@ async def get_recommendations(
             filters.append(kickoff_clause)
         if market_type:
             filters.append(RecommendationModel.market_type == market_type.value)
-        if league:
-            filters.append(FixtureModel.league == league)
+        clause = competition_clause(
+            FixtureModel.league, FixtureModel.competition_api_id, league, competition_api_id
+        )
+        if clause is not None:
+            filters.append(clause)
         if min_edge > 0:
             filters.append(RecommendationModel.edge >= min_edge)
 
@@ -262,8 +267,11 @@ async def get_recommendations(
         filter_config = RecommendationFilter(min_edge=min_edge)
         if market_type:
             filter_config.markets = [market_type.value]
-        if league:
-            filter_config.leagues = [league]
+        effective_league = (
+            league_key_for(competition_api_id) if competition_api_id is not None else league
+        )
+        if effective_league:
+            filter_config.leagues = [effective_league]
         raw_recs, _ = await get_recommendations_for_date(dt, db, filter_config)
     except Exception as exc:
         logger.error("Failed to generate recommendations: %s", exc, exc_info=True)

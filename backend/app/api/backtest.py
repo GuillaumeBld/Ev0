@@ -244,6 +244,7 @@ async def run_backtest(
 
 class SimulateConfig(BaseModel):
     league: str | None = None
+    competition_api_id: int | None = None
     min_date: date | None = None
     max_date: date | None = None
     min_edge: float = 0.05
@@ -275,6 +276,7 @@ async def run_simulated_backtest(
     records = await simulate_historical(
         db,
         league=config.league,
+        competition_api_id=config.competition_api_id,
         min_date=config.min_date,
         max_date=config.max_date,
     )

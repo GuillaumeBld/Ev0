@@ -35,6 +35,13 @@ from app.pricing.goalscorer import (
     calculate_finishing_multiplier,
     calculate_supersub_prob,
 )
+from app.services.competitions import (
+    SELECTION_COMPETITION_IDS,
+    WC2026_COMPETITION_API_ID,
+    is_international,
+    is_wc2026,
+    league_key_for,
+)
 from app.services.market_xg import MarketXgResult, MarketXgService
 
 # ── Constants ─────────────────────────────────────────────────────
@@ -74,15 +81,15 @@ POSITION_XA_PRIORS: dict[str, float] = {
     "FW": 0.10, "MF": 0.15, "DF": 0.03,
 }
 
-INTERNATIONAL_LEAGUES: frozenset[str] = frozenset({
-    "world_cup_2026",
-    "friendly_international",
-    "nations_league_uefa",
-    "nations_league_concacaf",
-})
+# Etiquettes historiques des competitions de selections, derivees des identifiants
+# Atlas (compatibilite). Le code compare `fixture.competition_api_id` via
+# `is_international`, jamais ces etiquettes.
+INTERNATIONAL_LEAGUES: frozenset[str] = frozenset(
+    league_key_for(cid) for cid in SELECTION_COMPETITION_IDS
+)
 
 # CDM tournament stats blend (WC2026 — integrates in-tournament match-by-match data)
-WC2026_LEAGUE_API_ID: int = 27
+WC2026_LEAGUE_API_ID: int = WC2026_COMPETITION_API_ID
 _TOURNAMENT_CLUB_WEIGHT: float = 0.40    # club season stats weight
 _TOURNAMENT_CDM_WEIGHT: float = 0.60     # CDM in-tournament stats weight
 _TOURNAMENT_GOALS_XG_ALPHA: float = 0.60 # goal-rate vs xG blend within CDM stats
@@ -1436,7 +1443,7 @@ async def load_match_pricing(
     home_players_for_lineup: list[dict[str, Any]] | None = None
     away_players_for_lineup: list[dict[str, Any]] | None = None
 
-    if fixture.league in INTERNATIONAL_LEAGUES:
+    if is_international(fixture.competition_api_id):
         from app.models.bzzoiro import BzzEvent
         bzz_api_id_str = (fixture.external_id or "").removeprefix("bzz_")
         bzz_event = None
@@ -1453,7 +1460,7 @@ async def load_match_pricing(
             away_players_db = await _load_national_team_players(
                 db, national_team_api_id=bzz_event.away_team_api_id
             )
-            if fixture.league == "world_cup_2026":
+            if is_wc2026(fixture.competition_api_id):
                 all_ids = [p["player_id"] for p in home_players_db + away_players_db]
                 # Filtrer au groupe effectif : seuls les joueurs ayant joué au tournoi.
                 squad_ids = await _get_tournament_player_ids(db, all_ids, WC2026_LEAGUE_API_ID)
@@ -1604,7 +1611,7 @@ async def load_match_pricing(
     # For players with ≥ _WC_DIRECT_LAMBDA_MIN_MINUTES in the tournament, blend the
     # top-down lambda with a direct CDM signal (goals/90 × mins_ratio).
     # This bypasses the team-xG ceiling that structurally limits top-down lambdas.
-    if fixture.league == "world_cup_2026" and t_stats:
+    if is_wc2026(fixture.competition_api_id) and t_stats:
         for alloc in home_allocs + away_allocs:
             ts_d = t_stats.get(alloc.player_id)
             if ts_d is None:

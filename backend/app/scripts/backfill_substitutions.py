@@ -14,7 +14,7 @@ alphabétique des clés, celui effectivement utilisé par --league via
 sorted(TARGET_LEAGUE_API_IDS) ; hypothèse de priorisation non validée — cf.
 rapport spike).
 
-Usage : cd backend && python -m app.scripts.backfill_substitutions --league premier_league --limit 300
+Usage : cd backend && python -m app.scripts.backfill_substitutions --league <clé historique> --limit 300
 
 Le lien vers Bzzoiro se fait via Fixture.external_id = "bzz_{api_id}" — il n'existe
 PAS de colonne BzzEvent.fixture_id dans le schéma (cf. app/models/bzzoiro.py) ; ce
@@ -36,6 +36,7 @@ from app.ingestion.bzzoiro.constants import TARGET_LEAGUE_API_IDS
 from app.ingestion.bzzoiro.sync_incidents import _parse_incidents, _store_events
 from app.models.fixtures import Fixture
 from app.models.match_events import MatchEvent
+from app.services.competitions import competition_clause
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +57,8 @@ def _fixtures_sans_subs_query(league_key: str | None, limit: int):
     """Fixtures terminées 2025-26 ayant des buts mais aucune substitution.
 
     Jointure via Fixture.external_id LIKE 'bzz\\_%' (pas de BzzEvent.fixture_id,
-    ce champ n'existe pas). Le filtre ligue se fait sur Fixture.league (la clé
-    string type "premier_league", cf. sync_fixtures_from_bzz.py), pas sur un
-    league_api_id numérique.
+    ce champ n'existe pas). Le filtre ligue se fait sur Fixture.competition_api_id (identifiant Atlas
+    dérivé de la clé historique, cf. sync_fixtures_from_bzz.py).
 
     Exclut les fixtures ayant déjà une substitution OU la sentinelle
     subs_unavailable (incidents sans subs / 404 : inutile de re-fetch).
@@ -93,7 +93,9 @@ def _fixtures_sans_subs_query(league_key: str | None, limit: int):
         .limit(limit)
     )
     if league_key is not None:
-        query = query.where(Fixture.league == league_key)
+        query = query.where(
+            competition_clause(Fixture.league, Fixture.competition_api_id, league_key, None)
+        )
     return query
 
 

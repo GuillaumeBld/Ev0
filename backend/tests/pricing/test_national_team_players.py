@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.competitions import competition_id_for_league
 from app.models.bzzoiro import BzzPlayerSeasonStat
 
 _STAT_COLS = [c.key for c in BzzPlayerSeasonStat.__table__.columns]
@@ -211,6 +212,7 @@ class TestInternationalFixtureDetection:
         f = MagicMock()
         f.id = 1110181
         f.league = league
+        f.competition_api_id = competition_id_for_league(league)
         f.external_id = external_id
         f.home_team = home_team
         f.away_team = away_team
