@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import type { PlayerAllocationOut, TeamBadgeOut } from '@/lib/api'
 import { TeamBadge } from '@/components/TeamBadge'
 import { PlayerLink } from '@/components/PlayerLink'
@@ -8,6 +9,8 @@ import { useCrestColor } from './useCrestColor'
 import s from './calculateur.module.css'
 
 export type TeamMode = 'squad' | 'xi'
+type SortCol = 'alpha' | 'beta' | 'betclic' | 'unibet' | 'pmu'
+type SortKey = 'name' | `${Market}-${SortCol}`
 
 const cx = (...names: (string | false | null | undefined)[]) =>
   names
@@ -27,6 +30,8 @@ export function TeamOddsTable({
   onToggleStarter,
   note,
   bookOdds,
+  penTakerId,
+  onPenTaker,
 }: {
   name: string
   badge: TeamBadgeOut | null | undefined
@@ -42,16 +47,43 @@ export function TeamOddsTable({
   /** Ligne courte sous l'en-tête en mode Compo (signalements de l'API inclus). */
   note: string | null
   bookOdds: BookOddsByPlayer
+  /** Tireur de penalty choisi à la main (null = détection automatique). */
+  penTakerId: number | null
+  onPenTaker: (playerId: number) => void
 }) {
   const [r, g, b] = useCrestColor(badge)
   const isXi = mode === 'xi'
-  const byAlphaGoal = (a: PlayerAllocationOut, c: PlayerAllocationOut) =>
-    (ev0Odds(a, 'goal').alpha ?? Infinity) - (ev0Odds(c, 'goal').alpha ?? Infinity)
+  // Tri : colonne active et sens ; par défaut cote Alpha buteur croissante. « — » toujours en bas.
+  const [sortKey, setSortKey] = useState<SortKey>('goal-alpha')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+  const clickSort = (k: SortKey) => {
+    if (k === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    else {
+      setSortKey(k)
+      setSortDir('asc')
+    }
+  }
+  const value = (p: PlayerAllocationOut, priced: boolean): string | number | null => {
+    if (sortKey === 'name') return p.player_name
+    const [market, col] = sortKey.split('-') as [Market, SortCol]
+    if (col === 'alpha' || col === 'beta') return priced ? ev0Odds(p, market)[col] : null
+    return bookOdds.get(p.player_id)?.[market]?.[col] ?? null
+  }
+  const sortRows = <T,>(rows: T[], get: (r: T) => [PlayerAllocationOut, boolean]): T[] => {
+    const sign = sortDir === 'asc' ? 1 : -1
+    return [...rows].sort((a, c) => {
+      const va = value(...get(a))
+      const vc = value(...get(c))
+      if (va == null || vc == null) return va == null && vc == null ? 0 : va == null ? 1 : -1
+      if (typeof va === 'string' || typeof vc === 'string') return sign * String(va).localeCompare(String(vc), 'fr')
+      return sign * (va - vc)
+    })
+  }
 
   let starters: { p: PlayerAllocationOut; priced: boolean }[] = []
   let bench: PlayerAllocationOut[] = []
   if (!isXi) {
-    starters = [...squad].sort(byAlphaGoal).map((p) => ({ p, priced: true }))
+    starters = squad.map((p) => ({ p, priced: true }))
   } else {
     const chosen = new Set(starterIds)
     const lineupById = new Map((lineup ?? []).map((p) => [p.player_id, p]))
@@ -61,9 +93,21 @@ export function TeamOddsTable({
         const lp = lineupById.get(p.player_id)
         return lp ? { p: lp, priced: true } : { p, priced: false }
       })
-      .sort((a, c) => (a.priced === c.priced ? byAlphaGoal(a.p, c.p) : a.priced ? -1 : 1))
-    bench = squad.filter((p) => !chosen.has(p.player_id)).sort(byAlphaGoal)
+    bench = squad.filter((p) => !chosen.has(p.player_id))
   }
+  starters = sortRows(starters, (r) => [r.p, r.priced])
+  bench = sortRows(bench, (p) => [p, false])
+
+  const isTaker = (p: PlayerAllocationOut) => (penTakerId != null ? p.player_id === penTakerId : p.is_pen_taker)
+
+  const sortTh = (k: SortKey, label: string, classes: (string | false)[]) => (
+    <th key={k} className={cx(...classes)} aria-sort={sortKey === k ? (sortDir === 'asc' ? 'ascending' : 'descending') : undefined}>
+      <button className={s.sortBtn} onClick={() => clickSort(k)}>
+        {label}
+        {sortKey === k && <span className={s.sortArrow}>{sortDir === 'asc' ? '▲' : '▼'}</span>}
+      </button>
+    </th>
+  )
 
   const cells = (p: PlayerAllocationOut, market: Market, priced: boolean) => {
     const { alpha, beta } = priced ? ev0Odds(p, market) : { alpha: null, beta: null }
@@ -135,13 +179,13 @@ export function TeamOddsTable({
               </th>
             </tr>
             <tr>
-              <th className={s.l}>Joueur</th>
+              {sortTh('name', 'Joueur', ['l'])}
               {(['goal', 'assist'] as const).map((m) => [
-                <th key={`${m}-a`} className={cx('s', 'al')}>Alpha</th>,
-                <th key={`${m}-b`} className={cx('be')}>Beta</th>,
-                <th key={`${m}-1`} className={cx('s', 'bk')}>Betclic</th>,
-                <th key={`${m}-2`} className={cx('bk')}>Unibet</th>,
-                <th key={`${m}-3`} className={cx('bk')}>PMU</th>,
+                sortTh(`${m}-alpha`, 'Alpha', ['s', 'al']),
+                sortTh(`${m}-beta`, 'Beta', ['be']),
+                sortTh(`${m}-betclic`, 'Betclic', ['s', 'bk']),
+                sortTh(`${m}-unibet`, 'Unibet', ['bk']),
+                sortTh(`${m}-pmu`, 'PMU', ['bk']),
               ])}
             </tr>
           </thead>
@@ -165,6 +209,14 @@ export function TeamOddsTable({
                     />
                   )}
                   <PlayerLink playerId={p.player_id} name={p.player_name} className={s.plink} />
+                  <button
+                    className={cx('pen', isTaker(p) && 'penOn')}
+                    onClick={() => onPenTaker(p.player_id)}
+                    aria-pressed={isTaker(p)}
+                    title={isTaker(p) ? 'Tireur de penalty' : 'Désigner tireur de penalty'}
+                  >
+                    pen.
+                  </button>
                 </td>
                 {cells(p, 'goal', priced)}
                 {cells(p, 'assist', priced)}

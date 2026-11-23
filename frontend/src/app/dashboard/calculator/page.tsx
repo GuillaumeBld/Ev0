@@ -8,6 +8,7 @@ import {
   getFixtures,
   getPenTakers,
   priceMatch,
+  setPenTakers,
   type FixtureOut,
   type FixtureTeamLineup,
   type MatchPriceResponse,
@@ -24,6 +25,19 @@ type PerSide<T> = Record<Side, T>
 const MIN_STARTERS = 5
 
 const isPlaceholder = (t: string) => /^[WL]\d+|TBD/i.test(t)
+
+/** Âge des cotes du marché, comme l'ancien bandeau de fraîcheur (« il y a 12 min », « il y a 2h05 »). */
+function fmtAge(iso: string): string {
+  const mins = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000))
+  if (mins < 60) return `il y a ${mins} min`
+  const h = Math.floor(mins / 60)
+  const rem = mins % 60
+  return rem > 0 ? `il y a ${h}h${String(rem).padStart(2, '0')}` : `il y a ${h}h`
+}
+
+/** Pas et plancher de l'ajustement manuel du xG. */
+const XG_STEP = 0.1
+const XG_MIN = 0.1
 
 /** Signalement API sans le préfixe technique « team=X: ». */
 const cleanWarning = (w: string) => w.replace(/^team=[^:]*:\s*/, '')
@@ -69,6 +83,9 @@ function CalculatorInner() {
   const [pricing, setPricing] = useState<MatchPriceResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // xG ajusté à la main (null = xG du marché) et cotes du marché trop anciennes (503 du calcul).
+  const [xgOv, setXgOv] = useState<PerSide<number | null>>({ home: null, away: null })
+  const [staleSince, setStaleSince] = useState<string | null>(null)
   const reqSeq = useRef(0)
   const selectedIdRef = useRef(selectedId)
   selectedIdRef.current = selectedId
@@ -119,6 +136,8 @@ function CalculatorInner() {
     setMode({ home: 'squad', away: 'squad' })
     setStarters({ home: [], away: [] })
     setPens({ home: null, away: null })
+    setXgOv({ home: null, away: null })
+    setStaleSince(null)
     if (selectedId == null) return
     let cancelled = false
     Promise.allSettled([getFixtureLineups(selectedId), getPenTakers(selectedId), getFixturePlayerOdds(selectedId)]).then(
@@ -158,6 +177,8 @@ function CalculatorInner() {
       setLoading(true)
       priceMatch({
         fixture_id: selectedId,
+        home_xg_override: xgOv.home,
+        away_xg_override: xgOv.away,
         home_pen_taker_override: pens.home,
         away_pen_taker_override: pens.away,
         home_starter_ids: homeKey ? homeKey.split(',').map(Number) : null,
@@ -167,10 +188,24 @@ function CalculatorInner() {
           if (seq !== reqSeq.current || res.fixture_id !== selectedId) return
           setPricing(res)
           setError(null)
+          setStaleSince(null)
         })
         .catch((e: any) => {
           if (seq !== reqSeq.current) return
           const detail = e?.response?.data?.detail
+          if (e?.response?.status === 503) {
+            // Même règle que l'ancienne page : 503 = pas de cotes du marché assez récentes
+            // pour en tirer le xG (MarketXgService.MAX_SNAPSHOT_AGE) ; plus de calcul affiché.
+            setPricing(null)
+            if (detail?.last_scraped_at) {
+              setStaleSince(detail.last_scraped_at)
+              setError(null)
+            } else {
+              setStaleSince(null)
+              setError('Pas de cotes du marché pour ce match.')
+            }
+            return
+          }
           setError(
             typeof detail === 'string'
               ? detail
@@ -182,7 +217,25 @@ function CalculatorInner() {
         })
     }, 250)
     return () => clearTimeout(t)
-  }, [ready, selectedId, pens.home, pens.away, homeKey, awayKey])
+  }, [ready, selectedId, pens.home, pens.away, homeKey, awayKey, xgOv.home, xgOv.away])
+
+  // Tireur de penalty : un par équipe ; re-cliquer le tireur choisi revient à la détection automatique.
+  const choosePen = (side: Side) => (playerId: number) => {
+    if (selectedId == null) return
+    const next = { ...pens, [side]: pens[side] === playerId ? null : playerId }
+    setPens(next)
+    setPenTakers(selectedId, next.home, next.away).catch(() =>
+      setError('Tireur de penalty non enregistré (erreur) : appliqué à ce calcul seulement.'),
+    )
+  }
+
+  const bumpXg = (side: Side, delta: number) => {
+    if (!pricing) return
+    const base = xgOv[side] ?? (side === 'home' ? pricing.home_match_xg : pricing.away_match_xg)
+    const next = Math.max(XG_MIN, Math.round((base + delta) * 100) / 100)
+    setXgOv((cur) => ({ ...cur, [side]: next }))
+  }
+  const adjusted = xgOv.home != null || xgOv.away != null
 
   const pick = useCallback(
     (f: FixtureOut) => {
@@ -246,9 +299,37 @@ function CalculatorInner() {
                 </div>
                 {pricing && (
                   <div className={s.faint} style={{ fontSize: 14, marginTop: 6 }}>
-                    xG du match : {homeName} <b style={{ color: '#e6edf3' }}>{fmtXg(pricing.home_match_xg)}</b> · {awayName}{' '}
-                    <b style={{ color: '#e6edf3' }}>{fmtXg(pricing.away_match_xg)}</b>
-                    {scrapedAt && ` — cotes du marché à ${scrapedAt}`}
+                    xG du match :{' '}
+                    {sides.map((side, i) => (
+                      <span key={side}>
+                        {i > 0 && ' · '}
+                        {side === 'home' ? homeName : awayName}{' '}
+                        <button className={s.xgBtn} onClick={() => bumpXg(side, -XG_STEP)} aria-label={`Baisser le xG de ${side === 'home' ? homeName : awayName}`}>
+                          −
+                        </button>
+                        <b style={{ color: '#e6edf3' }}>
+                          {fmtXg(xgOv[side] ?? (side === 'home' ? pricing.home_match_xg : pricing.away_match_xg))}
+                        </b>
+                        <button className={s.xgBtn} onClick={() => bumpXg(side, XG_STEP)} aria-label={`Monter le xG de ${side === 'home' ? homeName : awayName}`}>
+                          +
+                        </button>
+                      </span>
+                    ))}
+                    {adjusted ? (
+                      <>
+                        {' — ajusté à la main · '}
+                        <button className={s.linkBtn} onClick={() => setXgOv({ home: null, away: null })}>
+                          Revenir au marché
+                        </button>
+                      </>
+                    ) : (
+                      scrapedAt && ` — cotes du marché à ${scrapedAt}`
+                    )}
+                  </div>
+                )}
+                {staleSince && (
+                  <div style={{ fontSize: 13, marginTop: 6, color: '#ffc98a' }}>
+                    Cotes du marché anciennes ({fmtAge(staleSince)})
                   </div>
                 )}
                 {error && (
@@ -286,6 +367,8 @@ function CalculatorInner() {
                           (side === 'home' ? pricing.home_lineup_warnings : pricing.away_lineup_warnings) ?? [],
                         )}
                         bookOdds={bookOdds}
+                        penTakerId={pens[side]}
+                        onPenTaker={choosePen(side)}
                       />
                     )
                   })}

@@ -172,3 +172,27 @@
 /* Nom de joueur = lien vers sa fiche Atlas, rendu comme le texte de la maquette. */
 .ev a.plink { color: inherit; text-decoration: none; }
 .ev a.plink:hover { color: inherit; text-decoration: underline; }
+
+/* Tri par colonne : en-tête cliquable, flèche sur la colonne active. */
+.sortBtn { all: unset; cursor: pointer; }
+.sortBtn:hover { color: #e6edf3; }
+.sortBtn:focus-visible { outline: 2px solid #4c8dff; }
+.sortArrow { font-size: 9px; margin-left: 3px; }
+
+/* Tireur de penalty : petit texte discret après le nom, allumé quand c'est lui. */
+.pen { all: unset; cursor: pointer; margin-left: 6px; font-size: 11px; font-weight: 500; color: #5d6876; }
+.pen:hover { color: #9aa4b1; }
+.pen:focus-visible { outline: 2px solid #4c8dff; }
+.penOn, .penOn:hover { color: #ffc98a; font-weight: 700; }
+
+/* Ajustement manuel du xG sur la ligne « xG du match ». */
+.xgBtn {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin: 0 4px; border-radius: 5px; border: 1px solid #262d37;
+  font-size: 12px; line-height: 1; color: #c5ced9; vertical-align: 1px;
+}
+.xgBtn:hover { border-color: #4c8dff; color: #ffffff; }
+.xgBtn:focus-visible { outline: 2px solid #4c8dff; }
+.linkBtn { all: unset; cursor: pointer; color: #8ab4ff; }
+.linkBtn:hover { color: #b3ceff; text-decoration: underline; }
+.linkBtn:focus-visible { outline: 2px solid #4c8dff; }
