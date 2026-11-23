@@ -147,3 +147,47 @@ def _player_row(
         "odds": odds,
         "scraped_at": now,
     }
+
+
+async def backfill_player_api_ids(
+    session: AsyncSession,
+    fixture_ids: list[int] | None = None,
+) -> int:
+    """Renseigne `player_api_id` des cotes joueur écrites avant le rapprochement.
+
+    Pour chaque match ayant des cotes sans identifiant (ou pour `fixture_ids`),
+    charge l'effectif Atlas une fois et résout chaque nom. Une cote qui reste
+    non reliée garde None. Retourne le nombre de lignes reliées.
+    """
+    from sqlalchemy import select
+
+    stmt = select(PlayerOddsSnapshot).where(PlayerOddsSnapshot.player_api_id.is_(None))
+    if fixture_ids is not None:
+        if not fixture_ids:
+            return 0
+        stmt = stmt.where(PlayerOddsSnapshot.fixture_id.in_(fixture_ids))
+    rows = list((await session.execute(stmt)).scalars().all())
+
+    by_fixture: dict[int, list[PlayerOddsSnapshot]] = {}
+    for row in rows:
+        by_fixture.setdefault(row.fixture_id, []).append(row)
+
+    linked = 0
+    for fixture_id, fixture_rows in by_fixture.items():
+        squad = await load_fixture_squad(session, fixture_id)
+        unresolved: set[str] = set()
+        for row in fixture_rows:
+            api_id = resolve_odds_player(row.player_name, squad)
+            if api_id is None:
+                unresolved.add(row.player_name)
+                continue
+            row.player_api_id = api_id
+            linked += 1
+        if unresolved:
+            logger.warning(
+                "backfill_player_api_ids: fixture=%d — %d nom(s) toujours non relié(s) : %s",
+                fixture_id, len(unresolved), sorted(unresolved),
+            )
+    await session.commit()
+    logger.info("backfill_player_api_ids: %d/%d cotes reliées", linked, len(rows))
+    return linked

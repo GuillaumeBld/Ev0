@@ -46,16 +46,27 @@ ALERT_RISE_RATIO = 1.05
 UNRESOLVED_ODDS_ALERT_RATIO = 0.10
 
 
+# Dernier lot de noms non reliés signalé par match : on ne réalerte que
+# quand ce lot change (les compteurs n'entrent pas dans la clé). Mémoire du
+# process — un redémarrage du worker réémet au plus une alerte par match.
+_unresolved_alerted: dict[int, frozenset[str]] = {}
+
+
 def alert_unresolved_odds(
-    fixture_label: str, total: int, unresolved: int, names: set[str],
+    fixture_id: int, fixture_label: str, total: int, unresolved: int, names: set[str],
 ) -> bool:
     """Alerte `incidents` si plus de 10 % des cotes du match sont non reliées.
 
-    Message stable (noms triés) : la déduplication de `send_alert` évite de
-    renvoyer la même alerte à chaque passage du scraping.
+    Une seule alerte par (match, lot de noms) : le scraping repasse toutes les
+    60 s, l'alerte ne repart que si de nouveaux noms apparaissent ou changent.
+    Appelée uniquement par le worker (process_scraped_fixtures).
     """
     if total <= 0 or unresolved <= 0 or unresolved / total <= UNRESOLVED_ODDS_ALERT_RATIO:
         return False
+    key = frozenset(names)
+    if _unresolved_alerted.get(fixture_id) == key:
+        return False
+    _unresolved_alerted[fixture_id] = key
     alert_bg(
         f"Cotes joueurs non reliées à l'Atlas — {fixture_label} : "
         f"{unresolved}/{total} ({unresolved / total:.0%}), aucune reco pour : "
@@ -282,11 +293,13 @@ async def generate_recommendations(
             }
             all_recommendations.append(recommendation)
 
-        alert_unresolved_odds(
-            f"{home_team} vs {away_team}",
-            sum(1 for e in fixture_odds if e.get("player_name") and e.get("odds", 0) > 1),
-            _fx_unresolved_count, _fx_unresolved,
-        )
+        # Pas d'alerte ici (chemin API, à chaque affichage) : le worker
+        # (process_scraped_fixtures) est la seule source de l'alerte.
+        if _fx_unresolved_count:
+            logger.warning(
+                "rec_service: %s vs %s — %d cote(s) non reliée(s) à l'Atlas : %s",
+                home_team, away_team, _fx_unresolved_count, sorted(_fx_unresolved),
+            )
 
     logger.info(
         "Player matching: %d matched, %d non reliées Atlas, %d sans allocation, "
@@ -676,6 +689,7 @@ async def process_scraped_fixtures(
                 fixture_orm.id, odds_unresolved, odds_total,
             )
         alert_unresolved_odds(
+            fixture_orm.id,
             f"{fixture_orm.home_team} vs {fixture_orm.away_team}",
             odds_total, odds_unresolved, unresolved_names,
         )

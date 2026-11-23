@@ -9,8 +9,11 @@ que le calculateur cote. Ordre :
 1. nom normalisé identique (accents, casse, ponctuation ignorés) ;
 2. nom de famille commun + prénom compatible (même initiale, prénom court
    contenu dans le long — Phil/Philip —, ou prénom Atlas parmi les prénoms
-   donnés par le bookmaker) ; un nom d'un seul mot ne vaut que s'il est le
-   prénom OU le nom d'un seul joueur de l'effectif ;
+   donnés par le bookmaker) ; un nom bookmaker d'un seul mot ne vaut que
+   s'il est le prénom OU le nom d'un seul joueur de l'effectif ; un nom
+   ATLAS d'un seul mot (Neto, Danilo, Marcos...) ne vaut qu'à l'identique —
+   « Pedro Neto » ou « Marcos Senesi » ne désignent jamais l'Atlas « Neto »
+   ou « Marcos » ;
 3. sinon None.
 
 Plusieurs candidats = None : on ne devine jamais, et aucune distance
@@ -18,12 +21,15 @@ d'édition approximative.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.odds import normalize_selection_name
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -81,7 +87,8 @@ def _compatible(bk: list[str], at: list[str]) -> bool:
     if len(bk) == 1:
         return bk[0] in (at[0], at[-1])
     if len(at) == 1:
-        return at[0] in bk
+        # Nom Atlas d'un seul mot : seule l'égalité exacte (étape 1) compte.
+        return False
     k = _common_suffix(bk, at)
     if k == 0:
         return False
@@ -147,6 +154,12 @@ async def load_fixture_squad(session: AsyncSession, fixture_id: int) -> list[Squ
                                 lineup_ids.add(int(p["id"]))
                 if lineup_ids:
                     filters.append(BzzPlayer.api_id.in_(lineup_ids))
+        else:
+            logger.warning(
+                "load_fixture_squad: match international %s (league=%r, external_id=%r) "
+                "— événement Bzzoiro absent ou sans sélections, repli sur les effectifs club",
+                fixture_id, fixture.league, fixture.external_id,
+            )
 
     if not filters:
         for team_id in (fixture.home_bzz_team_id, fixture.away_bzz_team_id):

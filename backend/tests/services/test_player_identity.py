@@ -108,6 +108,52 @@ def test_meme_nom_dans_les_deux_equipes_ambigu():
     assert resolve_odds_player("Mohamed Salah", squad) is None
 
 
+# ── Noms Atlas d'un seul mot (Bzzoiro : Neto, Danilo, Marcos, Allan...) ─────
+
+def test_nom_atlas_un_mot_jamais_pris_dans_un_nom_plus_long():
+    squad = [SquadPlayer(30, "Neto"), SquadPlayer(31, "Cole Palmer")]
+    assert resolve_odds_player("Pedro Neto", squad) is None
+    assert resolve_odds_player("Neto", squad) == 30
+
+    squad = [SquadPlayer(40, "Marcos"), SquadPlayer(41, "Cole Palmer")]
+    assert resolve_odds_player("Marcos Senesi", squad) is None
+    assert resolve_odds_player("Marcos", squad) == 40
+
+
+def test_allan_atlas_un_mot():
+    squad = [SquadPlayer(50, "Allan"), SquadPlayer(51, "Floyd Samba")]
+    assert resolve_odds_player("Allan", squad) == 50          # PMU : identique
+    # Même forme que « Marcos Senesi » : on ne peut pas trancher sans risque,
+    # la cote reste non reliée (comptée, alertée) plutôt que mal reliée.
+    assert resolve_odds_player("Allan Andrade Elias", squad) is None
+
+
+# ── Noms composés, initiale finale, garde Ian/Christian ─────────────────────
+
+def test_noms_de_famille_composes():
+    squad = [
+        SquadPlayer(60, "Kevin De Bruyne"),
+        SquadPlayer(61, "Micky van de Ven"),
+        SquadPlayer(62, "Giovanni Di Lorenzo"),
+    ]
+    assert resolve_odds_player("K. De Bruyne", squad) == 60
+    assert resolve_odds_player("De Bruyne", squad) == 60
+    assert resolve_odds_player("Micky Van De Ven", squad) == 61
+    assert resolve_odds_player("Van de Ven", squad) == 61
+    assert resolve_odds_player("Di Lorenzo, Giovanni", squad) == 62
+    assert resolve_odds_player("G. Di Lorenzo", squad) == 62
+
+
+def test_initiale_en_fin_de_nom():
+    assert resolve_odds_player("MBAPPE K.", PSG) == 1
+    assert resolve_odds_player("HERNANDEZ T.", PSG) == 3
+
+
+def test_prefixe_pas_sous_chaine():
+    squad = [SquadPlayer(70, "Christian Pulisic")]
+    assert resolve_odds_player("Ian Pulisic", squad) is None
+
+
 # ── Écriture des cotes : player_api_id renseigné ─────────────────────────────
 
 def _scrape_result(names: list[str]):
@@ -205,8 +251,12 @@ def _odds(name: str, api_id: int | None, odds: float = 3.0, bookmaker: str = "un
     return o
 
 
-async def _run_process(odds_rows, allocs, existing_recs=None):
+async def _run_process(odds_rows, allocs, existing_recs=None, reset_memo=True):
+    from app.services import recommendation_service
     from app.services.recommendation_service import process_scraped_fixtures
+
+    if reset_memo:
+        recommendation_service._unresolved_alerted.clear()
 
     fixture = MagicMock()
     fixture.id = 42
@@ -305,6 +355,69 @@ async def test_vieille_cote_non_reliee_ne_declenche_pas_d_alerte():
     stale.scraped_at = datetime.now(UTC) - timedelta(days=3)
     _, _, alert = await _run_process([stale, _odds("Samba, Floyd", 14)], allocs)
     alert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_alerte_une_seule_fois_par_lot_de_noms():
+    allocs = [_alloc(14, "Floyd Samba"), _alloc(15, "Tyrone Samba")]
+    rows = [_odds("Samba", None), _odds("Samba, Floyd", 14)]
+    _, _, alert1 = await _run_process(rows, allocs)
+    # Passage suivant, même lot de noms, compteurs différents : pas de réalerte.
+    rows2 = [_odds("Samba", None), _odds("Samba", None, bookmaker="pmu"), _odds("Samba, Floyd", 14)]
+    _, _, alert2 = await _run_process(rows2, allocs, reset_memo=False)
+    # Nouveau nom non relié : nouvelle alerte.
+    rows3 = rows2 + [_odds("Inconnu X", None)]
+    _, _, alert3 = await _run_process(rows3, allocs, reset_memo=False)
+    assert alert1.call_count == 1
+    assert alert2.call_count == 0
+    assert alert3.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_chemin_api_n_alerte_pas():
+    from app.services import recommendation_service as rs
+
+    fixture_orm = MagicMock()
+    fixture_orm.external_id = "ext1"
+    pricing = MagicMock()
+    pricing.home_match_xg, pricing.away_match_xg = 1.8, 1.0
+    pricing.xg_source, pricing.p00 = "market_implied", 0.06
+    pricing.home_players, pricing.away_players = [_alloc(14, "Floyd Samba")], []
+    odds = {"ext1": [{"player_name": "Samba", "player_api_id": None, "odds": 3.0,
+                      "market_type": "goalscorer", "bookmaker": "pmu"}]}
+    alert = MagicMock()
+    with patch.object(rs, "load_match_pricing", new=AsyncMock(return_value=pricing)), \
+            patch.object(rs, "alert_bg", alert):
+        await rs.generate_recommendations(
+            [{"fixture_id": "ext1", "home_team": "A", "away_team": "B"}],
+            odds, db=AsyncMock(), db_fixtures=[fixture_orm],
+        )
+    alert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_backfill_player_api_ids():
+    from app.ingestion import odds_storage
+
+    rows = [
+        SimpleNamespace(fixture_id=42, player_name="Samba, Floyd", player_api_id=None),
+        SimpleNamespace(fixture_id=42, player_name="Samba", player_api_id=None),
+        SimpleNamespace(fixture_id=42, player_name="Philip Foden", player_api_id=None),
+    ]
+    session = AsyncMock()
+    res = MagicMock()
+    res.scalars.return_value.all.return_value = rows
+    session.execute = AsyncMock(return_value=res)
+    session.commit = AsyncMock()
+    loader = AsyncMock(return_value=CITY_NAPOLI)
+    with patch.object(odds_storage, "load_fixture_squad", loader):
+        linked = await odds_storage.backfill_player_api_ids(session, [42])
+
+    assert linked == 2
+    assert [r.player_api_id for r in rows] == [14, None, 10]
+    assert loader.await_count == 1
+    session.commit.assert_awaited_once()
+    assert await odds_storage.backfill_player_api_ids(session, []) == 0
 
 
 @pytest.mark.asyncio
