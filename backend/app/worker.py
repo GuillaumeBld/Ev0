@@ -2644,9 +2644,9 @@ async def job_daily_health_report() -> None:
     aille bien ou mal finit par ne plus être lu — donc à ne plus alerter."""
     try:
         from app.alerts import send_alert
-        from app.ingestion.bzzoiro.sync_fixtures_from_bzz import _LEAGUE_API_ID_TO_KEY
+        from app.services.competitions import SYNCED_COMPETITION_IDS
 
-        ligues_calendrier = list(_LEAGUE_API_ID_TO_KEY)
+        ligues_calendrier = sorted(SYNCED_COMPETITION_IDS)
         async with async_session() as session:
             row = (await session.execute(text("""
                 SELECT
