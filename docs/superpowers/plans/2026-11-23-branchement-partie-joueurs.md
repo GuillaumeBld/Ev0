@@ -230,6 +230,32 @@
 - [ ] **Step 4:** `cd frontend && npx tsc --noEmit && npm run build` → OK ; le grep de l'étape 1 ne renvoie plus rien.
 - [ ] **Step 5:** Commit `feat(front): écussons et drapeaux de l'Atlas partout, table écrite à la main supprimée`.
 
+### Task 13: Moteur de compo — titulaires par identifiant, Alpha ET Beta, xG vraiment réparti
+
+> Ajoutée le 23/11 sur demande de l'utilisateur (« corrige le moteur de compo maintenant »). Constat en prod (Man City – Napoli, 10 titulaires envoyés par équipe) : Beta renvoie exactement ses cotes « effectif complet » ; côté City les cotes Alpha ne bougent pas du tout (Haaland 2,13 → 2,13) alors que côté Napoli elles bougent (De Bruyne 4,45 → 3,39). Les titulaires sont envoyés par NOM (`home_starters: list[str]`) et rapprochés par `_lineup_name_compatible` — contraire à la source unique.
+
+**Files:**
+- Modify: `backend/app/api/pricing.py` (`MatchPriceRequest`), `backend/app/pricing/team_xg.py` (`load_match_pricing`, `compute_lineup_allocation`), `backend/app/pricing/beta_pricing.py`, `backend/app/services/recommendation_service.py` (si les recos utilisent la compo officielle), `frontend/src/components/calculator/LineupPricingWidget.tsx`, `frontend/src/app/dashboard/calculator/page.tsx`, `frontend/src/lib/api.ts` (envoi par identifiants)
+- Test: `backend/tests/pricing/test_compo.py`
+
+**Interfaces:**
+- Produces: `MatchPriceRequest.home_starter_ids: list[int] | None`, `away_starter_ids: list[int] | None` (identifiants `bzz_players.api_id`) ; les champs `home_starters` / `away_starters` (noms) et `_lineup_name_compatible` sont SUPPRIMÉS. `compute_lineup_allocation(players, starter_ids: set[int], team, team_xg)`. `compute_beta_allocations(..., home_starter_ids=None, away_starter_ids=None)` rend aussi les allocations Beta de la compo ; `PlayerAllocationOut` des listes `*_lineup_players` porte des champs `beta_*` calculés sur la compo.
+
+- [ ] **Step 1:** Diagnostiquer pourquoi la compo City ne change rien (superpowers:systematic-debugging) et consigner la cause dans le rapport.
+- [ ] **Step 2:** Tests : (a) 10 titulaires d'un club → somme des λ des titulaires = xG de l'équipe à l'arrondi près, et cotes des titulaires plus courtes que celles de l'effectif complet pour un joueur à minutes partielles ; (b) Beta compo ≠ Beta effectif quand la compo exclut des joueurs ; (c) identifiant inconnu de l'effectif → ignoré et signalé (`InputWarning`), pas d'échec ; (d) structurel : plus aucun rapprochement de nom de titulaire.
+- [ ] **Step 3:** Lancer → FAIL. **Step 4:** Implémenter (identifiants depuis `bzz_events.lineups` côté compo officielle ; widget du front envoie les `player_id`). **Step 5:** `.venv/bin/python -m pytest tests/pricing -q` + suite complète → PASS ; `cd frontend && npx tsc --noEmit` → OK.
+- [ ] **Step 6:** Commit `fix(compo): titulaires par identifiant Atlas, xG réparti pour Alpha et Beta`.
+
+### Task 14: Retrait de la garantie « remboursé si 0-0 »
+
+> Ajoutée le 23/11 : l'utilisateur indique que la garantie n'existe plus chez les books. `ev_p00_guarantee` n'est qu'informatif (aucune décision de reco ne l'utilise).
+
+**Files:**
+- Modify: `backend/app/pricing/goalscorer.py` (supprimer `ev_anytime_p00_guarantee`), `backend/app/pricing/team_xg.py` (champ `p00` de `MatchPricingResult`), `backend/app/api/pricing.py` (`MatchPriceResponse.p00`), `backend/app/services/recommendation_service.py` (clés `ev_p00_guarantee` / `p00` du dict extra), `frontend/src/app/dashboard/calculator/page.tsx` (ligne « P(0-0) … (remboursé si 0-0) »), `frontend/src/lib/api.ts` (`p00`)
+- Test: tests existants qui référencent `p00` / `ev_anytime_p00_guarantee` (grep) mis à jour.
+
+- [ ] **Step 1:** Test structurel : `grep -rn "p00\|rembours" backend/app frontend/src` ne renvoie plus rien (hors commentaires d'historique des migrations). **Step 2:** FAIL. **Step 3:** Supprimer. Les recos déjà en base gardent leurs anciennes clés (pas de migration de données). **Step 4:** suite complète + `npx tsc --noEmit` → PASS. **Step 5:** Commit `chore: retrait de la garantie remboursé si 0-0, disparue chez les books`.
+
 ### Task 12: Mesure de fin + mise en production
 
 **Files:**
