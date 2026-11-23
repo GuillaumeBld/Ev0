@@ -4,6 +4,7 @@ Priorité : official > probable_manual > last_known
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -12,6 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.fixtures import Fixture
 from app.models.lineups import TeamLineup, TeamLineupPlayer
 
+logger = logging.getLogger(__name__)
+
+# Compos enregistrées par nom (saisie manuelle, ancien import) : elles ne sont
+# utilisables que si chaque titulaire porte son identifiant Atlas
+# (team_lineup_players.player_api_id, migration 069). Sinon on passe à la
+# source suivante, jamais de rapprochement par nom.
+MANUAL_TYPES: frozenset[str] = frozenset({"probable_manual", "probable_statshub"})
+
 PRIORITY: dict[str, int] = {
     "official": 0,
     "bzzoiro": 1,
@@ -19,6 +28,26 @@ PRIORITY: dict[str, int] = {
     "probable_statshub": 3,  # legacy — no longer created, kept for existing DB rows
     "last_known": 4,
 }
+
+
+def manual_lineup_has_ids(players: list) -> bool:
+    """Vrai si chaque titulaire de la compo porte son identifiant Atlas."""
+    return all(
+        getattr(p, "player_api_id", None) is not None
+        for p in players
+        if getattr(p, "is_starter", True)
+    )
+
+
+def _usable(lineup_type: str, players: list, team: str, fixture_id: int) -> bool:
+    if lineup_type not in MANUAL_TYPES or manual_lineup_has_ids(players):
+        return True
+    logger.warning(
+        "resolve_lineup: compo %s de %s (match %s) enregistrée sans identifiants "
+        "— ignorée, source suivante",
+        lineup_type, team, fixture_id,
+    )
+    return False
 
 
 @dataclass
@@ -38,9 +67,13 @@ async def resolve_lineup(
 ) -> ResolvedLineup | None:
     """Retourne la compo de priorité la plus haute pour ce fixture+team."""
     if _overrides is not None:
-        if not _overrides:
+        candidates = [
+            lu for lu in _overrides
+            if _usable(lu.lineup_type, list(lu.players), team, fixture_id)
+        ]
+        if not candidates:
             return None
-        best = min(_overrides, key=lambda lu: PRIORITY.get(lu.lineup_type, 99))
+        best = min(candidates, key=lambda lu: PRIORITY.get(lu.lineup_type, 99))
         return ResolvedLineup(
             lineup_type=best.lineup_type,
             team=team,
@@ -58,17 +91,19 @@ async def resolve_lineup(
         )
     )
     rows = result.scalars().all()
-    if rows:
-        # Use .get(..., 99) for consistency with the _overrides path
-        best = min(rows, key=lambda lu: PRIORITY.get(lu.lineup_type, 99))
+    # Use .get(..., 99) for consistency with the _overrides path
+    for best in sorted(rows, key=lambda lu: PRIORITY.get(lu.lineup_type, 99)):
         players_result = await session.execute(
             select(TeamLineupPlayer).where(TeamLineupPlayer.lineup_id == best.id)
         )
+        players = players_result.scalars().all()
+        if not _usable(best.lineup_type, players, team, fixture_id):
+            continue
         return ResolvedLineup(
             lineup_type=best.lineup_type,
             team=team,
             fixture_id=fixture_id,
-            players=players_result.scalars().all(),
+            players=players,
             lineup_id=best.id,
         )
 

@@ -85,24 +85,34 @@ export function LineupPricingWidget({
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
+  const [compoMsg, setCompoMsg] = useState<string | null>(null)
 
   // When "Dernière compo" is clicked, auto-fetch and compute
   async function handleDerniereCompo() {
     setMode('derniere')
+    setCompoMsg(null)
     try {
       const r = await fetch(`/api/v1/lineups/fixture/${fixtureId}`)
-      if (!r.ok) return
+      if (!r.ok) {
+        setCompoMsg('Compo indisponible pour ce match')
+        return
+      }
       const d = await r.json()
       const side = isHome ? d.home : d.away
-      if (!side) return
-      // Titulaires par identifiant (compo Bzzoiro) — jamais par nom.
+      if (!side) {
+        setCompoMsg('Aucune compo connue pour cette équipe')
+        return
+      }
+      // Titulaires par identifiant — jamais par nom.
       const starterIds: number[] = side.starter_ids ?? []
       if (starterIds.length >= 5) {
         setSelected(new Set(starterIds))
         onCalculate(starterIds)
+      } else {
+        setCompoMsg('Compo enregistrée sans identifiants — à refaire')
       }
     } catch {
-      // non-fatal
+      setCompoMsg('Compo indisponible pour ce match')
     }
   }
 
@@ -115,6 +125,7 @@ export function LineupPricingWidget({
         .filter((p) => selected.has(p.player_id))
         .map((p) => ({
           player_name: p.player_name,
+          player_api_id: p.player_id,
           position: p.position ?? 'MF',
           is_starter: true,
         }))
@@ -169,7 +180,7 @@ export function LineupPricingWidget({
             {(['probable', 'officielle'] as const).map((m) => (
               <button
                 key={m}
-                onClick={() => { setMode(m); setSelected(new Set()) }}
+                onClick={() => { setMode(m); setSelected(new Set()); setCompoMsg(null) }}
                 className={clsx(
                   'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
                   mode === m
@@ -192,6 +203,7 @@ export function LineupPricingWidget({
               Dernière compo
             </button>
           </div>
+          {compoMsg && <p className="text-xs text-amber-400">{compoMsg}</p>}
 
           {/* Player picker (for probable / officielle modes) */}
           {(mode === 'probable' || mode === 'officielle') && (

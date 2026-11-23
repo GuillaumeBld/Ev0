@@ -15,6 +15,7 @@ jamais recalculé sur la compo.
 from __future__ import annotations
 
 import inspect
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -301,21 +302,122 @@ async def test_compo_officielle_rend_les_identifiants_des_titulaires_de_champ():
     session.get = AsyncMock(side_effect=get)
     session.execute = AsyncMock(return_value=res)
 
-    with patch.object(lineups_api, "alert_bg") as alert:
+    with patch.object(lineups_api.logger, "warning") as warn:
         ids = await lineups_api._starter_ids_for_lineup(99, session)
 
     assert ids == [11, 12]  # gardien exclu, place sans identifiant exclue
-    alert.assert_called_once()  # … et signalée
-    assert "E. Anderson" in alert.call_args.args[0]
+    warn.assert_called_once()  # … et journalisée (pas d'alerte sur un chargement de page)
+    assert "E. Anderson" in str(warn.call_args.args)
+    assert not hasattr(lineups_api, "alert_bg")
 
 
-@pytest.mark.asyncio
-async def test_compo_saisie_a_la_main_n_a_pas_d_identifiants():
+def _manual_session(players):
     from types import SimpleNamespace
-
-    import app.api.lineups as lineups_api
 
     session = AsyncMock()
     session.get = AsyncMock(return_value=SimpleNamespace(
         lineup_type="probable_manual", fixture_id=7, team="X"))
-    assert await lineups_api._starter_ids_for_lineup(99, session) is None
+    res = MagicMock()
+    res.scalars.return_value.all.return_value = players
+    session.execute = AsyncMock(return_value=res)
+    return session
+
+
+@pytest.mark.asyncio
+async def test_compo_enregistree_avec_identifiants_est_appliquee():
+    from types import SimpleNamespace
+
+    import app.api.lineups as lineups_api
+
+    players = [
+        SimpleNamespace(player_api_id=i, is_starter=True, position="MF") for i in range(1, 11)
+    ] + [SimpleNamespace(player_api_id=50, is_starter=False, position="MF")]
+    ids = await lineups_api._starter_ids_for_lineup(99, _manual_session(players))
+    assert ids == list(range(1, 11))
+
+
+@pytest.mark.asyncio
+async def test_compo_enregistree_sans_identifiants_n_a_pas_d_identifiants():
+    from types import SimpleNamespace
+
+    import app.api.lineups as lineups_api
+
+    players = [SimpleNamespace(player_api_id=None, is_starter=True, position="MF")] * 10
+    assert await lineups_api._starter_ids_for_lineup(99, _manual_session(players)) is None
+
+
+# ── Résolution : une compo enregistrée sans identifiants est sautée ─
+
+def _lu(lineup_type, players, lid=1):
+    from types import SimpleNamespace
+    return SimpleNamespace(lineup_type=lineup_type, players=players, id=lid)
+
+
+def _joueur(pid, starter=True):
+    from types import SimpleNamespace
+    return SimpleNamespace(player_api_id=pid, is_starter=starter, position="MF")
+
+
+@pytest.mark.asyncio
+async def test_resolution_compo_enregistree_avec_identifiants_gagne():
+    from app.ingestion.lineup_resolver import resolve_lineup
+
+    manual = _lu("probable_manual", [_joueur(i) for i in range(1, 11)], lid=2)
+    last = _lu("last_known", [_joueur(i) for i in range(20, 30)], lid=3)
+    res = await resolve_lineup(1, "City", None, _overrides=[last, manual])
+    assert res.lineup_type == "probable_manual" and res.lineup_id == 2
+
+
+@pytest.mark.asyncio
+async def test_resolution_compo_sans_identifiants_sautee_au_profit_de_la_derniere_officielle():
+    import app.ingestion.lineup_resolver as resolver
+
+    manual = _lu("probable_manual", [_joueur(None) for _ in range(10)], lid=2)
+    last = _lu("last_known", [_joueur(i) for i in range(20, 30)], lid=3)
+    with patch.object(resolver.logger, "warning") as warn:
+        res = await resolver.resolve_lineup(1, "City", None, _overrides=[last, manual])
+    assert res.lineup_type == "last_known" and res.lineup_id == 3
+    warn.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_resolution_base_saute_la_compo_sans_identifiants():
+    """Chemin base : la compo manuelle sans id est sautée, la recherche passe
+    à la dernière compo officielle (avec identifiants)."""
+    from datetime import datetime
+
+    from app.ingestion.lineup_resolver import resolve_lineup
+
+    manual = _lu("probable_manual", [], lid=2)
+    prev_official = _lu("official", [], lid=3)
+
+    def _res(*, all_=None, one=None):
+        r = MagicMock()
+        r.scalars.return_value.all.return_value = all_ or []
+        r.scalar_one_or_none.return_value = one
+        return r
+
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[
+        _res(all_=[manual]),                                   # compos du match
+        _res(all_=[_joueur(None) for _ in range(10)]),         # joueurs manuels sans id
+        _res(one=datetime(2026, 11, 25, tzinfo=UTC)),  # coup d'envoi
+        _res(one=prev_official),                               # dernière officielle
+        _res(all_=[_joueur(i) for i in range(20, 30)]),        # ses joueurs
+    ])
+    res = await resolve_lineup(1, "City", session)
+    assert res.lineup_type == "last_known" and res.lineup_id == 3
+
+
+def test_sauvegarde_envoie_et_stocke_les_identifiants():
+    from app.api.lineups import LineupPlayerIn
+
+    assert "player_api_id" in LineupPlayerIn.model_fields
+    src = (BACKEND / "app/api/lineups.py").read_text()
+    assert "player_api_id=p.player_api_id" in src
+    widget = (BACKEND.parent / "frontend/src/components/calculator/LineupPricingWidget.tsx").read_text()
+    save = widget[widget.index("async function handleSave"):widget.index("function togglePlayer")]
+    assert "player_api_id: p.player_id" in save
+    # « Dernière compo » sans identifiants : message visible, jamais un no-op muet
+    derniere = widget[widget.index("async function handleDerniereCompo"):widget.index("async function handleSave")]
+    assert "sans identifiants" in derniere

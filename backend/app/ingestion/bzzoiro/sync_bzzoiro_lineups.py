@@ -239,6 +239,7 @@ async def sync_bzzoiro_lineups(
                     position=_map_position(p.get("position")),
                     is_starter=True,
                     jersey_number=int(p["jersey_number"]) if p.get("jersey_number") else None,
+                    player_api_id=pid,
                 ))
             for p in substitutes_raw:
                 pid = int(p["id"]) if p.get("id") else None
@@ -249,6 +250,7 @@ async def sync_bzzoiro_lineups(
                     position=_map_position(p.get("position")),
                     is_starter=False,
                     jersey_number=int(p["jersey_number"]) if p.get("jersey_number") else None,
+                    player_api_id=pid,
                 ))
 
             count += 1

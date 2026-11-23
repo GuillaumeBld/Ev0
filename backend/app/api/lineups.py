@@ -9,10 +9,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.alerts import alert_bg
 from app.api._badges import MatchBadges, badge_fields_for_fixtures
 from app.db import get_db
-from app.ingestion.lineup_resolver import resolve_lineup
+from app.ingestion.lineup_resolver import MANUAL_TYPES, resolve_lineup
 from app.ingestion.ps3838.anchor import _fold
 from app.models.bzz_lineup_slots import BzzLineupSlot
 from app.models.bzzoiro import BzzEvent, BzzPlayer
@@ -105,6 +104,9 @@ class LineupPlayerIn(BaseModel):
     position: str       # GK | DEF | MID | FWD
     is_starter: bool = True
     jersey_number: int | None = None
+    # Identifiant Atlas (bzz_players.api_id) : c'est lui qui désigne le
+    # titulaire pour le calcul. Une compo sans identifiants est ignorée.
+    player_api_id: int | None = None
 
 
 class LineupIn(BaseModel):
@@ -213,16 +215,35 @@ async def _resolve_wc2026_lineup(team: str, session: AsyncSession) -> LineupOut 
 async def _starter_ids_for_lineup(
     lineup_id: int | None, session: AsyncSession
 ) -> list[int] | None:
-    """Identifiants des titulaires de champ d'une compo d'origine Bzzoiro.
+    """Identifiants des titulaires de champ d'une compo.
 
-    Source : bzz_lineup_slots (compo de bzz_events.lineups résolue joueur par
-    joueur), à défaut les "id" bruts de bzz_events.lineups. Une place sans
-    identifiant est signalée, jamais rapprochée par nom.
+    Compo enregistrée (saisie manuelle) : team_lineup_players.player_api_id.
+    Compo d'origine Bzzoiro : bzz_lineup_slots (compo de bzz_events.lineups
+    résolue joueur par joueur), à défaut les "id" bruts de bzz_events.lineups.
+    Une place sans identifiant est journalisée, jamais rapprochée par nom.
+    Pas d'alerte ici (simple chargement de page) : les alertes restent sur le
+    chemin du calcul.
     """
     if lineup_id is None:
         return None
     lineup = await session.get(TeamLineup, lineup_id)
-    if lineup is None or lineup.lineup_type not in ("official", "bzzoiro"):
+    if lineup is None:
+        return None
+    if lineup.lineup_type in MANUAL_TYPES:
+        res = await session.execute(
+            select(TeamLineupPlayer).where(TeamLineupPlayer.lineup_id == lineup_id)
+        )
+        starters = [
+            p for p in res.scalars().all() if p.is_starter and p.position != "GK"
+        ]
+        ids = [p.player_api_id for p in starters if p.player_api_id is not None]
+        if len(ids) < len(starters):
+            logger.warning(
+                "compo %s %s : %d titulaire(s) sans identifiant",
+                lineup.lineup_type, lineup.team, len(starters) - len(ids),
+            )
+        return ids or None
+    if lineup.lineup_type not in ("official", "bzzoiro"):
         return None
     fx = await session.get(Fixture, lineup.fixture_id)
     ext = (getattr(fx, "external_id", None) or "").removeprefix("bzz_")
@@ -261,11 +282,6 @@ async def _starter_ids_for_lineup(
         logger.warning(
             "compo %s (match %s) : %d titulaire(s) sans identifiant : %s",
             lineup.team, fx.id, len(unresolved), unresolved,
-        )
-        alert_bg(
-            f"Compo {lineup.team} (match {fx.id}) : titulaire(s) sans identifiant "
-            f"Bzzoiro, exclus du calcul — {', '.join(str(n) for n in unresolved)}",
-            "incidents",
         )
     return [pid for pid, _pos, _name in champ if pid is not None]
 
@@ -433,7 +449,14 @@ async def create_lineup(body: LineupIn, session: AsyncSession = Depends(get_db))
                 position=p.position,
                 is_starter=p.is_starter,
                 jersey_number=p.jersey_number,
+                player_api_id=p.player_api_id,
             )
+        )
+    if any(p.is_starter and p.player_api_id is None for p in body.players):
+        logger.warning(
+            "create_lineup : compo %s (match %s) enregistrée sans identifiants "
+            "— elle sera ignorée par la résolution de compo",
+            body.team, body.fixture_id,
         )
 
     await session.commit()
