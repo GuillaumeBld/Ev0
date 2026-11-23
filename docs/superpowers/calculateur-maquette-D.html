@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Ev0 — Calculateur, listes par équipe</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0d1117}
+a{color:#8ab4ff}a:hover{color:#b3ceff}
+.ev{font-family:Inter,system-ui,sans-serif;color:#e6edf3;background:#0d1117;min-height:100vh;font-variant-numeric:tabular-nums}
+.panel{background:#151b23;border:1px solid #262d37;border-radius:14px;box-shadow:0 1px 0 rgba(255,255,255,.04) inset,0 14px 34px rgba(0,0,0,.45)}
+.faint{color:#9aa4b1}
+.chip{all:unset;cursor:pointer;display:inline-flex;align-items:center;padding:7px 11px;border-radius:999px;border:1px solid #262d37;font-size:12px;font-weight:500;color:#c5ced9;white-space:nowrap}
+.chip.on{border-color:#4c8dff;color:#ffffff;background:#14223a}
+.chip:focus-visible{outline:2px solid #4c8dff}
+.grp{all:unset;cursor:pointer;box-sizing:border-box;width:100%;display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;font-size:13px;font-weight:600}
+.grp:hover{background:#1b222c}
+.grp:focus-visible{outline:2px solid #4c8dff}
+.mrow{all:unset;box-sizing:border-box;width:100%;cursor:pointer;display:grid;grid-template-columns:44px minmax(0,1fr);gap:10px;align-items:center;padding:9px 12px;border-radius:10px;font-size:13px}
+.mrow:hover{background:#1b222c}
+.mrow.on{background:#1c2840;box-shadow:inset 0 0 0 1px #35507f}
+.mrow:focus-visible{outline:2px solid #4c8dff}
+.disc{display:inline-flex;align-items:center;justify-content:center;border-radius:50%;font-weight:700;flex:none}
+.search{all:unset;box-sizing:border-box;width:100%;padding:11px 14px;border-radius:10px;background:#0d1117;border:1px solid #262d37;font-size:14px;color:#e6edf3}
+.search::placeholder{color:#8b96a5}
+.seg{display:inline-flex;background:rgba(13,17,23,.7);border-radius:8px;padding:3px;gap:2px}
+.seg button{all:unset;cursor:pointer;padding:5px 11px;border-radius:6px;font-size:12px;font-weight:600;color:#b8c2cf}
+.seg button.on{background:#2b3442;color:#ffffff}
+.seg button:focus-visible{outline:2px solid #4c8dff}
+table{border-collapse:collapse;width:100%;min-width:780px}
+th{font-size:11px;font-weight:600;color:#9aa4b1;text-align:right;padding:4px 8px;white-space:nowrap}
+th.l,td.l{text-align:left}
+tr.top th{font-size:12px;color:#e6edf3;padding-bottom:2px}
+td{font-size:13px;padding:6px 8px;text-align:right;border-top:1px solid #222a35;white-space:nowrap}
+tbody tr:nth-child(even) td{background:#11161d}
+tbody tr:hover td{background:#1a2230}
+td.s,th.s{border-left:2px solid #2a323e}
+td.book{color:#c5ced9}
+tr.top th.gB{background:linear-gradient(180deg,#1d3a2b,#16241d);color:#8ee6b0;border-radius:8px 8px 0 0}
+tr.top th.gP{background:linear-gradient(180deg,#3a2a14,#241b10);color:#ffc98a;border-radius:8px 8px 0 0}
+th.al{color:#8fb8ff}
+th.be{color:#c9a8ff}
+th.bk{color:#b8c2cf}
+td.al{color:#a9c8ff;font-weight:600;background:rgba(76,141,255,.07)}
+td.be{color:#d4b8ff;font-weight:600;background:rgba(160,110,255,.08)}
+td.up{color:#7ee2a8;font-weight:700;background:rgba(46,160,90,.16)}
+td.dn{color:#8b96a5}
+tr.bench td{color:#8b96a5;background:transparent}
+tr.bench td.al,tr.bench td.be{color:#8b96a5;font-weight:500;background:transparent}
+tr.sec td{background:transparent;font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#9aa4b1;padding-top:12px}
+.thead-team{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:12px 14px;margin:-16px -6px 10px;border-radius:14px 14px 0 0}
+input[type=checkbox]{width:16px;height:16px;accent-color:#4c8dff;margin:0 8px 0 0;vertical-align:-3px;cursor:pointer}
+</style>
+</helmet>
+
+<div class="ev">
+<div style="max-width: 1480px; margin: 0 auto; padding: 20px 20px 40px; display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start">
+
+<!-- Bande gauche : championnats et dates -->
+<div class="panel" style="flex: 1 1 280px; max-width: 340px; min-width: 0; padding: 14px; display: flex; flex-direction: column; gap: 12px">
+  <label for="q" style="position: absolute; width: 1px; height: 1px; overflow: hidden">Rechercher</label>
+  <input id="q" class="search" placeholder="Match, équipe ou joueur">
+  <div style="display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px">
+    <sc-for list="{{days}}" as="d" hint-placeholder-count="5"><button class="{{d.cls}}" onClick="{{d.pick}}">{{d.label}}</button></sc-for>
+  </div>
+  <div style="display: flex; flex-direction: column; gap: 2px">
+    <sc-for list="{{groups}}" as="g" hint-placeholder-count="6">
+      <div>
+        <button class="grp" onClick="{{g.toggle}}" aria-expanded="{{g.open}}">
+          <span class="disc" style="{{g.badgeStyle}}">{{g.short}}</span>
+          <span style="flex: 1; text-align: left">{{g.name}}</span>
+          <span class="faint" style="font-weight: 500; font-size: 12px">{{g.count}}</span>
+        </button>
+        <sc-if value="{{g.open}}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; flex-direction: column; gap: 2px; padding: 2px 0 8px">
+            <sc-for list="{{g.matches}}" as="m" hint-placeholder-count="4">
+              <button class="{{m.cls}}" onClick="{{m.pick}}">
+                <span class="faint" style="font-size: 12px">{{m.time}}</span>
+                <span style="display: flex; flex-direction: column; gap: 3px; min-width: 0">
+                  <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{m.home}}</span>
+                  <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{m.away}}</span>
+                </span>
+              </button>
+            </sc-for>
+          </div>
+        </sc-if>
+      </div>
+    </sc-for>
+  </div>
+</div>
+
+<!-- Listes -->
+<div style="flex: 999 1 640px; min-width: 0; display: flex; flex-direction: column; gap: 24px">
+
+  <div>
+    <div class="faint" style="font-size: 13px">Ligue des champions · mardi 24 novembre · 21:00</div>
+    <div style="font-size: 24px; font-weight: 700; margin-top: 4px">Manchester City – SSC Napoli</div>
+    <div class="faint" style="font-size: 14px; margin-top: 6px">xG du match : City <b style="color: #e6edf3">2,74</b> · Napoli <b style="color: #e6edf3">0,93</b> — cotes du marché à 14:22</div>
+  </div>
+
+  <sc-for list="{{teams}}" as="t" hint-placeholder-count="2">
+    <div class="panel" style="padding: 16px 6px 6px">
+      <div class="thead-team" style="{{t.band}}">
+        <span class="disc" style="{{t.disc}}">{{t.short}}</span>
+        <span style="font-size: 16px; font-weight: 700">{{t.name}}</span>
+        <span style="font-size: 13px; color: #e6edf3">xG <b>{{t.xg}}</b></span>
+        <span style="margin-left: auto; display: inline-flex; align-items: center; gap: 10px">
+          <sc-if value="{{t.isXi}}" hint-placeholder-val="{{ false }}"><span style="font-size: 12px; color: #e6edf3">{{t.count}}</span></sc-if>
+          <span class="seg" role="group" aria-label="Mode de calcul">
+            <sc-for list="{{t.modes}}" as="o" hint-placeholder-count="2"><button class="{{o.cls}}" onClick="{{o.pick}}">{{o.label}}</button></sc-for>
+          </span>
+        </span>
+      </div>
+      <sc-if value="{{t.isXi}}" hint-placeholder-val="{{ false }}">
+        <div class="faint" style="font-size: 12px; padding: 0 14px 8px">{{t.xiNote}}</div>
+      </sc-if>
+      <div style="overflow-x: auto">
+        <table>
+          <thead>
+            <tr class="top"><th class="l"></th><th class="s gB" colspan="5" style="text-align: center">Buteur</th><th class="s gP" colspan="5" style="text-align: center">Passeur</th></tr>
+            <tr><th class="l">Joueur</th><th class="s al">Alpha</th><th class="be">Beta</th><th class="s bk">Betclic</th><th class="bk">Unibet</th><th class="bk">PMU</th><th class="s al">Alpha</th><th class="be">Beta</th><th class="s bk">Betclic</th><th class="bk">Unibet</th><th class="bk">PMU</th></tr>
+          </thead>
+          <tbody>
+            <sc-if value="{{t.isXi}}" hint-placeholder-val="{{ false }}"><tr class="sec"><td class="l" colspan="11">Titulaires</td></tr></sc-if>
+            <sc-for list="{{t.players}}" as="p" hint-placeholder-count="7">
+              <tr>
+                <td class="l" style="font-weight: 600"><sc-if value="{{t.isXi}}" hint-placeholder-val="{{ false }}"><input type="checkbox" checked="{{ true }}" onChange="{{p.flip}}" aria-label="Retirer des titulaires"></sc-if>{{p.name}}</td>
+                <td class="s al">{{p.ga}}</td><td class="be">{{p.gb}}</td><td class="{{p.c1}}">{{p.g1}}</td><td class="{{p.c2}}">{{p.g2}}</td><td class="{{p.c3}}">{{p.g3}}</td>
+                <td class="s al">{{p.aa}}</td><td class="be">{{p.ab}}</td><td class="{{p.d1}}">{{p.a1}}</td><td class="{{p.d2}}">{{p.a2}}</td><td class="{{p.d3}}">{{p.a3}}</td>
+              </tr>
+            </sc-for>
+            <sc-if value="{{t.isXi}}" hint-placeholder-val="{{ false }}"><tr class="sec"><td class="l" colspan="11">Remplaçants — cotes en entrant en jeu</td></tr></sc-if>
+            <sc-for list="{{t.bench}}" as="p" hint-placeholder-count="3">
+              <tr class="bench">
+                <td class="l"><input type="checkbox" checked="{{ false }}" onChange="{{p.flip}}" aria-label="Mettre titulaire">{{p.name}}</td>
+                <td class="s al">{{p.ga}}</td><td class="be">{{p.gb}}</td><td class="s">{{p.g1}}</td><td>{{p.g2}}</td><td>{{p.g3}}</td>
+                <td class="s al">{{p.aa}}</td><td class="be">{{p.ab}}</td><td class="s">{{p.a1}}</td><td>{{p.a2}}</td><td>{{p.a3}}</td>
+              </tr>
+            </sc-for>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </sc-for>
+
+  <div class="faint" style="font-size: 12px; line-height: 1.6">Vraies cotes du 23/11 à 14:22. Alpha = calcul actuel (saison), Beta = saison + carrière. Cotes Betclic, Unibet et PMU telles que récupérées ; — = cote non proposée. En vert : cote book au-dessus des deux cotes Ev0 de plus de 5 %. Mode Compo : l’xG de l’équipe est réparti entre les titulaires cochés ; dans la maquette, cocher ou décocher déplace le joueur sans recalculer.</div>
+</div>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1500}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = {
+      day: 'mar', open: { c1: true }, match: 'mci-nap', mode: { h: 'squad', a: 'squad' },
+      xi: {
+        h: ['Erling Haaland', 'Rayan Cherki', 'Phil Foden', 'Enzo Fernández', 'Joško Gvardiol', 'Jérémy Doku', 'Marc Guéhi', 'Rúben Dias', 'Matheus Nunes', 'Elliot Anderson'],
+        a: ['Kevin De Bruyne', 'Rasmus Højlund', 'Scott McTominay', 'Mathías Olivera', 'Matteo Politano', 'Frank Anguissa', 'Stanislav Lobotka', 'Giovanni Di Lorenzo', 'Alessandro Buongiorno', 'Amir Rrahmani']
+      }
+    };
+  }
+  renderVals() {
+    const s = this.state;
+    const set = (p) => this.setState(p);
+    const f = (o) => o == null ? '—' : o.toFixed(2).replace('.', ',');
+    // [nom, buteur Alpha, Beta, [Betclic, Unibet, PMU], passeur Alpha, Beta, [Betclic, Unibet, PMU]]
+    // Effectif complet (sortie réelle du calculateur sans compo)
+    const SQ = {
+      h: [
+        ['Erling Haaland', 2.13, 1.93, [1.35, 1.37, 1.38], 31.05, 30.03, [5.0, 3.65, 4.0]],
+        ['Rayan Cherki', 3.28, 4.30, [2.40, 2.40, 2.75], 3.17, 2.46, [2.45, 2.10, 2.10]],
+        ["Nico O'Reilly", 3.56, 4.56, [5.50, 4.95, 5.50], 5.52, 7.96, [6.50, 4.55, 3.20]],
+        ['Phil Foden', 3.73, 4.46, [2.60, 2.60, 2.80], 2.53, 3.04, [3.90, 3.20, 2.70]],
+        ['Ryan McAidoo', 4.36, 12.94, [3.00, 3.05, null], 3.25, 5.52, [4.50, null, null]],
+        ['Iliman Ndiaye', 4.80, 4.77, [3.00, 2.85, 3.15], 2.41, 2.74, [3.50, 2.75, 2.90]],
+        ['Enzo Fernández', 5.52, 4.68, [3.80, 3.80, 3.25], 6.02, 5.79, [4.25, 3.20, 3.50]]
+      ],
+      a: [
+        ['Kevin De Bruyne', 4.45, 6.47, [6.50, 5.60, 6.50], 6.99, 7.15, [5.00, 3.65, 5.00]],
+        ['Rasmus Højlund', 6.86, 6.60, [4.00, 3.75, 4.35], 41.85, 72.29, [12.0, 8.10, 6.50]],
+        ['Scott McTominay', 7.10, 6.57, [5.00, 4.60, 5.60], 55.22, 60.90, [11.0, 8.10, 7.50]],
+        ['Mathías Olivera', 7.64, 17.87, [17.0, 14.0, 17.0], 9.43, 16.92, [12.0, 10.5, 10.5]],
+        ['David Neres', 12.19, 9.36, [6.50, null, 6.75], 8.33, 13.35, [8.00, null, 5.80]],
+        ['Matteo Politano', 12.68, 14.12, [7.00, 5.80, 7.00], 3.30, 3.82, [8.50, 6.30, 8.00]],
+        ['Frank Anguissa', 13.12, 18.00, [9.00, 6.80, 7.50], 74.92, 66.40, [11.0, 8.10, 12.5]]
+      ]
+    };
+    // Compo (sortie réelle du calculateur avec ces titulaires)
+    const XI = {
+      h: [
+        ['Erling Haaland', 2.13, 1.93, [1.35, 1.37, 1.38], 31.05, 30.03, [5.0, 3.65, 4.0]],
+        ['Rayan Cherki', 3.28, 4.30, [2.40, 2.40, 2.75], 3.17, 2.46, [2.45, 2.10, 2.10]],
+        ['Phil Foden', 3.73, 4.46, [2.60, 2.60, 2.80], 2.53, 3.04, [3.90, 3.20, 2.70]],
+        ['Enzo Fernández', 5.52, 4.68, [3.80, 3.80, 3.25], 6.02, 5.79, [4.25, 3.20, 3.50]],
+        ['Joško Gvardiol', 8.61, 9.47, [7.50, 6.50, 6.10], 5.94, 9.60, [8.50, 6.30, 5.20]],
+        ['Jérémy Doku', 8.88, 9.13, [3.20, 2.95, 3.00], 3.17, 3.42, [3.70, 3.20, 2.35]],
+        ['Marc Guéhi', 9.24, 12.46, [9.00, 7.50, 7.00], 11.49, 24.45, [11.0, 8.10, 5.00]],
+        ['Rúben Dias', 11.49, 16.70, [11.0, 7.80, 7.00], 42.49, 56.70, [12.0, 10.5, 8.50]],
+        ['Matheus Nunes', 32.38, 25.65, [11.0, 8.00, 7.00], 15.16, 17.31, [5.00, 3.65, 3.20]],
+        ['Elliot Anderson', 33.24, 18.16, [6.50, 5.60, 6.10], 7.19, 7.45, [5.00, 3.65, 3.40]]
+      ],
+      a: [
+        ['Kevin De Bruyne', 3.39, 6.47, [6.50, 5.60, 6.50], 4.30, 7.15, [5.00, 3.65, 5.00]],
+        ['Rasmus Højlund', 5.13, 6.60, [4.00, 3.75, 4.35], 24.60, 72.29, [12.0, 8.10, 6.50]],
+        ['Scott McTominay', 5.31, 6.57, [5.00, 4.60, 5.60], 32.39, 60.90, [11.0, 8.10, 7.50]],
+        ['Mathías Olivera', 5.70, 17.87, [17.0, 14.0, 17.0], 5.71, 16.92, [12.0, 10.5, 10.5]],
+        ['Matteo Politano', 9.36, 14.12, [7.00, 5.80, 7.00], 2.17, 3.82, [8.50, 6.30, 8.00]],
+        ['Frank Anguissa', 9.68, 18.00, [9.00, 6.80, 7.50], 43.87, 66.40, [11.0, 8.10, 12.5]],
+        ['Stanislav Lobotka', 19.34, 88.05, [null, 11.5, null], 35.48, 71.92, [null, null, null]],
+        ['Giovanni Di Lorenzo', 23.75, 27.43, [null, 9.90, null], 10.63, 12.64, [null, null, null]],
+        ['Alessandro Buongiorno', 30.24, 42.43, [null, 13.0, null], 51.09, 65.15, [null, null, null]],
+        ['Amir Rrahmani', 52.23, 40.96, [17.0, 11.5, 17.0], 83.03, 100.5, [25.0, 13.5, 17.0]]
+      ]
+    };
+    const c = (book, alpha, beta, first) => (first ? 's ' : '') + (book == null ? 'book dn' : (book > Math.max(alpha, beta) * 1.05 ? 'book up' : 'book'));
+    const row = (r, flip) => {
+      const [name, ga, gb, gk, aa, ab, ak] = r;
+      return {
+        name, flip, ga: f(ga), gb: f(gb), g1: f(gk[0]), g2: f(gk[1]), g3: f(gk[2]), aa: f(aa), ab: f(ab), a1: f(ak[0]), a2: f(ak[1]), a3: f(ak[2]),
+        c1: c(gk[0], ga, gb, true), c2: c(gk[1], ga, gb), c3: c(gk[2], ga, gb),
+        d1: c(ak[0], aa, ab, true), d2: c(ak[1], aa, ab), d3: c(ak[2], aa, ab)
+      };
+    };
+    const team = (k, meta) => {
+      const isXi = s.mode[k] === 'xi';
+      const modes = [['squad', 'Effectif'], ['xi', 'Compo']].map(([v, label]) => ({ label, cls: s.mode[k] === v ? 'on' : '', pick: () => set({ mode: { ...s.mode, [k]: v } }) }));
+      if (!isXi) return { ...meta, isXi, modes, players: SQ[k].map((r) => row(r)), bench: [] };
+      const byName = {};
+      SQ[k].forEach((r) => { byName[r[0]] = r; });
+      XI[k].forEach((r) => { byName[r[0]] = r; });
+      const chosen = s.xi[k];
+      const flip = (name) => () => {
+        const cur = s.xi[k];
+        const next = cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name];
+        set({ xi: { ...s.xi, [k]: next } });
+      };
+      const players = chosen.map((n) => row(byName[n], flip(n)));
+      const bench = Object.keys(byName).filter((n) => !chosen.includes(n)).map((n) => row(byName[n], flip(n)));
+      return { ...meta, isXi, modes, players, bench, count: chosen.length + ' / 10 joueurs de champ', xiNote: 'Compo probable — à confirmer à l’annonce officielle. Gardien non coté.' };
+    };
+    const M = (id, time, home, away) => ({ id, time, home, away });
+    const groups = [
+      { id: 'c1', name: 'Ligue des champions', short: 'C1', count: 18, bg: '#1e2a4a', fg: '#b8c9ff', matches: [M('mci-nap', '21:00', 'Manchester City', 'SSC Napoli'), M('rbl', '21:00', 'RB Leipzig', 'RC Lens'), M('fey', '21:00', 'Feyenoord', 'FC Porto'), M('slo', '21:00', 'Slovan Bratislava', 'Real Betis'), M('com', '21:00', 'Como', 'AEK Athènes'), M('bod', '18:45', 'Bodø/Glimt', 'LASK'), M('gal', '18:45', 'Galatasaray', 'Aston Villa')] },
+      { id: 'pl', name: 'Premier League', short: 'EN', count: 29, bg: '#2a1e3a', fg: '#d9c2ff', matches: [M('bre', 'Lun.', 'Brentford', 'Everton')] },
+      { id: 'll', name: 'La Liga', short: 'ES', count: 28, bg: '#3a1e1e', fg: '#ffc2c2', matches: [] },
+      { id: 'sa', name: 'Serie A', short: 'IT', count: 17, bg: '#1e3a2c', fg: '#bff0d4', matches: [] },
+      { id: 'bl', name: 'Bundesliga', short: 'DE', count: 9, bg: '#3a2e1e', fg: '#ffe2b8', matches: [] },
+      { id: 'l1', name: 'Ligue 1', short: 'FR', count: 9, bg: '#1e2c3a', fg: '#c2dcff', matches: [] }
+    ].map((g) => {
+      const open = !!s.open[g.id];
+      return { ...g, open, badgeStyle: 'width: 26px; height: 26px; font-size: 10px; background: ' + g.bg + '; color: ' + g.fg,
+        toggle: () => set({ open: { ...s.open, [g.id]: !open } }),
+        matches: g.matches.map((m) => ({ ...m, cls: s.match === m.id ? 'mrow on' : 'mrow', pick: () => set({ match: m.id }) })) };
+    });
+    return {
+      days: [['lun', 'Lun. 23'], ['mar', 'Mar. 24'], ['mer', 'Mer. 25'], ['jeu', 'Jeu. 26'], ['sam', 'Sam. 28']].map(([v, l]) => ({ label: l, cls: s.day === v ? 'chip on' : 'chip', pick: () => set({ day: v }) })),
+      groups,
+      teams: [
+        team('h', { name: 'Manchester City', short: 'MC', xg: '2,74', band: 'background: linear-gradient(90deg, rgba(108,171,221,.38), rgba(108,171,221,0) 70%)', disc: 'width: 30px; height: 30px; font-size: 11px; background: #6cabdd; color: #0b2340; box-shadow: 0 4px 12px rgba(108,171,221,.4)' }),
+        team('a', { name: 'SSC Napoli', short: 'NA', xg: '0,93', band: 'background: linear-gradient(90deg, rgba(10,111,181,.45), rgba(10,111,181,0) 70%)', disc: 'width: 30px; height: 30px; font-size: 11px; background: #0a6fb5; color: #ffffff; box-shadow: 0 4px 12px rgba(10,111,181,.45)' })
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

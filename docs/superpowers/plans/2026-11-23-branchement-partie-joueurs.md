@@ -256,6 +256,26 @@
 
 - [ ] **Step 1:** Test structurel : `grep -rn "p00\|rembours" backend/app frontend/src` ne renvoie plus rien (hors commentaires d'historique des migrations). **Step 2:** FAIL. **Step 3:** Supprimer. Les recos déjà en base gardent leurs anciennes clés (pas de migration de données). **Step 4:** suite complète + `npx tsc --noEmit` → PASS. **Step 5:** Commit `chore: retrait de la garantie remboursé si 0-0, disparue chez les books`.
 
+### Task 15: Nouvel écran du calculateur (maquette D validée)
+
+> Ajoutée le 23/11 : l'utilisateur a validé la maquette D (`docs/superpowers/calculateur-maquette-D.html`, artefact https://claude.ai/artifact/Joyw1HxijGKHc8sVVKvoQs#artboard-Liste3). C'est l'étape 2 de la roadmap. Elle remplace la « substitution minimale » prévue en tâche 11 pour la page calculateur.
+
+**Exigences (de l'utilisateur, à respecter à la lettre) :**
+- Bande à gauche : recherche, jours, compétitions dépliables avec leurs matchs (noms et écussons de l'Atlas, `competition_name`).
+- À droite : titre du match + ligne xG ; UNE LISTE PAR ÉQUIPE, un joueur par ligne, colonnes Buteur puis Passeur, chacune = Alpha · Beta · Betclic · Unibet · PMU. Texte compact (13 px, lignes resserrées), lisible.
+- Couleurs : en-tête d'équipe en dégradé aux couleurs du club (couleur dérivée de l'écusson ou valeur neutre si inconnue — jamais inventée par nom), bandeau Buteur vert, Passeur orange, Alpha bleu, Beta violet, books gris ; cote book en VERT quand elle dépasse les deux cotes Ev0 de plus de 5 % ; « — » quand le book ne propose pas la cote ; relief (ombres).
+- Bouton Effectif / Compo par équipe ; en Compo : titulaires cochés puis remplaçants grisés, cocher/décocher recalcule via `home_starter_ids` / `away_starter_ids` ; compteur « N / 10 joueurs de champ » ; signalements de compo de l'API affichés.
+- JAMAIS de minutes affichées ; pas de P(0-0) ; pas de cartes/blocs décoratifs ; rien d'autre que la maquette sans demander.
+
+**Files:**
+- Create: `backend` endpoint `GET /api/v1/fixtures/{fixture_id}/player-odds` → `[{player_api_id, market: "goal"|"assist", bookmaker, odds, scraped_at}]` (dernière cote par joueur × marché × book, uniquement lignes reliées `player_api_id IS NOT NULL`), test.
+- Rewrite: `frontend/src/app/dashboard/calculator/page.tsx`, `frontend/src/components/calculator/*` (le widget compo actuel est remplacé par le mode Compo intégré).
+- Modify: `frontend/src/lib/api.ts`.
+
+- [ ] **Step 1:** Endpoint + test (TDD backend).
+- [ ] **Step 2:** Page et composants selon la maquette ; `npx tsc --noEmit && npm run build` OK.
+- [ ] **Step 3:** Commit `feat(calculateur): nouvel écran en listes par équipe, Alpha · Beta · books (maquette D)`.
+
 ### Task 12: Mesure de fin + mise en production
 
 **Files:**
