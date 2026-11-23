@@ -173,6 +173,37 @@ def _minutes_du_joueur(minutes: dict[str, float] | None, player_name: str) -> fl
     return 0.0
 
 
+async def _minutes_du_match_par_id(db: AsyncSession, fixture) -> dict[int, float] | None:
+    """Minutes jouees par identifiant Bzzoiro : {player_api_id -> minutes}.
+
+    Meme source que `_minutes_du_match` (`bzz_player_match_stats`), cle par
+    identifiant au lieu du nom. None quand le match n'a aucune donnee.
+    """
+    ext = getattr(fixture, "external_id", None) or ""
+    if not ext.startswith("bzz_"):
+        return None
+    try:
+        bzz_event_id = int(ext[len("bzz_"):])
+    except ValueError:
+        return None
+    rows = (await db.execute(
+        sa_text("""
+            SELECT m.player_api_id, m.minutes_played
+            FROM bzz_player_match_stats m
+            WHERE m.event_api_id = :ev
+        """),
+        {"ev": bzz_event_id},
+    )).all()
+    minutes = {int(pid): float(mn or 0) for pid, mn in rows if pid is not None}
+    return minutes or None
+
+
+def _id_joueur(rec) -> int | None:
+    """Identifiant Bzzoiro de la reco, ou None (anciennes recos : chemin par nom)."""
+    pid = getattr(rec, "player_id", None)
+    return pid if isinstance(pid, int) and not isinstance(pid, bool) else None
+
+
 # Un 1N2 se regle sur le temps reglementaire. Le soir d'un match prolonge, la
 # synchro peut capter le score apres prolongation, que Bzzoiro remplace ensuite
 # par le score a 90' : on attend que le score soit stabilise. Le 12/10/2026,
@@ -223,6 +254,8 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
     _minutes_cache: dict[int, dict[str, float] | None] = {}
     # event_types distincts par fixture (set vide = aucun event synchronisé)
     _events_cache: dict[int, set] = {}
+    # fixture_id -> {player_api_id: minutes} (recos portant un player_id)
+    _minutes_id_cache: dict[int, dict[int, float] | None] = {}
 
     settled = 0
     won_count = 0
@@ -302,7 +335,15 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
             _minutes_cache[fixture.id] = await _minutes_du_match(db, fixture)
 
         minutes_du_match = _minutes_cache[fixture.id]
-        minutes_joueur = _minutes_du_joueur(minutes_du_match, rec.player_name)
+        pid = _id_joueur(rec)
+        if pid is not None:
+            # Reco avec identifiant : minutes cherchees par id, jamais par nom.
+            if fixture.id not in _minutes_id_cache:
+                _minutes_id_cache[fixture.id] = await _minutes_du_match_par_id(db, fixture)
+            minutes_par_id = _minutes_id_cache[fixture.id]
+            minutes_joueur = None if minutes_par_id is None else minutes_par_id.get(pid, 0.0)
+        else:
+            minutes_joueur = _minutes_du_joueur(minutes_du_match, rec.player_name)
 
         # --- Load MatchEvents (types + nb d'events "but") ---
         if fixture.id not in _events_cache:
@@ -381,7 +422,20 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
                 )
             )
             fixture_events = all_events_result.scalars().all()
-            won = any(_names_match(ev.player_name, rec.player_name) for ev in fixture_events)
+            if pid is not None:
+                won = any(ev.player_id == pid for ev in fixture_events)
+                if not won and any(ev.player_id is None for ev in fixture_events):
+                    # Un but sans identifiant : impossible de conclure PERDU
+                    # par id, et pas de repli silencieux sur le nom.
+                    logger.warning(
+                        "auto_settle: reco %d (id %d) — des evenements sans "
+                        "identifiant joueur sur la fixture %d, laissee en attente",
+                        rec.id, pid, fixture.id,
+                    )
+                    stuck_fixture_ids.add(fixture.id)
+                    continue
+            else:
+                won = any(_names_match(ev.player_name, rec.player_name) for ev in fixture_events)
 
             # Un but prouve la participation : GAGNE se tranche sans les
             # minutes. PERDU, non -- il faut avoir etabli que le joueur a
