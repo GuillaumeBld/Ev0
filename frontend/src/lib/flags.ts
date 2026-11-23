@@ -6,6 +6,13 @@
 export function emojiToIso(emoji: string | null | undefined): string | null {
   if (!emoji) return null
   const chars = Array.from(emoji)
+  // Drapeaux régionaux (suite de balises) : Angleterre, Écosse, Pays de Galles.
+  const BALISES: Record<string, string> = {
+    '\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}': 'gb-eng',
+    '\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}': 'gb-sct',
+    '\u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}': 'gb-wls',
+  }
+  if (BALISES[emoji]) return BALISES[emoji]
   if (chars.length !== 2) return null
   const a = chars[0].codePointAt(0) ?? 0
   const b = chars[1].codePointAt(0) ?? 0

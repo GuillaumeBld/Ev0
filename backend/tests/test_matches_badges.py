@@ -27,3 +27,11 @@ def test_player_ids_exposes_pour_les_liens_fiche():
     assert "player_id" in Recommendation.model_fields
     assert "player_id" in HistoryItem.model_fields
     assert "player_api_id" in lineups.LineupPlayerOut.model_fields
+
+
+def test_route_competitions_declaree_avant_la_route_dynamique():
+    chemins = [r.path for r in matches.router.routes]
+    assert "/matches/competitions" in chemins
+    assert chemins.index("/matches/competitions") < chemins.index("/matches/{event_api_id}")
+    src = inspect.getsource(matches.list_match_competitions)
+    assert "distinct()" in src and "competition_name(" in src

@@ -29,6 +29,7 @@ function fmtDate(iso: string | null): string {
 export default function MatchesPage() {
   const [matches, setMatches] = useState<MatchListItem[]>([])
   const [league, setLeague] = useState<number | null>(null)
+  const [leagues, setLeagues] = useState<[number, string][]>([])
   const [loading, setLoading] = useState(true)
   const [erreur, setErreur] = useState<string | null>(null)
 
@@ -36,9 +37,11 @@ export default function MatchesPage() {
     setLoading(true)
     setErreur(null)
     try {
-      // Tout le périmètre d'un coup : le filtre championnat est construit
-      // depuis les données reçues et appliqué à l'écran.
-      const r = await fetch('/api/v1/matches?limit=200')
+      // « Tous » = les matchs les plus récents ; un championnat choisi est
+      // filtré côté serveur, avec sa propre limite.
+      const params = new URLSearchParams({ limit: '100' })
+      if (league !== null) params.set('league_api_id', league.toString())
+      const r = await fetch(`/api/v1/matches?${params}`)
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       setMatches(await r.json())
     } catch (e) {
@@ -47,19 +50,23 @@ export default function MatchesPage() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [league])
 
   useEffect(() => { charger() }, [charger])
 
-  // Championnats présents dans les matchs reçus : une compétition inconnue s'affiche.
-  const leagues = Array.from(
-    new Map(
-      matches
-        .filter((m) => m.league_api_id != null)
-        .map((m) => [m.league_api_id as number, m.competition_name ?? `Compétition ${m.league_api_id}`]),
-    ),
-  ).sort((a, b) => a[1].localeCompare(b[1], 'fr'))
-  const shown = league === null ? matches : matches.filter((m) => m.league_api_id === league)
+  // Boutons de championnat : liste de TOUTES les compétitions présentes
+  // (endpoint dédié), indépendante des matchs affichés.
+  useEffect(() => {
+    fetch('/api/v1/matches/competitions')
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json()
+      })
+      .then((d: { competition_api_id: number; competition_name: string }[]) =>
+        setLeagues(d.map((c) => [c.competition_api_id, c.competition_name] as [number, string])),
+      )
+      .catch((e) => setErreur(`Impossible de charger les championnats : ${(e as Error).message}`))
+  }, [])
 
   return (
     <div className="space-y-4">
@@ -111,10 +118,10 @@ export default function MatchesPage() {
               {loading && (
                 <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Chargement…</td></tr>
               )}
-              {!loading && shown.length === 0 && (
+              {!loading && matches.length === 0 && (
                 <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Aucun match</td></tr>
               )}
-              {shown.map((m) => (
+              {matches.map((m) => (
                 <tr key={m.event_api_id} className="border-b border-gray-700/50 hover:bg-ev-surface2">
                   <td className="px-4 py-2 text-gray-400 whitespace-nowrap">{fmtDate(m.event_date)}</td>
                   <td className="px-3 py-2">

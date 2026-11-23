@@ -25,6 +25,7 @@ from app.models.fixtures import Fixture
 from app.models.canonical_teams import CanonicalTeam
 from app.models.lineups import TeamLineup
 from app.services.atlas_source import team_badges
+from app.services.competitions import competition_name
 
 router = APIRouter(prefix="/matches", tags=["matches"])
 
@@ -158,6 +159,32 @@ async def list_matches(
         }
         for e in rows
     ]
+
+
+@router.get("/competitions", response_model=list[dict])
+async def list_match_competitions(
+    session: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """Toutes les competitions presentes dans la base des matchs du perimetre.
+
+    Source des boutons de filtre de la page Matchs : independante de la
+    pagination de la liste, donc aucun championnat ne disparait faute de match
+    recent. Declaree avant `/{event_api_id}` pour ne pas etre captee par lui.
+    """
+    ids = (await session.execute(
+        select(BzzEvent.league_api_id)
+        .where(BzzEvent.league_api_id.in_(LEAGUES_FICHE_MATCH))
+        .distinct()
+    )).scalars().all()
+    out = [
+        {
+            "competition_api_id": i,
+            "competition_name": competition_name(i) or f"Competition {i}",
+        }
+        for i in ids
+        if i is not None
+    ]
+    return sorted(out, key=lambda c: c["competition_name"])
 
 
 @router.get("/{event_api_id}", response_model=dict)
