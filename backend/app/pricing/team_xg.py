@@ -209,6 +209,9 @@ class PlayerShare:
     # mesuree. Sert a afficher d'ou vient une cote.
     poids_mesure_goal: float = 1.0
     poids_mesure_assist: float = 1.0
+    # Saison dont viennent les stats (toutes competitions fusionnees) ;
+    # None pour un joueur de l'effectif sans aucune stat.
+    stats_season: str | None = None
 
 
 @dataclass
@@ -243,6 +246,8 @@ class PlayerAllocation:
     # Permet d'afficher si une cote est mesuree, melangee, ou issue du poste.
     poids_mesure_goal: float = 1.0
     poids_mesure_assist: float = 1.0
+    # Saison dont viennent les stats du joueur (None = aucune stat).
+    stats_season: str | None = None
     # Supersub fields
     p_goal_supersub: float = 0.0
     fair_odds_goal_supersub: float = 99.0
@@ -568,6 +573,7 @@ def compute_player_shares(
             has_bzz_stats=p.get("has_bzz_stats", False),
             poids_mesure_goal=round(poids_xg, 4),
             poids_mesure_assist=round(poids_xa, 4),
+            stats_season=p.get("stats_season"),
         ))
     return shares
 
@@ -734,6 +740,7 @@ def allocate_player(
         has_signal_assist=has_signal_assist,
         poids_mesure_goal=share.poids_mesure_goal,
         poids_mesure_assist=share.poids_mesure_assist,
+        stats_season=share.stats_season,
         p_goal_supersub=round(p_goal_ss, 4),
         fair_odds_goal_supersub=fair_odds_goal_ss,
         p_assist_supersub=round(p_assist_ss, 4),
@@ -747,35 +754,134 @@ def allocate_player(
 
 # ── DB helpers ────────────────────────────────────────────────────
 
-async def _load_team_players(
-    db: AsyncSession,
-    team: str,
-    league: str | None = None,
-    bzz_team_id: int | None = None,
-) -> list[dict[str, Any]]:
-    """Load player season stats from bzz_player_season_stats for a team.
+def _player_dict_from_merged(player: Any, merged: dict[str, Any], season: str) -> dict[str, Any]:
+    """Dict joueur du calculateur depuis la fusion de TOUTES ses competitions d'une saison.
 
-    Effectif = `club_squad_filter(bzz_team_id)` (source unique Atlas).
-    Sans bzz_team_id : liste vide + alerte, jamais de rapprochement par nom.
+    `merged` = sortie de `merge_season_stats` (meme source que la partie Joueurs).
+    Les cles sont exactement celles lues par compute_player_shares /
+    allocate_player / _blend_tournament_stats / beta_pricing, plus
+    `stats_season`. Une stat absente de toutes les lignes reste 0 / None
+    comme avant : jamais de valeur inventee.
+    """
+    def _num(key: str, default: float | int = 0.0) -> Any:
+        v = merged.get(key)
+        return v if v else default
+
+    name = player.name
+    xg_total = _num("expected_goals")
+    goals_total = _num("goals", 0)
+    xa_total = _num("expected_assists")
+    xg_per_90 = _num("xg_per_90")
+    accurate_cross_per_90 = _num("accurate_cross_per_90")
+    form_xg_5 = merged.get("form_xg_5")
+    return {
+        "player_id": player.api_id,
+        "player_name": name,
+        "name": name,
+        "position": _norm_pos(_bzz_pos_to_raw(player.position)),
+        "matches_played": _num("matches_played", 0),
+        "minutes_played": _num("minutes_played", 0),
+        # Shared numeric fields (mapped to existing compute_player_shares keys)
+        "goals": goals_total,
+        "xg": xg_total,
+        "npxg": xg_total,  # no penalty split in bzz — use total xG
+        "xa": xa_total,
+        "npxg_per_90": xg_per_90,
+        "xa_per_90": _num("xa_per_90"),
+        "xgchain_per_90": 0.0,  # not available in bzz
+        # Bzzoiro-specific quality/creation fields
+        "xg_per_90": xg_per_90,
+        "shot_accuracy": _num("shot_accuracy"),
+        "xg_per_shot": _num("xg_per_shot"),
+        "avg_rating": _num("avg_rating"),          # brut (0-10), pondere par matchs
+        "cross_accuracy": _num("cross_accuracy"),
+        "xa_total": xa_total,
+        "assists_total": _num("goal_assist", 0),
+        "form_assists_5": merged.get("form_assists_5"),  # peut être None
+        "npxg_total": xg_total,
+        "goals_total": goals_total,
+        "key_pass_per_90": _num("key_pass_per_90"),
+        "accurate_cross_per_90": accurate_cross_per_90,
+        "form_xg_5": form_xg_5 if form_xg_5 else None,
+        "finishing_delta": goals_total - xg_total,
+        # Sofascore fields — not available from bzz; default to 0
+        "shots_on_target_per_90": _num("shots_on_target_per_90"),
+        "touches_attack_pen_area_per_90": 0.0,
+        "bcc_per_90": 0.0,
+        "accurate_crosses_per_90": accurate_cross_per_90,
+        "through_balls_per_90": 0.0,
+        # Flag to indicate bzz-sourced stats (triggers new multiplier formulas)
+        "has_bzz_stats": True,
+        "stats_season": season,
+    }
+
+
+def _roster_only_dict(player: Any, position: str | None) -> dict[str, Any]:
+    """Joueur de l'effectif sans aucune ligne de stats : zeros, les a priori de poste prennent le relais."""
+    return {
+        "player_id": player.api_id,
+        "player_name": player.name,
+        "name": player.name,
+        "position": position,
+        "matches_played": 0,
+        "minutes_played": 0,
+        "goals": 0,
+        "xg": 0.0,
+        "npxg": 0.0,
+        "xa": 0.0,
+        "npxg_per_90": 0.0,
+        "xa_per_90": 0.0,
+        "xgchain_per_90": 0.0,
+        "xg_per_90": 0.0,
+        "shot_accuracy": 0.0,
+        "xg_per_shot": 0.0,
+        "avg_rating": 0.0,
+        "cross_accuracy": 0.0,
+        "xa_total": 0.0,
+        "assists_total": 0,
+        "npxg_total": 0.0,
+        "goals_total": 0,
+        "key_pass_per_90": 0.0,
+        "accurate_cross_per_90": 0.0,
+        "form_xg_5": None,
+        "form_assists_5": None,
+        "finishing_delta": 0.0,
+        "shots_on_target_per_90": 0.0,
+        "touches_attack_pen_area_per_90": 0.0,
+        "bcc_per_90": 0.0,
+        "accurate_crosses_per_90": 0.0,
+        "through_balls_per_90": 0.0,
+        "has_bzz_stats": False,
+        "stats_season": None,
+    }
+
+
+async def _load_latest_season_merged(
+    db: AsyncSession,
+    where: Any,
+    join_player_in_subquery: bool = True,
+) -> list[tuple[Any, dict[str, Any], str]]:
+    """Derniere saison jouee de chaque joueur, TOUTES competitions fusionnees.
+
+    Methode Alpha inchangee (rythme de la derniere saison jouee) ; seule la
+    donnee change : championnat + coupes d'Europe + coupes nationales, et
+    les lignes sous deux clubs d'un joueur transfere en cours de saison,
+    sont additionnees par `merge_season_stats` (meme fusion que la partie
+    Joueurs) au lieu de ne garder que la competition la plus jouee.
+
+    Retourne [(BzzPlayer, merged, season)] trie par player_api_id.
     """
     from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat
-    from app.services.atlas_source import club_squad_filter
+    from app.services.atlas_source import merge_season_stats
 
-    if bzz_team_id is None:
-        logger.warning("_load_team_players: équipe non reliée à l'Atlas: %r", team)
-        alert_bg(f"Calculateur : équipe non reliée à l'Atlas — {team}", "incidents")
-        return []
-
-    team_id_filter = club_squad_filter(bzz_team_id)
-
-    # Query season stats joined to player — pick the most recent season per player
+    latest_q = select(
+        BzzPlayerSeasonStat.player_api_id,
+        func.max(BzzPlayerSeasonStat.season).label("max_season"),
+    )
+    if join_player_in_subquery:
+        latest_q = latest_q.join(BzzPlayer, BzzPlayer.api_id == BzzPlayerSeasonStat.player_api_id)
     latest_subq = (
-        select(
-            BzzPlayerSeasonStat.player_api_id,
-            func.max(BzzPlayerSeasonStat.season).label("max_season"),
-        )
-        .join(BzzPlayer, BzzPlayer.api_id == BzzPlayerSeasonStat.player_api_id)
-        .where(team_id_filter)
+        latest_q.where(where)
         .group_by(BzzPlayerSeasonStat.player_api_id)
         .subquery()
     )
@@ -788,152 +894,116 @@ async def _load_team_players(
             (BzzPlayerSeasonStat.player_api_id == latest_subq.c.player_api_id)
             & (BzzPlayerSeasonStat.season == latest_subq.c.max_season),
         )
-        .where(team_id_filter)
-        # Ensure the row with the most matches is seen first so seen_ids dedup
-        # keeps the full-season row rather than a sparse migration artifact.
-        .order_by(
-            BzzPlayerSeasonStat.player_api_id,
-            BzzPlayerSeasonStat.matches_played.desc().nullslast(),
-        )
+        .where(where)
+        .order_by(BzzPlayerSeasonStat.player_api_id, BzzPlayerSeasonStat.league_api_id)
     )
 
     res = await db.execute(stats_q)
+    grouped: dict[int, tuple[Any, list[Any]]] = {}
+    for row in res.all():
+        stat, player = row[0], row[1]
+        grouped.setdefault(player.api_id, (player, []))[1].append(stat)
 
-    players = []
+    out: list[tuple[Any, dict[str, Any], str]] = []
+    for player, stats in grouped.values():
+        season = stats[0].season
+        merged = merge_season_stats(stats, season)
+        if merged is not None:
+            out.append((player, merged, season))
+    return out
+
+
+def _append_merged_players(
+    merged_players: list[tuple[Any, dict[str, Any], str]],
+    players: list[dict[str, Any]],
+    seen_ids: set[int],
+    seen_internal_ids: set[int],
+    seen_names: set[str],
+) -> None:
+    """Ajoute les joueurs fusionnes (gardiens exclus), dedoublonnes par id / internal_id / nom."""
+    for player, merged, season in merged_players:
+        name_key = _name_key(player.name)
+        internal_id = player.internal_id
+        if player.api_id in seen_ids:
+            continue
+        if internal_id is not None and internal_id in seen_internal_ids:
+            continue
+        if name_key in seen_names:
+            continue
+        seen_ids.add(player.api_id)
+        if internal_id is not None:
+            seen_internal_ids.add(internal_id)
+        seen_names.add(name_key)
+
+        d = _player_dict_from_merged(player, merged, season)
+        if d["position"] == "GK":
+            continue
+        players.append(d)
+
+
+def _append_roster_fallback(
+    roster: list[Any],
+    players: list[dict[str, Any]],
+    seen_ids: set[int],
+    seen_internal_ids: set[int],
+    seen_names: set[str],
+) -> None:
+    """Joueurs de l'effectif sans stats : zeros, a priori de poste (comportement inchange)."""
+    for player in roster:
+        if player.api_id in seen_ids:
+            continue
+        internal_id = player.internal_id
+        if internal_id is not None and internal_id in seen_internal_ids:
+            continue
+        name_key = _name_key(player.name)
+        if name_key in seen_names:
+            continue
+
+        position = _norm_pos(_bzz_pos_to_raw(player.position))
+        if position == "GK":
+            continue
+
+        seen_ids.add(player.api_id)
+        if internal_id is not None:
+            seen_internal_ids.add(internal_id)
+        seen_names.add(name_key)
+        players.append(_roster_only_dict(player, position))
+
+
+async def _load_team_players(
+    db: AsyncSession,
+    team: str,
+    league: str | None = None,
+    bzz_team_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Load player season stats from bzz_player_season_stats for a team.
+
+    Effectif = `club_squad_filter(bzz_team_id)` (source unique Atlas).
+    Sans bzz_team_id : liste vide + alerte, jamais de rapprochement par nom.
+    Stats = derniere saison jouee, toutes competitions fusionnees.
+    """
+    from app.models.bzzoiro import BzzPlayer
+    from app.services.atlas_source import club_squad_filter
+
+    if bzz_team_id is None:
+        logger.warning("_load_team_players: équipe non reliée à l'Atlas: %r", team)
+        alert_bg(f"Calculateur : équipe non reliée à l'Atlas — {team}", "incidents")
+        return []
+
+    team_id_filter = club_squad_filter(bzz_team_id)
+    merged_players = await _load_latest_season_merged(db, team_id_filter)
+
+    players: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
     seen_internal_ids: set[int] = set()
     seen_names: set[str] = set()
-    for row in res.all():
-        stat, player = row[0], row[1]
-        name = player.name
-        name_key = _name_key(name)
-        internal_id = player.internal_id
-        if player.api_id in seen_ids:
-            continue
-        if internal_id is not None and internal_id in seen_internal_ids:
-            continue
-        if name_key in seen_names:
-            continue
-        seen_ids.add(player.api_id)
-        if internal_id is not None:
-            seen_internal_ids.add(internal_id)
-        seen_names.add(name_key)
-
-        # Map bzz position (G/D/M/F) to pricing engine format (GK/DF/MF/FW)
-        raw_pos = _bzz_pos_to_raw(player.position)
-        position = _norm_pos(raw_pos)
-        if position == "GK":
-            continue
-
-        xg_total = stat.expected_goals or 0.0
-        goals_total = stat.goals or 0
-        finishing_delta = goals_total - xg_total
-
-        players.append({
-            "player_id": player.api_id,
-            "player_name": name,
-            "name": name,
-            "position": position,
-            "matches_played": stat.matches_played or 0,
-            "minutes_played": stat.minutes_played or 0,
-            # Shared numeric fields (mapped to existing compute_player_shares keys)
-            "goals": goals_total,
-            "xg": xg_total,
-            "npxg": xg_total,  # no penalty split in bzz — use total xG
-            "xa": stat.expected_assists or 0.0,
-            "npxg_per_90": stat.xg_per_90 or 0.0,
-            "xa_per_90": stat.xa_per_90 or 0.0,
-            "xgchain_per_90": 0.0,  # not available in bzz
-            # Bzzoiro-specific quality/creation fields
-            "xg_per_90": stat.xg_per_90 or 0.0,
-            "shot_accuracy": stat.shot_accuracy or 0.0,
-            "xg_per_shot": stat.xg_per_shot or 0.0,
-            "avg_rating":      stat.avg_rating or 0.0,          # brut (0-10)
-            "cross_accuracy":  stat.cross_accuracy or 0.0,
-            "xa_total":        stat.expected_assists or 0.0,
-            "assists_total":   stat.goal_assist or 0,
-            "form_assists_5":  stat.form_assists_5,              # peut être None
-            "npxg_total":      xg_total,
-            "goals_total":     goals_total,
-            "key_pass_per_90": stat.key_pass_per_90 or 0.0,
-            "accurate_cross_per_90": stat.accurate_cross_per_90 or 0.0,
-            "form_xg_5": stat.form_xg_5 if stat.form_xg_5 else None,
-            "finishing_delta": finishing_delta,
-            # Sofascore fields — not available from bzz; default to 0
-            "shots_on_target_per_90": stat.shots_on_target_per_90 or 0.0,
-            "touches_attack_pen_area_per_90": 0.0,
-            "bcc_per_90": 0.0,
-            "accurate_crosses_per_90": stat.accurate_cross_per_90 or 0.0,
-            "through_balls_per_90": 0.0,
-            # Flag to indicate bzz-sourced stats (triggers new multiplier formulas)
-            "has_bzz_stats": True,
-        })
+    _append_merged_players(merged_players, players, seen_ids, seen_internal_ids, seen_names)
 
     # ── Fallback: add roster players with no season stats ─────────
-    # Players in bzz_players for this team but without BzzPlayerSeasonStat
-    # rows are invisible to the pricing engine. Load all roster players
-    # and append missing ones with zero stats — positional priors handle them.
-    all_roster_result = await db.execute(
-        select(BzzPlayer)
-        .where(team_id_filter)
+    all_roster_result = await db.execute(select(BzzPlayer).where(team_id_filter))
+    _append_roster_fallback(
+        all_roster_result.scalars().all(), players, seen_ids, seen_internal_ids, seen_names,
     )
-    for player in all_roster_result.scalars().all():
-        if player.api_id in seen_ids:
-            continue
-        internal_id = player.internal_id
-        if internal_id is not None and internal_id in seen_internal_ids:
-            continue
-        name = player.name
-        name_key = _name_key(name)
-        if name_key in seen_names:
-            continue
-
-        raw_pos = _bzz_pos_to_raw(player.position)
-        position = _norm_pos(raw_pos)
-        if position == "GK":
-            continue
-
-        seen_ids.add(player.api_id)
-        if internal_id is not None:
-            seen_internal_ids.add(internal_id)
-        seen_names.add(name_key)
-        players.append({
-            "player_id": player.api_id,
-            "player_name": name,
-            "name": name,
-            "position": position,
-            "matches_played": 0,
-            "minutes_played": 0,
-            "goals": 0,
-            "xg": 0.0,
-            "npxg": 0.0,
-            "xa": 0.0,
-            "npxg_per_90": 0.0,
-            "xa_per_90": 0.0,
-            "xgchain_per_90": 0.0,
-            "xg_per_90": 0.0,
-            "shot_accuracy": 0.0,
-            "xg_per_shot": 0.0,
-            "avg_rating": 0.0,
-            "cross_accuracy": 0.0,
-            "xa_total": 0.0,
-            "assists_total": 0,
-            "npxg_total": 0.0,
-            "goals_total": 0,
-            "key_pass_per_90": 0.0,
-            "accurate_cross_per_90": 0.0,
-            "form_xg_5": None,
-            "form_assists_5": None,
-            "finishing_delta": 0.0,
-            "shots_on_target_per_90": 0.0,
-            "touches_attack_pen_area_per_90": 0.0,
-            "bcc_per_90": 0.0,
-            "accurate_crosses_per_90": 0.0,
-            "through_balls_per_90": 0.0,
-            "has_bzz_stats": False,
-        })
-    # ── End fallback ──────────────────────────────────────────────
-
     return players
 
 
@@ -946,174 +1016,24 @@ async def _load_national_team_players(
     Filters bzz_players by national_team_api_id (direct integer match —
     no fuzzy name resolution needed). Return structure is identical to
     _load_team_players so all downstream callers work unchanged.
+    Stats = derniere saison jouee, toutes competitions fusionnees.
     """
-    from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat
+    from app.models.bzzoiro import BzzPlayer
 
     nat_filter = BzzPlayer.national_team_api_id == national_team_api_id
-
-    # Most-recent season per player (same subquery pattern as _load_team_players)
-    latest_subq = (
-        select(
-            BzzPlayerSeasonStat.player_api_id,
-            func.max(BzzPlayerSeasonStat.season).label("max_season"),
-        )
-        .join(BzzPlayer, BzzPlayer.api_id == BzzPlayerSeasonStat.player_api_id)
-        .where(nat_filter)
-        .group_by(BzzPlayerSeasonStat.player_api_id)
-        .subquery()
-    )
-
-    stats_q = (
-        select(BzzPlayerSeasonStat, BzzPlayer)
-        .join(BzzPlayer, BzzPlayer.api_id == BzzPlayerSeasonStat.player_api_id)
-        .join(
-            latest_subq,
-            (BzzPlayerSeasonStat.player_api_id == latest_subq.c.player_api_id)
-            & (BzzPlayerSeasonStat.season == latest_subq.c.max_season),
-        )
-        .where(nat_filter)
-        .order_by(
-            BzzPlayerSeasonStat.player_api_id,
-            BzzPlayerSeasonStat.matches_played.desc().nullslast(),
-        )
-    )
-
-    res = await db.execute(stats_q)
+    merged_players = await _load_latest_season_merged(db, nat_filter)
 
     players: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
     seen_internal_ids: set[int] = set()
     seen_names: set[str] = set()
-
-    for row in res.all():
-        stat, player = row[0], row[1]
-        name = player.name
-        name_key = _name_key(name)
-        internal_id = player.internal_id
-        if player.api_id in seen_ids:
-            continue
-        if internal_id is not None and internal_id in seen_internal_ids:
-            continue
-        if name_key in seen_names:
-            continue
-        seen_ids.add(player.api_id)
-        if internal_id is not None:
-            seen_internal_ids.add(internal_id)
-        seen_names.add(name_key)
-
-        raw_pos = _bzz_pos_to_raw(player.position)
-        position = _norm_pos(raw_pos)
-        if position == "GK":
-            continue
-
-        xg_total = stat.expected_goals or 0.0
-        goals_total = stat.goals or 0
-        finishing_delta = goals_total - xg_total
-
-        players.append({
-            "player_id": player.api_id,
-            "player_name": name,
-            "name": name,
-            "position": position,
-            "matches_played": stat.matches_played or 0,
-            "minutes_played": stat.minutes_played or 0,
-            # Shared numeric fields (mapped to existing compute_player_shares keys)
-            "goals": goals_total,
-            "xg": xg_total,
-            "npxg": xg_total,  # no penalty split in bzz — use total xG
-            "xa": stat.expected_assists or 0.0,
-            "npxg_per_90": stat.xg_per_90 or 0.0,
-            "xa_per_90": stat.xa_per_90 or 0.0,
-            "xgchain_per_90": 0.0,  # not available in bzz
-            # Bzzoiro-specific quality/creation fields
-            "xg_per_90": stat.xg_per_90 or 0.0,
-            "shot_accuracy": stat.shot_accuracy or 0.0,
-            "xg_per_shot": stat.xg_per_shot or 0.0,
-            "avg_rating":      stat.avg_rating or 0.0,          # brut (0-10)
-            "cross_accuracy":  stat.cross_accuracy or 0.0,
-            "xa_total":        stat.expected_assists or 0.0,
-            "assists_total":   stat.goal_assist or 0,
-            "form_assists_5":  stat.form_assists_5,              # peut être None
-            "npxg_total":      xg_total,
-            "goals_total":     goals_total,
-            "key_pass_per_90": stat.key_pass_per_90 or 0.0,
-            "accurate_cross_per_90": stat.accurate_cross_per_90 or 0.0,
-            "form_xg_5": stat.form_xg_5 if stat.form_xg_5 else None,
-            "finishing_delta": finishing_delta,
-            # Sofascore fields — not available from bzz; default to 0
-            "shots_on_target_per_90": stat.shots_on_target_per_90 or 0.0,
-            "touches_attack_pen_area_per_90": 0.0,
-            "bcc_per_90": 0.0,
-            "accurate_crosses_per_90": stat.accurate_cross_per_90 or 0.0,
-            "through_balls_per_90": 0.0,
-            # Flag to indicate bzz-sourced stats (triggers new multiplier formulas)
-            "has_bzz_stats": True,
-        })
+    _append_merged_players(merged_players, players, seen_ids, seen_internal_ids, seen_names)
 
     # ── Fallback: add roster players with no season stats ─────────
-    # Players in bzz_players for this national team but without BzzPlayerSeasonStat
-    # rows are invisible to the pricing engine. Load all roster players
-    # and append missing ones with zero stats — positional priors handle them.
-    all_roster_result = await db.execute(
-        select(BzzPlayer).where(nat_filter)
+    all_roster_result = await db.execute(select(BzzPlayer).where(nat_filter))
+    _append_roster_fallback(
+        all_roster_result.scalars().all(), players, seen_ids, seen_internal_ids, seen_names,
     )
-    for player in all_roster_result.scalars().all():
-        if player.api_id in seen_ids:
-            continue
-        internal_id = player.internal_id
-        if internal_id is not None and internal_id in seen_internal_ids:
-            continue
-        name = player.name
-        name_key = _name_key(name)
-        if name_key in seen_names:
-            continue
-
-        raw_pos = _bzz_pos_to_raw(player.position)
-        position = _norm_pos(raw_pos)
-        if position == "GK":
-            continue
-
-        seen_ids.add(player.api_id)
-        if internal_id is not None:
-            seen_internal_ids.add(internal_id)
-        seen_names.add(name_key)
-        players.append({
-            "player_id": player.api_id,
-            "player_name": name,
-            "name": name,
-            "position": position,
-            "matches_played": 0,
-            "minutes_played": 0,
-            "goals": 0,
-            "xg": 0.0,
-            "npxg": 0.0,
-            "xa": 0.0,
-            "npxg_per_90": 0.0,
-            "xa_per_90": 0.0,
-            "xgchain_per_90": 0.0,
-            "xg_per_90": 0.0,
-            "shot_accuracy": 0.0,
-            "xg_per_shot": 0.0,
-            "avg_rating": 0.0,
-            "cross_accuracy": 0.0,
-            "xa_total": 0.0,
-            "assists_total": 0,
-            "npxg_total": 0.0,
-            "goals_total": 0,
-            "key_pass_per_90": 0.0,
-            "accurate_cross_per_90": 0.0,
-            "form_xg_5": None,
-            "form_assists_5": None,
-            "finishing_delta": 0.0,
-            "shots_on_target_per_90": 0.0,
-            "touches_attack_pen_area_per_90": 0.0,
-            "bcc_per_90": 0.0,
-            "accurate_crosses_per_90": 0.0,
-            "through_balls_per_90": 0.0,
-            "has_bzz_stats": False,
-        })
-    # ── End fallback ──────────────────────────────────────────────
-
     return players
 
 
@@ -1125,82 +1045,26 @@ async def _load_players_by_api_ids(
 
     Used to supplement the pool with players who are in the BZZ event lineup but
     whose national_team_api_id is missing or incorrect in bzz_players.
+    Stats = derniere saison jouee, toutes competitions fusionnees.
     """
     from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat
 
     if not api_ids:
         return []
 
-    latest_subq = (
-        select(
-            BzzPlayerSeasonStat.player_api_id,
-            func.max(BzzPlayerSeasonStat.season).label("max_season"),
-        )
-        .where(BzzPlayerSeasonStat.player_api_id.in_(api_ids))
-        .group_by(BzzPlayerSeasonStat.player_api_id)
-        .subquery()
+    merged_players = await _load_latest_season_merged(
+        db, BzzPlayerSeasonStat.player_api_id.in_(api_ids), join_player_in_subquery=False,
     )
-
-    stats_q = (
-        select(BzzPlayerSeasonStat, BzzPlayer)
-        .join(BzzPlayer, BzzPlayer.api_id == BzzPlayerSeasonStat.player_api_id)
-        .join(
-            latest_subq,
-            (BzzPlayerSeasonStat.player_api_id == latest_subq.c.player_api_id)
-            & (BzzPlayerSeasonStat.season == latest_subq.c.max_season),
-        )
-        .where(BzzPlayerSeasonStat.player_api_id.in_(api_ids))
-    )
-
-    res = await db.execute(stats_q)
     seen_ids: set[int] = set()
     players: list[dict[str, Any]] = []
-    for row in res.all():
-        stat, player = row[0], row[1]
+    for player, merged, season in merged_players:
         if player.api_id in seen_ids:
             continue
         seen_ids.add(player.api_id)
-        raw_pos = _bzz_pos_to_raw(player.position)
-        position = _norm_pos(raw_pos)
-        if position == "GK":
+        d = _player_dict_from_merged(player, merged, season)
+        if d["position"] == "GK":
             continue
-        xg_total = stat.expected_goals or 0.0
-        goals_total = stat.goals or 0
-        players.append({
-            "player_id": player.api_id,
-            "player_name": player.name,
-            "name": player.name,
-            "position": position,
-            "matches_played": stat.matches_played or 0,
-            "minutes_played": stat.minutes_played or 0,
-            "goals": goals_total,
-            "xg": xg_total,
-            "npxg": xg_total,
-            "xa": stat.expected_assists or 0.0,
-            "npxg_per_90": stat.xg_per_90 or 0.0,
-            "xa_per_90": stat.xa_per_90 or 0.0,
-            "xgchain_per_90": 0.0,
-            "xg_per_90": stat.xg_per_90 or 0.0,
-            "shot_accuracy": stat.shot_accuracy or 0.0,
-            "xg_per_shot": stat.xg_per_shot or 0.0,
-            "avg_rating": stat.avg_rating or 0.0,
-            "cross_accuracy": stat.cross_accuracy or 0.0,
-            "xa_total": stat.expected_assists or 0.0,
-            "assists_total": stat.goal_assist or 0,
-            "form_assists_5": stat.form_assists_5,
-            "npxg_total": xg_total,
-            "goals_total": goals_total,
-            "key_pass_per_90": stat.key_pass_per_90 or 0.0,
-            "accurate_cross_per_90": stat.accurate_cross_per_90 or 0.0,
-            "form_xg_5": stat.form_xg_5 if stat.form_xg_5 else None,
-            "finishing_delta": goals_total - xg_total,
-            "shots_on_target_per_90": stat.shots_on_target_per_90 or 0.0,
-            "touches_attack_pen_area_per_90": 0.0,
-            "bcc_per_90": 0.0,
-            "accurate_crosses_per_90": stat.accurate_cross_per_90 or 0.0,
-            "through_balls_per_90": 0.0,
-            "has_bzz_stats": True,
-        })
+        players.append(d)
 
     # Fallback for players without season stats
     no_stat_ids = [i for i in api_ids if i not in seen_ids]
@@ -1211,46 +1075,11 @@ async def _load_players_by_api_ids(
         for player in roster_res.scalars().all():
             if player.api_id in seen_ids:
                 continue
-            raw_pos = _bzz_pos_to_raw(player.position)
-            position = _norm_pos(raw_pos)
+            position = _norm_pos(_bzz_pos_to_raw(player.position))
             if position == "GK":
                 continue
             seen_ids.add(player.api_id)
-            players.append({
-                "player_id": player.api_id,
-                "player_name": player.name,
-                "name": player.name,
-                "position": position,
-                "matches_played": 0,
-                "minutes_played": 0,
-                "goals": 0,
-                "xg": 0.0,
-                "npxg": 0.0,
-                "xa": 0.0,
-                "npxg_per_90": 0.0,
-                "xa_per_90": 0.0,
-                "xgchain_per_90": 0.0,
-                "xg_per_90": 0.0,
-                "shot_accuracy": 0.0,
-                "xg_per_shot": 0.0,
-                "avg_rating": 0.0,
-                "cross_accuracy": 0.0,
-                "xa_total": 0.0,
-                "assists_total": 0,
-                "form_assists_5": None,
-                "npxg_total": 0.0,
-                "goals_total": 0,
-                "key_pass_per_90": 0.0,
-                "accurate_cross_per_90": 0.0,
-                "form_xg_5": None,
-                "finishing_delta": 0.0,
-                "shots_on_target_per_90": 0.0,
-                "touches_attack_pen_area_per_90": 0.0,
-                "bcc_per_90": 0.0,
-                "accurate_crosses_per_90": 0.0,
-                "through_balls_per_90": 0.0,
-                "has_bzz_stats": False,
-            })
+            players.append(_roster_only_dict(player, position))
 
     return players
 

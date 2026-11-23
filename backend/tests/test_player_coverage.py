@@ -7,9 +7,19 @@ the fallback query, with zero stats and has_bzz_stats=False.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from app.models.bzzoiro import BzzPlayerSeasonStat
+
+_STAT_COLS = [c.key for c in BzzPlayerSeasonStat.__table__.columns]
+
+
+def _stat_row() -> SimpleNamespace:
+    """Ligne bzz_player_season_stats : vraies colonnes du modele, None par defaut."""
+    return SimpleNamespace(**dict.fromkeys(_STAT_COLS))
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,7 +54,7 @@ def _make_bzz_season_stat(
     expected_goals: float = 2.5,
     goals: int = 3,
 ) -> MagicMock:
-    stat = MagicMock()
+    stat = _stat_row()
     stat.player_api_id = player_api_id
     stat.minutes_played = minutes_played
     stat.xg_per_90 = xg_per_90
@@ -59,6 +69,7 @@ def _make_bzz_season_stat(
     stat.goals = goals
     stat.matches_played = 10
     stat.starts = 8
+    stat.season = "2026-2027"
     stat.shots_on_target_per_90 = 0.0
     stat.expected_assists = 1.2
     stat.form_assists_5 = None

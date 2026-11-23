@@ -9,9 +9,19 @@ Covers:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from app.models.bzzoiro import BzzPlayerSeasonStat
+
+_STAT_COLS = [c.key for c in BzzPlayerSeasonStat.__table__.columns]
+
+
+def _stat_row() -> SimpleNamespace:
+    """Ligne bzz_player_season_stats : vraies colonnes du modele, None par defaut."""
+    return SimpleNamespace(**dict.fromkeys(_STAT_COLS))
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -55,7 +65,7 @@ def _make_bzz_season_stat(
     expected_goals: float = 2.5,
     goals: int = 3,
 ) -> MagicMock:
-    stat = MagicMock()
+    stat = _stat_row()
     stat.player_api_id = player_api_id
     stat.minutes_played = minutes_played
     stat.xg_per_90 = xg_per_90
@@ -71,6 +81,15 @@ def _make_bzz_season_stat(
     stat.matches_played = 10
     stat.starts = 8
     stat.shots_on_target_per_90 = 0.0
+    stat.season = "2026-2027"
+    # Totaux coherents avec les ratios demandes : le chargeur recalcule
+    # per-90 et ratios depuis les totaux (fusion de toutes les competitions).
+    n90 = minutes_played / 90
+    stat.key_pass = key_pass_per_90 * n90
+    stat.expected_assists = xa_per_90 * n90
+    stat.accurate_cross = accurate_cross_per_90 * n90
+    stat.total_shots = expected_goals / xg_per_shot
+    stat.shots_on_target = shot_accuracy * stat.total_shots
     return stat
 
 
@@ -154,13 +173,13 @@ class TestLoadTeamPlayersBasic:
         # Check player 1 fields
         p1 = next(p for p in result if p["name"] == "Kylian Mbappé")
         assert p1["minutes_played"] == 900
-        assert p1["xg_per_90"] == 0.50
-        assert p1["shot_accuracy"] == 0.55
-        assert p1["xg_per_shot"] == 0.18
+        assert p1["xg_per_90"] == pytest.approx(0.50)
+        assert p1["shot_accuracy"] == pytest.approx(0.55)
+        assert p1["xg_per_shot"] == pytest.approx(0.18)
         assert abs(p1["avg_rating"] - 8.2) < 1e-6  # brut (0-10)
-        assert p1["key_pass_per_90"] == 1.2
-        assert p1["xa_per_90"] == 0.20
-        assert p1["accurate_cross_per_90"] == 0.1
+        assert p1["key_pass_per_90"] == pytest.approx(1.2)
+        assert p1["xa_per_90"] == pytest.approx(0.20)
+        assert p1["accurate_cross_per_90"] == pytest.approx(0.1)
         assert p1["form_xg_5"] == 2.0
         assert abs(p1["finishing_delta"] - 1.0) < 1e-6  # goals(6) - xG(5.0)
 
@@ -168,7 +187,7 @@ class TestLoadTeamPlayersBasic:
         p2 = next(p for p in result if p["name"] == "Ousmane Dembélé")
         assert p2["minutes_played"] == 720
         assert abs(p2["avg_rating"] - 7.5) < 1e-6  # brut (0-10)
-        assert p2["xa_per_90"] == 0.25
+        assert p2["xa_per_90"] == pytest.approx(0.25)
         assert abs(p2["finishing_delta"] - 0.4) < 1e-6  # goals(2) - xG(1.6)
 
         assert p1["has_bzz_stats"] is True

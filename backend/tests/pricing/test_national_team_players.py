@@ -1,8 +1,19 @@
 """Tests for _load_national_team_players and international fixture detection."""
 from __future__ import annotations
 
-import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from app.models.bzzoiro import BzzPlayerSeasonStat
+
+_STAT_COLS = [c.key for c in BzzPlayerSeasonStat.__table__.columns]
+
+
+def _stat_row() -> SimpleNamespace:
+    """Ligne bzz_player_season_stats : vraies colonnes du modele, None par defaut."""
+    return SimpleNamespace(**dict.fromkeys(_STAT_COLS))
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -20,7 +31,7 @@ def _make_player(api_id: int, name: str, position: str, national_team_api_id: in
 
 def _make_stat(player_api_id: int):
     """Build a minimal BzzPlayerSeasonStat-like mock with realistic values."""
-    s = MagicMock()
+    s = _stat_row()
     s.player_api_id = player_api_id
     s.season = "2025-2026"
     s.matches_played = 10

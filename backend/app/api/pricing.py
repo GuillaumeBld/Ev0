@@ -60,6 +60,11 @@ class PlayerAllocationOut(BaseModel):
     beta_fair_odds_goal_supersub: float = 99.0
     beta_p_assist_supersub: float = 0.0
     beta_fair_odds_assist_supersub: float = 99.0
+    # Saison d'ou viennent les stats (toutes competitions fusionnees) ;
+    # None = joueur sans aucune stat (cote issue du poste).
+    stats_season: str | None = None
+    # Vrai quand ces stats datent d'une saison anterieure a la saison courante.
+    stats_stale: bool = False
 
 
 class MatchPriceResponse(BaseModel):
@@ -147,10 +152,23 @@ async def price_match(
         )
         home_beta, away_beta = {}, {}
 
+    # Saison courante (season_service) pour signaler des stats d'une saison
+    # passee. Lue seulement si au moins un joueur porte une saison de stats.
+    all_allocs = [
+        *pricing.home_players, *pricing.away_players,
+        *(pricing.home_lineup_players or []), *(pricing.away_lineup_players or []),
+    ]
+    saison_courante: str | None = None
+    if any(getattr(a, "stats_season", None) for a in all_allocs):
+        from app.services.season_service import current_season
+
+        saison_courante = await current_season(db)
+
     def _to_out(allocs: list, beta_by_id: dict) -> list[PlayerAllocationOut]:
         out = []
         for a in allocs:
             beta = beta_by_id.get(a.player_id)
+            stats_season = getattr(a, "stats_season", None)
             out.append(
                 PlayerAllocationOut(
                     player_id=a.player_id,
@@ -184,6 +202,12 @@ async def price_match(
                     beta_p_assist_supersub=getattr(beta, "p_assist_supersub", a.p_assist_supersub),
                     beta_fair_odds_assist_supersub=getattr(
                         beta, "fair_odds_assist_supersub", a.fair_odds_assist_supersub
+                    ),
+                    stats_season=stats_season,
+                    stats_stale=(
+                        stats_season is not None
+                        and saison_courante is not None
+                        and stats_season < saison_courante
                     ),
                 )
             )
