@@ -22,8 +22,18 @@ _ETIQUETTE_HISTORIQUE: dict[int, str] = {
 for _cle, _id in INTERNATIONAL_LEAGUE_INTERNAL_IDS.items():
     _ETIQUETTE_HISTORIQUE.setdefault(_id, _cle)
 
-# Perimetre de synchro du calendrier : inchange (l'elargir est une etape ulterieure).
-SYNCED_COMPETITION_IDS: frozenset[int] = frozenset(_ETIQUETTE_HISTORIQUE)
+# Coupes d'Europe ajoutees au calendrier le 23/11/2026 (ids internes Bzzoiro).
+# Etiquette derivee : comp_8 / comp_83 (pas d'etiquette historique).
+EUROPA_LEAGUE_COMPETITION_API_ID: int = 8
+CONFERENCE_LEAGUE_COMPETITION_API_ID: int = 83
+
+# Perimetre de synchro du calendrier : 6 championnats + internationales +
+# Europa League + Conference League. L'elargissement a toutes les competitions
+# de l'Atlas se fait dans l'etape C de la roadmap.
+SYNCED_COMPETITION_IDS: frozenset[int] = frozenset(_ETIQUETTE_HISTORIQUE) | {
+    EUROPA_LEAGUE_COMPETITION_API_ID,
+    CONFERENCE_LEAGUE_COMPETITION_API_ID,
+}
 
 
 def league_key_for(competition_api_id: int) -> str:

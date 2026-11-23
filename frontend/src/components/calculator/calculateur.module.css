@@ -64,6 +64,54 @@
 .chipOn { border-color: #4c8dff; color: #ffffff; background: #14223a; }
 .chip:focus-visible { outline: 2px solid #4c8dff; }
 
+/* Navigation par jour : flèches + jour en toutes lettres, puis tous les jours sur plusieurs lignes. */
+.dayNav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dayArrow {
+  all: unset;
+  cursor: pointer;
+  box-sizing: border-box;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  border: 1px solid #262d37;
+  color: #e6edf3;
+  font-size: 20px;
+  line-height: 1;
+}
+.dayArrow:hover:not(:disabled) { border-color: #4c8dff; background: #14223a; }
+.dayArrow:focus-visible { outline: 2px solid #4c8dff; }
+.dayArrow:disabled { opacity: .35; cursor: default; }
+.dayCurrent {
+  flex: 1;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e6edf3;
+}
+.dayGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 6px;
+}
+.dayChip {
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 10px;
+}
+.dayCount {
+  font-size: 11px;
+  color: #9aa4b1;
+  font-variant-numeric: tabular-nums;
+}
+.chipOn .dayCount { color: #b8c9ff; }
+
 .grp {
   all: unset;
   cursor: pointer;

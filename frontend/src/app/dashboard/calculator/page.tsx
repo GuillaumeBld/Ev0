@@ -99,7 +99,8 @@ function CalculatorInner() {
   // Matchs à venir et en cours (compétitions de clubs : une sélection n'a ni effectif ni stats).
   useEffect(() => {
     Promise.all([
-      getFixtures({ status: 'scheduled', limit: 200, upcoming_only: false, clubs_only: true }),
+      // À partir d'aujourd'hui, sans plafond bas : 200 coupait déjà les derniers jours (360 matchs à venir le 23/11).
+      getFixtures({ status: 'scheduled', limit: 1000, from_date: dayKey(new Date().toISOString()), clubs_only: true }),
       getFixtures({ status: 'live', limit: 50, clubs_only: true }),
     ])
       .then(([sched, live]) => {

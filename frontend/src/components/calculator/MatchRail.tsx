@@ -17,6 +17,12 @@ function dayLabel(key: string): string {
   return `${wd.charAt(0).toUpperCase()}${wd.slice(1)} ${d}`
 }
 
+function dayLabelLong(key: string): string {
+  const [y, m, d] = key.split('-').map(Number)
+  const txt = new Date(y, m - 1, d).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })
+  return txt.charAt(0).toUpperCase() + txt.slice(1)
+}
+
 export function kickoffTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
 }
@@ -63,6 +69,17 @@ export function MatchRail({
   onPick: (f: FixtureOut) => void
 }) {
   const days = useMemo(() => Array.from(new Set(fixtures.map((f) => dayKey(f.kickoff_utc)))).sort(), [fixtures])
+  const countByDay = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const f of fixtures) m.set(dayKey(f.kickoff_utc), (m.get(dayKey(f.kickoff_utc)) ?? 0) + 1)
+    return m
+  }, [fixtures])
+  const dayIndex = day ? days.indexOf(day) : -1
+  const goTo = (i: number) => {
+    if (i < 0 || i >= days.length) return
+    onQuery('')
+    onDay(days[i])
+  }
 
   const groups = useMemo(() => {
     const q = fold(query.trim())
@@ -103,17 +120,45 @@ export function MatchRail({
         value={query}
         onChange={(e) => onQuery(e.target.value)}
       />
-      <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 2 }}>
+      {days.length > 0 && (
+        <div className={s.dayNav}>
+          <button
+            type="button"
+            className={s.dayArrow}
+            aria-label="Jour précédent"
+            disabled={dayIndex <= 0}
+            onClick={() => goTo(dayIndex - 1)}
+          >
+            ‹
+          </button>
+          <span className={s.dayCurrent}>
+            {searching ? 'Tous les jours' : day ? dayLabelLong(day) : '—'}
+          </span>
+          <button
+            type="button"
+            className={s.dayArrow}
+            aria-label="Jour suivant"
+            disabled={dayIndex >= days.length - 1}
+            onClick={() => goTo(dayIndex + 1)}
+          >
+            ›
+          </button>
+        </div>
+      )}
+      {/* Tous les jours visibles d'un coup, sur plusieurs lignes : plus de défilement horizontal caché. */}
+      <div className={s.dayGrid}>
         {days.map((d) => (
           <button
             key={d}
-            className={`${s.chip} ${!searching && d === day ? s.chipOn : ''}`}
+            type="button"
+            className={`${s.chip} ${s.dayChip} ${!searching && d === day ? s.chipOn : ''}`}
             onClick={() => {
               onQuery('')
               onDay(d)
             }}
           >
-            {dayLabel(d)}
+            <span>{dayLabel(d)}</span>
+            <span className={s.dayCount}>{countByDay.get(d) ?? 0}</span>
           </button>
         ))}
       </div>
