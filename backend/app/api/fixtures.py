@@ -381,6 +381,61 @@ async def get_fixture_odds(
     ]
 
 
+# Marches de player_odds_snapshots.market_type -> nom expose au calculateur.
+_PLAYER_ODDS_MARKETS: dict[str, str] = {"goalscorer": "goal", "assist": "assist"}
+
+
+class FixturePlayerOddOut(BaseModel):
+    player_api_id: int
+    market: str  # "goal" | "assist"
+    bookmaker: str
+    odds: float
+    scraped_at: str
+
+
+def _player_odds_stmt(fixture_id: int):
+    """Derniere cote par joueur x marche x book, en une requete (DISTINCT ON).
+
+    Uniquement les lignes reliees a un joueur Atlas : une cote dont le nom n'a
+    pas ete resolu (player_api_id NULL) n'est jamais rapprochee par nom ici.
+    """
+    pos = PlayerOddsSnapshot
+    book = func.lower(pos.bookmaker)
+    return (
+        select(pos.player_api_id, pos.market_type, book, pos.odds, pos.scraped_at)
+        .where(
+            pos.fixture_id == fixture_id,
+            pos.player_api_id.is_not(None),
+            pos.market_type.in_(list(_PLAYER_ODDS_MARKETS)),
+        )
+        .distinct(pos.player_api_id, pos.market_type, book)
+        .order_by(pos.player_api_id, pos.market_type, book, pos.scraped_at.desc())
+    )
+
+
+def player_odds_rows_out(rows) -> list[FixturePlayerOddOut]:
+    return [
+        FixturePlayerOddOut(
+            player_api_id=pid,
+            market=_PLAYER_ODDS_MARKETS[market],
+            bookmaker=bookmaker,
+            odds=odds,
+            scraped_at=scraped_at.isoformat(),
+        )
+        for pid, market, bookmaker, odds, scraped_at in rows
+    ]
+
+
+@router.get("/fixtures/{fixture_id}/player-odds", response_model=list[FixturePlayerOddOut])
+async def get_fixture_player_odds(
+    fixture_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Cotes books buteur/passeur par joueur Atlas (bzz_players.api_id)."""
+    result = await db.execute(_player_odds_stmt(fixture_id))
+    return player_odds_rows_out(result.all())
+
+
 @router.post("/fixtures/{fixture_id}/odds", response_model=OddsSnapshotOut, status_code=201)
 async def create_odds(
     fixture_id: int,
