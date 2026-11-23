@@ -415,9 +415,9 @@ def test_sauvegarde_envoie_et_stocke_les_identifiants():
     assert "player_api_id" in LineupPlayerIn.model_fields
     src = (BACKEND / "app/api/lineups.py").read_text()
     assert "player_api_id=p.player_api_id" in src
-    widget = (BACKEND.parent / "frontend/src/components/calculator/LineupPricingWidget.tsx").read_text()
-    save = widget[widget.index("async function handleSave"):widget.index("function togglePlayer")]
-    assert "player_api_id: p.player_id" in save
-    # « Dernière compo » sans identifiants : message visible, jamais un no-op muet
-    derniere = widget[widget.index("async function handleDerniereCompo"):widget.index("async function handleSave")]
-    assert "sans identifiants" in derniere
+    # Ecran du calculateur (maquette D) : titulaires envoyes par identifiant,
+    # jamais par nom ; compo absente = message visible, jamais un no-op muet.
+    page = (BACKEND.parent / "frontend/src/app/dashboard/calculator/page.tsx").read_text()
+    assert "home_starter_ids:" in page and "away_starter_ids:" in page
+    assert "starter_ids ?? []" in page
+    assert "Pas de compo connue : coche les titulaires." in page
