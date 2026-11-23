@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._badges import MatchBadges, badge_fields_for_fixtures
 from app.db import get_db
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ class PlayerAllocationOut(BaseModel):
     stats_stale: bool = False
 
 
-class MatchPriceResponse(BaseModel):
+class MatchPriceResponse(MatchBadges):
     fixture_id: int
     home_team: str
     away_team: str
@@ -221,6 +222,8 @@ async def price_match(
             )
         return out
 
+    badge_map = await badge_fields_for_fixtures(db, [fixture])
+
     return MatchPriceResponse(
         fixture_id=pricing.fixture_id,
         home_team=pricing.home_team,
@@ -238,4 +241,5 @@ async def price_match(
         ),
         last_scraped_at=pricing.last_scraped_at.isoformat() if pricing.last_scraped_at else None,
         p00=pricing.p00,
+        **badge_map[fixture.id],
     )

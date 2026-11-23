@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._badges import MatchBadges, badge_fields_for_fixtures
 from app.db import get_db
 from app.ingestion.auto_settle import settle_approved_recommendations
 from app.models.bankroll import BankrollEntry
@@ -21,7 +22,7 @@ router = APIRouter()
 # ── Response models ──────────────────────────────────────────────
 
 
-class HistoryItem(BaseModel):
+class HistoryItem(MatchBadges):
     id: int
     date: str
     fixture_name: str
@@ -85,7 +86,7 @@ async def get_history(
 ):
     """List betting history from settled/executed recommendations."""
     stmt = (
-        select(Recommendation, Fixture.home_team, Fixture.away_team)
+        select(Recommendation, Fixture)
         .join(Fixture, Recommendation.fixture_id == Fixture.id)
         .where(Recommendation.status == "approved")
         .order_by(Recommendation.generated_utc.desc())
@@ -116,9 +117,11 @@ async def get_history(
             if rid is not None:
                 stake_map[rid] = stake or 10.0
 
+    badge_map = await badge_fields_for_fixtures(db, [fx for _, fx in rows])
+
     bets = []
-    for rec, home_team, away_team in rows:
-        fixture_name = f"{home_team} vs {away_team}"
+    for rec, fx in rows:
+        fixture_name = f"{fx.home_team} vs {fx.away_team}"
         display_status = rec.result if rec.result else "running"
 
         bets.append(
@@ -137,6 +140,7 @@ async def get_history(
                 pnl=rec.pnl if rec.result else None,
                 stake=stake_map.get(rec.id),
                 decided_utc=rec.decided_utc.isoformat() if rec.decided_utc else None,
+                **badge_map[fx.id],
             )
         )
 
@@ -166,6 +170,8 @@ async def get_autoflat_history(
     )
     result = await db.execute(stmt)
     rows = result.all()
+
+    badge_map = await badge_fields_for_fixtures(db, [fx for _, fx in rows])
 
     bets = []
     for rec, fixture in rows:
@@ -209,6 +215,7 @@ async def get_autoflat_history(
                 pnl=computed_pnl,
                 stake=10.0,
                 decided_utc=None,
+                **badge_map[fixture.id],
             )
         )
 

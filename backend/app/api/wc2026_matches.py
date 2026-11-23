@@ -1,6 +1,7 @@
 """WC2026 match center — list + detail with on-demand sync from Bzzoiro."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 
@@ -9,11 +10,11 @@ from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import asyncio
-
+from app.api._badges import MatchBadges, badge_fields
 from app.db import get_db
 from app.ingestion.bzzoiro.client import BzzoiroClient
 from app.models.bzzoiro import BzzEvent, BzzPlayer, BzzPlayerMatchStat, BzzTeam
+from app.services.atlas_source import team_badges
 
 router = APIRouter(prefix="/wc2026/matches", tags=["wc2026"])
 
@@ -27,7 +28,7 @@ def _bzz_client() -> BzzoiroClient:
 
 # ── Pydantic out models ───────────────────────────────────────────────────────
 
-class MatchListItem(BaseModel):
+class MatchListItem(MatchBadges):
     bzz_id: int
     home_team: str
     away_team: str
@@ -142,7 +143,7 @@ class TeamStats(BaseModel):
     offsides: int | None = None
 
 
-class MatchDetail(BaseModel):
+class MatchDetail(MatchBadges):
     bzz_id: int
     home_team: str
     away_team: str
@@ -319,6 +320,7 @@ async def list_matches(
     result = await session.execute(
         select(
             BzzEvent.api_id,
+            BzzEvent.league_api_id,
             BzzEvent.home_team_api_id,
             BzzEvent.away_team_api_id,
             BzzEvent.event_date,
@@ -350,6 +352,11 @@ async def list_matches(
     )
     team_names: dict[int, str] = {r.api_id: r.name for r in teams_result.all()}
 
+    badges = await team_badges(
+        session,
+        [r.home_team_api_id for r in rows] + [r.away_team_api_id for r in rows],
+    )
+
     # Load group names from cached incidents (stored in incidents col after first sync)
     # For now we'll get group_name from a fresh fetch if needed, or skip
     out = []
@@ -380,6 +387,9 @@ async def list_matches(
             home_xg=row.home_xg,
             away_xg=row.away_xg,
             has_detail=has_detail,
+            **badge_fields(
+                badges, row.home_team_api_id, row.away_team_api_id, row.league_api_id
+            ),
         ))
     return out
 
@@ -608,9 +618,9 @@ async def get_match_detail(
     # Auto-sync lineup editor for finished group stage matches (fire-and-forget)
     if event.status == "finished" and (event.round_number or 0) in (1, 2, 3):
         from app.api.wc2026_lineups import sync_match_lineups_to_editor
-        from app.db import get_db as _get_db
         async def _bg_sync():
             from sqlalchemy.ext.asyncio import AsyncSession
+
             from app.db import engine
             async with AsyncSession(engine) as bg_session:
                 try:
@@ -655,4 +665,10 @@ async def get_match_detail(
         ),
         home_lineup=_parse_lineup(lineups_raw, "home"),
         away_lineup=_parse_lineup(lineups_raw, "away"),
+        **badge_fields(
+            await team_badges(session, [event.home_team_api_id, event.away_team_api_id]),
+            event.home_team_api_id,
+            event.away_team_api_id,
+            event.league_api_id,
+        ),
     )

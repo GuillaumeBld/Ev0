@@ -4,7 +4,6 @@ import logging
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from math import ceil
-
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -12,6 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._badges import MatchBadges, badge_fields_for_fixtures
 from app.db import get_db
 from app.models.bankroll import BankrollEntry
 from app.models.bzzoiro import BzzPlayer
@@ -115,7 +115,7 @@ class RecommendationStatus(StrEnum):
     EXPIRED = "expired"
 
 
-class Recommendation(BaseModel):
+class Recommendation(MatchBadges):
     """A betting recommendation."""
 
     id: int
@@ -216,6 +216,7 @@ async def get_recommendations(
         rows = result.all()
 
         bzz_teams = await _batch_player_teams(db, [rec.player_name for rec, _ in rows])
+        badge_map = await badge_fields_for_fixtures(db, [fix for _, fix in rows])
 
         recommendations = [
             Recommendation(
@@ -239,6 +240,7 @@ async def get_recommendations(
                 is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
                 supersub_market_type=rec.market_type.value if rec.market_type else None,
                 bet_type=getattr(rec, "bet_type", None),
+                **badge_map[fix.id],
             )
             for rec, fix in rows
         ]
@@ -362,6 +364,16 @@ async def get_recommendations(
         )
         status_map = {row.id: row.status for row in status_rows}
 
+    # Ecussons/competition : une requete pour tout le lot (fixtures par external_id)
+    badge_by_ext: dict[str, dict] = {}
+    ext_for_badges = {r.get("fixture_id", "") for r in raw_recs if r.get("fixture_id")}
+    if ext_for_badges:
+        fx_rows = (await db.execute(
+            select(FixtureModel).where(FixtureModel.external_id.in_(ext_for_badges))
+        )).scalars().all()
+        by_id = await badge_fields_for_fixtures(db, fx_rows)
+        badge_by_ext = {fx.external_id: by_id[fx.id] for fx in fx_rows}
+
     # Transform to response models
     recommendations = []
     for rec in raw_recs:
@@ -389,6 +401,7 @@ async def get_recommendations(
                 is_pen_taker=rec.get("is_pen_taker", False) or False,
                 supersub_market_type=rec.get("market_type"),
                 bet_type=rec.get("bet_type"),
+                **badge_by_ext.get(rec.get("fixture_id", ""), {}),
             )
         )
 
@@ -436,6 +449,7 @@ async def get_expired_recommendations(
         rows = result.all()
 
         bzz_teams_exp = await _batch_player_teams(db, [rec.player_name for rec, _ in rows])
+        badge_map = await badge_fields_for_fixtures(db, [fix for _, fix in rows])
 
         recommendations = [
             Recommendation(
@@ -459,6 +473,7 @@ async def get_expired_recommendations(
                 is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
                 supersub_market_type=rec.market_type.value if rec.market_type else None,
                 bet_type=getattr(rec, "bet_type", None),
+                **badge_map[fix.id],
             )
             for rec, fix in rows
         ]
@@ -486,6 +501,7 @@ async def get_expired_recommendations(
         .order_by(FixtureModel.kickoff_utc.asc())
     )
     rows = result.all()
+    badge_map = await badge_fields_for_fixtures(db, [fix for _, fix in rows])
 
     recommendations = [
         Recommendation(
@@ -509,6 +525,7 @@ async def get_expired_recommendations(
             is_pen_taker=getattr(rec, "is_pen_taker", False) or False,
             supersub_market_type=rec.market_type.value if rec.market_type else None,
             bet_type=getattr(rec, "bet_type", None),
+            **badge_map[fix.id],
         )
         for rec, fix in rows
     ]

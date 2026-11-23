@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._badges import MatchBadges, badge_fields_for_fixtures
 from app.db import get_db
 from app.ingestion.bzzoiro.constants import INTERNATIONAL_LEAGUE_INTERNAL_IDS
 from app.models.canonical_teams import CanonicalTeam
@@ -51,7 +52,7 @@ class OddsSnapshotOut(BaseModel):
     snapshot_utc: str  # maps to scraped_at
 
 
-class FixtureOut(BaseModel):
+class FixtureOut(MatchBadges):
     id: int
     external_id: str
     league: str
@@ -221,6 +222,8 @@ async def list_fixtures(
             return canonical_data[ct_id].api_football_id
         return None
 
+    badge_map = await badge_fields_for_fixtures(db, [r.Fixture for r in rows])
+
     items = [
         FixtureOut(
             id=row.Fixture.id,
@@ -242,6 +245,7 @@ async def list_fixtures(
             goalscorer_count=row.goalscorer_count,
             assist_count=row.assist_count,
             odds=[],
+            **badge_map[row.Fixture.id],
         )
         for row in rows
     ]
@@ -291,6 +295,7 @@ async def create_fixture(
         goalscorer_count=0,
         assist_count=0,
         odds=[],
+        **(await badge_fields_for_fixtures(db, [fixture]))[fixture.id],
     )
 
 
@@ -301,6 +306,7 @@ async def delete_fixture(
 ):
     """Delete a fixture and all related records (odds, recommendations, lineups, etc.)."""
     from sqlalchemy import delete as sa_delete
+
     from app.models.lineups import TeamLineup
     from app.models.match_events import MatchEvent
     from app.models.match_odds import MatchOddsSnapshot

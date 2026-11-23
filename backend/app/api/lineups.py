@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._badges import MatchBadges, badge_fields_for_fixtures
 from app.db import get_db
 from app.ingestion.lineup_resolver import resolve_lineup
 from app.ingestion.ps3838.anchor import _fold
@@ -124,7 +125,7 @@ class LineupOut(BaseModel):
     players: list[LineupPlayerOut]
 
 
-class FixtureLineupsOut(BaseModel):
+class FixtureLineupsOut(MatchBadges):
     fixture_id: int
     home_team: str
     away_team: str
@@ -155,7 +156,7 @@ async def _hydrate_strikers(
     ]
 
 
-async def _resolve_wc2026_lineup(team: str, session: AsyncSession) -> "LineupOut | None":
+async def _resolve_wc2026_lineup(team: str, session: AsyncSession) -> LineupOut | None:
     """Fallback WC2026 : lit wc2026_expected_lineups pour la nation correspondant à team.
 
     Choisit le contexte le plus récent disponible (final > sf > qf > … > matchday_1).
@@ -260,6 +261,7 @@ async def get_fixture_lineups(
         away_team=fx.away_team,
         home=home_out,
         away=away_out,
+        **(await badge_fields_for_fixtures(session, [fx]))[fx.id],
     )
 
 
