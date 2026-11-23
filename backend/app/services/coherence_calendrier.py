@@ -162,6 +162,16 @@ def competition_mal_rangee(matchs: list[MatchRange]) -> list[Violation]:
     for m in sorted(matchs, key=lambda x: x.identifiant):
         source = m.competition_source
         if source is None:
+            violations.append(
+                Violation(
+                    regle="competition_mal_rangee",
+                    motif=(
+                        f"match {m.identifiant} : competition source introuvable "
+                        f"(match absent de la source ou sans competition)"
+                    ),
+                    identifiants=frozenset({m.identifiant}),
+                )
+            )
             continue
         nom = competition_name(source) or f"competition {source}"
         if m.competition_api_id is None:

@@ -1382,7 +1382,7 @@ async def job_sync_bzzoiro_events():
                     Fixture.competition_api_id,
                     BzzEvent.league_api_id,
                 )
-                .join(
+                .outerjoin(
                     BzzEvent,
                     Fixture.external_id == func.concat("bzz_", BzzEvent.api_id),
                 )

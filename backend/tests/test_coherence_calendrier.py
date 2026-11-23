@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from app.ingestion.bzzoiro.sync_events import PART_MINIMALE_RENDUE
 from app.services.coherence_calendrier import (
     MatchAControler,
+    MatchRange,
+    competition_mal_rangee,
     controler,
     equipe_dedoublee,
     identifiants_incoherents,
@@ -278,9 +280,6 @@ def test_le_filtre_est_optionnel_et_desactive_par_defaut():
 
 # --- competition_mal_rangee : la competition affichee doit etre celle de la source ---
 
-from app.services.coherence_calendrier import MatchRange, competition_mal_rangee  # noqa: E402
-
-
 def _range(identifiant, league, api_id, source):
     return MatchRange(
         identifiant=identifiant,
@@ -316,8 +315,16 @@ def test_competition_mal_rangee_non_renseignee():
 def test_competition_mal_rangee_resumer_cite_le_nom_de_la_competition():
     from app.services.competitions import competition_name
 
-    source = next(
-        i for i in range(1, 400) if competition_name(i) == "Saudi Pro League"
-    )
+    source = 17
+    assert competition_name(source) == "Saudi Pro League"
     violations = competition_mal_rangee([_range(4, "premier_league", 17, source)])
     assert "Saudi Pro League" in resumer(violations)
+
+
+def test_competition_mal_rangee_source_introuvable():
+    """Match sans evenement source (jointure externe) ou sans league_api_id."""
+    violations = competition_mal_rangee([_range(5, "premier_league", 1, None)])
+    assert len(violations) == 1
+    assert violations[0].identifiants == frozenset({5})
+    assert "competition source introuvable" in violations[0].motif
+    assert "competition source introuvable" in resumer(violations)
