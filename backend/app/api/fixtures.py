@@ -124,7 +124,7 @@ async def list_fixtures(
     status: str | None = Query(None),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
-    limit: int = Query(50, le=200),
+    limit: int = Query(50, le=1000),
     upcoming_only: bool = Query(False),
     clubs_only: bool = Query(
         False,
