@@ -118,3 +118,26 @@ async def test_event_sans_identifiant_jamais_perdu_en_silence():
     db = _db([r], _fixture(), {777: 90.0}, [("Buteur Sans Id", None)])
     await settle_approved_recommendations(db)
     assert r.result is None
+
+
+def _reco_passe(nom, player_id):
+    r = _reco(nom, player_id)
+    r.bet_type = "assist"
+    return r
+
+
+@pytest.mark.asyncio
+async def test_passeur_regle_par_identifiant():
+    r = _reco_passe("Lamine Yamal", 42)
+    db = _db([r], _fixture(), {42: 90.0, 5: 90.0}, [("L. Yamal", 42)])
+    await settle_approved_recommendations(db)
+    assert r.result == "won"
+
+
+@pytest.mark.asyncio
+async def test_identifiant_hors_des_minutes_reste_en_attente_jamais_perdu():
+    """Un but dont l'id n'est pas dans les minutes du match : pas de PERDU."""
+    r = _reco("Titulaire", 777)
+    db = _db([r], _fixture(), {777: 90.0}, [("Buteur", 999)])
+    bilan = await settle_approved_recommendations(db)
+    assert r.result is None and bilan["stuck_fixture_ids"] == [1]

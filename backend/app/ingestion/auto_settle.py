@@ -13,7 +13,8 @@ inscrivait au registre des pertes qui n'avaient pas eu lieu.
 
 Les minutes viennent de `bzz_player_match_stats` (1 441 029 lignes, 99 % des
 matchs termines) complete par `player_match_minutes` (470 lignes, prioritaire
-la ou il existe). Les incidents de match ne peuvent pas les remplacer : un
+la ou il existe, CHEMIN PAR NOM uniquement : cette table n'a pas
+d'identifiant joueur, les recos portant un `player_id` ne la lisent pas). Les incidents de match ne peuvent pas les remplacer : un
 joueur absent des incidents est soit un titulaire reste 90 minutes sans rien
 faire, soit un remplacant non utilise -- deux verdicts opposes.
 
@@ -177,7 +178,8 @@ async def _minutes_du_match_par_id(db: AsyncSession, fixture) -> dict[int, float
     """Minutes jouees par identifiant Bzzoiro : {player_api_id -> minutes}.
 
     Meme source que `_minutes_du_match` (`bzz_player_match_stats`), cle par
-    identifiant au lieu du nom. None quand le match n'a aucune donnee.
+    identifiant au lieu du nom. Le complement `player_match_minutes` (noms
+    seulement) n'est PAS applique ici. None quand le match n'a aucune donnee.
     """
     ext = getattr(fixture, "external_id", None) or ""
     if not ext.startswith("bzz_"):
@@ -256,6 +258,7 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
     _events_cache: dict[int, set] = {}
     # fixture_id -> {player_api_id: minutes} (recos portant un player_id)
     _minutes_id_cache: dict[int, dict[int, float] | None] = {}
+    _id_warned: set[int] = set()  # un avertissement par fixture et par passage
 
     settled = 0
     won_count = 0
@@ -331,10 +334,6 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
         # C'est la donnee qui separe un PERDU d'un ANNULE. Elle gouverne le
         # reglement avant toute lecture des buts : un joueur qui n'est pas
         # entre n'a pas perdu son pari, sa mise est rendue.
-        if fixture.id not in _minutes_cache:
-            _minutes_cache[fixture.id] = await _minutes_du_match(db, fixture)
-
-        minutes_du_match = _minutes_cache[fixture.id]
         pid = _id_joueur(rec)
         if pid is not None:
             # Reco avec identifiant : minutes cherchees par id, jamais par nom.
@@ -343,6 +342,9 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
             minutes_par_id = _minutes_id_cache[fixture.id]
             minutes_joueur = None if minutes_par_id is None else minutes_par_id.get(pid, 0.0)
         else:
+            if fixture.id not in _minutes_cache:
+                _minutes_cache[fixture.id] = await _minutes_du_match(db, fixture)
+            minutes_du_match = _minutes_cache[fixture.id]
             minutes_joueur = _minutes_du_joueur(minutes_du_match, rec.player_name)
 
         # --- Load MatchEvents (types + nb d'events "but") ---
@@ -424,16 +426,28 @@ async def settle_approved_recommendations(db: AsyncSession) -> dict:
             fixture_events = all_events_result.scalars().all()
             if pid is not None:
                 won = any(ev.player_id == pid for ev in fixture_events)
-                if not won and any(ev.player_id is None for ev in fixture_events):
-                    # Un but sans identifiant : impossible de conclure PERDU
-                    # par id, et pas de repli silencieux sur le nom.
-                    logger.warning(
-                        "auto_settle: reco %d (id %d) — des evenements sans "
-                        "identifiant joueur sur la fixture %d, laissee en attente",
-                        rec.id, pid, fixture.id,
+                if not won:
+                    sans_id = any(ev.player_id is None for ev in fixture_events)
+                    minutes_par_id = _minutes_id_cache.get(fixture.id)
+                    id_hors_groupe = minutes_par_id is not None and any(
+                        ev.player_id is not None and ev.player_id not in minutes_par_id
+                        for ev in fixture_events
                     )
-                    stuck_fixture_ids.add(fixture.id)
-                    continue
+                    if sans_id or id_hors_groupe:
+                        # Impossible de conclure PERDU par id (evenement sans
+                        # identifiant, ou identifiant hors des minutes du
+                        # match), et pas de repli silencieux sur le nom.
+                        if fixture.id not in _id_warned:
+                            _id_warned.add(fixture.id)
+                            logger.warning(
+                                "auto_settle: fixture %d — evenements %s : "
+                                "recos par identifiant laissees en attente",
+                                fixture.id,
+                                "sans identifiant joueur" if sans_id
+                                else "dont l'identifiant est absent des minutes",
+                            )
+                        stuck_fixture_ids.add(fixture.id)
+                        continue
             else:
                 won = any(_names_match(ev.player_name, rec.player_name) for ev in fixture_events)
 
