@@ -162,7 +162,15 @@ async def price_match(
     if any(getattr(a, "stats_season", None) for a in all_allocs):
         from app.services.season_service import current_season
 
-        saison_courante = await current_season(db)
+        try:
+            saison_courante = await current_season(db)
+        except Exception:
+            # Jamais d'echec du prix pour un simple signalement : stats_stale
+            # reste False pour tout le monde.
+            logger.warning(
+                "current_season indisponible pour fixture %s — stats_stale=False",
+                request.fixture_id, exc_info=True,
+            )
 
     def _to_out(allocs: list, beta_by_id: dict) -> list[PlayerAllocationOut]:
         out = []

@@ -82,14 +82,13 @@ def _make_bzz_season_stat(
     stat.starts = 8
     stat.shots_on_target_per_90 = 0.0
     stat.season = "2026-2027"
-    # Totaux coherents avec les ratios demandes : le chargeur recalcule
-    # per-90 et ratios depuis les totaux (fusion de toutes les competitions).
+    # Les per-90 sont recalcules depuis les totaux (fusion de toutes les
+    # competitions) : on fournit les totaux de comptage. shot_accuracy et
+    # xg_per_shot restent les valeurs STOCKEES (aucun total de tirs fourni).
     n90 = minutes_played / 90
     stat.key_pass = key_pass_per_90 * n90
     stat.expected_assists = xa_per_90 * n90
     stat.accurate_cross = accurate_cross_per_90 * n90
-    stat.total_shots = expected_goals / xg_per_shot
-    stat.shots_on_target = shot_accuracy * stat.total_shots
     return stat
 
 
@@ -174,8 +173,8 @@ class TestLoadTeamPlayersBasic:
         p1 = next(p for p in result if p["name"] == "Kylian Mbappé")
         assert p1["minutes_played"] == 900
         assert p1["xg_per_90"] == pytest.approx(0.50)
-        assert p1["shot_accuracy"] == pytest.approx(0.55)
-        assert p1["xg_per_shot"] == pytest.approx(0.18)
+        assert p1["shot_accuracy"] == 0.55
+        assert p1["xg_per_shot"] == 0.18
         assert abs(p1["avg_rating"] - 8.2) < 1e-6  # brut (0-10)
         assert p1["key_pass_per_90"] == pytest.approx(1.2)
         assert p1["xa_per_90"] == pytest.approx(0.20)

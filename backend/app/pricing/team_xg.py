@@ -754,8 +754,39 @@ def allocate_player(
 
 # ── DB helpers ────────────────────────────────────────────────────
 
-def _player_dict_from_merged(player: Any, merged: dict[str, Any], season: str) -> dict[str, Any]:
+# Ratios stockes par l'agregation (aggregate.py) comme MOYENNE des ratios par
+# match, pas comme ratio des totaux. Les multiplicateurs finition / creation et
+# leurs references par poste sont regles sur cette definition : la fusion
+# multi-competitions doit la conserver (methode Alpha inchangee).
+_RATIOS_MOYENNE_PAR_MATCH: tuple[str, ...] = ("shot_accuracy", "xg_per_shot", "cross_accuracy")
+
+
+def _stored_ratio_weighted(rows: list[Any], attr: str) -> float | None:
+    """Moyenne des valeurs STOCKEES de `attr`, ponderee par matches_played.
+
+    Une seule ligne renseignee -> sa valeur exacte. Lignes a None ignorees ;
+    tout a None -> None (le dict applique alors le repli 0.0 d'aujourd'hui).
+    """
+    pairs = [(getattr(r, attr), getattr(r, "matches_played", None) or 0)
+             for r in rows if getattr(r, attr, None) is not None]
+    if not pairs:
+        return None
+    if len(pairs) == 1:
+        return pairs[0][0]
+    total_w = sum(w for _, w in pairs)
+    if total_w == 0:
+        return sum(v for v, _ in pairs) / len(pairs)
+    return sum(v * w for v, w in pairs) / total_w
+
+
+def _player_dict_from_merged(
+    player: Any, merged: dict[str, Any], season: str, rows: list[Any],
+) -> dict[str, Any]:
     """Dict joueur du calculateur depuis la fusion de TOUTES ses competitions d'une saison.
+
+    `rows` = les lignes bzz_player_season_stats fusionnees : shot_accuracy,
+    xg_per_shot et cross_accuracy en viennent (moyenne ponderee des valeurs
+    stockees, meme definition qu'avant), pas des ratios de totaux de `merged`.
 
     `merged` = sortie de `merge_season_stats` (meme source que la partie Joueurs).
     Les cles sont exactement celles lues par compute_player_shares /
@@ -774,6 +805,7 @@ def _player_dict_from_merged(player: Any, merged: dict[str, Any], season: str) -
     xg_per_90 = _num("xg_per_90")
     accurate_cross_per_90 = _num("accurate_cross_per_90")
     form_xg_5 = merged.get("form_xg_5")
+    ratios = {k: _stored_ratio_weighted(rows, k) or 0.0 for k in _RATIOS_MOYENNE_PAR_MATCH}
     return {
         "player_id": player.api_id,
         "player_name": name,
@@ -791,10 +823,10 @@ def _player_dict_from_merged(player: Any, merged: dict[str, Any], season: str) -
         "xgchain_per_90": 0.0,  # not available in bzz
         # Bzzoiro-specific quality/creation fields
         "xg_per_90": xg_per_90,
-        "shot_accuracy": _num("shot_accuracy"),
-        "xg_per_shot": _num("xg_per_shot"),
+        "shot_accuracy": ratios["shot_accuracy"],
+        "xg_per_shot": ratios["xg_per_shot"],
         "avg_rating": _num("avg_rating"),          # brut (0-10), pondere par matchs
-        "cross_accuracy": _num("cross_accuracy"),
+        "cross_accuracy": ratios["cross_accuracy"],
         "xa_total": xa_total,
         "assists_total": _num("goal_assist", 0),
         "form_assists_5": merged.get("form_assists_5"),  # peut être None
@@ -860,7 +892,7 @@ async def _load_latest_season_merged(
     db: AsyncSession,
     where: Any,
     join_player_in_subquery: bool = True,
-) -> list[tuple[Any, dict[str, Any], str]]:
+) -> list[tuple[Any, dict[str, Any], str, list[Any]]]:
     """Derniere saison jouee de chaque joueur, TOUTES competitions fusionnees.
 
     Methode Alpha inchangee (rythme de la derniere saison jouee) ; seule la
@@ -869,7 +901,7 @@ async def _load_latest_season_merged(
     sont additionnees par `merge_season_stats` (meme fusion que la partie
     Joueurs) au lieu de ne garder que la competition la plus jouee.
 
-    Retourne [(BzzPlayer, merged, season)] trie par player_api_id.
+    Retourne [(BzzPlayer, merged, season, lignes)] trie par player_api_id.
     """
     from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat
     from app.services.atlas_source import merge_season_stats
@@ -904,24 +936,24 @@ async def _load_latest_season_merged(
         stat, player = row[0], row[1]
         grouped.setdefault(player.api_id, (player, []))[1].append(stat)
 
-    out: list[tuple[Any, dict[str, Any], str]] = []
+    out: list[tuple[Any, dict[str, Any], str, list[Any]]] = []
     for player, stats in grouped.values():
         season = stats[0].season
         merged = merge_season_stats(stats, season)
         if merged is not None:
-            out.append((player, merged, season))
+            out.append((player, merged, season, stats))
     return out
 
 
 def _append_merged_players(
-    merged_players: list[tuple[Any, dict[str, Any], str]],
+    merged_players: list[tuple[Any, dict[str, Any], str, list[Any]]],
     players: list[dict[str, Any]],
     seen_ids: set[int],
     seen_internal_ids: set[int],
     seen_names: set[str],
 ) -> None:
     """Ajoute les joueurs fusionnes (gardiens exclus), dedoublonnes par id / internal_id / nom."""
-    for player, merged, season in merged_players:
+    for player, merged, season, stat_rows in merged_players:
         name_key = _name_key(player.name)
         internal_id = player.internal_id
         if player.api_id in seen_ids:
@@ -935,7 +967,7 @@ def _append_merged_players(
             seen_internal_ids.add(internal_id)
         seen_names.add(name_key)
 
-        d = _player_dict_from_merged(player, merged, season)
+        d = _player_dict_from_merged(player, merged, season, stat_rows)
         if d["position"] == "GK":
             continue
         players.append(d)
@@ -1057,11 +1089,11 @@ async def _load_players_by_api_ids(
     )
     seen_ids: set[int] = set()
     players: list[dict[str, Any]] = []
-    for player, merged, season in merged_players:
+    for player, merged, season, stat_rows in merged_players:
         if player.api_id in seen_ids:
             continue
         seen_ids.add(player.api_id)
-        d = _player_dict_from_merged(player, merged, season)
+        d = _player_dict_from_merged(player, merged, season, stat_rows)
         if d["position"] == "GK":
             continue
         players.append(d)

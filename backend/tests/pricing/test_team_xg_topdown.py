@@ -126,7 +126,7 @@ def test_player_dict_from_merged_toutes_competitions():
               goal_assist=0, form_xg_5=0.4),
     ]
     merged = merge_season_stats(rows, "2026-2027")
-    d = team_xg._player_dict_from_merged(_joueur(), merged, "2026-2027")
+    d = team_xg._player_dict_from_merged(_joueur(), merged, "2026-2027", rows)
     assert d["minutes_played"] == 1200
     assert d["matches_played"] == 14
     assert d["npxg_per_90"] == pytest.approx(3.2 / 1200 * 90)
@@ -147,12 +147,45 @@ def test_player_dict_from_merged_toutes_competitions():
 
 
 def test_player_dict_from_merged_memes_cles_que_le_repli_effectif():
-    merged = merge_season_stats(
-        [_stat(season="2026-2027", matches_played=1, minutes_played=90)], "2026-2027"
-    )
-    d = team_xg._player_dict_from_merged(_joueur(), merged, "2026-2027")
+    rows = [_stat(season="2026-2027", matches_played=1, minutes_played=90)]
+    merged = merge_season_stats(rows, "2026-2027")
+    d = team_xg._player_dict_from_merged(_joueur(), merged, "2026-2027", rows)
     for key in SAMPLE_FW:
         assert key in d, key
+
+
+def test_ratios_une_ligne_valeur_stockee_meme_si_les_totaux_disent_autre_chose():
+    # aggregate.py stocke ces ratios comme moyenne des ratios par match ; les
+    # multiplicateurs finition/creation sont regles dessus : on les garde tels quels.
+    rows = [_stat(season="2026-2027", matches_played=10, minutes_played=900,
+                  total_shots=20, shots_on_target=5, expected_goals=4.0,
+                  total_cross=10, accurate_cross=9,
+                  shot_accuracy=0.41, xg_per_shot=0.13, cross_accuracy=0.27)]
+    merged = merge_season_stats(rows, "2026-2027")
+    assert merged["shot_accuracy"] != pytest.approx(0.41)  # totaux en desaccord
+    d = team_xg._player_dict_from_merged(_joueur(), merged, "2026-2027", rows)
+    assert d["shot_accuracy"] == 0.41
+    assert d["xg_per_shot"] == 0.13
+    assert d["cross_accuracy"] == 0.27
+
+
+def test_ratios_deux_lignes_moyenne_ponderee_par_matchs():
+    rows = [
+        _stat(season="2026-2027", league_api_id=1, matches_played=9, minutes_played=800,
+              shot_accuracy=0.5, xg_per_shot=0.10, cross_accuracy=None),
+        _stat(season="2026-2027", league_api_id=2, matches_played=3, minutes_played=270,
+              shot_accuracy=0.3, xg_per_shot=0.20, cross_accuracy=0.4),
+    ]
+    merged = merge_season_stats(rows, "2026-2027")
+    d = team_xg._player_dict_from_merged(_joueur(), merged, "2026-2027", rows)
+    assert d["shot_accuracy"] == pytest.approx((0.5 * 9 + 0.3 * 3) / 12)
+    assert d["xg_per_shot"] == pytest.approx((0.10 * 9 + 0.20 * 3) / 12)
+    assert d["cross_accuracy"] == 0.4  # ligne a None ignoree
+    # Tout a None -> repli 0.0 d'aujourd'hui
+    rows0 = [_stat(season="2026-2027", matches_played=2, minutes_played=180)]
+    d0 = team_xg._player_dict_from_merged(
+        _joueur(), merge_season_stats(rows0, "2026-2027"), "2026-2027", rows0)
+    assert (d0["shot_accuracy"], d0["xg_per_shot"], d0["cross_accuracy"]) == (0.0, 0.0, 0.0)
 
 
 def test_joueur_transfere_deux_clubs_meme_saison_tout_compte():
@@ -163,7 +196,7 @@ def test_joueur_transfere_deux_clubs_meme_saison_tout_compte():
               minutes_played=400, goals=1, expected_goals=1.2),
     ]
     merged = merge_season_stats(rows, "2026-2027")
-    d = team_xg._player_dict_from_merged(_joueur(), merged, "2026-2027")
+    d = team_xg._player_dict_from_merged(_joueur(), merged, "2026-2027", rows)
     assert d["minutes_played"] == 900
     assert d["goals"] == 3
     assert d["npxg_per_90"] == pytest.approx(2.7 / 900 * 90)
@@ -189,6 +222,31 @@ def test_les_trois_chargeurs_fusionnent_au_lieu_de_garder_une_ligne():
     helper = inspect.getsource(team_xg._load_latest_season_merged)
     assert "merge_season_stats" in helper
     assert "max_season" in helper
+
+
+@pytest.mark.asyncio
+async def test_price_match_ne_casse_pas_si_saison_courante_indisponible():
+    from dataclasses import replace
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.api.pricing import MatchPriceRequest, price_match
+    from app.pricing.team_xg import MatchPricingResult
+
+    shares = compute_player_shares([dict(SAMPLE_FW)], "Home FC", lambda_team=1.5)
+    a = replace(allocate_player(shares[0], 1.5, False, 0.9), stats_season="2025-2026")
+    pricing = MatchPricingResult(fixture_id=42, home_team="Home FC", away_team="Away FC",
+                                 home_match_xg=1.5, away_match_xg=1.2,
+                                 home_players=[a], away_players=[])
+    db = AsyncMock()
+    res = MagicMock()
+    res.scalar_one_or_none.return_value = MagicMock(id=42)
+    db.execute = AsyncMock(return_value=res)
+    with patch("app.pricing.team_xg.load_match_pricing", new=AsyncMock(return_value=pricing)), \
+         patch("app.pricing.beta_pricing.compute_beta_allocations", new=AsyncMock(return_value=({}, {}))), \
+         patch("app.services.season_service.current_season", new=AsyncMock(side_effect=RuntimeError("db"))):
+        out = await price_match(MatchPriceRequest(fixture_id=42), db=db)
+    assert out.home_players[0].stats_season == "2025-2026"
+    assert out.home_players[0].stats_stale is False
 
 
 def test_player_allocation_out_porte_la_saison_des_stats():
