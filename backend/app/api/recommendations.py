@@ -304,10 +304,14 @@ async def get_recommendations(
             )
             # Nom normalisé : les recos d'avant la tâche 8 portent la graphie
             # bookmaker, les nouvelles le nom Atlas — même joueur, même clé.
-            existing_by_key: dict[tuple, int] = {
-                (r.fixture_id, normalize_selection_name(r.player_name), r.market_type): r.id
-                for r in existing_result.scalars()
-            }
+            # Par identifiant joueur d'abord (graphies différentes du même
+            # joueur), le nom normalisé restant pour les recos sans identifiant.
+            existing_by_key: dict[tuple, int] = {}
+            existing_by_pid: dict[tuple, int] = {}
+            for r in existing_result.scalars():
+                existing_by_key[(r.fixture_id, normalize_selection_name(r.player_name), r.market_type)] = r.id
+                if r.player_id is not None:
+                    existing_by_pid[(r.fixture_id, r.player_id, r.market_type)] = r.id
 
             now = datetime.now(UTC)
             new_db_recs: list[tuple[dict, RecommendationModel]] = []
@@ -316,7 +320,10 @@ async def get_recommendations(
                 if fix_db_id is None:
                     continue
                 key = (fix_db_id, normalize_selection_name(rec["player_name"]), rec["market_type"])
-                if key in existing_by_key:
+                pid_key = (fix_db_id, rec.get("player_id"), rec["market_type"])
+                if rec.get("player_id") is not None and pid_key in existing_by_pid:
+                    rec["_db_id"] = existing_by_pid[pid_key]
+                elif key in existing_by_key:
                     rec["_db_id"] = existing_by_key[key]
                 else:
                     expl = rec.get("explanation") or {}

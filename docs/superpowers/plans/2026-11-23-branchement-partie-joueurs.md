@@ -286,6 +286,6 @@
 
 - [ ] **Step 1:** Écrire le script (requêtes SQL du jalon 0, reprises dans le contexte ci-dessus).
 - [ ] **Step 2:** Revue finale de branche (superpowers:requesting-code-review), PR, merge, attendre le déploiement automatique Dokploy (un seul).
-- [ ] **Step 3:** Sauvegarde base (Global Constraints) ; `docker exec ev0-compose-z5hvqt-worker-1 python -m app.scripts.repair_fixture_competitions` (simulation : attendu ≈ 127 reclassés à venir) puis `--apply`.
+- [ ] **Step 3:** Sauvegarde base (Global Constraints) ; `docker exec ev0-compose-z5hvqt-worker-1 python -m app.scripts.repair_fixture_competitions` (simulation : attendu ≈ 127 reclassés à venir) puis `--apply`. Avant `--apply`, compter les recos à supprimer par statut (une reco « approved » peut être un pari placé à la main). Puis `python -m app.scripts.rattrapage_identifiants_atlas` (simulation) et `--apply` : identifiants joueur des cotes et des passes déjà en base.
 - [ ] **Step 4:** `python -m app.scripts.mesure_branchement_atlas` → attendu : mal rangés 0, minutes ignorées 0 %, écussons manquants ≤ 10 (ceux que l'Atlas n'a pas), cotes reliées ≥ 95 %.
 - [ ] **Step 5:** Trois matchs témoins (un Big 5, un LDC, un international) : `POST /api/v1/price/match` avant/après comparé joueur par joueur ; écarts expliqués par les compétitions désormais comptées. Rapport à l'utilisateur.

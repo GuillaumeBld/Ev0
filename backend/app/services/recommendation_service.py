@@ -14,7 +14,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.alerts import alert_bg
-from app.ingestion.odds import normalize_selection_name
 from app.models.match_odds import MatchOddsSnapshot
 from app.models.recommendations import MarketType
 from app.pricing.goalscorer import (
@@ -25,6 +24,7 @@ from app.pricing.goalscorer import (
 )
 from app.pricing.team_xg import load_match_pricing
 from app.services.market_xg import p_poisson_away_win, p_poisson_draw, p_poisson_home_win
+from app.services.player_identity import SquadPlayer, resolve_odds_player
 from app.services.recommendations_service import build_recommendations_for_player
 from app.strategy.selector import RecommendationFilter, select_bets
 
@@ -618,17 +618,20 @@ async def process_scraped_fixtures(
         # Cote ↔ allocation par identifiant Atlas, plus par nom.
         allocs = pricing.home_players + pricing.away_players
         alloc_by_id: dict[int, Any] = {alloc.player_id: alloc for alloc in allocs}
-        # Uniquement pour retrouver les recos d'avant la tâche 8 (player_id
-        # vide, nom bookmaker dont la forme normalisée = nom de l'allocation).
-        pid_by_norm: dict[str, int] = {
-            normalize_selection_name(alloc.player_name): alloc.player_id for alloc in allocs
-        }
+        # Recos d'avant la tâche 8 : player_id vide, nom au format bookmaker
+        # (« K. Mbappé », « Samba, Floyd »). On les relie avec le même résolveur
+        # que les cotes et on ENREGISTRE l'identifiant, sinon le passage suivant
+        # recréerait la reco sous le nom Atlas (doublon + nouvelle alerte Telegram).
+        alloc_squad = [SquadPlayer(api_id=a.player_id, name=a.player_name) for a in allocs]
 
-        def _rec_pid(rec, pid_by_norm=pid_by_norm) -> int | None:
+        def _rec_pid(rec, alloc_squad=alloc_squad) -> int | None:
             pid = getattr(rec, "player_id", None)
             if pid is not None:
                 return pid
-            return pid_by_norm.get(normalize_selection_name(rec.player_name or ""))
+            pid = resolve_odds_player(rec.player_name or "", alloc_squad)
+            if pid is not None:
+                rec.player_id = pid
+            return pid
 
         # Recos joueur existantes de ce match, par (joueur Atlas, marché, pari).
         rec_by_pid: dict[tuple, Recommendation] = {}
@@ -863,7 +866,16 @@ async def process_scraped_fixtures(
             if rec.status not in ("pending", "approved"):
                 continue
             pid = _rec_pid(rec)
-            if pid is None or pid not in active_pids:
+            if pid is None:
+                # Reco d'avant la tâche 8 que le résolveur ne relie à aucun
+                # joueur coté (nom ambigu ou joueur absent de l'effectif) :
+                # plus suivable, elle resterait « en attente » figée jusqu'au
+                # coup d'envoi. On l'expire dès que le match a des cotes fraîches.
+                if active_pids:
+                    rec.status = "expired"
+                    stats["expired"] += 1
+                continue
+            if pid not in active_pids:
                 continue
             # Clé (joueur, marché, pari) — DOIT correspondre à seen_player_keys
             # (bug du 12/07 : une clé qui ne matchait jamais expirait puis

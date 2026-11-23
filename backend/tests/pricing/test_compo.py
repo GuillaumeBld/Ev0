@@ -421,3 +421,17 @@ def test_sauvegarde_envoie_et_stocke_les_identifiants():
     assert "home_starter_ids:" in page and "away_starter_ids:" in page
     assert "starter_ids ?? []" in page
     assert "Pas de compo connue : coche les titulaires." in page
+
+
+def test_alerte_incidents_du_calculateur_une_seule_fois(monkeypatch):
+    """Le calcul tourne toutes les 60 s : même message → une seule alerte."""
+    envoyes = []
+    monkeypatch.setattr(team_xg, "alert_bg", lambda m, c: envoyes.append((m, c)))
+    monkeypatch.setattr(team_xg, "_incidents_envoyes", set())
+    for _ in range(3):
+        team_xg._alert_once("Calculateur : équipe non reliée à l'Atlas — X")
+    team_xg._alert_once("Calculateur : équipe non reliée à l'Atlas — Y")
+    assert envoyes == [
+        ("Calculateur : équipe non reliée à l'Atlas — X", "incidents"),
+        ("Calculateur : équipe non reliée à l'Atlas — Y", "incidents"),
+    ]

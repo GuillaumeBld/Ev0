@@ -451,3 +451,38 @@ async def test_reco_existante_sous_nom_bookmaker_est_retrouvee():
     assert old.best_odds == 3.0
     assert old.player_id == 11
     assert old.status == "pending"
+
+
+def _legacy_rec(name: str, status: str = "pending"):
+    from app.models.recommendations import MarketType, Recommendation
+
+    return Recommendation(
+        fixture_id=42, player_id=None, player_name=name,
+        market_type=MarketType.STANDARD, bet_type="goalscorer", status=status,
+        best_odds=3.0, best_bookmaker="unibet", edge=0.2, fair_odds=2.5,
+        fair_probability=0.4, lambda_intensity=0.5, classification="VALUE",
+        confidence=0.7, explanation={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_reco_d_avant_ids_reliee_sans_doublon():
+    """Reco au nom bookmaker abrégé : reliée et identifiant enregistré, pas recréée."""
+    allocs = [_alloc(14, "Floyd Samba"), _alloc(15, "Tyrone Samba")]
+    old = _legacy_rec("F. Samba")
+    rows = [_odds("Samba, Floyd", 14)]
+    _, added, _ = await _run_process(rows, allocs, existing_recs=[old])
+
+    assert old.player_id == 14
+    assert not [r for r in added if r.market_type == "standard"], "doublon créé"
+    assert old.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_reco_d_avant_ids_non_reliable_expiree():
+    """Nom ambigu (« Samba » seul, deux Samba) : plus suivable → expirée, pas figée."""
+    allocs = [_alloc(14, "Floyd Samba"), _alloc(15, "Tyrone Samba")]
+    old = _legacy_rec("Samba")
+    _, _, _ = await _run_process([_odds("Samba, Floyd", 14)], allocs, existing_recs=[old])
+    assert old.player_id is None
+    assert old.status == "expired"

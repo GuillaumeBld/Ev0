@@ -44,6 +44,20 @@ from app.services.competitions import (
 )
 from app.services.market_xg import MarketXgResult, MarketXgService
 
+# Alertes « incidents » du calculateur déjà envoyées par ce processus. Le
+# calcul tourne à chaque passage (60 s) : sans mémoire, la même équipe non
+# reliée réalerterait ~4 fois par heure (send_alert ne filtre que 15 min).
+_incidents_envoyes: set[str] = set()
+
+
+def _alert_once(message: str) -> None:
+    """Alerte incidents envoyée une seule fois par message et par processus."""
+    if message in _incidents_envoyes:
+        return
+    _incidents_envoyes.add(message)
+    alert_bg(message, "incidents")
+
+
 # ── Constants ─────────────────────────────────────────────────────
 
 HOME_ADVANTAGE = 1.22
@@ -1027,7 +1041,7 @@ async def _load_team_players(
 
     if bzz_team_id is None:
         logger.warning("_load_team_players: équipe non reliée à l'Atlas: %r", team)
-        alert_bg(f"Calculateur : équipe non reliée à l'Atlas — {team}", "incidents")
+        _alert_once(f"Calculateur : équipe non reliée à l'Atlas — {team}")
         return []
 
     team_id_filter = club_squad_filter(bzz_team_id)
@@ -1363,9 +1377,8 @@ def select_lineup_starters(
     if warnings:
         for w in warnings:
             logger.warning("compo [%s]: %s — %s", team, w.code, w.detail)
-        alert_bg(
-            f"Calculateur, compo {team} : " + " ; ".join(w.detail for w in warnings),
-            "incidents",
+        _alert_once(
+            f"Calculateur, compo {team} : " + " ; ".join(w.detail for w in warnings)
         )
     return starters, warnings
 
