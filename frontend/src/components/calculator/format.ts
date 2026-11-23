@@ -43,8 +43,9 @@ export function ev0Odds(p: PlayerAllocationOut, market: Market): { alpha: number
   }
 }
 
-/** Valeur : la cote book dépasse les DEUX cotes Ev0 de plus de 5 %. */
+/** Valeur : la cote book dépasse de plus de 5 % les cotes Ev0 existantes (Alpha seule si Beta manque). */
 export function isValue(book: number | null | undefined, alpha: number | null, beta: number | null): boolean {
-  if (book == null || alpha == null || beta == null) return false
-  return book > Math.max(alpha, beta) * 1.05
+  const ev0 = [alpha, beta].filter((o): o is number => o != null)
+  if (book == null || ev0.length === 0) return false
+  return book > Math.max(...ev0) * 1.05
 }

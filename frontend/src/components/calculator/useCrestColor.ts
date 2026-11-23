@@ -37,7 +37,10 @@ export function useCrestColor(badge: TeamBadgeOut | null | undefined): Rgb {
         else tryAt(i + 1)
       }
       img.onerror = () => tryAt(i + 1)
-      img.src = sources[i]
+      // Paramètre anti-cache : une copie déjà en cache sans en-têtes CORS (chargée par
+      // <img> sans crossOrigin) rendrait le canvas illisible.
+      const url = sources[i]
+      img.src = `${url}${url.includes('?') ? '&' : '?'}cors=1`
     }
     tryAt(0)
     return () => {

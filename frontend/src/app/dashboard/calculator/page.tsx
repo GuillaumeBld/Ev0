@@ -106,6 +106,9 @@ function CalculatorInner() {
   }, [])
   // Nouveau match : compo, tireurs de penalty enregistrés et cotes books, en parallèle.
   useEffect(() => {
+    // Invalide tout calcul encore en vol pour l'ancien match : sa réponse sera ignorée.
+    reqSeq.current++
+    setLoading(false)
     setReady(false)
     setPricing(null)
     setError(null)
@@ -137,8 +140,15 @@ function CalculatorInner() {
   }, [selectedId])
 
   // Calcul : à chaque changement de mode ou de titulaires (légère temporisation entre deux clics).
-  const homeIds = mode.home === 'xi' && starters.home.length >= MIN_STARTERS ? starters.home : null
-  const awayIds = mode.away === 'xi' && starters.away.length >= MIN_STARTERS ? starters.away : null
+  // Le seuil compte les mêmes titulaires que le compteur « N / 10 » : ceux présents dans l'effectif.
+  // Les identifiants inconnus restent envoyés pour que l'API les signale.
+  const inSquad = (side: Side) => {
+    const squad = side === 'home' ? pricing?.home_players : pricing?.away_players
+    const ids = new Set((squad ?? []).map((p) => p.player_id))
+    return starters[side].filter((id) => ids.has(id)).length
+  }
+  const homeIds = mode.home === 'xi' && inSquad('home') >= MIN_STARTERS ? starters.home : null
+  const awayIds = mode.away === 'xi' && inSquad('away') >= MIN_STARTERS ? starters.away : null
   const homeKey = homeIds?.join(',') ?? ''
   const awayKey = awayIds?.join(',') ?? ''
   useEffect(() => {
@@ -154,7 +164,7 @@ function CalculatorInner() {
         away_starter_ids: awayKey ? awayKey.split(',').map(Number) : null,
       })
         .then((res) => {
-          if (seq !== reqSeq.current) return
+          if (seq !== reqSeq.current || res.fixture_id !== selectedId) return
           setPricing(res)
           setError(null)
         })
