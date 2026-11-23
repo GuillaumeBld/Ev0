@@ -209,9 +209,12 @@ def test_player_row_porte_player_api_id():
     from app.ingestion.odds_storage import _player_row
 
     r = _scrape_result([])
-    row = _player_row(r, "goalscorer", "F. Samba", 3.0, r.scraped_at, CITY_NAPOLI)
+    from app.ingestion.scrape_result import PlayerOdds
+
+    row = _player_row(r, "goalscorer", PlayerOdds("F. Samba", 3.0, "avec_sub"), r.scraped_at, CITY_NAPOLI)
     assert row["player_api_id"] == 14
     assert row["player_name"] == "F. Samba"
+    assert row["variant"] == "avec_sub"
 
 
 def test_effectif_meme_source_que_le_calculateur():
@@ -240,11 +243,13 @@ def _alloc(player_id: int, name: str, team: str = "Manchester City"):
     )
 
 
-def _odds(name: str, api_id: int | None, odds: float = 3.0, bookmaker: str = "unibet"):
+def _odds(name: str, api_id: int | None, odds: float = 3.0, bookmaker: str = "unibet",
+          variant: str = "sans_sub"):
     o = MagicMock()
     o.player_name = name
     o.player_api_id = api_id
     o.market_type = "goalscorer"
+    o.variant = variant
     o.odds = odds
     o.bookmaker = bookmaker
     o.scraped_at = datetime.now(UTC)
@@ -329,6 +334,63 @@ async def test_meilleure_cote_regroupee_par_joueur_entre_bookmakers():
     assert len(std) == 1
     assert std[0].best_odds == 3.4
     assert std[0].best_bookmaker == "betclic"
+
+
+# ── Recos : cote avec sub / sans sub ─────────────────────────────────────────
+
+def _alloc_sub(player_id: int, name: str):
+    """Cote Ev0 sans sub 2,50 ; avec sub 2,00 (le remplaçant ajoute des chances)."""
+    a = _alloc(player_id, name)
+    a.fair_odds_goal, a.prob_goal = 2.5, 0.4
+    a.fair_odds_goal_supersub, a.p_goal_supersub = 2.0, 0.5
+    return a
+
+
+@pytest.mark.asyncio
+async def test_cote_avec_sub_jugee_contre_notre_cote_avec_sub_seulement():
+    _, added, _ = await _run_process(
+        [_odds("Phil Foden", 10, odds=2.4, bookmaker="betclic", variant="avec_sub")],
+        [_alloc_sub(10, "Phil Foden")],
+    )
+    recs = [r for r in added if r.market_type != "h2h"]
+    assert [r.market_type.value for r in recs] == ["supersub"]
+    assert recs[0].fair_odds == 2.0
+
+
+@pytest.mark.asyncio
+async def test_cote_sans_sub_jamais_jugee_contre_notre_cote_avec_sub():
+    """2,40 sans sub : sous notre 2,50 sans sub -> aucune reco. Avant, cette
+    cote était aussi comparée à notre 2,00 avec sub : fausse value de 20 %."""
+    _, added, _ = await _run_process(
+        [_odds("Phil Foden", 10, odds=2.4, bookmaker="unibet", variant="sans_sub")],
+        [_alloc_sub(10, "Phil Foden")],
+    )
+    assert not [r for r in added if r.market_type != "h2h"]
+
+
+@pytest.mark.asyncio
+async def test_cote_sans_sub_en_value_donne_une_reco_sans_sub():
+    _, added, _ = await _run_process(
+        [_odds("Phil Foden", 10, odds=3.0, bookmaker="unibet", variant="sans_sub")],
+        [_alloc_sub(10, "Phil Foden")],
+    )
+    recs = [r for r in added if r.market_type != "h2h"]
+    assert [r.market_type.value for r in recs] == ["standard"]
+    assert recs[0].fair_odds == 2.5
+
+
+@pytest.mark.asyncio
+async def test_cote_sans_sub_plus_haute_ne_masque_pas_la_cote_avec_sub():
+    _, added, _ = await _run_process(
+        [
+            _odds("Phil Foden", 10, odds=2.4, bookmaker="betclic", variant="avec_sub"),
+            _odds("Philip Foden", 10, odds=3.0, bookmaker="unibet", variant="sans_sub"),
+        ],
+        [_alloc_sub(10, "Phil Foden")],
+    )
+    par_marche = {r.market_type.value: (r.best_odds, r.best_bookmaker)
+                  for r in added if r.market_type != "h2h"}
+    assert par_marche == {"supersub": (2.4, "betclic"), "standard": (3.0, "unibet")}
 
 
 @pytest.mark.asyncio

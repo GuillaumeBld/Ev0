@@ -5,8 +5,14 @@ export const BOOKS = ['betclic', 'unibet', 'pmu'] as const
 export type Book = (typeof BOOKS)[number]
 export type Market = 'goal' | 'assist'
 
+/** Cote d'un book. `sansSub` : le book ne propose pas le pari « ou son remplaçant » pour ce joueur. */
+export interface BookOdd {
+  odds: number
+  sansSub: boolean
+}
+
 /** Cotes books d'un joueur : marché → book → cote. */
-export type PlayerBookOdds = Record<Market, Partial<Record<Book, number>>>
+export type PlayerBookOdds = Record<Market, Partial<Record<Book, BookOdd>>>
 export type BookOddsByPlayer = Map<number, PlayerBookOdds>
 
 export function indexBookOdds(rows: FixturePlayerOdd[]): BookOddsByPlayer {
@@ -14,7 +20,7 @@ export function indexBookOdds(rows: FixturePlayerOdd[]): BookOddsByPlayer {
   for (const r of rows) {
     if (!(BOOKS as readonly string[]).includes(r.bookmaker)) continue
     const cur = out.get(r.player_api_id) ?? { goal: {}, assist: {} }
-    cur[r.market][r.bookmaker as Book] = r.odds
+    cur[r.market][r.bookmaker as Book] = { odds: r.odds, sansSub: r.variant === 'sans_sub' }
     out.set(r.player_api_id, cur)
   }
   return out
@@ -29,7 +35,7 @@ export function fmtXg(x: number | null | undefined): string {
   return x == null ? '—' : x.toFixed(2).replace('.', ',')
 }
 
-/** Cotes Ev0 « avec sub ». Probabilité nulle = pas de cote calculée (la valeur 99 par défaut n'est pas une cote). */
+/** Cotes Ev0 « avec sub » — les seules affichées. Probabilité nulle = pas de cote calculée (la valeur 99 par défaut n'est pas une cote). */
 export function ev0Odds(p: PlayerAllocationOut, market: Market): { alpha: number | null; beta: number | null } {
   if (market === 'goal') {
     return {
@@ -40,6 +46,20 @@ export function ev0Odds(p: PlayerAllocationOut, market: Market): { alpha: number
   return {
     alpha: (p.p_assist_supersub ?? 0) > 0 ? p.fair_odds_assist_supersub ?? null : null,
     beta: (p.beta_p_assist_supersub ?? 0) > 0 ? p.beta_fair_odds_assist_supersub ?? null : null,
+  }
+}
+
+/** Cotes Ev0 « sans sub » : jamais affichées, elles servent seulement à juger une cote de book sans sub. */
+export function ev0OddsSansSub(p: PlayerAllocationOut, market: Market): { alpha: number | null; beta: number | null } {
+  if (market === 'goal') {
+    return {
+      alpha: (p.prob_goal ?? 0) > 0 ? p.fair_odds_goal ?? null : null,
+      beta: (p.beta_prob_goal ?? 0) > 0 ? p.beta_fair_odds_goal ?? null : null,
+    }
+  }
+  return {
+    alpha: (p.prob_assist ?? 0) > 0 ? p.fair_odds_assist ?? null : null,
+    beta: (p.beta_prob_assist ?? 0) > 0 ? p.beta_fair_odds_assist ?? null : null,
   }
 }
 

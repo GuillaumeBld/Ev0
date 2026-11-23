@@ -34,7 +34,7 @@ from typing import Any
 
 import httpx
 
-from app.ingestion.scrape_result import MatchScrapeResult, PlayerOdds
+from app.ingestion.scrape_result import AVEC_SUB, SANS_SUB, MatchScrapeResult, PlayerOdds
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,24 @@ _HEADERS = {
 }
 
 
+# « Garantie Coaching » de PMU : le pari « Marque » / « Effectue une passe
+# décisive » reste valable sur le remplaçant. Ce n'est pas un marché à part
+# mais une promotion posée sur le marché normal, et le flux ne la signale pas
+# (seul le site affiche l'icône). Compétitions couvertes confirmées par
+# l'utilisateur le 24/11/2026 : les cinq grands championnats et la Ligue des
+# champions. Ligue des nations : supposée, à vérifier en mars 2027. Partout
+# ailleurs, la cote PMU est une cote sans sub.
+PMU_GARANTIE_COACHING_LEAGUES: frozenset[str] = frozenset({
+    "ligue_1", "premier_league", "bundesliga", "la_liga", "serie_a",
+    "champions_league",
+})
+
+
+def player_variant(league: str) -> str:
+    """Variante des cotes joueur PMU pour une compétition."""
+    return AVEC_SUB if league in PMU_GARANTIE_COACHING_LEAGUES else SANS_SUB
+
+
 def _kambi_odds(raw: int | None) -> float | None:
     """Convertit les cotes Kambi (entier×1000) en décimal. Retourne None si invalide."""
     if not raw or raw <= 1000:
@@ -99,6 +117,7 @@ def _parse_betoffers(
     btts: dict[str, float] | None = None
     goalscorer: list[PlayerOdds] = []
     assist: list[PlayerOdds] = []
+    variant = player_variant(league)
 
     for bo in betoffers:
         btype = bo.get("betOfferType", {}).get("name", "")
@@ -170,7 +189,7 @@ def _parse_betoffers(
                 player = o.get("participant")
                 odds = _kambi_odds(o.get("odds"))
                 if player and odds:
-                    goalscorer.append(PlayerOdds(player_name=player, odds=odds))
+                    goalscorer.append(PlayerOdds(player_name=player, odds=odds, variant=variant))
 
         # ── Passes décisives ──────────────────────────────────────────────────
         elif btype == "Player Occurrence Line" and "assist" in eng_label.lower():
@@ -178,7 +197,7 @@ def _parse_betoffers(
                 player = o.get("participant")
                 odds = _kambi_odds(o.get("odds"))
                 if player and odds:
-                    assist.append(PlayerOdds(player_name=player, odds=odds))
+                    assist.append(PlayerOdds(player_name=player, odds=odds, variant=variant))
 
     if not goalscorer and not h2h:
         return None

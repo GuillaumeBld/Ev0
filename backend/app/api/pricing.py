@@ -58,6 +58,11 @@ class PlayerAllocationOut(BaseModel):
     # Beta (career-blended rhythm) — same match context as Alpha, only the
     # goal/assist rate per 90 differs. Equals the Alpha fields above when the
     # player has no imported career (no blended rhythm available).
+    # Beta sans sub : sert seulement à juger une cote de book sans sub.
+    beta_prob_goal: float = 0.0
+    beta_fair_odds_goal: float = 99.0
+    beta_prob_assist: float = 0.0
+    beta_fair_odds_assist: float = 99.0
     beta_p_goal_supersub: float = 0.0
     beta_fair_odds_goal_supersub: float = 99.0
     beta_p_assist_supersub: float = 0.0
@@ -211,6 +216,10 @@ async def price_match(
                     avg_sub_time=getattr(a, "avg_sub_time", 65.0),
                     sub_premium_goal=getattr(a, "sub_premium_goal", 0.0),
                     sub_premium_assist=getattr(a, "sub_premium_assist", 0.0),
+                    beta_prob_goal=getattr(beta, "prob_goal", a.prob_goal),
+                    beta_fair_odds_goal=getattr(beta, "fair_odds_goal", a.fair_odds_goal),
+                    beta_prob_assist=getattr(beta, "prob_assist", a.prob_assist),
+                    beta_fair_odds_assist=getattr(beta, "fair_odds_assist", a.fair_odds_assist),
                     beta_p_goal_supersub=getattr(beta, "p_goal_supersub", a.p_goal_supersub),
                     beta_fair_odds_goal_supersub=getattr(
                         beta, "fair_odds_goal_supersub", a.fair_odds_goal_supersub

@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.alerts import alert_bg
+from app.ingestion.scrape_result import AVEC_SUB, SANS_SUB
 from app.models.match_odds import MatchOddsSnapshot
 from app.models.recommendations import MarketType
 from app.pricing.goalscorer import (
@@ -186,6 +187,7 @@ async def generate_recommendations(
             market_type = odds_entry.get("market_type", "goalscorer")
             market_odds = odds_entry.get("odds", 0)
             bookmaker = odds_entry.get("bookmaker", "unknown")
+            avec_sub = odds_entry.get("variant") == AVEC_SUB
 
             if not player_name or market_odds <= 1:
                 continue
@@ -207,15 +209,17 @@ async def generate_recommendations(
 
             _matched += 1
 
-            # Get fair odds from allocation
+            # Cote Ev0 de la MÊME variante que la cote du book : une cote
+            # « ou son remplaçant » se juge contre notre cote avec sub, une
+            # cote sans sub contre notre cote sans sub.
             if market_type == "goalscorer":
-                fair_odds = alloc.fair_odds_goal
-                probability = alloc.prob_goal
+                fair_odds = alloc.fair_odds_goal_supersub if avec_sub else alloc.fair_odds_goal
+                probability = alloc.p_goal_supersub if avec_sub else alloc.prob_goal
                 lambda_val = alloc.lambda_total
                 has_form = alloc.has_form_goal
             else:
-                fair_odds = alloc.fair_odds_assist
-                probability = alloc.prob_assist
+                fair_odds = alloc.fair_odds_assist_supersub if avec_sub else alloc.fair_odds_assist
+                probability = alloc.p_assist_supersub if avec_sub else alloc.prob_assist
                 lambda_val = alloc.lambda_assist
                 has_form = alloc.has_form_assist
 
@@ -263,6 +267,7 @@ async def generate_recommendations(
                 "bookmaker_player_name": player_name,
                 "team": alloc.team,
                 "market_type": market_type,
+                "variant": AVEC_SUB if avec_sub else SANS_SUB,
                 "fair_probability": round(probability, 4),
                 "fair_odds": fair_odds,
                 "lambda_intensity": round(lambda_val, 4),
@@ -374,10 +379,12 @@ async def get_recommendations_for_date(
                     "player_name": o.player_name,
                     "player_api_id": o.player_api_id,
                     "market_type": o.market_type,
+                    "variant": o.variant,
                     "odds": o.odds,
                     "bookmaker": o.bookmaker,
                 }
-        # Puis meilleure cote ACTUELLE entre bookmakers
+        # Puis meilleure cote ACTUELLE entre bookmakers, par variante : une
+        # cote sans sub (plus haute) ne doit jamais masquer une cote avec sub.
         # regroupée par joueur Atlas (les graphies diffèrent d'un bookmaker à
         # l'autre) ; une cote non reliée reste seule, sous son nom.
         best_odds: dict[tuple, dict[str, Any]] = {}
@@ -386,7 +393,7 @@ async def get_recommendations_for_date(
                 ("id", entry["player_api_id"]) if entry["player_api_id"] is not None
                 else ("nom", entry["player_name"], entry["bookmaker"])
             )
-            key = (who, entry["market_type"])
+            key = (who, entry["market_type"], entry["variant"])
             existing = best_odds.get(key)
             if existing is None or entry["odds"] > existing["odds"]:
                 best_odds[key] = entry
@@ -657,7 +664,8 @@ async def process_scraped_fixtures(
                 PlayerOddsSnapshot.fixture_id == fixture_orm.id
             )
         )
-        best_odds_map: dict[tuple[int, str], dict] = {}
+        # Meilleure cote par joueur x marché x VARIANTE (avec sub / sans sub).
+        best_odds_map: dict[tuple[int, str, str], dict] = {}
         odds_total = 0
         odds_unresolved = 0
         unresolved_names: set[str] = set()
@@ -673,7 +681,7 @@ async def process_scraped_fixtures(
                     odds_unresolved += 1
                     unresolved_names.add(o.player_name)
                 continue
-            key = (o.player_api_id, o.market_type)
+            key = (o.player_api_id, o.market_type, o.variant)
             existing = best_odds_map.get(key)
             if existing is None or o.odds > existing["odds"]:
                 best_odds_map[key] = {
@@ -696,7 +704,7 @@ async def process_scraped_fixtures(
         seen_value_keys: set[tuple] = set()
         seen_player_keys: set[tuple] = set()
 
-        for (player_api_id, bet_type), odds_entry in best_odds_map.items():
+        for (player_api_id, bet_type, variant), odds_entry in best_odds_map.items():
             market_odds = odds_entry["odds"]
             bookmaker = odds_entry["bookmaker"]
 
@@ -739,11 +747,17 @@ async def process_scraped_fixtures(
             else:
                 confidence = 0.25
 
-            # --- Generate STANDARD and SUPERSUB recommendations ---
-            for mkt_type, probability, fair_odds in (
-                (MarketType.STANDARD, probability_std, fair_odds_std),
-                (MarketType.SUPERSUB, probability_ss, fair_odds_ss),
-            ):
+            # Une cote de book ne se compare qu'à la cote Ev0 de la même
+            # variante : cote « ou son remplaçant » -> reco SUPERSUB, cote sans
+            # sub -> reco STANDARD. Avant le 24/11/2026 chaque cote produisait
+            # les deux recos, quelle que soit sa variante : une cote sans sub
+            # (plus haute) jugée contre notre cote avec sub fabriquait de la
+            # fausse value.
+            if variant == AVEC_SUB:
+                candidates = ((MarketType.SUPERSUB, probability_ss, fair_odds_ss),)
+            else:
+                candidates = ((MarketType.STANDARD, probability_std, fair_odds_std),)
+            for mkt_type, probability, fair_odds in candidates:
                 if not fair_odds or fair_odds <= 1 or probability <= 0:
                     continue
 
@@ -859,7 +873,7 @@ async def process_scraped_fixtures(
                                 )
 
         # Expire pending/approved recs for players that appeared in fresh odds but are no longer EV+
-        active_pids: set[int] = {pid for (pid, _) in best_odds_map}
+        active_pids: set[int] = {pid for (pid, _, _) in best_odds_map}
         for rec in all_recs:
             if rec.fixture_id != fixture_orm.id or rec.market_type == MarketType.H2H:
                 continue

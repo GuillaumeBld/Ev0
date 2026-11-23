@@ -70,7 +70,7 @@ class TestParseMatchItems:
         "m200": {"parent": "e100", "markettypeId": 31, "desc": "Buteur"},
         # markettypeId=100001899 : nbre de passes décisives (format actuel Unibet)
         "m201": {"parent": "e100", "markettypeId": 100001899, "desc": "Nbre de passes décisives"},
-        # markettypeId=4 : 1er buteur (doit être dédupliqué au profit de l'anytime)
+        # markettypeId=4 : 1er buteur (autre pari : jamais lu)
         "m202": {"parent": "e100", "markettypeId": 4, "desc": "1er Buteur"},
         # Outcomes buteur anytime
         "o300": {"parent": "m200", "desc": "Mbappé", "price": "2,75"},
@@ -101,12 +101,44 @@ class TestParseMatchItems:
         assert result.assist[0].odds == pytest.approx(3.20)
 
     def test_deduplicates_anytime_over_first_scorer(self):
-        """Anytime (markettypeId=31) bat toujours First Scorer (markettypeId=4)."""
+        """Le 1er buteur (markettypeId=4) n'est jamais lu : seul le buteur compte."""
         result = self._scraper()._parse_match_items(self.SAMPLE_ITEMS, "ligue_1")
         mbappe_goals = [s for s in result.goalscorer if s.player_name == "Mbappé"]
         # Un seul Mbappé goalscorer, avec les cotes anytime (2.75) pas first scorer (4.00)
         assert len(mbappe_goals) == 1
         assert mbappe_goals[0].odds == pytest.approx(2.75)
+
+    def test_premier_buteur_seul_ne_donne_aucune_cote_buteur(self):
+        """Le 1er buteur n'est pas le même pari : il ne sert plus de repli."""
+        items = {
+            "e100": {"a": "PSG", "b": "Marseille", "start": "2604051930"},
+            "m1": {"parent": "e100", "markettypeId": 1, "desc": "1N2"},
+            "o1": {"parent": "m1", "desc": "PSG", "price": "1,50"},
+            "m202": {"parent": "e100", "markettypeId": 4, "desc": "1er Buteur"},
+            "o303": {"parent": "m202", "desc": "Mbappé", "price": "4,00"},
+        }
+        result = self._scraper()._parse_match_items(items, "ligue_1")
+        assert result is None or result.goalscorer == []
+
+    def test_buteur_avec_remplacant_prioritaire_sans_sub_en_second_recours(self):
+        """Coaching gagnant (100002264) = avec sub, pris d'abord ; le buteur
+        simple (31) ne reste que pour un joueur absent du marché avec sub."""
+        items = {
+            **self.SAMPLE_ITEMS,
+            "m203": {"parent": "e100", "markettypeId": 100002264,
+                     "desc": "Buteur ou son remplaçant marque"},
+            "o400": {"parent": "m203", "desc": "Mbappé", "price": "2,50"},
+        }
+        result = self._scraper()._parse_match_items(items, "ligue_1")
+        par_nom = {s.player_name: (s.odds, s.variant) for s in result.goalscorer}
+        assert par_nom["Mbappé"] == (pytest.approx(2.50), "avec_sub")
+        assert par_nom["Neymar"] == (pytest.approx(3.50), "sans_sub")
+        assert len(result.goalscorer) == 2
+
+    def test_passeur_toujours_sans_sub(self):
+        """Unibet n'a pas de marché passeur avec remplaçant."""
+        result = self._scraper()._parse_match_items(self.SAMPLE_ITEMS, "ligue_1")
+        assert [s.variant for s in result.assist] == ["sans_sub"]
 
     def test_skips_null_price(self):
         """Outcomes avec price=None (marché suspendu) sont ignorés."""

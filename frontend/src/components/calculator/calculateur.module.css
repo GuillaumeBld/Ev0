@@ -198,6 +198,10 @@
 .table td.be { color: #d4b8ff; font-weight: 600; background: rgba(160, 110, 255, .08); }
 .table td.up { color: #7ee2a8; font-weight: 700; background: rgba(46, 160, 90, .16); }
 .table td.dn { color: #8b96a5; }
+/* Cote de book sans sub (second recours) : point discret + légende sous le tableau. */
+.sansSub { color: #ffc98a; font-weight: 700; margin-left: 3px; }
+.legend { font-size: 12px; color: #9aa4b1; padding: 8px 14px 12px; }
+.legend .sansSub { margin: 0 4px 0 0; }
 .table tr.bench td { color: #8b96a5; background: transparent; }
 .table tr.bench td.al, .table tr.bench td.be { color: #8b96a5; font-weight: 500; background: transparent; }
 .table tr.sec td { background: transparent; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: #9aa4b1; padding-top: 12px; }

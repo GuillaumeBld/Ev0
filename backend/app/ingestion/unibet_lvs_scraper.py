@@ -9,8 +9,8 @@ Marchés extraits :
 - markettypeId=1         : 1X2 (résultat du match)   → h2h
 - markettypeId=994001025 : Plus / Moins X.5 But(s)   → totals (un marché par seuil)
 - markettypeId=350       : Les 2 équipes marqueront?  → btts
-- markettypeId=31        : Buteur anytime             → goalscorer
-- markettypeId=4         : 1er Buteur                 → goalscorer (dédupliqué)
+- markettypeId=100002264 : Buteur ou son remplaçant   → goalscorer AVEC sub (prioritaire)
+- markettypeId=31        : Buteur                     → goalscorer sans sub (second recours)
 - markettypeId=100001899 : Nbre de passes décisives   → assist (disponible sur tous les Big 5)
 
 CLI usage (dry-run):
@@ -28,7 +28,13 @@ from typing import Any
 
 import httpx
 
-from app.ingestion.scrape_result import MatchScrapeResult, PlayerOdds
+from app.ingestion.scrape_result import (
+    AVEC_SUB,
+    SANS_SUB,
+    MatchScrapeResult,
+    PlayerOdds,
+    prefer_avec_sub,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +60,19 @@ _MARKET_TYPES: dict[int, str] = {
     994001025:  "totals",     # Plus / Moins X.5 But(s) — over/under per threshold
     350:        "btts",       # Les 2 équipes marqueront-elles?
     # Player props
-    31:        "goalscorer",   # Buteur anytime (priorité haute)
-    4:         "goalscorer",   # 1er Buteur (priorité basse — dédupliqué)
+    100002264: "goalscorer",   # Coaching gagnant : Buteur ou son remplaçant marque (AVEC sub)
+    31:        "goalscorer",   # Buteur (sans sub — second recours)
     100001899: "assist",       # Nbre de passes décisives (outcomes: "Nom 1+", "Nom 2+")
 }
 
-# markettypeId=31 est l'anytime scorer, prioritaire sur le 1er buteur (4)
-_ANYTIME_SCORER_ID = 31
+# Règle du 23/11/2026 : la cote avec sub d'abord, la cote sans sub seulement
+# pour un joueur que le marché avec sub ne propose pas. Unibet n'a pas de
+# passeur avec sub : ses cotes passeur sont toujours « sans sub ».
+#
+# Le « 1er Buteur » (markettypeId=4) servait de repli quand le buteur manquait :
+# retiré, ce n'est pas le même pari (Cherki 6,10 en 1er buteur, 2,20 en buteur)
+# et il fabriquait de fausses values.
+_GOALSCORER_VARIANTS: dict[int, str] = {100002264: AVEC_SUB, 31: SANS_SUB}
 
 _EVENT_SLEEP = 0.3
 
@@ -211,9 +223,7 @@ class UnibetLVSScraper:
 
         # Collect outcomes grouped by market key
         market_outcomes: dict[str, list[tuple[str, float]]] = {}  # market_key → [(desc, odds)]
-        # For goalscorer dedup
-        selections_anytime: dict[str, PlayerOdds] = {}
-        selections_first: dict[str, PlayerOdds] = {}
+        selections_goalscorer: list[PlayerOdds] = []
         selections_assist: dict[str, PlayerOdds] = {}
 
         for key, val in items.items():
@@ -234,11 +244,9 @@ class UnibetLVSScraper:
             if market_type in ("h2h", "totals", "btts"):
                 market_outcomes.setdefault(parent, []).append((desc, odds))
             elif market_type == "goalscorer":
-                name_lower = desc.lower()
-                if mtype_id == _ANYTIME_SCORER_ID:
-                    selections_anytime.setdefault(name_lower, PlayerOdds(desc, odds))
-                else:
-                    selections_first.setdefault(name_lower, PlayerOdds(desc, odds))
+                selections_goalscorer.append(
+                    PlayerOdds(desc, odds, _GOALSCORER_VARIANTS[mtype_id])
+                )
             elif market_type == "assist":
                 # Unibet format: "Sotoca, Florian 1+" / "Sotoca, Florian 2+"
                 # Strip trailing threshold suffix — keep "1+" (anytime assist, lowest odds)
@@ -295,8 +303,8 @@ class UnibetLVSScraper:
                 if yes_odds and no_odds:
                     btts = {"yes": yes_odds, "no": no_odds}
 
-        # Fusionner goalscorer : anytime > first
-        final_goalscorer = list({**selections_first, **selections_anytime}.values())
+        # Une cote buteur par joueur : avec sub si elle existe, sinon sans sub.
+        final_goalscorer = prefer_avec_sub(selections_goalscorer)
         totals: dict | None = totals_dict if totals_dict else None
 
         return MatchScrapeResult(
