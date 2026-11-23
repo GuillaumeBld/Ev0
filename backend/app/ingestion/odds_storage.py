@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ingestion.scrape_result import MatchScrapeResult
 from app.models.match_odds import MatchOddsSnapshot
 from app.models.player_odds_snapshot import PlayerOddsSnapshot
+from app.services.player_identity import SquadPlayer, load_fixture_squad, resolve_odds_player
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +19,14 @@ logger = logging.getLogger(__name__)
 async def store_match_scrape_result(
     result: MatchScrapeResult,
     session: AsyncSession,
+    squad_cache: dict[int, list[SquadPlayer]] | None = None,
 ) -> tuple[int, int]:
     """Write MatchScrapeResult to both snapshot tables.
+
+    Chaque cote joueur porte `player_api_id` : le joueur Atlas résolu contre
+    l'effectif des deux équipes du match (chargé une fois par match grâce à
+    `squad_cache`, partagé entre bookmakers d'un même passage). Non relié =
+    None, compté par la génération des recos qui alerte au-delà de 10 %.
 
     Returns (match_odds_rows_inserted, player_odds_rows_upserted).
     Uses ON CONFLICT DO NOTHING for match odds (immutable per-timestamp snapshots).
@@ -53,10 +60,21 @@ async def store_match_scrape_result(
 
     # ── 2. player_odds_snapshots ──────────────────────────────────────────────
     player_rows_raw: list[dict] = []
-    for p in result.goalscorer:
-        player_rows_raw.append(_player_row(result, "goalscorer", p.player_name, p.odds, now))
-    for p in result.assist:
-        player_rows_raw.append(_player_row(result, "assist", p.player_name, p.odds, now))
+    if result.goalscorer or result.assist:
+        cache = squad_cache if squad_cache is not None else {}
+        if result.fixture_id not in cache:
+            cache[result.fixture_id] = await load_fixture_squad(session, result.fixture_id)
+        squad = cache[result.fixture_id]
+        for p in result.goalscorer:
+            player_rows_raw.append(_player_row(result, "goalscorer", p.player_name, p.odds, now, squad))
+        for p in result.assist:
+            player_rows_raw.append(_player_row(result, "assist", p.player_name, p.odds, now, squad))
+        unresolved = sorted({r["player_name"] for r in player_rows_raw if r["player_api_id"] is None})
+        if unresolved:
+            logger.warning(
+                "odds_storage: fixture=%d %s — %d cote(s) joueur non reliée(s) à l'Atlas : %s",
+                result.fixture_id, result.bookmaker, len(unresolved), unresolved,
+            )
 
     # Deduplicate on (fixture_id, bookmaker, market_type, player_name) — keep best odds.
     # PostgreSQL's ON CONFLICT DO UPDATE cannot handle two rows with the same conflict key
@@ -74,7 +92,11 @@ async def store_match_scrape_result(
         excluded = insert_stmt.excluded
         stmt2 = insert_stmt.on_conflict_do_update(
             index_elements=["fixture_id", "bookmaker", "market_type", "player_name"],
-            set_={"odds": excluded.odds, "scraped_at": excluded.scraped_at},
+            set_={
+                "odds": excluded.odds,
+                "scraped_at": excluded.scraped_at,
+                "player_api_id": excluded.player_api_id,
+            },
         )
         res2 = await session.execute(stmt2)
         player_upserted = res2.rowcount or 0
@@ -114,12 +136,14 @@ def _player_row(
     player: str,
     odds: float,
     now: datetime,
+    squad: list[SquadPlayer],
 ) -> dict:
     return {
         "fixture_id": r.fixture_id,
         "bookmaker": r.bookmaker,
         "market_type": market,
         "player_name": player,
+        "player_api_id": resolve_odds_player(player, squad),
         "odds": odds,
         "scraped_at": now,
     }

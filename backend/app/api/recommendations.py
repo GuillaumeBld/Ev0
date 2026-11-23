@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._badges import MatchBadges, badge_fields_for_fixtures
 from app.db import get_db
+from app.ingestion.odds import normalize_selection_name
 from app.models.bankroll import BankrollEntry
 from app.models.bzzoiro import BzzPlayer
 from app.models.fixtures import Fixture as FixtureModel
@@ -290,8 +291,10 @@ async def get_recommendations(
                     RecommendationModel.fixture_id.in_(fixture_db_ids)
                 )
             )
+            # Nom normalisé : les recos d'avant la tâche 8 portent la graphie
+            # bookmaker, les nouvelles le nom Atlas — même joueur, même clé.
             existing_by_key: dict[tuple, int] = {
-                (r.fixture_id, r.player_name, r.market_type): r.id
+                (r.fixture_id, normalize_selection_name(r.player_name), r.market_type): r.id
                 for r in existing_result.scalars()
             }
 
@@ -301,13 +304,14 @@ async def get_recommendations(
                 fix_db_id = fixture_map.get(rec.get("fixture_id", ""))
                 if fix_db_id is None:
                     continue
-                key = (fix_db_id, rec["player_name"], rec["market_type"])
+                key = (fix_db_id, normalize_selection_name(rec["player_name"]), rec["market_type"])
                 if key in existing_by_key:
                     rec["_db_id"] = existing_by_key[key]
                 else:
                     expl = rec.get("explanation") or {}
                     db_rec = RecommendationModel(
                         fixture_id=fix_db_id,
+                        player_id=rec.get("player_id"),
                         player_name=rec["player_name"],
                         market_type=rec["market_type"],
                         lambda_intensity=float(expl.get("lambda", 0) or 0),
@@ -342,12 +346,12 @@ async def get_recommendations(
                         )
                     )
                     refetched: dict[tuple, int] = {
-                        (r.fixture_id, r.player_name, r.market_type): r.id
+                        (r.fixture_id, normalize_selection_name(r.player_name), r.market_type): r.id
                         for r in refetch_result.scalars()
                     }
                     for rec, _ in new_db_recs:
                         fix_db_id = fixture_map.get(rec.get("fixture_id", ""))
-                        key = (fix_db_id, rec["player_name"], rec["market_type"])
+                        key = (fix_db_id, normalize_selection_name(rec["player_name"]), rec["market_type"])
                         if key in refetched:
                             rec["_db_id"] = refetched[key]
         except Exception as exc:

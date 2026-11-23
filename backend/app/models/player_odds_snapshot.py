@@ -17,7 +17,8 @@ class PlayerOddsSnapshot(Base):
     bookmaker: Mapped[str] = mapped_column(String(30))
     market_type: Mapped[str] = mapped_column(String(20))   # goalscorer | assist
     player_name: Mapped[str] = mapped_column(String(200))
-    # bzz_players.api_id, rempli par le rapprochement de noms
+    # bzz_players.api_id : résolu contre l'effectif Atlas des deux équipes du
+    # match (player_identity.resolve_odds_player) ; None = non relié
     player_api_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     odds: Mapped[float] = mapped_column(Float)
     scraped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
