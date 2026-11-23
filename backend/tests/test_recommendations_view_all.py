@@ -95,6 +95,11 @@ class TestGetRecommendationsViewAll:
         fix.home_team = "PSG"
         fix.away_team = "Lyon"
         fix.kickoff_utc = datetime(2026, 4, 10, 18, 45, tzinfo=timezone.utc)
+        # Club sans id Atlas : pas de requete d'ecussons (cf. team_badges).
+        fix.id = 1
+        fix.home_bzz_team_id = None
+        fix.away_bzz_team_id = None
+        fix.competition_api_id = None
         return fix
 
     @pytest.mark.asyncio
@@ -200,11 +205,19 @@ class TestGetRecommendationsViewAll:
         fix1.home_team = "PSG"
         fix1.away_team = "Lyon"
         fix1.kickoff_utc = datetime(2026, 4, 10, 18, 45, tzinfo=timezone.utc)
+        fix1.id = 1
+        fix1.home_bzz_team_id = None
+        fix1.away_bzz_team_id = None
+        fix1.competition_api_id = None
         fix2 = MagicMock()
         fix2.external_id = "ext-2"
         fix2.home_team = "OM"
         fix2.away_team = "Nice"
         fix2.kickoff_utc = datetime(2026, 4, 12, 20, 0, tzinfo=timezone.utc)
+        fix2.id = 2
+        fix2.home_bzz_team_id = None
+        fix2.away_bzz_team_id = None
+        fix2.competition_api_id = None
         items_result.all.return_value = [
             (self._make_db_rec(id_=1), fix1),
             (self._make_db_rec(id_=2), fix2),
@@ -247,6 +260,11 @@ class TestGetExpiredRecommendationsViewAll:
         fix.home_team = "PSG"
         fix.away_team = "Lyon"
         fix.kickoff_utc = datetime(2026, 3, 15, 18, 45, tzinfo=timezone.utc)
+        # Club sans id Atlas : pas de requete d'ecussons (cf. team_badges).
+        fix.id = 1
+        fix.home_bzz_team_id = None
+        fix.away_bzz_team_id = None
+        fix.competition_api_id = None
         return fix
 
     @pytest.mark.asyncio
