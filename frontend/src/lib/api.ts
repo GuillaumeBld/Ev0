@@ -120,7 +120,6 @@ export interface MatchPriceResponse {
   home_lineup_warnings?: string[]
   away_lineup_warnings?: string[]
   last_scraped_at?: string | null
-  p00?: number
 }
 
 export async function priceMatch(request: MatchPriceRequest): Promise<MatchPriceResponse> {

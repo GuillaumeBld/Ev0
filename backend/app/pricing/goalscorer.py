@@ -152,17 +152,6 @@ def ev_anytime(model_prob: float, market_odds: float) -> float:
     return model_prob * (market_odds - 1.0) - (1.0 - model_prob)
 
 
-def ev_anytime_p00_guarantee(model_prob: float, market_odds: float, p00: float) -> float:
-    """EV with French 'remboursé si 0-0' guarantee.
-
-    If the match ends 0-0 you receive your stake back (push), so you never lose
-    on a 0-0 scoreline:
-        EV = model_prob × (odds-1) - (1 - model_prob - p00)
-           = ev_anytime(model_prob, odds) + p00
-    """
-    return ev_anytime(model_prob, market_odds) + p00
-
-
 def calculate_edge(fair_odds: float, market_odds: float) -> float:
     """Edge = (market_odds / fair_odds) - 1.
 

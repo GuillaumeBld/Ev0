@@ -805,12 +805,6 @@ function CalculatorInner() {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Recalculer
           </button>
-          {pricing?.p00 != null && (
-            <span className="text-xs text-gray-400">
-              P(0-0) = <span className="font-mono text-white">{(pricing.p00 * 100).toFixed(1)}%</span>
-              <span className="text-gray-600 ml-1">(remboursé si 0-0)</span>
-            </span>
-          )}
         </div>
       )}
 

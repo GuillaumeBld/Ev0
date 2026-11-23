@@ -20,7 +20,6 @@ from app.models.recommendations import MarketType
 from app.pricing.goalscorer import (
     calculate_edge,
     ev_anytime,
-    ev_anytime_p00_guarantee,
     devig_implied_prob,
     GOALSCORER_MARKET_MARGIN,
 )
@@ -171,7 +170,6 @@ async def generate_recommendations(
         xg_source = pricing.xg_source
         home_match_xg = pricing.home_match_xg
         away_match_xg = pricing.away_match_xg
-        match_p00 = pricing.p00
 
         # Cote ↔ allocation par identifiant Atlas (allocation.player_id ==
         # bzz_players.api_id == player_odds_snapshots.player_api_id).
@@ -231,7 +229,6 @@ async def generate_recommendations(
 
             edge = calculate_edge(fair_odds, market_odds)
             ev = round(ev_anytime(probability, market_odds), 4)
-            ev_p00 = round(ev_anytime_p00_guarantee(probability, market_odds, match_p00), 4)
             market_devigged_prob = round(devig_implied_prob(market_odds, GOALSCORER_MARKET_MARGIN), 4)
 
             # Confidence
@@ -273,9 +270,7 @@ async def generate_recommendations(
                 "best_bookmaker": bookmaker,
                 "edge": edge,
                 "ev_anytime": ev,
-                "ev_p00_guarantee": ev_p00,
                 "market_devigged_prob": market_devigged_prob,
-                "p00": match_p00,
                 "classification": classification,
                 "confidence": confidence,
                 "xg_source": xg_source,
@@ -620,7 +615,6 @@ async def process_scraped_fixtures(
             logger.debug("process_scraped: no pricing for fixture %d — skipping", fixture_orm.id)
             continue
 
-        match_p00 = pricing.p00
         # Cote ↔ allocation par identifiant Atlas, plus par nom.
         allocs = pricing.home_players + pricing.away_players
         alloc_by_id: dict[int, Any] = {alloc.player_id: alloc for alloc in allocs}
@@ -752,7 +746,6 @@ async def process_scraped_fixtures(
 
                 edge = calculate_edge(fair_odds, market_odds)
                 ev = round(ev_anytime(probability, market_odds), 4)
-                ev_p00 = round(ev_anytime_p00_guarantee(probability, market_odds, match_p00), 4)
                 is_value = edge >= min_edge
 
                 rec_key = (player_api_id, mkt_type, bet_type)
@@ -786,8 +779,6 @@ async def process_scraped_fixtures(
                                 "bet_type": bet_type,
                                 "market_type": mkt_type.value,
                                 "ev_anytime": ev,
-                                "ev_p00_guarantee": ev_p00,
-                                "p00": match_p00,
                             },
                             generated_utc=now,
                             status="pending",

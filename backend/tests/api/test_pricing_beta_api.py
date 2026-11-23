@@ -73,7 +73,6 @@ def _make_pricing_result(fixture) -> MatchPricingResult:
         xg_source="market_implied",
         home_players=[_alloc(1, "Home FC", fair_odds_goal_supersub=6.0, p_goal_supersub=0.15)],
         away_players=[_alloc(2, "Away FC", fair_odds_goal_supersub=9.0, p_goal_supersub=0.10)],
-        p00=0.10,
     )
 
 

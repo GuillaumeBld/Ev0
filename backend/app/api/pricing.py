@@ -86,7 +86,6 @@ class MatchPriceResponse(MatchBadges):
     home_lineup_warnings: list[str] = []
     away_lineup_warnings: list[str] = []
     last_scraped_at: str | None = None  # ISO timestamp of freshest bookmaker odds snapshot
-    p00: float = 0.0  # P(0-0) under independent Poisson; used for FR 'remboursé si 0-0' guarantee
 
 
 @router.post("/price/match", response_model=MatchPriceResponse)
@@ -252,6 +251,5 @@ async def price_match(
         home_lineup_warnings=list(getattr(pricing, "home_lineup_warnings", []) or []),
         away_lineup_warnings=list(getattr(pricing, "away_lineup_warnings", []) or []),
         last_scraped_at=pricing.last_scraped_at.isoformat() if pricing.last_scraped_at else None,
-        p00=pricing.p00,
         **badge_map[fixture.id],
     )

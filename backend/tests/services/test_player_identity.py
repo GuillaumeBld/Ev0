@@ -268,7 +268,6 @@ async def _run_process(odds_rows, allocs, existing_recs=None, reset_memo=True):
     pricing.home_match_xg = 1.8
     pricing.away_match_xg = 1.0
     pricing.xg_source = "market_implied"
-    pricing.p00 = 0.06
     pricing.home_players = allocs
     pricing.away_players = []
 
@@ -381,7 +380,7 @@ async def test_chemin_api_n_alerte_pas():
     fixture_orm.external_id = "ext1"
     pricing = MagicMock()
     pricing.home_match_xg, pricing.away_match_xg = 1.8, 1.0
-    pricing.xg_source, pricing.p00 = "market_implied", 0.06
+    pricing.xg_source = "market_implied"
     pricing.home_players, pricing.away_players = [_alloc(14, "Floyd Samba")], []
     odds = {"ext1": [{"player_name": "Samba", "player_api_id": None, "odds": 3.0,
                       "market_type": "goalscorer", "bookmaker": "pmu"}]}

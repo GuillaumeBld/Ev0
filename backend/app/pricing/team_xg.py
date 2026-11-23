@@ -283,8 +283,6 @@ class MatchPricingResult:
     home_lineup_warnings: list[str] = field(default_factory=list)
     away_lineup_warnings: list[str] = field(default_factory=list)
     last_scraped_at: datetime | None = None
-    # Match-level derived probabilities
-    p00: float = 0.0   # P(0-0) = e^(-(lambda_h + lambda_a)) under independent Poisson
 
 
 
@@ -1708,8 +1706,6 @@ async def load_match_pricing(
         if away_starter_ids else None
     )
 
-    p00 = round(math.exp(-(home_match_xg + away_match_xg)), 4)
-
     return MatchPricingResult(
         fixture_id=fixture.id,
         home_team=home_team,
@@ -1724,5 +1720,4 @@ async def load_match_pricing(
         home_lineup_warnings=[w.detail for w in home_lineup_warnings],
         away_lineup_warnings=[w.detail for w in away_lineup_warnings],
         last_scraped_at=market_result.last_snapshot_at if market_result is not None else None,
-        p00=p00,
     )
