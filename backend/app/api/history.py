@@ -32,6 +32,8 @@ class HistoryItem(MatchBadges):
     date: str
     fixture_name: str
     player_name: str
+    # Identifiant Atlas (bzz_players.api_id), None si non relie.
+    player_id: int | None = None
     market_type: str
     best_odds: float
     fair_odds: float | None
@@ -137,6 +139,7 @@ async def get_history(
                 date=str(rec.generated_utc.date()) if rec.generated_utc else "",
                 fixture_name=fixture_name,
                 player_name=rec.player_name,
+                player_id=rec.player_id,
                 market_type=rec.market_type,
                 best_odds=rec.best_odds,
                 fair_odds=rec.fair_odds,
@@ -212,6 +215,7 @@ async def get_autoflat_history(
                 date=str(rec.generated_utc.date()) if rec.generated_utc else "",
                 fixture_name=fixture_name,
                 player_name=rec.player_name,
+                player_id=rec.player_id,
                 market_type=rec.market_type,
                 best_odds=rec.best_odds,
                 fair_odds=rec.fair_odds,

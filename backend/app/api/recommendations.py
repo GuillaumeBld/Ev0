@@ -125,6 +125,8 @@ class Recommendation(MatchBadges):
     fixture_name: str
     kickoff_utc: str
     player_name: str
+    # Identifiant Atlas (bzz_players.api_id), None si non relie : pas de lien fiche.
+    player_id: int | None = None
     team: str
     market_type: MarketType
     fair_odds: float
@@ -231,6 +233,7 @@ async def get_recommendations(
                 fixture_name=f"{fix.home_team} vs {fix.away_team}",
                 kickoff_utc=fix.kickoff_utc.isoformat(),
                 player_name=rec.player_name,
+                player_id=rec.player_id,
                 team=_resolve_team(rec.player_name, fix.home_team, fix.away_team, bzz_teams, rec.explanation or {}),
                 market_type=rec.market_type,
                 fair_odds=rec.fair_odds,
@@ -399,6 +402,7 @@ async def get_recommendations(
                 fixture_name=rec.get("fixture_name", ""),
                 kickoff_utc=str(rec.get("kickoff_utc", "")),
                 player_name=rec.get("player_name", ""),
+                player_id=rec.get("player_id"),
                 team=rec.get("team", ""),
                 market_type=rec.get("market_type", "goalscorer"),
                 fair_odds=rec.get("fair_odds", 0.0),
@@ -470,6 +474,7 @@ async def get_expired_recommendations(
                 fixture_name=f"{fix.home_team} vs {fix.away_team}",
                 kickoff_utc=fix.kickoff_utc.isoformat(),
                 player_name=rec.player_name,
+                player_id=rec.player_id,
                 team=_resolve_team(rec.player_name, fix.home_team, fix.away_team, bzz_teams_exp, rec.explanation or {}),
                 market_type=rec.market_type,
                 fair_odds=rec.fair_odds,
@@ -522,6 +527,7 @@ async def get_expired_recommendations(
             fixture_name=f"{fix.home_team} vs {fix.away_team}",
             kickoff_utc=fix.kickoff_utc.isoformat(),
             player_name=rec.player_name,
+            player_id=rec.player_id,
             team="",
             market_type=rec.market_type,
             fair_odds=rec.fair_odds,

@@ -14,6 +14,7 @@ import {
 import { getHistory, getAutoflatHistory, patchRecommendation, triggerAutoSettle } from '@/lib/api'
 import type { HistoryItem, TeamBadgeOut } from '@/lib/api'
 import { TeamBadge } from '@/components/TeamBadge'
+import { PlayerLink } from '@/components/PlayerLink'
 
 type BetStatus = 'won' | 'lost' | 'running' | 'void'
 
@@ -22,6 +23,7 @@ interface HistoricalBet {
   date: string
   fixture: string
   player: string
+  playerId: number | null
   market: 'goalscorer' | 'assist'
   odds: number
   fairOdds: number | null
@@ -41,6 +43,7 @@ function historyItemToBet(item: HistoryItem): HistoricalBet {
     date: item.date,
     fixture: item.fixture_name,
     player: item.player_name,
+    playerId: item.player_id ?? null,
     market: item.market_type as 'goalscorer' | 'assist',
     odds: item.best_odds,
     fairOdds: item.fair_odds ?? null,
@@ -434,7 +437,7 @@ export default function HistoryPage() {
                         <span className="block text-[10px] text-gray-500">{bet.competitionName}</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-sm text-white font-medium">{bet.player}</td>
+                    <td className="px-4 py-3 text-sm text-white font-medium"><PlayerLink playerId={bet.playerId} name={bet.player} /></td>
                     <td className="px-4 py-3 hidden md:table-cell">
                       <span className={clsx(
                         'px-2 py-0.5 rounded text-xs',

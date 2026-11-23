@@ -4,19 +4,10 @@ import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { clsx } from 'clsx'
 import { AlertCircle, RefreshCw } from 'lucide-react'
+import { TeamBadge } from '@/components/TeamBadge'
+import type { MatchBadges } from '@/lib/api'
 
-/** Championnats du périmètre. La Ligue des champions est absente : elle attend
- *  les tirages de la phase de ligue. */
-const LEAGUES: { id: number | null; label: string; flag: string }[] = [
-  { id: null, label: 'Tous', flag: '' },
-  { id: 1, label: 'Premier League', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
-  { id: 3, label: 'La Liga', flag: '🇪🇸' },
-  { id: 4, label: 'Serie A', flag: '🇮🇹' },
-  { id: 5, label: 'Bundesliga', flag: '🇩🇪' },
-  { id: 6, label: 'Ligue 1', flag: '🇫🇷' },
-]
-
-interface MatchListItem {
+interface MatchListItem extends MatchBadges {
   event_api_id: number
   event_date: string | null
   status: string | null
@@ -45,9 +36,9 @@ export default function MatchesPage() {
     setLoading(true)
     setErreur(null)
     try {
-      const params = new URLSearchParams({ limit: '100' })
-      if (league !== null) params.set('league_api_id', league.toString())
-      const r = await fetch(`/api/v1/matches?${params}`)
+      // Tout le périmètre d'un coup : le filtre championnat est construit
+      // depuis les données reçues et appliqué à l'écran.
+      const r = await fetch('/api/v1/matches?limit=200')
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       setMatches(await r.json())
     } catch (e) {
@@ -56,9 +47,19 @@ export default function MatchesPage() {
     } finally {
       setLoading(false)
     }
-  }, [league])
+  }, [])
 
   useEffect(() => { charger() }, [charger])
+
+  // Championnats présents dans les matchs reçus : une compétition inconnue s'affiche.
+  const leagues = Array.from(
+    new Map(
+      matches
+        .filter((m) => m.league_api_id != null)
+        .map((m) => [m.league_api_id as number, m.competition_name ?? `Compétition ${m.league_api_id}`]),
+    ),
+  ).sort((a, b) => a[1].localeCompare(b[1], 'fr'))
+  const shown = league === null ? matches : matches.filter((m) => m.league_api_id === league)
 
   return (
     <div className="space-y-4">
@@ -73,7 +74,7 @@ export default function MatchesPage() {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {LEAGUES.map(({ id, label, flag }) => (
+        {[[null, 'Tous'] as const, ...leagues].map(([id, label]) => (
           <button
             key={id ?? 'all'}
             onClick={() => setLeague(id)}
@@ -84,7 +85,7 @@ export default function MatchesPage() {
                 : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white',
             )}
           >
-            {flag} {label}
+            {label}
           </button>
         ))}
       </div>
@@ -110,15 +111,17 @@ export default function MatchesPage() {
               {loading && (
                 <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Chargement…</td></tr>
               )}
-              {!loading && matches.length === 0 && (
+              {!loading && shown.length === 0 && (
                 <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Aucun match</td></tr>
               )}
-              {matches.map((m) => (
+              {shown.map((m) => (
                 <tr key={m.event_api_id} className="border-b border-gray-700/50 hover:bg-ev-surface2">
                   <td className="px-4 py-2 text-gray-400 whitespace-nowrap">{fmtDate(m.event_date)}</td>
                   <td className="px-3 py-2">
-                    <Link href={`/dashboard/matches/${m.event_api_id}`} className="text-white hover:text-brand-400">
+                    <Link href={`/dashboard/matches/${m.event_api_id}`} className="inline-flex items-center gap-2 text-white hover:text-brand-400">
+                      <TeamBadge badge={m.home_badge} name={m.home_team} size={20} />
                       {m.home_team} — {m.away_team}
+                      <TeamBadge badge={m.away_badge} name={m.away_team} size={20} />
                     </Link>
                   </td>
                   <td className="px-3 py-2 text-center font-mono text-white">

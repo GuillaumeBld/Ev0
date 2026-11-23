@@ -57,6 +57,7 @@ export interface Recommendation extends MatchBadges {
   fixture_name: string
   kickoff_utc: string
   player_name: string
+  player_id?: number | null
   team: string
   market_type: 'goalscorer' | 'assist'
   bet_type?: 'goal' | 'assist'
@@ -298,6 +299,7 @@ export interface HistoryItem extends MatchBadges {
   date: string
   fixture_name: string
   player_name: string
+  player_id?: number | null
   market_type: string
   best_odds: number
   fair_odds: number | null

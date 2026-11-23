@@ -30,6 +30,7 @@ export function Dashboard({ user }: DashboardProps) {
       const recs = (response.recommendations || []).map((rec: any) => ({
         id: rec.id,
         player: rec.player_name,
+        playerId: rec.player_id ?? null,
         team: rec.team,
         opponent: parseOpponent(rec.fixture_name, rec.team),
         market: rec.market_type,

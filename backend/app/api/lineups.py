@@ -121,6 +121,8 @@ class LineupPlayerOut(BaseModel):
     is_starter: bool
     jersey_number: int | None
     is_striker: bool = False
+    # Identifiant Atlas (bzz_players.api_id) ; None = joueur non relié, pas de lien fiche.
+    player_api_id: int | None = None
 
 
 class LineupOut(BaseModel):
@@ -161,6 +163,7 @@ async def _hydrate_strikers(
             is_starter=p.is_starter,
             jersey_number=p.jersey_number,
             is_striker=striker_map.get(p.player_name, False),
+            player_api_id=getattr(p, "player_api_id", None),
         )
         for p in players
     ]

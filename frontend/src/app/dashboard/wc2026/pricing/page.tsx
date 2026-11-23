@@ -119,6 +119,10 @@ export default function WC2026PricingPage() {
     }
   }
 
+  const nationFlags = Object.fromEntries(
+    nations.map((n) => [n.nation, n.flag_emoji])
+  )
+
   const isPlayerTab = tab === 'goals' || tab === 'assists' || tab === 'decisive'
   const anySyncing = BOOKMAKERS.some((b) => syncStates[b].loading)
 
@@ -346,7 +350,7 @@ export default function WC2026PricingPage() {
         ) : loading ? (
           <p className="text-gray-500 text-sm p-4">Chargement…</p>
         ) : (
-          <PricingTable key={tab} players={players} mode={tab} />
+          <PricingTable key={tab} players={players} mode={tab} nationFlags={nationFlags} />
         )}
       </div>
     </div>

@@ -13,6 +13,8 @@ import {
   syncBzzoiroLineups,
   fillSubsLineups,
 } from '@/lib/api'
+import { TeamBadge } from '@/components/TeamBadge'
+import { flagBadge } from '@/lib/flags'
 import { LineupPitchEditor } from '@/components/wc2026/LineupPitchEditor'
 
 export default function WC2026LineupsPage() {
@@ -162,7 +164,10 @@ export default function WC2026LineupsPage() {
                 ) : (
                   <Circle className="w-3 h-3 text-gray-600 shrink-0" />
                 )}
-                <span className="truncate">{n.nation}</span>
+                <span className="truncate flex items-center gap-1">
+                  {flagBadge(n.flag_emoji) && <TeamBadge badge={flagBadge(n.flag_emoji)} size={16} />}
+                  {n.nation}
+                </span>
                 {!n.complete && n.starters_count > 0 && (
                   <span className="ml-auto text-[10px] text-gray-500">{n.starters_count}/11</span>
                 )}
@@ -189,6 +194,7 @@ export default function WC2026LineupsPage() {
         {selectedNation && !loadingNation && nationData && (
           <>
             <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+              {flagBadge(nationData.flag_emoji) && <TeamBadge badge={flagBadge(nationData.flag_emoji)} size={24} />}
               {selectedNation}
             </h3>
             <LineupPitchEditor

@@ -1,12 +1,14 @@
 "use client"
 
 import { Badge } from "@/components/ui/badge"
+import { PlayerLink } from "@/components/PlayerLink"
 
 export type LineupPlayer = {
   player_name: string
   position: string      // GK | DEF | MID | FWD
   is_starter: boolean
   is_striker: boolean
+  player_api_id?: number | null
 }
 
 export type LineupData = {
@@ -86,7 +88,7 @@ export function LineupDisplay({ lineup }: { lineup: LineupData }) {
                     : "text-foreground"
                 }
               >
-                {p.player_name}
+                <PlayerLink playerId={p.player_api_id} name={p.player_name} />
               </span>
             ))}
           </div>

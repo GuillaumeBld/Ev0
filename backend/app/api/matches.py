@@ -17,12 +17,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api._badges import badge_fields
 from app.db import get_db
 from app.ingestion.bzzoiro.sync_match_detail import LEAGUES_FICHE_MATCH
 from app.models.bzzoiro import BzzEvent, BzzPlayerMatchStat
 from app.models.fixtures import Fixture
 from app.models.canonical_teams import CanonicalTeam
 from app.models.lineups import TeamLineup
+from app.services.atlas_source import team_badges
 
 router = APIRouter(prefix="/matches", tags=["matches"])
 
@@ -131,8 +133,17 @@ async def list_matches(
         *[e.away_team_api_id for e in rows],
     )
 
+    # Ecussons + nom de competition : UN seul SELECT pour toute la liste.
+    badges = await team_badges(
+        session,
+        [e.home_team_api_id for e in rows] + [e.away_team_api_id for e in rows],
+    )
+
     return [
         {
+            **badge_fields(
+                badges, e.home_team_api_id, e.away_team_api_id, e.league_api_id
+            ),
             "event_api_id": e.api_id,
             "event_date": e.event_date,
             "status": e.status,

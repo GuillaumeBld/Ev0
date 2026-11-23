@@ -1,9 +1,10 @@
 'use client'
 
-import { TeamBadge } from '@/components/TeamBadge'
 import { useState } from 'react'
+import Link from 'next/link'
 import { clsx } from 'clsx'
 import { type WCMatchDetail, type WCIncident } from '@/lib/api'
+import { TeamBadge } from '@/components/TeamBadge'
 import { MatchPitch } from './MatchPitch'
 import { ShotMap } from './ShotMap'
 
@@ -44,8 +45,16 @@ function IncidentRow({ inc, homeTeam, awayTeam, onGoalClick }: {
 
   if (inc.type === 'goal') {
     return (
-      <button
+      <div
+        role={onGoalClick ? 'button' : undefined}
+        tabIndex={onGoalClick ? 0 : undefined}
         onClick={() => onGoalClick?.(inc)}
+        onKeyDown={(e) => {
+          if (onGoalClick && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault()
+            onGoalClick(inc)
+          }
+        }}
         className={clsx(
           'w-full flex items-center gap-3 py-2 px-2 rounded-lg transition-colors group',
           onGoalClick ? 'hover:bg-green-900/25 cursor-pointer' : 'cursor-default',
@@ -58,9 +67,13 @@ function IncidentRow({ inc, homeTeam, awayTeam, onGoalClick }: {
           <div className={clsx(isHome ? 'text-left' : 'text-right')}>
             <div className="text-white font-semibold text-sm">
               {inc.player_id != null ? (
-                <a href={`/dashboard/atlas?player=${inc.player_id}`} className="hover:underline">
+                <Link
+                  href={`/dashboard/atlas?player=${inc.player_id}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="hover:underline"
+                >
                   {inc.is_own_goal ? `${inc.player} (CSC)` : inc.player}
-                </a>
+                </Link>
               ) : (
                 inc.is_own_goal ? `${inc.player} (CSC)` : inc.player
               )}
@@ -80,7 +93,7 @@ function IncidentRow({ inc, homeTeam, awayTeam, onGoalClick }: {
             voir tir →
           </span>
         )}
-      </button>
+      </div>
     )
   }
 
@@ -219,9 +232,9 @@ function PlayerStatsTable({ players, teamId, teamName }: {
             return (
               <tr key={p.player_id} className="border-b border-gray-800/40 hover:bg-gray-800/20">
                 <td className="py-1 pr-2 text-gray-200 truncate max-w-[160px]">
-                  <a href={`/dashboard/atlas?player=${p.player_id}`} className="hover:underline">
+                  <Link href={`/dashboard/atlas?player=${p.player_id}`} className="hover:underline">
                     {p.player_name ?? `#${p.player_id}`}
-                  </a>
+                  </Link>
                   {p.yellow_card ? ' 🟨' : ''}
                   {p.red_card ? ' 🟥' : ''}
                 </td>

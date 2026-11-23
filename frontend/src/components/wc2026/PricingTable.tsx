@@ -3,11 +3,14 @@
 import { useState } from 'react'
 import { clsx } from 'clsx'
 import { type WCPlayerPricing } from '@/lib/api'
+import { TeamBadge } from '@/components/TeamBadge'
+import { flagBadge } from '@/lib/flags'
 
 type Mode = 'goals' | 'assists' | 'decisive'
 type SortDir = 'asc' | 'desc'
 
 interface PricingTableProps {
+  nationFlags: Record<string, string | null>
   players: WCPlayerPricing[]
   mode: Mode
 }
@@ -139,7 +142,7 @@ function sortPlayers(
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-export function PricingTable({ players, mode }: PricingTableProps) {
+export function PricingTable({ players, mode, nationFlags }: PricingTableProps) {
   const isGoals = mode === 'goals'
   const isDecisive = mode === 'decisive'
   const [sortKey, setSortKey] = useState<SortKey>(isDecisive ? 'ga' : 'lambda')
@@ -273,6 +276,7 @@ export function PricingTable({ players, mode }: PricingTableProps) {
             const bkBet   = isGoals ? p.bk_top_scorer_betclic : p.bk_top_assister_betclic
             const bkPmu   = isGoals ? p.bk_top_scorer_pmu     : p.bk_top_assister_pmu
             const edgeOut = isGoals ? p.edge_top_scorer   : p.edge_top_assister
+            const flag    = flagBadge(nationFlags[p.nation])
 
             // Meilleure cote parmi les 3 books pour highlight
             const bkValues = [bkUni, bkBet, bkPmu].filter((v): v is number => v !== null)
@@ -288,7 +292,10 @@ export function PricingTable({ players, mode }: PricingTableProps) {
                 )}
                 <td className="py-1.5 px-2 font-medium text-white text-xs">{p.player_name}</td>
                 <td className="py-1.5 px-2">
-                  <span className="text-gray-500 text-[10px]">{p.nation}</span>
+                  <span className="flex items-center gap-1">
+                    {flag && <TeamBadge badge={flag} size={13} />}
+                    <span className="text-gray-500 text-[10px]">{p.nation}</span>
+                  </span>
                 </td>
                 <td className="py-1.5 px-2 text-gray-600">{p.position ?? '—'}</td>
                 {/* WC actual stats */}
