@@ -80,11 +80,10 @@ def _build_session(
     stat_rows: list,
     roster_players: list,
 ) -> AsyncMock:
-    """Build a mock async session with 3 execute calls:
+    """Build a mock async session with 2 execute calls (plus de recherche par nom) :
 
-    1. team lookup → scalar_one_or_none returns team
-    2. season-stats JOIN → all() returns stat_rows
-    3. fallback roster query → scalars().all() returns roster_players
+    1. season-stats JOIN → all() returns stat_rows
+    2. fallback roster query → scalars().all() returns roster_players
     """
     session = AsyncMock()
 
@@ -103,7 +102,7 @@ def _build_session(
     roster_exec.scalars.return_value = roster_scalars
 
     session.execute = AsyncMock(
-        side_effect=[team_exec, stats_exec, roster_exec]
+        side_effect=[stats_exec, roster_exec]
     )
     return session
 
@@ -134,7 +133,7 @@ async def test_load_team_players_includes_players_without_stats():
         roster_players=[player_with_stats, player_no_stats],
     )
 
-    result = await _load_team_players(session, "Test FC", "ligue_1")
+    result = await _load_team_players(session, "Test FC", "ligue_1", bzz_team_id=10)
 
     assert len(result) == 2
 
@@ -171,7 +170,7 @@ async def test_load_team_players_skips_gk_in_fallback():
         roster_players=[gk_player],
     )
 
-    result = await _load_team_players(session, "Test FC", "ligue_1")
+    result = await _load_team_players(session, "Test FC", "ligue_1", bzz_team_id=10)
 
     assert result == []
 
@@ -195,7 +194,7 @@ async def test_load_team_players_no_duplicate_in_fallback():
         roster_players=[player],  # same player, same api_id
     )
 
-    result = await _load_team_players(session, "Test FC", "ligue_1")
+    result = await _load_team_players(session, "Test FC", "ligue_1", bzz_team_id=10)
 
     assert len(result) == 1
     assert result[0]["name"] == "Alice Forward"

@@ -19,9 +19,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from sqlalchemy import Integer, case, func, literal, or_, select
+from sqlalchemy import Integer, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.alerts import alert_bg
 from app.pricing.assist import (
     ASSIST_GOAL_RATE,
     CLAMP_LAMBDA_MIN as CLAMP_LAMBDA_MIN_ASSIST,
@@ -308,7 +309,7 @@ def assess_inputs(players: list[dict[str, Any]], team: str) -> list[InputWarning
     """
     warnings: list[InputWarning] = []
     if not players:
-        warnings.append(InputWarning("NO_PLAYERS", None, None, f"team={team}: 0 players loaded"))
+        warnings.append(InputWarning("NO_PLAYERS", None, None, f"team={team}: 0 players loaded — équipe non reliée à l'Atlas"))
         return warnings
     for p in players:
         pid = p.get("player_id")
@@ -746,107 +747,6 @@ def allocate_player(
 
 # ── DB helpers ────────────────────────────────────────────────────
 
-# Fixture team name → exact bzz_teams.name mapping.
-# Values are verified against the production bzz_teams table.
-# Only map names that DIFFER from the bzz_teams canonical name —
-# if fixture name == bzz name, no entry needed (exact match handles it).
-_TEAM_NAME_ALIASES: dict[str, str] = {
-    # ── Accents / ponctuation ──────────────────────────────────────
-    "Atletico Madrid":             "Atlético Madrid",
-    "Atletico de Madrid":          "Atlético Madrid",
-    "Bayer Leverkusen":            "Bayer 04 Leverkusen",
-    "Borussia Mönchengladbach":    "Borussia M'gladbach",
-    "Deportivo Alaves":            "Deportivo Alavés",
-    "Rennes":                      "Stade Rennais",
-    # ── Premier League ────────────────────────────────────────────
-    "Man United":                  "Manchester United",
-    "Man Utd":                     "Manchester United",
-    "Manchester United FC":        "Manchester United",
-    "Man City":                    "Manchester City",
-    "Manchester City FC":          "Manchester City",
-    "Spurs":                       "Tottenham Hotspur",
-    "Tottenham Hotspur FC":        "Tottenham Hotspur",
-    "Arsenal FC":                  "Arsenal",
-    "Chelsea FC":                  "Chelsea",
-    "Liverpool FC":                "Liverpool",
-    "Wolverhampton Wanderers":     "Wolverhampton",
-    "Wolves":                      "Wolverhampton",
-    "Brighton and Hove Albion":    "Brighton & Hove Albion",
-    "Nottm Forest":                "Nottingham Forest",
-    "Nott'm Forest":               "Nottingham Forest",
-    # ── Ligue 1 ───────────────────────────────────────────────────
-    "PSG":                         "Paris Saint-Germain",
-    "Paris Saint Germain":         "Paris Saint-Germain",
-    "Marseille":                   "Olympique de Marseille",
-    "Lyon":                        "Olympique Lyonnais",
-    "Brest":                       "Stade Brestois",
-    "Reims":                       "Stade de Reims",
-    "Strasbourg":                  "RC Strasbourg",
-    "Lens":                        "RC Lens",
-    "Le Havre AC":                 "Le Havre",
-    "Havre AC":                    "Le Havre",
-    "Montpellier HSC":             "Montpellier",
-    # ── Bundesliga ────────────────────────────────────────────────
-    "Bayern Munich":               "Bayern München",
-    "FC Bayern Munich":            "FC Bayern München",
-    "Dortmund":                    "Borussia Dortmund",
-    "BVB":                         "Borussia Dortmund",
-    "Frankfurt":                   "Eintracht Frankfurt",
-    "Freiburg":                    "SC Freiburg",
-    "Hoffenheim":                  "TSG Hoffenheim",
-    "Augsburg":                    "FC Augsburg",
-    "Wolfsburg":                   "VfL Wolfsburg",
-    "VfL Bochum":                  "VfL Bochum 1848",
-    "Bochum":                      "VfL Bochum 1848",
-    "Stuttgart":                   "VfB Stuttgart",
-    "Werder Bremen":               "SV Werder Bremen",
-    "Bremen":                      "SV Werder Bremen",
-    "Leipzig":                     "RB Leipzig",
-    "Kiel":                        "Holstein Kiel",
-    "Heidenheim":                  "1. FC Heidenheim",
-    "FC Heidenheim":               "1. FC Heidenheim",
-    "St. Pauli":                   "FC St. Pauli",
-    # ── Serie A ───────────────────────────────────────────────────
-    "Internazionale":              "Inter",
-    "Inter Milan":                 "Inter",
-    "AC Milan":                    "Milan",
-    "SS Lazio":                    "Lazio",
-    "AS Roma":                     "Roma",
-    "SSC Napoli":                  "Napoli",
-    "Juventus FC":                 "Juventus",
-    "FC Bologna":                  "Bologna",
-    "ACF Fiorentina":              "Fiorentina",
-    "Atalanta BC":                 "Atalanta",
-    "Torino FC":                   "Torino",
-    "Genoa CFC":                   "Genoa",
-    "Empoli FC":                   "Empoli",
-    "Cagliari Calcio":             "Cagliari",
-    "Udinese Calcio":              "Udinese",
-    "Venezia FC":                  "Venezia",
-    "US Lecce":                    "Lecce",
-    "US Sassuolo":                 "Sassuolo",
-    "Como 1907":                   "Como",
-    # ── La Liga ───────────────────────────────────────────────────
-    "Real Madrid CF":              "Real Madrid",
-    "Athletic Bilbao":             "Athletic Club",
-    "Betis":                       "Real Betis",
-    "Villarreal CF":               "Villarreal",
-    "Sevilla FC":                  "Sevilla",
-    "Valencia CF":                 "Valencia",
-    "Celta de Vigo":               "Celta Vigo",
-    "Celta":                       "Celta Vigo",
-    "Rayo":                        "Rayo Vallecano",
-    "UD Las Palmas":               "Las Palmas",
-    "RCD Espanyol":                "Espanyol",
-    "RCD Mallorca":                "Mallorca",
-    "CD Leganes":                  "Leganés",
-    "Girona":                      "Girona FC",
-    "Getafe CF":                   "Getafe",
-    "CA Osasuna":                  "Osasuna",
-    "Alaves":                      "Deportivo Alavés",
-}
-
-
 async def _load_team_players(
     db: AsyncSession,
     team: str,
@@ -855,62 +755,18 @@ async def _load_team_players(
 ) -> list[dict[str, Any]]:
     """Load player season stats from bzz_player_season_stats for a team.
 
-    When bzz_team_id is provided (preferred path), filters players by
-    current_team_api_id OR loan_team_api_id — no string matching needed.
-
-    Fallback (bzz_team_id=None): resolves team name via alias map + fuzzy
-    match, then filters by COALESCE(loan_team_name, current_team_name).
+    Effectif = `club_squad_filter(bzz_team_id)` (source unique Atlas).
+    Sans bzz_team_id : liste vide + alerte, jamais de rapprochement par nom.
     """
-    from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat, BzzTeam
+    from app.models.bzzoiro import BzzPlayer, BzzPlayerSeasonStat
+    from app.services.atlas_source import club_squad_filter
 
-    # --- Build the player filter ---
-    if bzz_team_id is not None:
-        # COALESCE(loan_team_api_id, current_team_api_id): a player on loan belongs
-        # to their loan club, not their parent club — using OR would double-count them.
-        team_id_filter = func.coalesce(
-            BzzPlayer.loan_team_api_id, BzzPlayer.current_team_api_id
-        ) == bzz_team_id
-    else:
-        # Fallback: resolve team name → bzz_teams row → name filter
-        resolved = _TEAM_NAME_ALIASES.get(team, team)
+    if bzz_team_id is None:
+        logger.error("_load_team_players: équipe non reliée à l'Atlas: %r", team)
+        alert_bg(f"Calculateur : équipe non reliée à l'Atlas — {team}", "incidents")
+        return []
 
-        # Step 1+2: alias-resolved exact match
-        team_res = await db.execute(
-            select(BzzTeam)
-            .where(func.lower(BzzTeam.name) == func.lower(resolved))
-            .limit(1)
-        )
-        bzz_team = team_res.scalar_one_or_none()
-
-        # Step 3: bzz name contains fixture name (e.g. "FC Bayern München" ⊇ "Bayern München")
-        if bzz_team is None:
-            team_res = await db.execute(
-                select(BzzTeam)
-                .where(func.lower(BzzTeam.name).contains(func.lower(resolved)))
-                .order_by(func.length(BzzTeam.name))
-                .limit(1)
-            )
-            bzz_team = team_res.scalar_one_or_none()
-
-        # Step 4: fixture name contains bzz name (e.g. "Wolverhampton Wanderers" ⊇ "Wolverhampton")
-        if bzz_team is None:
-            team_res = await db.execute(
-                select(BzzTeam)
-                .where(literal(resolved.lower()).contains(func.lower(BzzTeam.name)))
-                .order_by(func.length(BzzTeam.name).desc())  # prefer longest bzz name (more specific)
-                .limit(1)
-            )
-            bzz_team = team_res.scalar_one_or_none()
-
-        if bzz_team is None:
-            logger.warning("_load_team_players: no bzz team found for %r", team)
-            return []
-
-        # Filter by effective team name — COALESCE(loan_team_name, current_team_name) so that
-        # players on loan appear under their loan club (not their parent club) in pricing,
-        # consistent with how the players API and teams API work (migration v027+).
-        _eff_team = func.coalesce(BzzPlayer.loan_team_name, BzzPlayer.current_team_name)
-        team_id_filter = func.lower(_eff_team) == func.lower(bzz_team.name)
+    team_id_filter = club_squad_filter(bzz_team_id)
 
     # Query season stats joined to player — pick the most recent season per player
     latest_subq = (

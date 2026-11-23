@@ -1,7 +1,7 @@
 """Tests for bzz_player_season_stats integration in pricing engine.
 
 Covers:
-  1. _load_team_players returns [] when no BzzTeam found
+  1. _load_team_players returns [] when no bzz_team_id (equipe non reliee)
   2. _load_team_players returns player dicts with correct fields when team + stats exist
   3. Quality multiplier formula (goalscorer.py)
   4. Creation multiplier formula (assist.py)
@@ -159,9 +159,9 @@ class TestLoadTeamPlayersBasic:
         roster_exec_result = MagicMock()
         roster_exec_result.scalars.return_value = roster_scalars
 
-        session.execute = AsyncMock(side_effect=[team_exec_result, players_exec_result, roster_exec_result])
+        session.execute = AsyncMock(side_effect=[players_exec_result, roster_exec_result])
 
-        result = await _load_team_players(session, "Paris Saint-Germain", "ligue_1")
+        result = await _load_team_players(session, "Paris Saint-Germain", "ligue_1", bzz_team_id=77)
 
         assert len(result) == 2
 
