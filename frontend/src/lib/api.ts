@@ -266,6 +266,42 @@ export async function getFixtures(params?: {
   return data
 }
 
+/** Dernière cote book d'un joueur Atlas (bzz_players.api_id) sur un marché. */
+export interface FixturePlayerOdd {
+  player_api_id: number
+  market: 'goal' | 'assist'
+  bookmaker: string
+  odds: number
+  scraped_at: string
+}
+
+export async function getFixturePlayerOdds(fixtureId: number): Promise<FixturePlayerOdd[]> {
+  const { data } = await api.get(`/api/v1/fixtures/${fixtureId}/player-odds`)
+  return data
+}
+
+/** Compo résolue d'une équipe (GET /lineups/fixture/{id}), champs lus par le calculateur. */
+export interface FixtureTeamLineup {
+  lineup_id: number | null
+  lineup_type: string
+  team: string
+  // Titulaires de champ par identifiant (gardien exclu) ; null = compo sans identifiants
+  starter_ids: number[] | null
+}
+
+export interface FixtureLineupsOut extends MatchBadges {
+  fixture_id: number
+  home_team: string
+  away_team: string
+  home: FixtureTeamLineup | null
+  away: FixtureTeamLineup | null
+}
+
+export async function getFixtureLineups(fixtureId: number): Promise<FixtureLineupsOut> {
+  const { data } = await api.get(`/api/v1/lineups/fixture/${fixtureId}`)
+  return data
+}
+
 export async function createFixture(body: FixtureCreateData): Promise<FixtureOut> {
   const { data } = await api.post('/api/v1/fixtures', body)
   return data

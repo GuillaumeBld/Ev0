@@ -1,0 +1,174 @@
+/* Calculateur — maquette D validée (docs/superpowers/calculateur-maquette-D.html).
+   Reprise à l'identique du bloc <style> de la maquette, scopée sous .ev. */
+
+.ev {
+  font-family: var(--font-inter), Inter, system-ui, sans-serif;
+  color: #e6edf3;
+  background: #0d1117;
+  min-height: 100vh;
+  font-variant-numeric: tabular-nums;
+}
+.ev a { color: #8ab4ff; }
+.ev a:hover { color: #b3ceff; }
+
+.wrap {
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 20px 20px 40px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.panel {
+  background: #151b23;
+  border: 1px solid #262d37;
+  border-radius: 14px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .04) inset, 0 14px 34px rgba(0, 0, 0, .45);
+}
+.faint { color: #9aa4b1; }
+
+.rail {
+  flex: 1 1 280px;
+  max-width: 340px;
+  min-width: 0;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.main {
+  flex: 999 1 640px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.srOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; }
+
+.chip {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 11px;
+  border-radius: 999px;
+  border: 1px solid #262d37;
+  font-size: 12px;
+  font-weight: 500;
+  color: #c5ced9;
+  white-space: nowrap;
+}
+.chipOn { border-color: #4c8dff; color: #ffffff; background: #14223a; }
+.chip:focus-visible { outline: 2px solid #4c8dff; }
+
+.grp {
+  all: unset;
+  cursor: pointer;
+  box-sizing: border-box;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.grp:hover { background: #1b222c; }
+.grp:focus-visible { outline: 2px solid #4c8dff; }
+
+.mrow {
+  all: unset;
+  box-sizing: border-box;
+  width: 100%;
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 9px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+.mrow:hover { background: #1b222c; }
+.mrowOn { background: #1c2840; box-shadow: inset 0 0 0 1px #35507f; }
+.mrow:focus-visible { outline: 2px solid #4c8dff; }
+
+.disc {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-weight: 700;
+  flex: none;
+}
+
+.search {
+  all: unset;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 11px 14px;
+  border-radius: 10px;
+  background: #0d1117;
+  border: 1px solid #262d37;
+  font-size: 14px;
+  color: #e6edf3;
+}
+.search::placeholder { color: #8b96a5; }
+
+.seg { display: inline-flex; background: rgba(13, 17, 23, .7); border-radius: 8px; padding: 3px; gap: 2px; }
+.seg button {
+  all: unset;
+  cursor: pointer;
+  padding: 5px 11px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #b8c2cf;
+}
+.seg button.on { background: #2b3442; color: #ffffff; }
+.seg button:focus-visible { outline: 2px solid #4c8dff; }
+
+.table { border-collapse: collapse; width: 100%; min-width: 780px; }
+.table th { font-size: 11px; font-weight: 600; color: #9aa4b1; text-align: right; padding: 4px 8px; white-space: nowrap; }
+.table th.l, .table td.l { text-align: left; }
+.table tr.top th { font-size: 12px; color: #e6edf3; padding-bottom: 2px; }
+.table td { font-size: 13px; padding: 6px 8px; text-align: right; border-top: 1px solid #222a35; white-space: nowrap; }
+.table tbody tr:nth-child(even) td { background: #11161d; }
+.table tbody tr:hover td { background: #1a2230; }
+.table td.s, .table th.s { border-left: 2px solid #2a323e; }
+.table td.book { color: #c5ced9; }
+.table tr.top th.gB { background: linear-gradient(180deg, #1d3a2b, #16241d); color: #8ee6b0; border-radius: 8px 8px 0 0; text-align: center; }
+.table tr.top th.gP { background: linear-gradient(180deg, #3a2a14, #241b10); color: #ffc98a; border-radius: 8px 8px 0 0; text-align: center; }
+.table th.al { color: #8fb8ff; }
+.table th.be { color: #c9a8ff; }
+.table th.bk { color: #b8c2cf; }
+.table td.al { color: #a9c8ff; font-weight: 600; background: rgba(76, 141, 255, .07); }
+.table td.be { color: #d4b8ff; font-weight: 600; background: rgba(160, 110, 255, .08); }
+.table td.up { color: #7ee2a8; font-weight: 700; background: rgba(46, 160, 90, .16); }
+.table td.dn { color: #8b96a5; }
+.table tr.bench td { color: #8b96a5; background: transparent; }
+.table tr.bench td.al, .table tr.bench td.be { color: #8b96a5; font-weight: 500; background: transparent; }
+.table tr.sec td { background: transparent; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: #9aa4b1; padding-top: 12px; }
+.table input[type=checkbox] { width: 16px; height: 16px; accent-color: #4c8dff; margin: 0 8px 0 0; vertical-align: -3px; cursor: pointer; }
+.table td.name { font-weight: 600; }
+.table tr.bench td.name { font-weight: 400; }
+
+.theadTeam {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  margin: -16px -6px 10px;
+  border-radius: 14px 14px 0 0;
+}
+.teamPanel { padding: 16px 6px 6px; }
+.scrollX { overflow-x: auto; }
+
+/* Nom de joueur = lien vers sa fiche Atlas, rendu comme le texte de la maquette. */
+.ev a.plink { color: inherit; text-decoration: none; }
+.ev a.plink:hover { color: inherit; text-decoration: underline; }
