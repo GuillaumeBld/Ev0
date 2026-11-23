@@ -1,7 +1,7 @@
 """Player-level bookmaker odds snapshot (goalscorer / assist)."""
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, UniqueConstraint
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -17,6 +17,8 @@ class PlayerOddsSnapshot(Base):
     bookmaker: Mapped[str] = mapped_column(String(30))
     market_type: Mapped[str] = mapped_column(String(20))   # goalscorer | assist
     player_name: Mapped[str] = mapped_column(String(200))
+    # bzz_players.api_id, rempli par le rapprochement de noms
+    player_api_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     odds: Mapped[float] = mapped_column(Float)
     scraped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
