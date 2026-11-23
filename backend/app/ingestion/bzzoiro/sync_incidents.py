@@ -11,6 +11,7 @@ Flow:
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -437,7 +438,14 @@ async def backfill_assist_player_ids(session: AsyncSession) -> int:
     """))).all()
 
     mis_a_jour = 0
+    lues = 0
     for fixture_id, incidents in rows:
+        if isinstance(incidents, str):
+            try:
+                incidents = json.loads(incidents)
+            except ValueError:
+                logger.debug("backfill passes: incidents illisibles (fixture %s)", fixture_id)
+                continue
         if not isinstance(incidents, list):
             continue
         ids = {
@@ -451,6 +459,7 @@ async def backfill_assist_player_ids(session: AsyncSession) -> int:
             SELECT id, minute, player_name FROM match_events
             WHERE fixture_id = :fid AND event_type = 'assist' AND player_id IS NULL
         """), {"fid": fixture_id})).all()
+        lues += len(manquants)
         for ev_id, minute, nom in manquants:
             pid = ids.get((minute, nom))
             if pid is None:
@@ -460,4 +469,8 @@ async def backfill_assist_player_ids(session: AsyncSession) -> int:
                 "WHERE id = :id AND player_id IS NULL"
             ), {"pid": pid, "id": ev_id})
             mis_a_jour += res.rowcount or 0
+    logger.info(
+        "backfill passes: %d lignes examinees, %d remplies, %d laissees NULL",
+        lues, mis_a_jour, lues - mis_a_jour,
+    )
     return mis_a_jour

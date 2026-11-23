@@ -66,3 +66,23 @@ async def test_backfill_remplit_et_est_idempotent():
     session.execute = AsyncMock(side_effect=execute)
     assert await backfill_assist_player_ids(session) == 1
     assert await backfill_assist_player_ids(session) == 0
+
+
+@pytest.mark.asyncio
+async def test_backfill_accepte_incidents_en_chaine_json():
+    import json
+
+    async def execute(stmt, params=None, *a, **k):
+        t = str(stmt)
+        res = MagicMock()
+        if "JOIN bzz_events" in t:
+            res.all.return_value = [(1, json.dumps([BUT_SEQ])), (2, "pas du json")]
+        elif t.lstrip().startswith("SELECT id, minute"):
+            res.all.return_value = [(10, 30, "D. Luiz")]
+        else:
+            res.rowcount = 1
+        return res
+
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=execute)
+    assert await backfill_assist_player_ids(session) == 1
