@@ -64,6 +64,53 @@ async def team_badges(
     }
 
 
+# Champs rendus par merge_season_stats. Sert a fabriquer une ligne vide
+# pour un joueur sans statistiques dans la saison demandee : en
+# comparaison, il reste affiche avec des tirets.
+_CHAMPS_VIDES: tuple[str, ...] = (
+    "goals",
+    "goal_assist",
+    "xg_per_90",
+    "xa_per_90",
+    "avg_rating",
+    "shots_on_target_per_90",
+    "form_xg_5",
+    "matches_played",
+    "minutes_played",
+    "season",
+    "total_shots",
+    "shots_on_target",
+    "key_pass",
+    "expected_goals",
+    "expected_assists",
+    "yellow_card",
+    "red_card",
+    "saves",
+    "shots_per_90",
+    "key_pass_per_90",
+    "accurate_cross_per_90",
+    "recoveries_per_90",
+    "tackles_per_90",
+    "interceptions_per_90",
+    "shot_accuracy",
+    "xg_per_shot",
+    "finishing_delta",
+    "xa_delta",
+    "pass_completion",
+    "long_ball_accuracy",
+    "cross_accuracy",
+    "duel_win_rate",
+    "aerial_win_rate",
+    "tackle_success_rate",
+    "avg_minutes_per_match",
+    "starts_pct",
+    "form_rating_5",
+    "form_goals_5",
+    "form_assists_5",
+    "rating_trend",
+)
+
+
 def merge_season_stats(rows: list[Any], season: str) -> dict[str, Any] | None:
     """Merge per-league BzzPlayerSeasonStat rows into a single combined season dict.
 

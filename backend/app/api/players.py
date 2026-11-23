@@ -34,7 +34,7 @@ from app.models.bzzoiro import (
 from app.models.player_career import PlayerCareerSeason
 from app.models.selection_stats import PlayerSelectionSeasonStat
 from app.pricing.career_blend import blended_rhythm
-from app.services.atlas_source import merge_season_stats
+from app.services.atlas_source import _CHAMPS_VIDES, merge_season_stats, team_badges
 from app.services.season_service import current_season, season_end, season_start
 
 router = APIRouter(prefix="/players", tags=["players"])
@@ -472,14 +472,6 @@ class PlayerDetail(BaseModel):
 
 
 
-def _safe_div(num: Any, den: Any) -> float | None:
-    if den is None or den == 0:
-        return None
-    if num is None:
-        return None
-    return num / den
-
-
 def _compute_form_from_matches(recent_matches: list[RecentMatch], overall_avg_rating: float | None) -> dict[str, Any]:
     """Derive form stats from the 5 most recent matches (already sorted desc by date)."""
     last5 = recent_matches[:5]
@@ -522,53 +514,6 @@ def _python_sort(results: list[dict[str, Any]], sort_by: str, sort_order: str) -
             results.sort(key=lambda r: (r.get(field) is None, r.get(field) or 0))
 
 
-# Champs rendus par merge_season_stats. Sert a fabriquer une ligne vide
-# pour un joueur sans statistiques dans la saison demandee : en
-# comparaison, il reste affiche avec des tirets.
-_CHAMPS_VIDES: tuple[str, ...] = (
-    "goals",
-    "goal_assist",
-    "xg_per_90",
-    "xa_per_90",
-    "avg_rating",
-    "shots_on_target_per_90",
-    "form_xg_5",
-    "matches_played",
-    "minutes_played",
-    "season",
-    "total_shots",
-    "shots_on_target",
-    "key_pass",
-    "expected_goals",
-    "expected_assists",
-    "yellow_card",
-    "red_card",
-    "saves",
-    "shots_per_90",
-    "key_pass_per_90",
-    "accurate_cross_per_90",
-    "recoveries_per_90",
-    "tackles_per_90",
-    "interceptions_per_90",
-    "shot_accuracy",
-    "xg_per_shot",
-    "finishing_delta",
-    "xa_delta",
-    "pass_completion",
-    "long_ball_accuracy",
-    "cross_accuracy",
-    "duel_win_rate",
-    "aerial_win_rate",
-    "tackle_success_rate",
-    "avg_minutes_per_match",
-    "starts_pct",
-    "form_rating_5",
-    "form_goals_5",
-    "form_assists_5",
-    "rating_trend",
-)
-
-
 _SAISON_RE = re.compile(r"^(\d{4})-(\d{4})$")
 
 
@@ -605,26 +550,10 @@ def bloc_precedent(merged: dict[str, Any] | None) -> dict[str, Any] | None:
 async def _team_crest_map(
     session: AsyncSession, team_ids: list[int | None]
 ) -> dict[int, tuple[int | None, str | None]]:
-    """Rend `{bzz_team_id: (api_football_id, crest_url)}` en un seul SELECT.
-
-    Forme propre a la partie Joueurs (3 colonnes, reponses inchangees) ;
-    `atlas_source.team_badges` fournit la forme complete au calculateur, sur
-    la meme table canonical_teams. Un champ absent reste None.
-    """
-    from app.models.canonical_teams import CanonicalTeam
-
-    ids = {i for i in team_ids if i is not None}
-    if not ids:
-        return {}
-    rows = (await session.execute(
-        select(
-            CanonicalTeam.bzz_team_id, CanonicalTeam.api_football_id, CanonicalTeam.crest_url
-        ).where(CanonicalTeam.bzz_team_id.in_(ids))
-    )).all()
-    return {
-        bzz_team_id: (api_football_id, crest_url)
-        for bzz_team_id, api_football_id, crest_url in rows
-    }
+    """Rend `{bzz_team_id: (api_football_id, crest_url)}` (forme de la partie
+    Joueurs), depuis la source unique `atlas_source.team_badges`."""
+    badges = await team_badges(session, team_ids)
+    return {k: (b.api_football_id, b.crest_url) for k, b in badges.items()}
 
 
 async def team_ids_for_league(

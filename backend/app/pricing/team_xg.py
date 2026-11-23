@@ -309,7 +309,7 @@ def assess_inputs(players: list[dict[str, Any]], team: str) -> list[InputWarning
     """
     warnings: list[InputWarning] = []
     if not players:
-        warnings.append(InputWarning("NO_PLAYERS", None, None, f"team={team}: 0 players loaded — équipe non reliée à l'Atlas"))
+        warnings.append(InputWarning("NO_PLAYERS", None, None, f"team={team}: aucun joueur — équipe non reliée à l'Atlas ou effectif vide"))
         return warnings
     for p in players:
         pid = p.get("player_id")
@@ -762,7 +762,7 @@ async def _load_team_players(
     from app.services.atlas_source import club_squad_filter
 
     if bzz_team_id is None:
-        logger.error("_load_team_players: équipe non reliée à l'Atlas: %r", team)
+        logger.warning("_load_team_players: équipe non reliée à l'Atlas: %r", team)
         alert_bg(f"Calculateur : équipe non reliée à l'Atlas — {team}", "incidents")
         return []
 
@@ -1666,13 +1666,13 @@ async def load_match_pricing(
     if not home_players_db:
         logger.warning(
             "load_match_pricing: 0 players found for home team %r (fixture %s) — "
-            "check bzz_players/bzz_player_season_stats and loan_team_name values",
+            "check the club's bzz_team_id link and its bzz_players roster",
             home_team, getattr(fixture, "id", "?"),
         )
     if not away_players_db:
         logger.warning(
             "load_match_pricing: 0 players found for away team %r (fixture %s) — "
-            "check bzz_players/bzz_player_season_stats and loan_team_name values",
+            "check the club's bzz_team_id link and its bzz_players roster",
             away_team, getattr(fixture, "id", "?"),
         )
 

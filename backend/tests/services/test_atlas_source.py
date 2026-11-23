@@ -14,17 +14,7 @@ from app.services.atlas_source import club_squad_filter, merge_season_stats
 
 
 def _row(**kw):
-    base = {
-        k: None
-        for k in (
-            "matches_played minutes_played starts goals goal_assist expected_goals "
-            "expected_assists total_shots shots_on_target key_pass total_cross accurate_cross "
-            "total_pass accurate_pass total_long_balls accurate_long_balls duel_won duel_lost "
-            "aerial_won aerial_lost total_tackle won_tackle interception ball_recovery "
-            "yellow_card red_card saves avg_rating form_xg_5 form_rating_5 form_goals_5 "
-            "form_assists_5 rating_trend league_api_id"
-        ).split()
-    }
+    base = dict.fromkeys(["matches_played", "minutes_played", "starts", "goals", "goal_assist", "expected_goals", "expected_assists", "total_shots", "shots_on_target", "key_pass", "total_cross", "accurate_cross", "total_pass", "accurate_pass", "total_long_balls", "accurate_long_balls", "duel_won", "duel_lost", "aerial_won", "aerial_lost", "total_tackle", "won_tackle", "interception", "ball_recovery", "yellow_card", "red_card", "saves", "avg_rating", "form_xg_5", "form_rating_5", "form_goals_5", "form_assists_5", "rating_trend", "league_api_id"])
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -78,3 +68,31 @@ def test_assess_inputs_equipe_non_reliee():
 def test_team_badge_forme():
     b = atlas_source.TeamBadge("A", "u", 1, "FR")
     assert b.country_iso == "FR"
+
+
+def test_team_badges_mappe_les_lignes_et_filtre_les_ids():
+    from unittest.mock import AsyncMock, MagicMock
+
+    res = MagicMock()
+    res.all.return_value = [
+        (63, "Milan", "http://c/63.png", 489, "Italy"),
+        (99, None, None, None, None),
+    ]
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=res)
+    out = asyncio.run(atlas_source.team_badges(db, [63, None, 99, 63]))
+    assert out[63] == atlas_source.TeamBadge("Milan", "http://c/63.png", 489, "IT")
+    assert out[99] == atlas_source.TeamBadge(None, None, None, None)
+    assert db.execute.await_count == 1
+    sql = str(db.execute.call_args[0][0].compile(dialect=postgresql.dialect()))
+    assert "bzz_team_id IN" in sql
+
+
+def test_team_badges_vide_sans_requete():
+    from unittest.mock import AsyncMock, MagicMock
+
+    db = MagicMock()
+    db.execute = AsyncMock()
+    assert asyncio.run(atlas_source.team_badges(db, [None])) == {}
+    assert asyncio.run(atlas_source.team_badges(db, [])) == {}
+    db.execute.assert_not_awaited()

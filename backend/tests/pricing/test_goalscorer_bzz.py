@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -26,14 +25,6 @@ def _make_session_no_team() -> AsyncMock:
     execute_result.scalar_one_or_none.return_value = None
     session.execute.return_value = execute_result
     return session
-
-
-def _make_bzz_team(api_id: int = 10, name: str = "Paris Saint-Germain") -> MagicMock:
-    team = MagicMock()
-    team.id = 1
-    team.api_id = api_id
-    team.name = name
-    return team
 
 
 def _make_bzz_player(
@@ -105,7 +96,6 @@ class TestLoadTeamPlayersBasic:
         """With 1 team + 2 players with season stats, returns 2 player dicts with correct fields."""
         from app.pricing.team_xg import _load_team_players
 
-        team = _make_bzz_team(api_id=10, name="Paris Saint-Germain")
 
         player1 = _make_bzz_player(api_id=101, name="Kylian Mbappé", position="F")
         stat1 = _make_bzz_season_stat(
@@ -145,11 +135,7 @@ class TestLoadTeamPlayersBasic:
 
         session = AsyncMock()
 
-        # First execute: team lookup → returns team
-        team_exec_result = MagicMock()
-        team_exec_result.scalar_one_or_none.return_value = team
-
-        # Second execute: player season stats JOIN → returns rows
+        # First execute: player season stats JOIN → returns rows
         players_exec_result = MagicMock()
         players_exec_result.all.return_value = [row1, row2]
 
@@ -192,8 +178,8 @@ class TestLoadTeamPlayersBasic:
 # ── Finishing multiplier, conversion, λ top-down tests ──────────────────────
 
 from app.pricing.goalscorer import (
-    calculate_finishing_multiplier,
     calculate_conversion_rate,
+    calculate_finishing_multiplier,
     calculate_goalscorer_lambda,
 )
 

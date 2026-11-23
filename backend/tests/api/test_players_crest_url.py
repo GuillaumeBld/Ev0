@@ -33,7 +33,7 @@ async def test_list_players_includes_crest_url_when_present_in_canonical_teams()
     stats_res.scalars.return_value.all.return_value = [s1]
     crest_res = MagicMock()
     # canonical_teams.bzz_team_id=100 (= p1.current_team_api_id) -> (541, crest_url)
-    crest_res.all.return_value = [(100, 541, _CREST_URL)]
+    crest_res.all.return_value = [(100, None, _CREST_URL, 541, None)]
 
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(side_effect=[players_res, stats_res, crest_res])
@@ -103,7 +103,7 @@ async def test_list_players_crest_url_none_quand_club_canonique_sans_ecusson_res
     stats_res = MagicMock()
     stats_res.scalars.return_value.all.return_value = [s1]
     crest_res = MagicMock()
-    crest_res.all.return_value = [(100, None, None)]
+    crest_res.all.return_value = [(100, None, None, None, None)]
 
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(side_effect=[players_res, stats_res, crest_res])
@@ -142,7 +142,7 @@ async def test_get_player_includes_crest_url_when_present_in_canonical_teams():
     recent_result.all.return_value = []
 
     crest_result = MagicMock()
-    crest_result.all.return_value = [(100, 541, _CREST_URL)]
+    crest_result.all.return_value = [(100, None, _CREST_URL, 541, None)]
 
     sel_result = MagicMock()
     sel_result.scalars.return_value.all.return_value = []  # pas de stats de selection
