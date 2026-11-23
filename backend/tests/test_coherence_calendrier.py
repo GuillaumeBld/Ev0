@@ -274,3 +274,50 @@ def test_le_filtre_est_optionnel_et_desactive_par_defaut():
     signature = inspect.signature(list_fixtures)
     assert "clubs_only" in signature.parameters
     assert signature.parameters["clubs_only"].default.default is False
+
+
+# --- competition_mal_rangee : la competition affichee doit etre celle de la source ---
+
+from app.services.coherence_calendrier import MatchRange, competition_mal_rangee  # noqa: E402
+
+
+def _range(identifiant, league, api_id, source):
+    return MatchRange(
+        identifiant=identifiant,
+        league=league,
+        competition_api_id=api_id,
+        competition_source=source,
+    )
+
+
+def test_competition_mal_rangee_ligne_juste_ne_signale_rien():
+    assert competition_mal_rangee([_range(1, "premier_league", 1, 1)]) == []
+
+
+def test_competition_mal_rangee_mauvais_identifiant():
+    violations = competition_mal_rangee([_range(1, "premier_league", 1, 99)])
+    assert len(violations) == 1
+    assert violations[0].regle == "competition_mal_rangee"
+    assert violations[0].identifiants == frozenset({1})
+
+
+def test_competition_mal_rangee_etiquette_incoherente():
+    violations = competition_mal_rangee([_range(2, "ligue_1", 1, 1)])
+    assert len(violations) == 1
+    assert violations[0].identifiants == frozenset({2})
+
+
+def test_competition_mal_rangee_non_renseignee():
+    violations = competition_mal_rangee([_range(3, "premier_league", None, 1)])
+    assert len(violations) == 1
+    assert "competition non renseignee" in violations[0].motif
+
+
+def test_competition_mal_rangee_resumer_cite_le_nom_de_la_competition():
+    from app.services.competitions import competition_name
+
+    source = next(
+        i for i in range(1, 400) if competition_name(i) == "Saudi Pro League"
+    )
+    violations = competition_mal_rangee([_range(4, "premier_league", 17, source)])
+    assert "Saudi Pro League" in resumer(violations)
