@@ -19,7 +19,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 
 from app.services.competitions import league_key_for
 
@@ -99,20 +99,24 @@ async def main(apply: bool) -> None:
                 .where(AutopilotDecision.recommendation_id.is_not(None))
             )
         )
-        base = select(Recommendation.id).where(Recommendation.fixture_id.in_(ids))
-        a_supprimer = list(
-            (await session.execute(base.where(Recommendation.id.not_in(liees)))).scalars()
-        ) if ids else []
-        nb_conservees = len(
-            (await session.execute(base.where(Recommendation.id.in_(liees)))).all()
-        ) if ids else 0
+        sur_fixtures = Recommendation.fixture_id.in_(ids)
+        nb_a_supprimer = nb_conservees = 0
+        if ids:
+            nb_a_supprimer = (await session.execute(
+                select(func.count()).select_from(Recommendation)
+                .where(sur_fixtures, Recommendation.id.not_in(liees))
+            )).scalar_one()
+            nb_conservees = (await session.execute(
+                select(func.count()).select_from(Recommendation)
+                .where(sur_fixtures, Recommendation.id.in_(liees))
+            )).scalar_one()
 
         comptes = Counter((anciennes[i], lg) for i, (_, lg) in plan.relabel.items())
         print(f"Matchs Bzzoiro lus : {len(rows)} ; a corriger : {len(plan.relabel)}")
         for (ancien, nouveau), n in sorted(comptes.items()):
             marque = "" if ancien != nouveau else " (colonne competition seulement)"
             print(f"  {ancien} -> {nouveau} : {n}{marque}")
-        print(f"Recos a supprimer (matchs futurs reclasses) : {len(a_supprimer)}")
+        print(f"Recos a supprimer (matchs futurs reclasses) : {nb_a_supprimer}")
         print(f"Recos conservees car liees a un pari : {nb_conservees}")
 
         if plan.non_relies:
@@ -128,10 +132,16 @@ async def main(apply: bool) -> None:
             return
 
         try:
-            if a_supprimer:
-                await session.execute(
-                    delete(Recommendation).where(Recommendation.id.in_(a_supprimer))
+            nb_supprimees = 0
+            if ids:
+                # Exclusion evaluee AU MOMENT de la suppression (une reco liee
+                # entre-temps par le worker/autopilot n'est jamais supprimee).
+                res = await session.execute(
+                    delete(Recommendation).where(
+                        sur_fixtures, Recommendation.id.not_in(liees)
+                    )
                 )
+                nb_supprimees = res.rowcount
             for fid, (comp, lg) in plan.relabel.items():
                 await session.execute(
                     update(Fixture).where(Fixture.id == fid)
@@ -141,6 +151,10 @@ async def main(apply: bool) -> None:
         except Exception:
             await session.rollback()
             raise
+        print(f"Recos supprimees : {nb_supprimees} (simulation : {nb_a_supprimer})")
+        if nb_supprimees != nb_a_supprimer:
+            print("ATTENTION : ecart entre simulation et suppression reelle "
+                  "(des recos ont ete liees ou creees entre-temps).")
         print("Corrections appliquees.")
 
 

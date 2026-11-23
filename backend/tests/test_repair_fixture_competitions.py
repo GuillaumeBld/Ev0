@@ -56,3 +56,9 @@ def test_idempotence():
     ]
     again = plan_repair(corriges, now=NOW)
     assert again.relabel == {} and again.recos_a_supprimer_fixture_ids == set()
+
+
+def test_coup_d_envoi_egal_maintenant_n_est_pas_futur():
+    plan = plan_repair([_row(1, "premier_league", None, 17, NOW)], now=NOW)
+    assert plan.relabel == {1: (17, "comp_17")}
+    assert plan.recos_a_supprimer_fixture_ids == set()
