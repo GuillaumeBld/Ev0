@@ -38,8 +38,8 @@ from app.pricing.goalscorer import (
 from app.services.competitions import (
     SELECTION_COMPETITION_IDS,
     WC2026_COMPETITION_API_ID,
-    is_international,
-    is_wc2026,
+    is_international_fixture,
+    is_wc2026_fixture,
     league_key_for,
 )
 from app.services.market_xg import MarketXgResult, MarketXgService
@@ -1443,7 +1443,7 @@ async def load_match_pricing(
     home_players_for_lineup: list[dict[str, Any]] | None = None
     away_players_for_lineup: list[dict[str, Any]] | None = None
 
-    if is_international(fixture.competition_api_id):
+    if is_international_fixture(fixture):
         from app.models.bzzoiro import BzzEvent
         bzz_api_id_str = (fixture.external_id or "").removeprefix("bzz_")
         bzz_event = None
@@ -1460,7 +1460,7 @@ async def load_match_pricing(
             away_players_db = await _load_national_team_players(
                 db, national_team_api_id=bzz_event.away_team_api_id
             )
-            if is_wc2026(fixture.competition_api_id):
+            if is_wc2026_fixture(fixture):
                 all_ids = [p["player_id"] for p in home_players_db + away_players_db]
                 # Filtrer au groupe effectif : seuls les joueurs ayant joué au tournoi.
                 squad_ids = await _get_tournament_player_ids(db, all_ids, WC2026_LEAGUE_API_ID)
@@ -1611,7 +1611,7 @@ async def load_match_pricing(
     # For players with ≥ _WC_DIRECT_LAMBDA_MIN_MINUTES in the tournament, blend the
     # top-down lambda with a direct CDM signal (goals/90 × mins_ratio).
     # This bypasses the team-xG ceiling that structurally limits top-down lambdas.
-    if is_wc2026(fixture.competition_api_id) and t_stats:
+    if is_wc2026_fixture(fixture) and t_stats:
         for alloc in home_allocs + away_allocs:
             ts_d = t_stats.get(alloc.player_id)
             if ts_d is None:

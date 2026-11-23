@@ -120,13 +120,13 @@ async def load_fixture_squad(session: AsyncSession, fixture_id: int) -> list[Squ
     """Effectif Atlas des deux équipes du match — le même vivier que le calculateur.
 
     Club : `club_squad_filter` (Transfermarkt seule autorité).
-    International (is_international) : `national_team_api_id` des deux
+    International (is_international_fixture) : `national_team_api_id` des deux
     sélections de l'événement Bzzoiro, plus, en Coupe du monde, les joueurs
     des compositions Bzzoiro (comme `load_match_pricing`).
     """
     from app.models.bzzoiro import BzzEvent, BzzPlayer
     from app.models.fixtures import Fixture
-    from app.services.competitions import is_international, is_wc2026
+    from app.services.competitions import is_international_fixture, is_wc2026_fixture
     from app.services.atlas_source import club_squad_filter
 
     fixture = await session.get(Fixture, fixture_id)
@@ -134,7 +134,7 @@ async def load_fixture_squad(session: AsyncSession, fixture_id: int) -> list[Squ
         return []
 
     filters = []
-    if is_international(fixture.competition_api_id):
+    if is_international_fixture(fixture):
         bzz_api_id_str = (fixture.external_id or "").removeprefix("bzz_")
         event = None
         if bzz_api_id_str.isdigit():
@@ -145,7 +145,7 @@ async def load_fixture_squad(session: AsyncSession, fixture_id: int) -> list[Squ
             filters.append(BzzPlayer.national_team_api_id.in_(
                 [event.home_team_api_id, event.away_team_api_id]
             ))
-            if is_wc2026(fixture.competition_api_id) and event.lineups:
+            if is_wc2026_fixture(fixture) and event.lineups:
                 lineup_ids: set[int] = set()
                 for side in ("home", "away"):
                     for section in ("players", "substitutes"):

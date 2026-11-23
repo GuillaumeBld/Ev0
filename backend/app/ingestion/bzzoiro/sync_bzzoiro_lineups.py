@@ -23,7 +23,7 @@ from app.models.bzzoiro import BzzEvent, BzzPlayer
 from app.models.fixtures import Fixture
 from app.models.lineups import TeamLineup, TeamLineupPlayer
 from app.models.wc2026_lineups import WC2026ExpectedLineup, WC2026ExpectedLineupPlayer
-from app.services.competitions import is_wc2026 as is_wc2026_competition
+from app.services.competitions import is_wc2026_fixture
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +189,7 @@ async def sync_bzzoiro_lineups(
         if fixture is None:
             continue
 
-        is_wc2026 = is_wc2026_competition(fixture.competition_api_id)
+        is_wc2026 = is_wc2026_fixture(fixture)
         wc_context = _ROUND_TO_CONTEXT.get(event.round_number) if event.round_number else None
 
         team_map = {

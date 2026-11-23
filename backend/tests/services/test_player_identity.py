@@ -223,7 +223,7 @@ def test_effectif_meme_source_que_le_calculateur():
     src = inspect.getsource(player_identity.load_fixture_squad)
     assert "club_squad_filter" in src
     assert "national_team_api_id" in src
-    assert "is_international" in src
+    assert "is_international_fixture" in src
     assert "loan_team_api_id" not in src
 
 

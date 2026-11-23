@@ -45,7 +45,7 @@ from app.pricing.team_xg import (
     compute_player_shares,
     detect_penalty_taker,
 )
-from app.services.competitions import is_international
+from app.services.competitions import is_international_fixture
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ async def _load_players_matching_alpha(
     club roster (_load_team_players) otherwise — identical to Alpha for the
     (much more common) club-match path.
     """
-    if is_international(fixture.competition_api_id):
+    if is_international_fixture(fixture):
         from app.models.bzzoiro import BzzEvent
 
         bzz_api_id_str = (getattr(fixture, "external_id", None) or "").removeprefix("bzz_")

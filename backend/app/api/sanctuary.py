@@ -11,7 +11,6 @@ archive, ni plus ni moins.
 from __future__ import annotations
 
 import re
-
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -23,7 +22,12 @@ from app.db import get_db
 from app.ingestion.ps3838.anchor import _fold as _fold_anchor
 from app.models.fixtures import Fixture
 from app.models.team_xg import TeamXgEstimate
-from app.services.competitions import competition_clause, competition_name, league_key_for
+from app.services.competitions import (
+    competition_clause,
+    competition_name,
+    competition_id_for_league,
+    league_key_for,
+)
 
 router = APIRouter(tags=["sanctuary"])
 
@@ -200,9 +204,10 @@ async def list_competitions(
         .order_by(Fixture.league)
     )).all()
     sortie: dict[int | str, SanctuaryCompetitionOut] = {}
-    for cid, league in rows:
+    for raw_cid, league in rows:
         if not league:
             continue
+        cid = raw_cid if raw_cid is not None else competition_id_for_league(league)
         cle = cid if cid is not None else league
         sortie.setdefault(cle, SanctuaryCompetitionOut(
             competition_api_id=cid,

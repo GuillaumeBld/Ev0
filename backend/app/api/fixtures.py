@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._badges import MatchBadges, badge_fields_for_fixtures
@@ -17,6 +17,7 @@ from app.models.player_odds_snapshot import PlayerOddsSnapshot
 from app.services.competitions import (
     DEFAULT_MANUAL_COMPETITION_API_ID,
     SELECTION_COMPETITION_IDS,
+    clubs_only_clause,
     UEFA_SUPER_CUP_COMPETITION_API_ID,
     competition_clause,
     competition_id_for_league,
@@ -200,12 +201,7 @@ async def list_fixtures(
     # peut rien produire. Le 07/09/2026, 178 matchs de Ligue des Nations et
     # d'amicaux noyaient les 109 vrais matchs de championnat.
     if clubs_only:
-        stmt = stmt.where(
-            or_(
-                Fixture.competition_api_id.is_(None),
-                Fixture.competition_api_id.notin_(SELECTION_COMPETITION_IDS),
-            )
-        )
+        stmt = stmt.where(clubs_only_clause(Fixture.league, Fixture.competition_api_id))
 
     # Exclure les fixtures dont un nom d'équipe est un placeholder
     # Patterns : W83, L101, 1A, 2B, R32 TBD 7, R16 TBD 1, QF TBD…

@@ -7,6 +7,8 @@ acceptes (le 14/11/2026 des matchs saoudiens etaient etiquetes premier_league).
 """
 from __future__ import annotations
 
+from sqlalchemy import and_, or_
+
 from app.ingestion.bzzoiro.constants import (
     INTERNATIONAL_LEAGUE_INTERNAL_IDS,
     TARGET_LEAGUE_INTERNAL_IDS,
@@ -88,8 +90,6 @@ def competition_clause(league_col, competition_col, league: str | None,
     et est traduite en identifiant. Un match sans identifiant garde le repli
     sur son etiquette, pour ne pas perdre les lignes anterieures.
     """
-    from sqlalchemy import and_, or_
-
     cid = competition_api_id
     if cid is None:
         cid = competition_id_for_league(league)
@@ -100,3 +100,31 @@ def competition_clause(league_col, competition_col, league: str | None,
             and_(competition_col.is_(None), league_col == league),
         )
     return competition_col == cid
+
+
+# ── Niveau match : l'identifiant, sinon l'etiquette historique ────────────────
+# Un match sans identifiant (manuel, ou pas encore rattrape) garde le sens que
+# lui donnait son etiquette.
+
+def fixture_competition_id(fixture) -> int | None:
+    cid = getattr(fixture, "competition_api_id", None)
+    if cid is not None:
+        return cid
+    return competition_id_for_league(getattr(fixture, "league", None))
+
+
+def is_international_fixture(fixture) -> bool:
+    return is_international(fixture_competition_id(fixture))
+
+
+def is_wc2026_fixture(fixture) -> bool:
+    return is_wc2026(fixture_competition_id(fixture))
+
+
+def clubs_only_clause(league_col, competition_col):
+    """Exclut les selections : par identifiant, sinon par etiquette historique."""
+    etiquettes = [league_key_for(c) for c in SELECTION_COMPETITION_IDS]
+    return or_(
+        and_(competition_col.is_(None), league_col.notin_(etiquettes)),
+        and_(competition_col.isnot(None), competition_col.notin_(SELECTION_COMPETITION_IDS)),
+    )

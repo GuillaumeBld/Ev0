@@ -91,3 +91,43 @@ def test_les_filtres_acceptent_competition_api_id():
         ("backtest/simulator.py", "competition_api_id"),
     ]:
         assert marque in (APP / chemin).read_text(), chemin
+
+
+# ── Matchs sans identifiant : l'etiquette historique garde son sens ──────────
+
+from types import SimpleNamespace  # noqa: E402
+
+from app.services.competitions import (  # noqa: E402
+    clubs_only_clause,
+    fixture_competition_id,
+    is_international_fixture,
+    is_wc2026_fixture,
+)
+
+
+def _fx(cid, league):
+    return SimpleNamespace(competition_api_id=cid, league=league)
+
+
+def test_match_sans_identifiant_retombe_sur_son_etiquette():
+    assert is_international_fixture(_fx(None, "world_cup_2026"))
+    assert is_wc2026_fixture(_fx(None, "world_cup_2026"))
+    assert is_international_fixture(_fx(None, "nations_league_uefa"))
+    assert not is_wc2026_fixture(_fx(None, "nations_league_uefa"))
+    assert not is_international_fixture(_fx(None, "ligue_1"))
+    assert not is_international_fixture(_fx(None, "uefa_super_cup"))
+    assert not is_international_fixture(_fx(None, None))
+
+
+def test_l_identifiant_prime_sur_l_etiquette():
+    assert not is_international_fixture(_fx(6, "world_cup_2026"))
+    assert fixture_competition_id(_fx(8, "x")) == 8
+
+
+def test_clubs_only_exclut_les_selections_meme_sans_identifiant():
+    from sqlalchemy import column
+    sql = str(clubs_only_clause(column("league"), column("competition_api_id")).compile(
+        compile_kwargs={"literal_binds": True}))
+    assert "nations_league_uefa" in sql and "world_cup_2026" in sql
+    assert "competition_api_id IS NULL" in sql and "NOT IN" in sql
+    assert "uefa_super_cup" not in sql

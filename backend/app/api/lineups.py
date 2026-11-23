@@ -18,7 +18,7 @@ from app.models.canonical_teams import CanonicalTeam
 from app.models.fixtures import Fixture
 from app.models.lineups import TeamLineup, TeamLineupPlayer
 from app.models.wc2026_lineups import WC2026ExpectedLineup, WC2026ExpectedLineupPlayer
-from app.services.competitions import is_wc2026
+from app.services.competitions import is_wc2026_fixture
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +250,7 @@ async def get_fixture_lineups(
 
     # Fallback WC2026 : si resolve_lineup n'a rien trouvé, on tire la dernière
     # compo connue depuis wc2026_expected_lineups (peuplée par sync_bzzoiro_lineups).
-    if is_wc2026(fx.competition_api_id):
+    if is_wc2026_fixture(fx):
         if home_out is None:
             home_out = await _resolve_wc2026_lineup(fx.home_team, session)
         if away_out is None:
