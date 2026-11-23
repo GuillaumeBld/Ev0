@@ -3,7 +3,6 @@
 import { useState } from 'react'
 import { clsx } from 'clsx'
 import { type WCPlayerPricing } from '@/lib/api'
-import { FlagImg } from '@/components/FlagImg'
 
 type Mode = 'goals' | 'assists' | 'decisive'
 type SortDir = 'asc' | 'desc'
@@ -11,7 +10,6 @@ type SortDir = 'asc' | 'desc'
 interface PricingTableProps {
   players: WCPlayerPricing[]
   mode: Mode
-  nationFlags: Record<string, string | null>
 }
 
 // ── Cells ────────────────────────────────────────────────────────────────────
@@ -141,7 +139,7 @@ function sortPlayers(
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-export function PricingTable({ players, mode, nationFlags }: PricingTableProps) {
+export function PricingTable({ players, mode }: PricingTableProps) {
   const isGoals = mode === 'goals'
   const isDecisive = mode === 'decisive'
   const [sortKey, setSortKey] = useState<SortKey>(isDecisive ? 'ga' : 'lambda')
@@ -275,7 +273,6 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
             const bkBet   = isGoals ? p.bk_top_scorer_betclic : p.bk_top_assister_betclic
             const bkPmu   = isGoals ? p.bk_top_scorer_pmu     : p.bk_top_assister_pmu
             const edgeOut = isGoals ? p.edge_top_scorer   : p.edge_top_assister
-            const flag    = nationFlags[p.nation]
 
             // Meilleure cote parmi les 3 books pour highlight
             const bkValues = [bkUni, bkBet, bkPmu].filter((v): v is number => v !== null)
@@ -291,10 +288,7 @@ export function PricingTable({ players, mode, nationFlags }: PricingTableProps) 
                 )}
                 <td className="py-1.5 px-2 font-medium text-white text-xs">{p.player_name}</td>
                 <td className="py-1.5 px-2">
-                  <span className="flex items-center gap-1">
-                    <FlagImg emoji={flag} size={13} />
-                    <span className="text-gray-500 text-[10px]">{p.nation}</span>
-                  </span>
+                  <span className="text-gray-500 text-[10px]">{p.nation}</span>
                 </td>
                 <td className="py-1.5 px-2 text-gray-600">{p.position ?? '—'}</td>
                 {/* WC actual stats */}

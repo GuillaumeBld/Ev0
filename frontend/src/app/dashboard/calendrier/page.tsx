@@ -7,8 +7,8 @@ import { Plus, Calendar, Trash2, ChevronDown, ChevronRight, Target, Share2 } fro
 import { clsx } from 'clsx'
 import type { ReactNode } from 'react'
 import { getFixtures, createFixture, deleteFixture, createOdds } from '@/lib/api'
-import type { FixtureOut } from '@/lib/api'
-import { getTeamId } from '@/lib/teamLogos'
+import type { FixtureOut, TeamBadgeOut } from '@/lib/api'
+import { TeamBadge } from '@/components/TeamBadge'
 
 interface Match {
   id: string
@@ -17,8 +17,9 @@ interface Match {
   awayTeam: string
   homeTeamId: string | null
   awayTeamId: string | null
-  homeApiFootballId: number | null
-  awayApiFootballId: number | null
+  homeBadge: TeamBadgeOut | null
+  awayBadge: TeamBadgeOut | null
+  competitionName: string | null
   league: string
   matchweek: number | null
   status: 'upcoming' | 'live' | 'finished'
@@ -50,8 +51,9 @@ function fixtureToMatch(f: FixtureOut): Match {
     awayTeam: f.away_team,
     homeTeamId: f.home_team_id,
     awayTeamId: f.away_team_id,
-    homeApiFootballId: f.home_api_football_id,
-    awayApiFootballId: f.away_api_football_id,
+    homeBadge: f.home_badge ?? null,
+    awayBadge: f.away_badge ?? null,
+    competitionName: f.competition_name ?? null,
     league: f.league,
     matchweek: f.matchweek,
     status: statusMap[f.status] ?? 'upcoming',
@@ -86,52 +88,6 @@ function formatKickoff(utcStr: string): string {
   return `${day} · ${time}`
 }
 
-// ── Team logo with initials fallback ───────────────────────────────────────────
-
-function TeamLogo({
-  apiFootballId,
-  teamName,
-  size = 'md',
-}: {
-  apiFootballId?: number | null
-  teamName: string
-  size?: 'sm' | 'md' | 'lg'
-}) {
-  const [imgFailed, setImgFailed] = useState(false)
-  const sizeClass = { sm: 'w-8 h-8', md: 'w-12 h-12', lg: 'w-14 h-14' }[size]
-  const textClass = { sm: 'text-xs', md: 'text-sm', lg: 'text-base' }[size]
-
-  const initials = teamName
-    .split(/[\s\-]+/)
-    .filter(Boolean)
-    .map(w => w[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2)
-
-  // Priority: DB canonical id → static map fallback
-  const resolvedId = apiFootballId ?? getTeamId(teamName)
-
-  if (resolvedId && !imgFailed) {
-    return (
-      <img
-        src={`https://media.api-sports.io/football/teams/${resolvedId}.png`}
-        alt={teamName}
-        className={`${sizeClass} object-contain`}
-        onError={() => setImgFailed(true)}
-      />
-    )
-  }
-
-  return (
-    <div
-      className={`${sizeClass} rounded-full bg-gray-700 border border-gray-600 flex items-center justify-center font-bold text-gray-300 ${textClass} shrink-0`}
-    >
-      {initials}
-    </div>
-  )
-}
-
 // ── MatchCard ──────────────────────────────────────────────────────────────────
 
 function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) => void }) {
@@ -151,7 +107,7 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
             'px-2 py-0.5 rounded text-xs font-medium border',
             league?.color ?? 'bg-gray-500/20 text-gray-400 border-gray-500/30',
           )}>
-            {league?.short ?? match.league}
+            {league?.short ?? match.competitionName ?? match.league}
           </span>
           {match.matchweek && (
             <span className="text-xs text-gray-500">J{match.matchweek}</span>
@@ -178,7 +134,7 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
 
           {/* Home team */}
           <div className="flex flex-col items-center gap-1.5 flex-1 min-w-0">
-            <TeamLogo apiFootballId={match.homeApiFootballId} teamName={match.homeTeam} size="lg" />
+            <TeamBadge badge={match.homeBadge} name={match.homeTeam} size={56} />
             <span className="text-sm font-medium text-white text-center leading-tight line-clamp-2">
               {match.homeTeam}
             </span>
@@ -205,7 +161,7 @@ function MatchCard({ match, onDelete }: { match: Match; onDelete: (id: string) =
 
           {/* Away team */}
           <div className="flex flex-col items-center gap-1.5 flex-1 min-w-0">
-            <TeamLogo apiFootballId={match.awayApiFootballId} teamName={match.awayTeam} size="lg" />
+            <TeamBadge badge={match.awayBadge} name={match.awayTeam} size={56} />
             <span className="text-sm font-medium text-white text-center leading-tight line-clamp-2">
               {match.awayTeam}
             </span>
@@ -464,8 +420,9 @@ function MatchForm({ onSave, onCancel }: { onSave: (m: Omit<Match, 'id'>) => voi
     matchweek: null as number | null,
     homeTeamId: null as string | null,
     awayTeamId: null as string | null,
-    homeApiFootballId: null as number | null,
-    awayApiFootballId: null as number | null,
+    homeBadge: null as TeamBadgeOut | null,
+    awayBadge: null as TeamBadgeOut | null,
+    competitionName: null as string | null,
     odds: [] as Match['odds'],
   })
 

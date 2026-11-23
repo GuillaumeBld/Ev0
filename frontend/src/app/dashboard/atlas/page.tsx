@@ -37,6 +37,15 @@ export default function AtlasPage() {
   const [openPlayerId, setOpenPlayerId] = useState<number | null>(null)
   const [compareSelection, setCompareSelection] = useState<PlayerSummary[]>([])
 
+  // Lien profond depuis le reste du site : /dashboard/atlas?player=<bzz api_id>
+  useEffect(() => {
+    try {
+      const raw = new URLSearchParams(window.location.search).get('player')
+      const id = raw ? Number(raw) : NaN
+      if (Number.isInteger(id) && id > 0) setOpenPlayerId(id)
+    } catch { /* URL illisible : on ignore */ }
+  }, [])
+
   useEffect(() => {
     try {
       const t = localStorage.getItem('ev0-atlas-theme')

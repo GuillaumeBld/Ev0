@@ -12,7 +12,8 @@ import {
   ResponsiveContainer, Cell, ReferenceLine,
 } from 'recharts'
 import { getHistory, getAutoflatHistory, patchRecommendation, triggerAutoSettle } from '@/lib/api'
-import type { HistoryItem } from '@/lib/api'
+import type { HistoryItem, TeamBadgeOut } from '@/lib/api'
+import { TeamBadge } from '@/components/TeamBadge'
 
 type BetStatus = 'won' | 'lost' | 'running' | 'void'
 
@@ -29,6 +30,9 @@ interface HistoricalBet {
   status: BetStatus
   pnl: number | null
   decidedUtc: string | null
+  homeBadge: TeamBadgeOut | null
+  awayBadge: TeamBadgeOut | null
+  competitionName: string | null
 }
 
 function historyItemToBet(item: HistoryItem): HistoricalBet {
@@ -45,6 +49,9 @@ function historyItemToBet(item: HistoryItem): HistoricalBet {
     status: (item.status || 'running') as BetStatus,
     pnl: item.pnl ?? null,
     decidedUtc: item.decided_utc ?? null,
+    homeBadge: item.home_badge ?? null,
+    awayBadge: item.away_badge ?? null,
+    competitionName: item.competition_name ?? null,
   }
 }
 
@@ -413,7 +420,20 @@ export default function HistoryPage() {
                     <td className="px-4 py-3 text-sm text-gray-400 font-mono hidden lg:table-cell">
                       {formatTime(bet.decidedUtc)}
                     </td>
-                    <td className="px-4 py-3 text-sm text-white hidden md:table-cell">{bet.fixture}</td>
+                    <td className="px-4 py-3 text-sm text-white hidden md:table-cell">
+                      <span className="inline-flex items-center gap-1.5">
+                        {(bet.homeBadge || bet.awayBadge) && (
+                          <>
+                            <TeamBadge badge={bet.homeBadge} size={18} />
+                            <TeamBadge badge={bet.awayBadge} size={18} />
+                          </>
+                        )}
+                        <span>{bet.fixture}</span>
+                      </span>
+                      {bet.competitionName && (
+                        <span className="block text-[10px] text-gray-500">{bet.competitionName}</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-sm text-white font-medium">{bet.player}</td>
                     <td className="px-4 py-3 hidden md:table-cell">
                       <span className={clsx(

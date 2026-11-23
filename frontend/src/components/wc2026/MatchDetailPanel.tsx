@@ -1,5 +1,6 @@
 'use client'
 
+import { TeamBadge } from '@/components/TeamBadge'
 import { useState } from 'react'
 import { clsx } from 'clsx'
 import { type WCMatchDetail, type WCIncident } from '@/lib/api'
@@ -56,7 +57,13 @@ function IncidentRow({ inc, homeTeam, awayTeam, onGoalClick }: {
           <span className="text-green-400 text-base">⚽</span>
           <div className={clsx(isHome ? 'text-left' : 'text-right')}>
             <div className="text-white font-semibold text-sm">
-              {inc.is_own_goal ? `${inc.player} (CSC)` : inc.player}
+              {inc.player_id != null ? (
+                <a href={`/dashboard/atlas?player=${inc.player_id}`} className="hover:underline">
+                  {inc.is_own_goal ? `${inc.player} (CSC)` : inc.player}
+                </a>
+              ) : (
+                inc.is_own_goal ? `${inc.player} (CSC)` : inc.player
+              )}
             </div>
             {inc.assist && (
               <div className="text-sky-400 text-xs mt-0.5">
@@ -212,7 +219,9 @@ function PlayerStatsTable({ players, teamId, teamName }: {
             return (
               <tr key={p.player_id} className="border-b border-gray-800/40 hover:bg-gray-800/20">
                 <td className="py-1 pr-2 text-gray-200 truncate max-w-[160px]">
-                  {p.player_name ?? `#${p.player_id}`}
+                  <a href={`/dashboard/atlas?player=${p.player_id}`} className="hover:underline">
+                    {p.player_name ?? `#${p.player_id}`}
+                  </a>
                   {p.yellow_card ? ' 🟨' : ''}
                   {p.red_card ? ' 🟥' : ''}
                 </td>
@@ -276,7 +285,10 @@ export function MatchDetailPanel({ match, onClose }: MatchDetailPanelProps) {
         {/* Score */}
         <div className="flex items-center justify-between mt-3 gap-6">
           <div className="flex-1 text-right">
-            <div className="text-lg font-semibold text-white">{match.home_team}</div>
+            <div className="text-lg font-semibold text-white flex items-center justify-end gap-2">
+              {match.home_team}
+              <TeamBadge badge={match.home_badge} name={match.home_team} size={28} />
+            </div>
             {match.home_xg !== null && (
               <div className="text-xs text-blue-400/80 mt-0.5">xG {match.home_xg.toFixed(2)}</div>
             )}
@@ -300,7 +312,10 @@ export function MatchDetailPanel({ match, onClose }: MatchDetailPanelProps) {
           </div>
 
           <div className="flex-1 text-left">
-            <div className="text-lg font-semibold text-white">{match.away_team}</div>
+            <div className="text-lg font-semibold text-white flex items-center gap-2">
+              <TeamBadge badge={match.away_badge} name={match.away_team} size={28} />
+              {match.away_team}
+            </div>
             {match.away_xg !== null && (
               <div className="text-xs text-red-400/80 mt-0.5">xG {match.away_xg.toFixed(2)}</div>
             )}

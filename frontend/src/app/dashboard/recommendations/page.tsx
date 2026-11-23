@@ -58,6 +58,7 @@ export default function RecommendationsPage() {
   const [supersubFilter, setSupersubFilter] = useState<SupersubFilter>('all')
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [page, setPage] = useState(1)
+  const [competitionFilter, setCompetitionFilter] = useState<string>('all')
   const [lineupCache, setLineupCache] = useState<Record<string, FixtureLineupCache>>({})
   const fetchingFixtures = useRef<Set<string>>(new Set())
 
@@ -100,6 +101,9 @@ export default function RecommendationsPage() {
             decided_utc: rec.decided_utc ?? null,
             xg_source: rec.xg_source,
             is_pen_taker: rec.is_pen_taker,
+            homeBadge: rec.home_badge ?? null,
+            awayBadge: rec.away_badge ?? null,
+            competitionName: rec.competition_name ?? null,
           })),
           total: response.total,
           pages: response.pages,
@@ -138,6 +142,9 @@ export default function RecommendationsPage() {
           decided_utc: rec.decided_utc ?? null,
           xg_source: rec.xg_source,
           is_pen_taker: rec.is_pen_taker,
+          homeBadge: rec.home_badge ?? null,
+          awayBadge: rec.away_badge ?? null,
+          competitionName: rec.competition_name ?? null,
         })),
         total: response.total,
         pages: response.pages,
@@ -146,9 +153,14 @@ export default function RecommendationsPage() {
   })
 
   const allRecs = data?.recs || []
-  const filteredRecs = supersubFilter === 'all'
-    ? allRecs
-    : allRecs.filter(r => r.supersub_market_type === supersubFilter)
+  // Championnats construits depuis les recos elles-mêmes : une compétition
+  // inconnue de toute liste écrite à la main s'affiche quand même.
+  const competitionOptions = Array.from(
+    new Set(allRecs.map((r) => r.competitionName).filter((n): n is string => !!n)),
+  ).sort((a, b) => a.localeCompare(b, 'fr'))
+  const filteredRecs = allRecs
+    .filter((r) => supersubFilter === 'all' || r.supersub_market_type === supersubFilter)
+    .filter((r) => competitionFilter === 'all' || r.competitionName === competitionFilter)
   const totalPages = data?.pages || 1
 
   useEffect(() => {
@@ -257,6 +269,21 @@ export default function RecommendationsPage() {
               </button>
             ))}
           </div>
+        )}
+
+        {/* Championnat — options issues des recos affichées */}
+        {competitionOptions.length > 0 && (
+          <select
+            value={competitionFilter}
+            onChange={(e) => setCompetitionFilter(e.target.value)}
+            aria-label="Filtrer par championnat"
+            className="bg-ev-surface border border-ev-bd rounded-full px-3 py-1.5 text-xs text-ev-t3"
+          >
+            <option value="all">Tous les championnats</option>
+            {competitionOptions.map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
         )}
 
         {/* Supersub filter */}

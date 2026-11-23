@@ -11,6 +11,7 @@ import {
   getWCMatchDetail,
   syncWCStats,
 } from '@/lib/api'
+import { TeamBadge } from '@/components/TeamBadge'
 import { MatchDetailPanel } from '@/components/wc2026/MatchDetailPanel'
 
 type StatusFilter = 'all' | 'finished' | 'upcoming'
@@ -77,7 +78,8 @@ function MatchCard({
       <div className="flex items-center gap-2">
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between">
-            <span className={clsx('text-sm truncate', hasScore && match.home_score! > match.away_score! ? 'text-white font-semibold' : 'text-gray-300')}>
+            <TeamBadge badge={match.home_badge} name={match.home_team} size={18} />
+            <span className={clsx('text-sm truncate flex-1 ml-1.5', hasScore && match.home_score! > match.away_score! ? 'text-white font-semibold' : 'text-gray-300')}>
               {match.home_team}
             </span>
             {hasScore && (
@@ -87,7 +89,8 @@ function MatchCard({
             )}
           </div>
           <div className="flex items-center justify-between mt-0.5">
-            <span className={clsx('text-sm truncate', hasScore && match.away_score! > match.home_score! ? 'text-white font-semibold' : 'text-gray-300')}>
+            <TeamBadge badge={match.away_badge} name={match.away_team} size={18} />
+            <span className={clsx('text-sm truncate flex-1 ml-1.5', hasScore && match.away_score! > match.home_score! ? 'text-white font-semibold' : 'text-gray-300')}>
               {match.away_team}
             </span>
             {hasScore && (

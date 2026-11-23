@@ -4,10 +4,10 @@ import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'rea
 import { useSearchParams, useRouter } from 'next/navigation'
 import { Calculator, RefreshCw, ChevronDown } from 'lucide-react'
 import { clsx } from 'clsx'
-import { getFixtures, priceMatch, getPenTakers, setPenTakers, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut } from '@/lib/api'
+import { getFixtures, priceMatch, getPenTakers, setPenTakers, type FixtureOut, type MatchPriceResponse, type PlayerAllocationOut, type TeamBadgeOut } from '@/lib/api'
 import { LineupPricingWidget } from '@/components/calculator/LineupPricingWidget'
 import { XgSourceBadge } from '@/components/XgSourceBadge'
-import { getTeamId } from '@/lib/teamLogos'
+import { TeamBadge } from '@/components/TeamBadge'
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -169,6 +169,7 @@ function ViewModeSwitch({ mode, onChange }: { mode: ViewMode; onChange: (m: View
 
 interface TeamTableProps {
   teamName: string
+  badge?: TeamBadgeOut | null
   matchXg: number
   xgSource?: string | null
   players: PlayerAllocationOut[]
@@ -214,6 +215,7 @@ function trierJoueurs(
 
 function TeamTable({
   teamName,
+  badge,
   matchXg,
   xgSource,
   players,
@@ -225,7 +227,6 @@ function TeamTable({
   viewMode,
 }: TeamTableProps) {
   const showProba = viewMode === 'proba'
-  const [logoFailed, setLogoFailed] = useState(false)
 
   // Tri du tableau. Par defaut la probabilite de but du nouveau calcul, du
   // plus fort au plus faible : c'est la colonne qu'on lit en premier.
@@ -265,8 +266,6 @@ function TeamTable({
       </span>
     </th>
   )
-  const logoId = getTeamId(teamName)
-
   return (
     <div className="bg-gray-800 rounded-xl overflow-hidden">
       {/* Header */}
@@ -275,14 +274,7 @@ function TeamTable({
         isHome ? 'bg-orange-500/10 border-b border-orange-500/20' : 'bg-blue-500/10 border-b border-blue-500/20',
       )}>
         <div className="flex items-center gap-2 flex-wrap">
-          {logoId && !logoFailed && (
-            <img
-              src={`https://media.api-sports.io/football/teams/${logoId}.png`}
-              alt={teamName}
-              className="w-7 h-7 object-contain shrink-0"
-              onError={() => setLogoFailed(true)}
-            />
-          )}
+          <TeamBadge badge={badge} name={teamName} size={28} />
           <span className="font-semibold text-white text-sm">{teamName}</span>
           <span className={clsx(
             'text-xs font-medium px-2 py-0.5 rounded',
@@ -872,6 +864,7 @@ function CalculatorInner() {
           <div>
             <TeamTable
               teamName={pricing.home_team}
+              badge={pricing.home_badge}
               matchXg={pricing.home_match_xg}
               xgSource={pricing.xg_source}
               players={pricing.home_players}
@@ -898,6 +891,7 @@ function CalculatorInner() {
           <div>
             <TeamTable
               teamName={pricing.away_team}
+              badge={pricing.away_badge}
               matchXg={pricing.away_match_xg}
               xgSource={pricing.xg_source}
               players={pricing.away_players}

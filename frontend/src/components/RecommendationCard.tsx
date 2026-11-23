@@ -7,6 +7,8 @@ import { clsx } from 'clsx'
 import { patchRecommendation } from '@/lib/api'
 import { LineupDisplay, LineupData } from '@/components/lineups/LineupDisplay'
 import { XgSourceBadge } from './XgSourceBadge'
+import { TeamBadge } from '@/components/TeamBadge'
+import type { TeamBadgeOut } from '@/lib/api'
 
 interface Recommendation {
   id: number
@@ -29,6 +31,9 @@ interface Recommendation {
   lineup?: LineupData | null
   xg_source?: string | null
   is_pen_taker?: boolean
+  homeBadge?: TeamBadgeOut | null
+  awayBadge?: TeamBadgeOut | null
+  competitionName?: string | null
 }
 
 
@@ -141,6 +146,16 @@ export function RecommendationCard({ recommendation: rec }: RecommendationCardPr
                 </span>
               ) : null}
             </h3>
+            {(rec.homeBadge || rec.awayBadge) && (
+              <p className="flex items-center gap-1.5 mt-1">
+                <TeamBadge badge={rec.homeBadge} size={18} />
+                <span className="text-ev-t5 text-[10px]">-</span>
+                <TeamBadge badge={rec.awayBadge} size={18} />
+                {rec.competitionName && (
+                  <span className="text-[10px] text-ev-t5 ml-1">{rec.competitionName}</span>
+                )}
+              </p>
+            )}
             {rec.market === 'h2h' ? (
               <p className="text-xs text-ev-t4 mt-0.5">{rec.fixtureName}</p>
             ) : (

@@ -41,6 +41,9 @@ export function Dashboard({ user }: DashboardProps) {
         kickoff: rec.kickoff_utc,
         explanation: rec.explanation,
         xg_source: rec.xg_source,
+        homeBadge: rec.home_badge ?? null,
+        awayBadge: rec.away_badge ?? null,
+        competitionName: rec.competition_name ?? null,
       }))
       return recs
     },

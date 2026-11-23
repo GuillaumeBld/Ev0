@@ -14,7 +14,6 @@ import {
   fillSubsLineups,
 } from '@/lib/api'
 import { LineupPitchEditor } from '@/components/wc2026/LineupPitchEditor'
-import { FlagImg } from '@/components/FlagImg'
 
 export default function WC2026LineupsPage() {
   const [nations, setNations] = useState<WCNationStatus[]>([])
@@ -163,10 +162,7 @@ export default function WC2026LineupsPage() {
                 ) : (
                   <Circle className="w-3 h-3 text-gray-600 shrink-0" />
                 )}
-                <span className="truncate flex items-center gap-1">
-                  <FlagImg emoji={n.flag_emoji} size={16} />
-                  {n.nation}
-                </span>
+                <span className="truncate">{n.nation}</span>
                 {!n.complete && n.starters_count > 0 && (
                   <span className="ml-auto text-[10px] text-gray-500">{n.starters_count}/11</span>
                 )}
@@ -193,7 +189,6 @@ export default function WC2026LineupsPage() {
         {selectedNation && !loadingNation && nationData && (
           <>
             <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-              <FlagImg emoji={nationData.flag_emoji} size={24} />
               {selectedNation}
             </h3>
             <LineupPitchEditor
