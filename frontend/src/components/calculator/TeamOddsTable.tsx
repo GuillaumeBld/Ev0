@@ -4,7 +4,7 @@ import { useState } from 'react'
 import type { PlayerAllocationOut, TeamBadgeOut } from '@/lib/api'
 import { TeamBadge } from '@/components/TeamBadge'
 import { PlayerLink } from '@/components/PlayerLink'
-import { BOOKS, ev0Odds, fmtOdds, fmtXg, isValue, type BookOddsByPlayer, type Market } from './format'
+import { BOOKS, ev0Odds, ev0OddsSansSub, fmtOdds, fmtXg, isValue, type BookOddsByPlayer, type Market } from './format'
 import { useCrestColor } from './useCrestColor'
 import s from './calculateur.module.css'
 
@@ -67,7 +67,7 @@ export function TeamOddsTable({
     if (sortKey === 'name') return p.player_name
     const [market, col] = sortKey.split('-') as [Market, SortCol]
     if (col === 'alpha' || col === 'beta') return priced ? ev0Odds(p, market)[col] : null
-    return bookOdds.get(p.player_id)?.[market]?.[col] ?? null
+    return bookOdds.get(p.player_id)?.[market]?.[col]?.odds ?? null
   }
   const sortRows = <T,>(rows: T[], get: (r: T) => [PlayerAllocationOut, boolean]): T[] => {
     const sign = sortDir === 'asc' ? 1 : -1
@@ -98,6 +98,10 @@ export function TeamOddsTable({
   starters = sortRows(starters, (r) => [r.p, r.priced])
   bench = sortRows(bench, (p) => [p, false])
 
+  const hasSansSub = squad.some((p) => {
+    const b = bookOdds.get(p.player_id)
+    return b != null && [b.goal, b.assist].some((m) => Object.values(m).some((o) => o?.sansSub))
+  })
   const isTaker = (p: PlayerAllocationOut) => (penTakerId != null ? p.player_id === penTakerId : p.is_pen_taker)
 
   const sortTh = (k: SortKey, label: string, classes: (string | false)[]) => (
@@ -112,15 +116,23 @@ export function TeamOddsTable({
   const cells = (p: PlayerAllocationOut, market: Market, priced: boolean) => {
     const { alpha, beta } = priced ? ev0Odds(p, market) : { alpha: null, beta: null }
     const books = bookOdds.get(p.player_id)?.[market] ?? {}
+    // Une cote de book sans sub se juge contre nos cotes sans sub (jamais affichées).
+    const sansSub = priced ? ev0OddsSansSub(p, market) : { alpha: null, beta: null }
     return [
       <td key={`${market}-a`} className={cx('s', 'al')}>{fmtOdds(alpha)}</td>,
       <td key={`${market}-b`} className={cx('be')}>{fmtOdds(beta)}</td>,
       ...BOOKS.map((bk, i) => {
-        const o = books[bk]
-        const cls = o == null ? 'dn' : isValue(o, alpha, beta) ? 'up' : null
+        const b = books[bk]
+        const ref = b?.sansSub ? sansSub : { alpha, beta }
+        const cls = b == null ? 'dn' : isValue(b.odds, ref.alpha, ref.beta) ? 'up' : null
         return (
-          <td key={`${market}-${bk}`} className={cx(i === 0 && 's', 'book', cls)}>
-            {fmtOdds(o)}
+          <td
+            key={`${market}-${bk}`}
+            className={cx(i === 0 && 's', 'book', cls)}
+            title={b?.sansSub ? 'Cote sans sub : ce book ne propose pas le pari avec remplaçant pour ce joueur. Comparée à notre cote sans sub.' : undefined}
+          >
+            {fmtOdds(b?.odds)}
+            {b?.sansSub && <span className={s.sansSub} aria-label="cote sans sub">•</span>}
           </td>
         )
       }),
@@ -254,6 +266,12 @@ export function TeamOddsTable({
           </tbody>
         </table>
       </div>
+      {hasSansSub && (
+        <div className={s.legend}>
+          <span className={s.sansSub}>•</span> cote sans sub : ce book ne propose pas le pari avec remplaçant pour ce
+          joueur. Elle est comparée à notre cote sans sub.
+        </div>
+      )}
     </div>
   )
 }

@@ -115,6 +115,11 @@ export interface PlayerAllocationOut {
   avg_sub_time?: number
   sub_premium_goal?: number
   sub_premium_assist?: number
+  // Beta sans sub : ne sert qu'à juger une cote de book sans sub
+  beta_prob_goal?: number
+  beta_fair_odds_goal?: number
+  beta_prob_assist?: number
+  beta_fair_odds_assist?: number
   // Beta model (nouveau calcul) — supersub fields, may be absent
   beta_p_goal_supersub?: number
   beta_fair_odds_goal_supersub?: number
@@ -272,6 +277,8 @@ export interface FixturePlayerOdd {
   market: 'goal' | 'assist'
   bookmaker: string
   odds: number
+  /** « avec_sub » : le pari couvre le remplaçant ; « sans_sub » : le book ne le propose pas pour ce joueur. */
+  variant: 'avec_sub' | 'sans_sub' | 'inconnu'
   scraped_at: string
 }
 

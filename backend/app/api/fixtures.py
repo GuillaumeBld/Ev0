@@ -390,6 +390,8 @@ class FixturePlayerOddOut(BaseModel):
     market: str  # "goal" | "assist"
     bookmaker: str
     odds: float
+    # "avec_sub" : le pari couvre le remplaçant ; "sans_sub" : second recours.
+    variant: str
     scraped_at: str
 
 
@@ -402,7 +404,7 @@ def _player_odds_stmt(fixture_id: int):
     pos = PlayerOddsSnapshot
     book = func.lower(pos.bookmaker)
     return (
-        select(pos.player_api_id, pos.market_type, book, pos.odds, pos.scraped_at)
+        select(pos.player_api_id, pos.market_type, book, pos.odds, pos.scraped_at, pos.variant)
         .where(
             pos.fixture_id == fixture_id,
             pos.player_api_id.is_not(None),
@@ -420,9 +422,10 @@ def player_odds_rows_out(rows) -> list[FixturePlayerOddOut]:
             market=_PLAYER_ODDS_MARKETS[market],
             bookmaker=bookmaker,
             odds=odds,
+            variant=variant,
             scraped_at=scraped_at.isoformat(),
         )
-        for pid, market, bookmaker, odds, scraped_at in rows
+        for pid, market, bookmaker, odds, scraped_at, variant in rows
     ]
 
 

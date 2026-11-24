@@ -8,7 +8,7 @@ from datetime import datetime
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ingestion.scrape_result import MatchScrapeResult
+from app.ingestion.scrape_result import AVEC_SUB, MatchScrapeResult, PlayerOdds
 from app.models.match_odds import MatchOddsSnapshot
 from app.models.player_odds_snapshot import PlayerOddsSnapshot
 from app.services.player_identity import SquadPlayer, load_fixture_squad, resolve_odds_player
@@ -66,9 +66,9 @@ async def store_match_scrape_result(
             cache[result.fixture_id] = await load_fixture_squad(session, result.fixture_id)
         squad = cache[result.fixture_id]
         for p in result.goalscorer:
-            player_rows_raw.append(_player_row(result, "goalscorer", p.player_name, p.odds, now, squad))
+            player_rows_raw.append(_player_row(result, "goalscorer", p, now, squad))
         for p in result.assist:
-            player_rows_raw.append(_player_row(result, "assist", p.player_name, p.odds, now, squad))
+            player_rows_raw.append(_player_row(result, "assist", p, now, squad))
         unresolved = sorted({r["player_name"] for r in player_rows_raw if r["player_api_id"] is None})
         if unresolved:
             logger.warning(
@@ -76,13 +76,22 @@ async def store_match_scrape_result(
                 result.fixture_id, result.bookmaker, len(unresolved), unresolved,
             )
 
-    # Deduplicate on (fixture_id, bookmaker, market_type, player_name) — keep best odds.
+    # Deduplicate on (fixture_id, bookmaker, market_type, player_name).
     # PostgreSQL's ON CONFLICT DO UPDATE cannot handle two rows with the same conflict key
     # in a single batch, so duplicates must be resolved before the INSERT.
+    # La cote avec sub l'emporte toujours sur la cote sans sub ; à variante
+    # égale, la meilleure cote est gardée.
+    #
+    # Un même joueur peut arriver sous deux écritures (« Samba, Floyd » dans un
+    # marché, « Floyd Samba » dans l'autre) : une fois relié à l'Atlas, c'est
+    # l'identifiant qui départage, pour ne jamais garder à la fois sa cote
+    # avec sub et sa cote sans sub.
     dedup: dict[tuple, dict] = {}
     for row in player_rows_raw:
-        key = (row["fixture_id"], row["bookmaker"], row["market_type"], row["player_name"])
-        if key not in dedup or row["odds"] > dedup[key]["odds"]:
+        who = row["player_api_id"] if row["player_api_id"] is not None else row["player_name"]
+        key = (row["fixture_id"], row["bookmaker"], row["market_type"], who)
+        cur = dedup.get(key)
+        if cur is None or _row_rank(row) > _row_rank(cur):
             dedup[key] = row
     player_rows = list(dedup.values())
 
@@ -94,6 +103,7 @@ async def store_match_scrape_result(
             index_elements=["fixture_id", "bookmaker", "market_type", "player_name"],
             set_={
                 "odds": excluded.odds,
+                "variant": excluded.variant,
                 "scraped_at": excluded.scraped_at,
                 "player_api_id": excluded.player_api_id,
             },
@@ -130,11 +140,15 @@ def _match_row(
     }
 
 
+def _row_rank(row: dict) -> tuple[int, float]:
+    """Ordre de préférence entre deux cotes du même joueur : avec sub d'abord."""
+    return (1 if row["variant"] == AVEC_SUB else 0, row["odds"])
+
+
 def _player_row(
     r: MatchScrapeResult,
     market: str,
-    player: str,
-    odds: float,
+    p: PlayerOdds,
     now: datetime,
     squad: list[SquadPlayer],
 ) -> dict:
@@ -142,9 +156,10 @@ def _player_row(
         "fixture_id": r.fixture_id,
         "bookmaker": r.bookmaker,
         "market_type": market,
-        "player_name": player,
-        "player_api_id": resolve_odds_player(player, squad),
-        "odds": odds,
+        "player_name": p.player_name,
+        "player_api_id": resolve_odds_player(p.player_name, squad),
+        "odds": p.odds,
+        "variant": p.variant,
         "scraped_at": now,
     }
 
