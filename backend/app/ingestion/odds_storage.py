@@ -81,9 +81,15 @@ async def store_match_scrape_result(
     # in a single batch, so duplicates must be resolved before the INSERT.
     # La cote avec sub l'emporte toujours sur la cote sans sub ; à variante
     # égale, la meilleure cote est gardée.
+    #
+    # Un même joueur peut arriver sous deux écritures (« Samba, Floyd » dans un
+    # marché, « Floyd Samba » dans l'autre) : une fois relié à l'Atlas, c'est
+    # l'identifiant qui départage, pour ne jamais garder à la fois sa cote
+    # avec sub et sa cote sans sub.
     dedup: dict[tuple, dict] = {}
     for row in player_rows_raw:
-        key = (row["fixture_id"], row["bookmaker"], row["market_type"], row["player_name"])
+        who = row["player_api_id"] if row["player_api_id"] is not None else row["player_name"]
+        key = (row["fixture_id"], row["bookmaker"], row["market_type"], who)
         cur = dedup.get(key)
         if cur is None or _row_rank(row) > _row_rank(cur):
             dedup[key] = row

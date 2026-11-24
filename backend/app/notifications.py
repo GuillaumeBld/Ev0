@@ -80,11 +80,15 @@ async def send_telegram_alert(message: str, channel: str) -> bool:
     return await _post(token, fallback, f"[{channel}] {message}")
 
 
-_BET_LABELS = {"goal": "Buteur", "assist": "Passeur"}
+_BET_LABELS = {"goal": "Buteur", "goalscorer": "Buteur", "assist": "Passeur"}
 
 
 def _format_movement(m: dict) -> str:
     label = _BET_LABELS.get(m["bet_type"], m["bet_type"])
+    # Cote d'un book qui ne propose pas le pari « ou son remplaçant » : le dire,
+    # c'est un autre pari que la cote avec sub du même joueur.
+    if m.get("sans_sub"):
+        label = f"{label} (sans sub)"
     head = "▲ NOUVELLE VALUE\n" if m["kind"] == "new" else "▲ "
     name_line = f"<b>{m['player']}</b> — {label}"
     fixture_line = f"{m['fixture']} ({m['kickoff']})"

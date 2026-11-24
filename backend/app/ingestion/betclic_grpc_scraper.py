@@ -250,13 +250,43 @@ def _classify_market(name: str) -> str | None:
     return None
 
 
+# Autres paris joueur de Betclic, connus et volontairement ignorés (relevé du
+# 24/11/2026). Tout marché « buteur » / « passeur décisif » qui n'est ni dans
+# _PLAYER_MARKETS ni ici est un nom nouveau : il est signalé.
+_IGNORED_PLAYER_MARKETS: frozenset[str] = frozenset({
+    "buteur (tr) - extra gains a chaque but du joueur",
+    "buteur + son remplacant (tr)",
+    "buteur et passeur decisif",
+    "buteur et passeur decisif (titulaire et remplacant cumules - t. reg)",
+    "decisif (buteur ou passeur dans le t. reg) - extra gains a chaque action decisive du joueur",
+    "double chance - passeur decisif",
+    "double chance buteur (remplacants inclus - t. reg)",
+    "double chance buteur (tr)",
+    "double chance decisif (buteur ou passeur decisif dans le t. reg)",
+    "joueur decisif (buteur ou passeur decisif dans le t. reg)",
+    "joueur decisif (buteur ou passeur decisif) + son remplacant (tr)",
+    "joueur ou son remplacant 1er buteur (tr)",
+    "les deux joueurs marquent (remplacants inclus - t. reg)",
+    "les deux joueurs sont decisifs (buteur ou passeur decisif)",
+    "passeur decisif (tr)",
+    "passeur decisif (tr) - extra gains a chaque passe decisive du joueur",
+    "triple chance - passeur decisif",
+    "un remplacant marque un but (tr)",
+})
+
+
 def _looks_like_player_market(name: str) -> bool:
-    """Marché buteur/passeur simple que la table ne connaît pas : sert à
-    signaler un renommage côté Betclic (voir fetch_match_odds)."""
+    """Marché buteur/passeur que ni la table ni la liste des ignorés ne
+    connaissent : Betclic a renommé ou ajouté un marché (voir fetch_match_odds)."""
     n = _norm_label(name)
-    if "extra gains" in n:  # variante boostée connue, volontairement ignorée
+    if n in _IGNORED_PLAYER_MARKETS:
         return False
-    return n.startswith(("buteur (", "buteur ou son", "joueur passeur decisif"))
+    return "buteur" in n or "passeur decisif" in n
+
+
+def _unknown_kind(name: str) -> str:
+    """Type de cote qu'un marché inconnu pourrait porter."""
+    return "assist" if "passeur" in _norm_label(name) else "goalscorer"
 
 
 async def _stream_first_grpc_frame(
@@ -391,6 +421,8 @@ def _parse_match_proto(
         "goalscorer": [], "assist": [],
         # Noms des marchés buteur/passeur non reconnus (renommage Betclic).
         "unknown_player_markets": [],
+        # Marchés reconnus dont aucune colonne n'est lisible (libellé changé).
+        "unreadable_player_markets": [],
     }
 
     try:
@@ -444,6 +476,7 @@ def _parse_match_proto(
                 except Exception:
                     continue
             if not source_groups:
+                column_labels: list[str] = []
                 for outer_bytes in market.get(13, []):
                     try:
                         outer = _proto_fields(outer_bytes)
@@ -451,6 +484,7 @@ def _parse_match_proto(
                         continue
                     label_b = (outer.get(2) or [b""])[0]
                     label = label_b.decode("utf-8", errors="replace") if isinstance(label_b, bytes) else ""
+                    column_labels.append(label)
                     if _norm_label(label) != _ANYTIME_COLUMN:
                         continue
                     for inner_bytes in outer.get(11, []):
@@ -540,6 +574,12 @@ def _parse_match_proto(
 
         # Populate output based on market type
         if market_type in ("goalscorer", "assist"):
+            # Marché à colonnes sans colonne « 1 fois ou + ». Normal pour le
+            # jumeau « & son équipe gagne / fait match nul / perd » ; sinon
+            # Betclic a changé le libellé de la colonne : à signaler.
+            if not sels and not market.get(11) and market.get(13):
+                if not all(_norm_label(c).startswith("& son equipe") for c in column_labels):
+                    out["unreadable_player_markets"].append(f"{market_name} {column_labels}")
             variant = _classify_player_market(market_name)[1]
             out[market_type].extend(
                 PlayerOdds(n, o, variant) for n, o in sels if n and n.lower() != "yes"
@@ -761,6 +801,7 @@ class BetclicGrpcScraper:
         # seulement si le match n'a pas de passeur avec sub : la cote sans sub
         # est un second recours. Aucun des deux n'est bloquant.
         async def _extra(template: str) -> dict | None:
+            """Marchés d'un autre onglet ; None si l'appel a échoué."""
             try:
                 raw_extra = await _stream_first_grpc_frame(
                     self._client, GRPC_ENDPOINT,
@@ -773,32 +814,50 @@ class BetclicGrpcScraper:
                     template, match_id, home_team, away_team, exc,
                 )
                 return None
-            return _parse_match_proto(raw_extra, home_team, away_team) if raw_extra else None
+            if not raw_extra:
+                return {"goalscorer": [], "assist": [],
+                        "unknown_player_markets": [], "unreadable_player_markets": []}
+            return _parse_match_proto(raw_extra, home_team, away_team)
 
         unknown: list[str] = list(parsed["unknown_player_markets"])
+        unreadable: list[str] = list(parsed["unreadable_player_markets"])
         supersub = await _extra(BETCLIC_SUPERSUB_TEMPLATE)
-        if supersub:
+        if supersub is None:
+            # Panne passagère de l'onglet SuperSub : on n'écrit AUCUNE cote
+            # passeur ce tour-ci. Retomber sur le sans sub remplacerait les
+            # cotes avec sub déjà enregistrées, ferait expirer les recos puis
+            # les recréerait au tour suivant.
+            parsed["assist"] = []
+        else:
             parsed["goalscorer"] = prefer_avec_sub(parsed["goalscorer"] + supersub["goalscorer"])
             parsed["assist"] = prefer_avec_sub(parsed["assist"] + supersub["assist"])
             unknown += supersub["unknown_player_markets"]
-        if not any(p.variant == AVEC_SUB for p in parsed["assist"]):
-            props = await _extra(BETCLIC_PROPS_TEMPLATE)
-            if props:
-                parsed["assist"] = prefer_avec_sub(parsed["assist"] + props["assist"])
-                unknown += props["unknown_player_markets"]
+            unreadable += supersub["unreadable_player_markets"]
+            if not any(p.variant == AVEC_SUB for p in parsed["assist"]):
+                props = await _extra(BETCLIC_PROPS_TEMPLATE)
+                if props:
+                    parsed["assist"] = prefer_avec_sub(parsed["assist"] + props["assist"])
+                    unknown += props["unknown_player_markets"]
+                    unreadable += props["unreadable_player_markets"]
 
-        # Un marché buteur/passeur que la table ne connaît pas alors qu'on n'a
-        # aucune cote de ce type : Betclic a renommé le marché. À corriger dans
-        # _PLAYER_MARKETS, jamais à deviner.
-        for kind, prefix in (("goalscorer", "buteur"), ("assist", "joueur passeur")):
-            if not parsed[kind]:
-                suspects = sorted({n for n in unknown if _norm_label(n).startswith(prefix)})
-                if suspects:
-                    logger.warning(
-                        "BetclicGrpcScraper: match %d (%s v %s) — aucune cote %s, "
-                        "marché(s) non reconnu(s) : %s",
-                        match_id, home_team, away_team, kind, suspects,
-                    )
+        # Jamais d'échec silencieux. Un marché buteur/passeur inconnu, ou un
+        # marché connu devenu illisible, alors que ce match n'a pas de cote
+        # avec sub de ce type : Betclic a renommé quelque chose et on est
+        # retombé (ou on va retomber) sur le sans sub sans le voir. À corriger
+        # dans _PLAYER_MARKETS / _IGNORED_PLAYER_MARKETS, jamais à deviner.
+        for kind in ("goalscorer", "assist"):
+            if any(p.variant == AVEC_SUB for p in parsed[kind]):
+                continue
+            suspects = sorted(
+                {n for n in unknown if _unknown_kind(n) == kind}
+                | {n for n in unreadable if _unknown_kind(n) == kind}
+            )
+            if suspects:
+                logger.warning(
+                    "BetclicGrpcScraper: match %d (%s v %s) — aucune cote %s avec sub, "
+                    "marché(s) non reconnu(s) ou illisible(s) : %s",
+                    match_id, home_team, away_team, kind, suspects,
+                )
 
         result = MatchScrapeResult(
             fixture_id=fixture_id,

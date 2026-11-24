@@ -278,7 +278,7 @@ export interface FixturePlayerOdd {
   bookmaker: string
   odds: number
   /** « avec_sub » : le pari couvre le remplaçant ; « sans_sub » : le book ne le propose pas pour ce joueur. */
-  variant: 'avec_sub' | 'sans_sub'
+  variant: 'avec_sub' | 'sans_sub' | 'inconnu'
   scraped_at: string
 }
 

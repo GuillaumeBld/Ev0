@@ -146,6 +146,80 @@ async def test_match_sans_supersub_second_recours_sans_sub(monkeypatch):
     assert _cotes(r.assist)["Rayan Cherki"] == (2.45, SANS_SUB)
 
 
+async def test_panne_de_l_onglet_supersub_aucune_cote_passeur_ecrite(monkeypatch):
+    """Si l'onglet SuperSub tombe, on n'écrase pas les cotes passeur avec sub
+    déjà enregistrées par du sans sub : aucune cote passeur ce tour-ci."""
+    import app.ingestion.betclic_grpc_scraper as b
+
+    appels: list = []
+    defaut = encode_grpc_web_request(1, "fr")
+
+    async def faux_appel(client, url, body, timeout):
+        appels.append(body)
+        if body == defaut:
+            return _reponse("defaut")
+        raise RuntimeError("timeout")
+
+    monkeypatch.setattr(b, "_stream_first_grpc_frame", faux_appel)
+    r = await BetclicGrpcScraper(client=None).fetch_match_odds(1, "Manchester City", "Naples", "champions_league")
+    assert r.assist == []
+    assert len(appels) == 2  # pas de repli sur l'onglet Stats
+    assert _cotes(r.goalscorer)["Erling Haaland"] == (1.42, AVEC_SUB)
+
+
+async def test_marche_avec_sub_renomme_est_signale(monkeypatch, caplog):
+    """Betclic renomme le passeur avec remplaçant : on retombe sur le sans sub,
+    mais ça se voit dans les logs (jamais d'échec silencieux)."""
+    import logging
+
+    import app.ingestion.betclic_grpc_scraper as b
+
+    monkeypatch.setitem(b._PLAYER_MARKETS, "joueur passeur decisif + son remplacant (tr)", ("x", "x"))
+    monkeypatch.delitem(b._PLAYER_MARKETS, "joueur passeur decisif + son remplacant (tr)")
+    scraper, _ = _scraper(monkeypatch, {
+        None: _reponse("defaut"),
+        BETCLIC_SUPERSUB_TEMPLATE: _reponse("supersub"),
+        BETCLIC_PROPS_TEMPLATE: _reponse("props"),
+    })
+    with caplog.at_level(logging.WARNING, logger=b.logger.name):
+        r = await scraper.fetch_match_odds(1, "Manchester City", "Naples", "champions_league")
+    assert {p.variant for p in r.assist} == {SANS_SUB}
+    assert any("aucune cote assist avec sub" in m and "son remplaçant" in m for m in caplog.messages)
+
+
+async def test_colonne_renommee_est_signalee(monkeypatch, caplog):
+    """Betclic renomme la colonne « 1 fois ou + » : le marché n'est plus
+    lisible, et c'est signalé."""
+    import logging
+
+    import app.ingestion.betclic_grpc_scraper as b
+
+    monkeypatch.setattr(b, "_ANYTIME_COLUMN", "1 fois ou plus")
+    scraper, _ = _scraper(monkeypatch, {
+        None: _reponse("defaut"),
+        BETCLIC_SUPERSUB_TEMPLATE: _reponse("supersub"),
+        BETCLIC_PROPS_TEMPLATE: _reponse("props"),
+    })
+    with caplog.at_level(logging.WARNING, logger=b.logger.name):
+        r = await scraper.fetch_match_odds(1, "Manchester City", "Naples", "champions_league")
+    assert r.assist == []
+    assert any("aucune cote assist avec sub" in m and "1 fois ou +" in m for m in caplog.messages)
+
+
+async def test_match_normal_aucun_signalement(monkeypatch, caplog):
+    import logging
+
+    import app.ingestion.betclic_grpc_scraper as b
+
+    scraper, _ = _scraper(monkeypatch, {
+        None: _reponse("defaut"),
+        BETCLIC_SUPERSUB_TEMPLATE: _reponse("supersub"),
+    })
+    with caplog.at_level(logging.WARNING, logger=b.logger.name):
+        await scraper.fetch_match_odds(1, "Manchester City", "Naples", "champions_league")
+    assert not caplog.messages
+
+
 def test_props_template_adds_field3():
     base = encode_grpc_web_request(123)
     with_tmpl = encode_grpc_web_request(123, template=BETCLIC_PROPS_TEMPLATE)

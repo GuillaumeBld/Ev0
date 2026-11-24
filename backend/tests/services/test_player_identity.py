@@ -456,6 +456,62 @@ async def test_chemin_api_n_alerte_pas():
     alert.assert_not_called()
 
 
+def test_chemin_api_une_cote_par_joueur_avec_sub_d_abord():
+    """Cherki passeur : Betclic 3,90 avec sub + Unibet 4,60 sans sub. Deux
+    entrées pour le même joueur faisaient échouer l'enregistrement de tout le
+    lot de recos (clé unique joueur x marché)."""
+    from app.services.recommendation_service import _one_odd_per_player
+
+    def e(nom, pid, cote, book, variante, marche="assist"):
+        return {"player_name": nom, "player_api_id": pid, "market_type": marche,
+                "variant": variante, "odds": cote, "bookmaker": book}
+
+    out = _one_odd_per_player([
+        e("Rayan Cherki", 7, 3.9, "betclic", "avec_sub"),
+        e("Cherki, Rayan", 7, 4.6, "unibet", "sans_sub"),
+        e("Rayan Cherki", 7, 4.1, "pmu", "avec_sub"),
+        e("Phil Foden", 10, 3.3, "unibet", "sans_sub"),
+        e("Rayan Cherki", 7, 2.4, "betclic", "avec_sub", marche="goalscorer"),
+    ])
+    lu = {(x["player_api_id"], x["market_type"]): (x["odds"], x["bookmaker"], x["variant"]) for x in out}
+    assert lu == {
+        (7, "assist"): (4.1, "pmu", "avec_sub"),          # meilleure cote AVEC sub, pas le 4,60 sans sub
+        (10, "assist"): (3.3, "unibet", "sans_sub"),      # second recours
+        (7, "goalscorer"): (2.4, "betclic", "avec_sub"),
+    }
+    assert len(out) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("variante, cote_ev0", [("avec_sub", 2.0), ("sans_sub", 2.5)])
+async def test_chemin_api_cote_jugee_contre_la_meme_variante(variante, cote_ev0):
+    from app.services import recommendation_service as rs
+
+    fixture_orm = MagicMock()
+    fixture_orm.external_id = "ext1"
+    pricing = MagicMock()
+    pricing.home_match_xg, pricing.away_match_xg = 1.8, 1.0
+    pricing.xg_source = "market_implied"
+    joueur = _alloc_sub(10, "Phil Foden")
+    joueur.expected_minutes = 80.0
+    pricing.home_players, pricing.away_players = [joueur], []
+    odds = {"ext1": [{"player_name": "Phil Foden", "player_api_id": 10, "odds": 3.0,
+                      "market_type": "goalscorer", "bookmaker": "betclic", "variant": variante}]}
+    captured: list = []
+
+    def fake_select(recs, cfg):
+        captured.extend(recs)
+        return SimpleNamespace(selected=recs)
+
+    with patch.object(rs, "load_match_pricing", new=AsyncMock(return_value=pricing)), \
+            patch.object(rs, "select_bets", fake_select), patch.object(rs, "alert_bg", MagicMock()):
+        await rs.generate_recommendations(
+            [{"fixture_id": "ext1", "home_team": "A", "away_team": "B"}],
+            odds, db=AsyncMock(), db_fixtures=[fixture_orm],
+        )
+    assert [(r["fair_odds"], r["variant"]) for r in captured] == [(cote_ev0, variante)]
+
+
 @pytest.mark.asyncio
 async def test_backfill_player_api_ids():
     from app.ingestion import odds_storage

@@ -6,8 +6,10 @@ Create Date: 2026-11-24
 
 `player_odds_snapshots.variant` : "avec_sub" quand le pari couvre le
 remplaçant du joueur, "sans_sub" sinon. Les lignes existantes reçoivent
-"sans_sub" : leur vraie variante est inconnue (le scraper ne la notait pas)
-et le prochain passage du scraper la réécrit.
+"inconnu" : le scraper ne notait pas la variante (Betclic mélangeait les deux
+marchés buteur) et rien ne permet de la retrouver. Le prochain passage du
+scraper réécrit celles des matchs à venir ; celles des matchs terminés
+restent "inconnu" — ne jamais les prendre pour du sans sub.
 """
 from collections.abc import Sequence
 
@@ -24,7 +26,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.add_column(
         "player_odds_snapshots",
-        sa.Column("variant", sa.String(length=10), nullable=False, server_default="sans_sub"),
+        sa.Column("variant", sa.String(length=10), nullable=False, server_default="inconnu"),
     )
 
 

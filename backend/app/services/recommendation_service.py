@@ -311,6 +311,35 @@ async def generate_recommendations(
     return selection.selected
 
 
+def _odds_rank(entry: dict[str, Any]) -> tuple[int, float]:
+    """Préférence entre deux cotes du même joueur : avec sub d'abord, puis la plus haute."""
+    return (1 if entry.get("variant") == AVEC_SUB else 0, entry["odds"])
+
+
+def _one_odd_per_player(entries) -> list[dict[str, Any]]:
+    """UNE cote par joueur et par marché, entre bookmakers.
+
+    Ce chemin enregistre une reco par joueur x marché. La cote avec sub passe
+    d'abord, quel que soit son niveau : une cote sans sub (plus haute) ne la
+    masque jamais et ne sert que si aucun book ne propose le pari avec
+    remplaçant. À variante égale, la meilleure cote.
+
+    Regroupé par joueur Atlas (les graphies diffèrent d'un bookmaker à
+    l'autre) ; une cote non reliée reste seule, sous son nom.
+    """
+    best: dict[tuple, dict[str, Any]] = {}
+    for entry in entries:
+        who = (
+            ("id", entry["player_api_id"]) if entry["player_api_id"] is not None
+            else ("nom", entry["player_name"], entry["bookmaker"])
+        )
+        key = (who, entry["market_type"])
+        existing = best.get(key)
+        if existing is None or _odds_rank(entry) > _odds_rank(existing):
+            best[key] = entry
+    return list(best.values())
+
+
 async def get_recommendations_for_date(
     target_date: datetime,
     db: AsyncSession,
@@ -383,21 +412,7 @@ async def get_recommendations_for_date(
                     "odds": o.odds,
                     "bookmaker": o.bookmaker,
                 }
-        # Puis meilleure cote ACTUELLE entre bookmakers, par variante : une
-        # cote sans sub (plus haute) ne doit jamais masquer une cote avec sub.
-        # regroupée par joueur Atlas (les graphies diffèrent d'un bookmaker à
-        # l'autre) ; une cote non reliée reste seule, sous son nom.
-        best_odds: dict[tuple, dict[str, Any]] = {}
-        for entry in latest_per_book.values():
-            who = (
-                ("id", entry["player_api_id"]) if entry["player_api_id"] is not None
-                else ("nom", entry["player_name"], entry["bookmaker"])
-            )
-            key = (who, entry["market_type"], entry["variant"])
-            existing = best_odds.get(key)
-            if existing is None or entry["odds"] > existing["odds"]:
-                best_odds[key] = entry
-        odds_data[fixture_id] = list(best_odds.values())
+        odds_data[fixture_id] = _one_odd_per_player(latest_per_book.values())
 
     if not fixtures:
         return [], {
@@ -566,6 +581,7 @@ async def process_scraped_fixtures(
             "competition_api_id": fixture_orm.competition_api_id,
             "league": fixture_orm.league,
             "bet_type": bet_type,
+            "sans_sub": rec.market_type == MarketType.STANDARD,
             "odds": market_odds,
             "previous_odds": previous_odds,
             "bookmaker": bookmaker,
@@ -730,9 +746,6 @@ async def process_scraped_fixtures(
                 fair_odds_ss = alloc.fair_odds_assist_supersub
                 probability_ss = alloc.p_assist_supersub
             else:
-                continue
-
-            if not fair_odds_std or fair_odds_std <= 1:
                 continue
 
             matches = alloc.matches_played

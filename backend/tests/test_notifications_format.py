@@ -127,3 +127,14 @@ async def test_autopilot_run_singular_and_mode_tag(monkeypatch):
     assert "1 position" in sent[0]
     assert "2 positions" not in sent[0]
     assert "LIVE" in sent[0]
+
+
+def test_cote_sans_sub_annoncee_comme_telle():
+    from app.notifications import _format_movement
+
+    m = {"kind": "new", "player": "Rayan Cherki", "fixture": "Man City vs Naples",
+         "kickoff": "21:00", "bet_type": "assist", "odds": 2.45, "bookmaker": "unibet",
+         "edge": 0.08, "previous_odds": None, "previous_edge": None}
+    assert "Passeur (sans sub)" in _format_movement({**m, "sans_sub": True})
+    assert "sans sub" not in _format_movement({**m, "sans_sub": False})
+    assert "Buteur" in _format_movement({**m, "bet_type": "goalscorer"})
