@@ -787,6 +787,16 @@ def _league_key(league_name: str | None) -> str | None:
     return SCRAPER_KEY_BY_LEAGUE.get(league_name)
 
 
+# Matchs lointains (coup d'envoi à plus de 6 h) rafraîchis par passage, au
+# plus. Tous les matchs créés ensemble (mise en ligne, synchro du calendrier)
+# deviennent « à rafraîchir » en même temps : sans plafond, un seul passage
+# lisait 600 matchs chez chaque book pendant 15 à 20 minutes, et les matchs
+# proches du coup d'envoi perdaient leur rafraîchissement toutes les 2 minutes.
+# Les matchs en trop restent « à rafraîchir » et passent aux tours suivants,
+# les plus anciens d'abord : le lot se disperse tout seul.
+_MAX_FAR_FIXTURES_PER_TICK = 30
+
+
 # Unibet a raté un match (liste refusée, lecture en erreur) : on réessaie ce
 # délai plus tard, sans attendre le prochain passage normal (jusqu'à 2 h).
 _UNIBET_RETRY = timedelta(minutes=5)
@@ -850,6 +860,7 @@ class OddsScheduler:
             league_by_fid[f.id] for f in targets
             if f.id in league_by_fid and f.id not in event_by_fid
         }
+        a_signaler: list[str] = []
         for league in asked:
             if league not in report.failed_leagues:
                 self._unibet_fail_streak.pop(league, None)
@@ -857,12 +868,17 @@ class OddsScheduler:
             streak = self._unibet_fail_streak.get(league, 0) + 1
             self._unibet_fail_streak[league] = streak
             if streak == _UNIBET_ALERT_AFTER:
-                alert_bg(
-                    f"⚠️ Unibet refuse la liste des matchs ({league}) depuis "
-                    f"{streak} passages d'affilée : les matchs pas encore accrochés "
-                    "de ce championnat n'ont plus de cotes Unibet fraîches.",
-                    "incidents",
-                )
+                a_signaler.append(league)
+        if a_signaler:
+            # UNE alerte par passage, quel que soit le nombre de championnats :
+            # si Unibet bloque le serveur, 40 championnats tombent ensemble.
+            alert_bg(
+                f"⚠️ Unibet refuse la liste des matchs depuis {_UNIBET_ALERT_AFTER} passages "
+                f"d'affilée sur {len(a_signaler)} championnat(s) : "
+                f"{', '.join(sorted(a_signaler)[:8])}{'…' if len(a_signaler) > 8 else ''}. "
+                "Leurs matchs pas encore accrochés n'ont plus de cotes Unibet fraîches.",
+                "incidents",
+            )
 
     async def tick(self, session: AsyncSession) -> tuple[int, list[int]]:
         """Process all fixtures due for a scrape. Returns (count_due, stored_fixture_ids)."""
@@ -915,6 +931,23 @@ class OddsScheduler:
                 states[f.id].last_scraped_at if f.id in states else None,
             )
         ]
+
+        proches = [f for f in due if f.kickoff_utc - now <= _MID_FREQ_THRESHOLD]
+        lointains = [f for f in due if f.kickoff_utc - now > _MID_FREQ_THRESHOLD]
+        if len(lointains) > _MAX_FAR_FIXTURES_PER_TICK:
+            jamais = datetime.min.replace(tzinfo=UTC)
+
+            def _anciennete(f) -> datetime:
+                last = states[f.id].last_scraped_at if f.id in states else None
+                return last or jamais
+
+            lointains.sort(key=lambda f: (_anciennete(f), f.kickoff_utc))
+            logger.info(
+                "OddsScheduler.tick: %d matchs lointains à rafraîchir, %d traités ce passage",
+                len(lointains), _MAX_FAR_FIXTURES_PER_TICK,
+            )
+            lointains = lointains[:_MAX_FAR_FIXTURES_PER_TICK]
+        due = proches + lointains
 
         # Reprises Unibet : matchs dont la dernière lecture Unibet a raté et
         # dont le délai de reprise est écoulé. Seul Unibet est relu pour eux.

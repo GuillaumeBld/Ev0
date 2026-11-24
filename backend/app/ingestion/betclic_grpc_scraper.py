@@ -118,7 +118,7 @@ _BTTS_LABELS = ("les 2 équipes marquent",)
 
 _MATCH_SLEEP = 0.3  # between match gRPC calls (used by scrape_league)
 # Un match de la liste est lu s'il démarre à moins de ça d'un match attendu.
-_KICKOFF_WINDOW = _dt.timedelta(hours=3)
+_KICKOFF_WINDOW = _dt.timedelta(hours=1)
 
 
 # ---------------------------------------------------------------------------
@@ -891,7 +891,7 @@ class BetclicGrpcScraper:
     async def scrape_league(self, league: str, wanted_kickoffs: list[datetime] | None = None) -> list:
         """Scrape all upcoming matches for a league: match list → gRPC per match.
 
-        `wanted_kickoffs` : ne lit que les matchs qui démarrent à moins de 3 h
+        `wanted_kickoffs` : ne lit que les matchs qui démarrent à moins d'1 h
         d'un de ces horaires (None = tous). Avec 40 compétitions, relire tout
         un championnat (2 à 3 demandes par match) pour un seul match à
         rafraîchir ferait des centaines de demandes inutiles par passage.

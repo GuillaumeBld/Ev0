@@ -17,7 +17,7 @@ from datetime import UTC, date, datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -1042,8 +1042,13 @@ async def job_auto_finish_fixtures():
     async with async_session() as session:
         result = await session.execute(
             select(Fixture).where(
-                Fixture.status == "scheduled",
-                Fixture.kickoff_utc < cutoff,
+                or_(
+                    and_(Fixture.status == "scheduled", Fixture.kickoff_utc < cutoff),
+                    # Match resté « en cours » : la synchro des statuts a vu
+                    # la mi-temps mais pas la fin. Sans ça il restait dans la
+                    # liste des matchs en direct et n'était jamais réglé.
+                    and_(Fixture.status == "live", Fixture.kickoff_utc < now - timedelta(hours=4)),
+                )
             )
         )
         fixtures = list(result.scalars().all())
@@ -1062,15 +1067,29 @@ async def job_auto_finish_fixtures():
             len(fixtures),
         )
 
+        # Message seulement pour les matchs qui portent un pari en attente de
+        # règlement : avec 70 matchs par jour, annoncer chaque match terminé
+        # noierait le canal.
+        from app.models.recommendations import Recommendation
+
+        avec_pari = set((await session.execute(
+            select(Recommendation.fixture_id).where(
+                Recommendation.fixture_id.in_([fx.id for fx in fixtures]),
+                Recommendation.status.in_(["pending", "approved"]),
+            ).distinct()
+        )).scalars().all())
+        concernes = [fx for fx in fixtures if fx.id in avec_pari]
+        if not concernes:
+            return
         names = "\n".join(
             f"• {fx.home_team} vs {fx.away_team} ({fx.kickoff_utc.strftime('%d/%m %H:%M')} UTC)"
-            for fx in fixtures[:10]
+            for fx in concernes[:10]
         )
         await send_alert(
             f"⏱️ <b>[Ev0] Auto-finish fixtures</b>\n\n"
-            f"{len(fixtures)} match(s) passés en <b>finished</b> (kickoff +2h dépassé) :\n"
+            f"{len(concernes)} match(s) avec pari passés en <b>finished</b> (kickoff +2h dépassé) :\n"
             f"{names}"
-            + (" ..." if len(fixtures) > 10 else ""),
+            + (" ..." if len(concernes) > 10 else ""),
             channel="autopilot",
         )
 
@@ -1310,23 +1329,37 @@ async def job_aggregate_season_stats():
     logger.info("=== Bzzoiro season stats aggregation complete ===")
 
 
-async def job_sync_bzzoiro_events():
-    """Every 6h: sync Bzzoiro match events — 3 days back, 30 days forward."""
+async def job_sync_bzzoiro_events(
+    league_internal_ids: list[int] | None = None,
+    days_back: int = 3,
+    days_forward: int = 30,
+):
+    """Every 6h: sync Bzzoiro match events — 3 days back, 30 days forward.
+
+    Périmètre par défaut : TOUT le calendrier (`SYNCED_COMPETITION_IDS`).
+    Avant le 24/11/2026 seuls les 6 championnats historiques et les sélections
+    étaient relus ici ; les autres compétitions ne l'étaient qu'une fois par
+    jour, donc scores, reports et changements d'horaire arrivaient avec
+    jusqu'à 24 h de retard. `league_internal_ids` restreint le passage (régime
+    d'approche : seulement les compétitions qui jouent).
+    """
     logger.info("=== Starting Bzzoiro events sync ===")
     if not settings.bzzoiro_api_key:
         logger.warning("BZZOIRO_API_KEY not configured, skipping events sync")
         return
     try:
+        from app.services.competitions import SYNCED_COMPETITION_IDS
+
+        ligues = (
+            sorted(SYNCED_COMPETITION_IDS) if league_internal_ids is None
+            else sorted(league_internal_ids)
+        )
         async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
-            result = await sync_events(session, client, days_back=3, days_forward=30)
-            logger.info("Bzzoiro events synced: %s", result)
-            intl_count = await sync_events(
-                session,
-                client,
-                days_forward=30,
-                league_internal_ids=INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST,
+            result = await sync_events(
+                session, client, days_back=days_back, days_forward=days_forward,
+                league_internal_ids=ligues,
             )
-            logger.info("job_sync_events: %d international events synced", intl_count)
+            logger.info("Bzzoiro events synced: %s (%d compétitions)", result, len(ligues))
     except Exception as exc:
         logger.error("Error in Bzzoiro events sync: %s", exc, exc_info=True)
 
@@ -1636,6 +1669,30 @@ async def has_imminent_kickoff(session, heures: int = 3) -> bool:
     return (result.scalar() or 0) > 0
 
 
+# Régime d'approche : compétitions dont un match démarre ou se joue dans cette
+# fenêtre autour de maintenant.
+_APPROCHE_AVANT = timedelta(hours=3)
+_APPROCHE_APRES = timedelta(hours=3)
+
+
+async def competitions_en_approche(session) -> list[int]:
+    """Compétitions qui ont un match proche du coup d'envoi ou en cours."""
+    from app.models.fixtures import Fixture
+
+    maintenant = datetime.now(UTC)
+    result = await session.execute(
+        select(Fixture.competition_api_id)
+        .where(
+            Fixture.competition_api_id.isnot(None),
+            Fixture.kickoff_utc > maintenant - _APPROCHE_APRES,
+            Fixture.kickoff_utc <= maintenant + _APPROCHE_AVANT,
+            Fixture.status.notin_(["finished", "cancelled", "postponed"]),
+        )
+        .distinct()
+    )
+    return sorted(c for c in result.scalars().all() if isinstance(c, int))
+
+
 async def job_sync_bzzoiro_events_approche() -> None:
     """Toutes les 10 min : rafraichit les evenements quand un coup d'envoi approche.
 
@@ -1650,11 +1707,17 @@ async def job_sync_bzzoiro_events_approche() -> None:
         return
     try:
         async with async_session() as session:
-            proche = await has_imminent_kickoff(session)
-        if not proche:
+            ligues = await competitions_en_approche(session)
+        if not ligues:
             return
-        logger.info("Coup d'envoi imminent — rafraichissement des evenements")
-        await job_sync_bzzoiro_events()
+        # Seulement les compétitions qui jouent, sur 3 jours : avec tout
+        # l'Atlas au calendrier il y a presque toujours un match proche, et
+        # relire 90 compétitions sur 30 jours toutes les 10 min serait absurde.
+        logger.info(
+            "Coup d'envoi proche ou match en cours — rafraichissement de %d compétition(s)",
+            len(ligues),
+        )
+        await job_sync_bzzoiro_events(ligues, days_back=1, days_forward=2)
     except Exception as exc:
         logger.error("Echec du rafraichissement d'approche : %s", exc, exc_info=True)
 
@@ -2372,6 +2435,21 @@ async def job_capture_xg_closing() -> None:
 # 7 jours est un bug, pas un cas limite. Un match non ancre est un match sans
 # aucune recommandation (load_match_pricing renvoie None faute de xG).
 _ANCHOR_ALERT_HORIZON = timedelta(days=7)
+# Compétitions ajoutées le 24/11/2026 (tout l'Atlas) : PS3838 n'ouvre pas
+# toujours leurs lignes une semaine à l'avance. On n'alerte qu'à l'approche
+# du match, et seulement là où un book est lu (sans book, pas de reco à perdre).
+_ANCHOR_ALERT_HORIZON_AUTRES = timedelta(hours=36)
+
+
+def _anchor_alert_concerne(league: str | None, kickoff: datetime, now: datetime) -> bool:
+    """Ce match sans xG mérite-t-il une alerte ?"""
+    from app.ingestion.odds_scheduler import _league_key
+
+    if league and not league.startswith("comp_"):
+        return True  # championnats et sélections historiques : horizon complet
+    if league in ("comp_8", "comp_83"):
+        return True  # coupes d'Europe, déjà suivies à 7 jours
+    return _league_key(league) is not None and kickoff - now <= _ANCHOR_ALERT_HORIZON_AUTRES
 
 
 def _unanchored_alert_lines(rows, now: datetime) -> list[str]:
@@ -2442,7 +2520,9 @@ async def job_resolve_ps3838_anchors() -> None:
 
             now = datetime.now(UTC)
             unanchored_rows = (await session.execute(
-                select(Fixture.home_team, Fixture.away_team, Fixture.kickoff_utc).where(
+                select(
+                    Fixture.home_team, Fixture.away_team, Fixture.kickoff_utc, Fixture.league
+                ).where(
                     Fixture.ps3838_event_id.is_(None),
                     Fixture.kickoff_utc > now,
                     Fixture.kickoff_utc < now + _ANCHOR_ALERT_HORIZON,
@@ -2455,9 +2535,15 @@ async def job_resolve_ps3838_anchors() -> None:
             # que MarketXgService (MAX_SNAPSHOT_AGE) pour rester coherent
             # avec ce qui alimente reellement le pricing. Pas de colonne
             # dediee : on interroge simplement les snapshots existants.
+            unanchored_rows = [
+                (h, a, ko) for h, a, ko, lg in unanchored_rows
+                if _anchor_alert_concerne(lg, ko, now)
+            ]
+
             anchored_near = (await session.execute(
                 select(
-                    Fixture.id, Fixture.home_team, Fixture.away_team, Fixture.kickoff_utc
+                    Fixture.id, Fixture.home_team, Fixture.away_team, Fixture.kickoff_utc,
+                    Fixture.league,
                 ).where(
                     Fixture.ps3838_event_id.isnot(None),
                     Fixture.kickoff_utc > now,
@@ -2465,6 +2551,11 @@ async def job_resolve_ps3838_anchors() -> None:
                     Fixture.status.notin_(["finished", "cancelled", "postponed"]),
                 ).order_by(Fixture.kickoff_utc)
             )).all()
+
+            anchored_near = [
+                (fid, h, a, ko) for fid, h, a, ko, lg in anchored_near
+                if _anchor_alert_concerne(lg, ko, now)
+            ]
 
             stale_rows: list[tuple[str, datetime]] = []
             if anchored_near:

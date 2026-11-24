@@ -141,3 +141,26 @@ async def test_pmu_ne_lit_que_les_matchs_attendus():
     assert [e["id"] for e, _ in tous] == [1, 2]            # l'Ukraine n'est pas la Premier League
     dus = await _fetch_events(Client(), {"comp_18"}, {"comp_18": [ko]})
     assert [e["id"] for e, _ in dus] == [1]
+
+
+@pytest.mark.parametrize("chemin, attendu", [
+    (["Football", "Champions League", "League Phase"], "champions_league"),
+    (["Football", "Belgium", "Jupiler Pro League", "Championship Round"], "comp_14"),
+    (["Football", "International", "International Friendly Matches"], "friendly_international"),
+    (["Football", "World Cup 2026", "Group A"], "world_cup_2026"),
+    (["Football", "Europe", "Premier League"], None),
+])
+def test_pmu_chemin_avec_phase_ou_groupe_parent(chemin, attendu):
+    assert _league_from_event(_event(chemin)) == attendu
+
+
+def test_alerte_match_sans_xg_seulement_la_ou_elle_sert():
+    from app.worker import _anchor_alert_concerne
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=UTC)
+    dans_5j, demain = now + timedelta(days=5), now + timedelta(hours=20)
+    assert _anchor_alert_concerne("ligue_1", dans_5j, now)        # historique : 7 jours
+    assert _anchor_alert_concerne("comp_8", dans_5j, now)         # coupe d'Europe : 7 jours
+    assert not _anchor_alert_concerne("comp_18", dans_5j, now)    # MLS : pas si tôt
+    assert _anchor_alert_concerne("comp_18", demain, now)         # MLS : à l'approche
+    assert not _anchor_alert_concerne("comp_86", demain, now)     # League One : aucun book

@@ -107,7 +107,7 @@ def player_variant(league: str) -> str:
 
 
 # Un match de la liste est lu s'il démarre à moins de ça d'un match attendu.
-_KICKOFF_WINDOW = timedelta(hours=3)
+_KICKOFF_WINDOW = timedelta(hours=1)
 
 
 def _parse_start(raw: str | None) -> datetime | None:
@@ -129,14 +129,23 @@ def _league_from_event(event: dict[str, Any]) -> str | None:
     names = [part.get("englishName", "") for part in event.get("path", [])]
     if names and names[0] == "Football":
         names = names[1:]
-    if len(names) == 1:
-        return _KAMBI_LEAGUE_MAP.get(names[0])
-    if len(names) >= 2:
-        league = _KAMBI_DOMESTIC_MAP.get((names[-2], names[-1]))
+    if not names:
+        return None
+    # Championnat national : la paire (pays, nom), où qu'elle soit dans le
+    # chemin (Kambi ajoute parfois une phase : « Belgium > Jupiler Pro League >
+    # Championship Round »).
+    for pays, nom in zip(names, names[1:]):
+        league = _KAMBI_DOMESTIC_MAP.get((pays, nom))
         if league:
             return league
-        if names[-1] in _KAMBI_INTERNATIONAL_NAMES:
-            return _KAMBI_LEAGUE_MAP[names[-1]]
+    # Compétition sans pays : directement sous « Football », phases comprises
+    # (« Champions League > League Phase »).
+    if names[0] in _KAMBI_LEAGUE_MAP:
+        return _KAMBI_LEAGUE_MAP[names[0]]
+    # Sélections : rangées sous un groupe (« International »...), nom sans homonyme.
+    for nom in names:
+        if nom in _KAMBI_INTERNATIONAL_NAMES:
+            return _KAMBI_LEAGUE_MAP[nom]
     return None
 
 

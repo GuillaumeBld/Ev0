@@ -50,13 +50,18 @@ async def test_job_sync_bzzoiro_events_calls_sync():
 
         await job_sync_bzzoiro_events()
 
-        # 2 appels : ligues domestiques (days_back=3) + internationales (WC etc.)
-        assert mock_sync.call_count == 2
-        first_call = mock_sync.call_args_list[0]
-        assert first_call.args == (mock_session, mock_client)
-        assert first_call.kwargs == {"days_back": 3, "days_forward": 30}
-        second_call = mock_sync.call_args_list[1]
-        assert "league_internal_ids" in second_call.kwargs
+        # Un seul appel, sur TOUT le calendrier (clubs de l'Atlas + sélections).
+        from app.services.competitions import SYNCED_COMPETITION_IDS
+
+        assert mock_sync.call_count == 1
+        appel = mock_sync.call_args_list[0]
+        assert appel.args == (mock_session, mock_client)
+        assert appel.kwargs == {
+            "days_back": 3, "days_forward": 30,
+            "league_internal_ids": sorted(SYNCED_COMPETITION_IDS),
+        }
+        # MLS, Suisse, sélections : toutes relues toutes les 6 h, plus une fois par jour.
+        assert {18, 15, 27} <= set(appel.kwargs["league_internal_ids"])
 
 
 # ---------------------------------------------------------------------------
@@ -518,7 +523,7 @@ async def test_job_approche_ne_synchronise_pas_sans_match_proche():
     from app.worker import job_sync_bzzoiro_events_approche
 
     with patch("app.worker.settings") as mock_settings, patch(
-        "app.worker.has_imminent_kickoff", new=AsyncMock(return_value=False)
+        "app.worker.competitions_en_approche", new=AsyncMock(return_value=[])
     ), patch(
         "app.worker.job_sync_bzzoiro_events", new=AsyncMock()
     ) as mock_sync:
@@ -532,14 +537,15 @@ async def test_job_approche_synchronise_quand_un_match_approche():
     from app.worker import job_sync_bzzoiro_events_approche
 
     with patch("app.worker.settings") as mock_settings, patch(
-        "app.worker.has_imminent_kickoff", new=AsyncMock(return_value=True)
+        "app.worker.competitions_en_approche", new=AsyncMock(return_value=[6, 18])
     ), patch(
         "app.worker.job_sync_bzzoiro_events", new=AsyncMock()
     ) as mock_sync:
         mock_settings.bzzoiro_api_key = "cle"
         await job_sync_bzzoiro_events_approche()
 
-    mock_sync.assert_awaited_once()
+    # Seulement les compétitions qui jouent, sur 3 jours — pas tout le calendrier.
+    mock_sync.assert_awaited_once_with([6, 18], days_back=1, days_forward=2)
 
 
 async def test_job_approche_sans_cle_ne_fait_rien():
@@ -681,11 +687,13 @@ async def test_sync_fixture_status_rereads_recently_finished_fixtures():
 
 # ── Statuts reporté / annulé / mi-temps (24/11/2026) ─────────────────────────
 
-async def _sync_un_match(statut_fixture: str, statut_bzz: str, decalage_jours: int = 0):
+async def _sync_un_match(statut_fixture: str, statut_bzz: str, decalage_jours: int = 0,
+                         score: int | None = None):
     from app.ingestion.bzzoiro.sync_fixture_status import sync_fixture_status_from_bzz
 
-    ko = datetime(2026, 11, 28, 19, 0, 0, tzinfo=UTC)
-    fixture = _make_fixture("Al Hilal", "Al Nassr", ko, status=statut_fixture)
+    ko = datetime.now(UTC).replace(microsecond=0) + timedelta(days=4)
+    fixture = _make_fixture("Al Hilal", "Al Nassr", ko, status=statut_fixture,
+                            home_score=score, away_score=score)
     event = _make_bzz_event(10, 20, ko + timedelta(days=decalage_jours), status=statut_bzz)
     session = _make_session_for_sync(
         [fixture], [event], [_make_bzz_team(10, "Al Hilal"), _make_bzz_team(20, "Al Nassr")],
@@ -717,6 +725,27 @@ async def test_match_reporte_puis_reprogramme_revient_au_calendrier():
 
 
 @pytest.mark.asyncio
-async def test_match_termine_ne_redevient_jamais_reporte():
-    fixture, _ = await _sync_un_match("finished", "postponed")
+async def test_match_termine_avec_score_ne_redevient_jamais_reporte():
+    fixture, _ = await _sync_un_match("finished", "postponed", score=2)
     assert fixture.status == "finished"
+
+
+@pytest.mark.asyncio
+async def test_report_vu_en_retard_apres_la_fin_par_l_horloge():
+    """Terminé par l'horloge (coup d'envoi + 2 h), sans score : le report
+    arrive ensuite et doit passer."""
+    fixture, _ = await _sync_un_match("finished", "postponed")
+    assert fixture.status == "postponed"
+
+
+@pytest.mark.asyncio
+async def test_match_termine_par_l_horloge_puis_reprogramme_revient():
+    fixture, ko = await _sync_un_match("finished", "notstarted", decalage_jours=3)
+    assert fixture.status == "scheduled"
+    assert fixture.kickoff_utc == ko + timedelta(days=3)
+
+
+@pytest.mark.asyncio
+async def test_match_annule_ne_revient_pas():
+    fixture, _ = await _sync_un_match("cancelled", "notstarted", decalage_jours=3)
+    assert fixture.status == "cancelled"

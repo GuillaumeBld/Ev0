@@ -148,6 +148,7 @@ async def sync_fixture_status_from_bzz(session: AsyncSession) -> int:
 
     # 6. For each fixture, find best matching BzzEvent and update if needed
     updated = 0
+    hors_calendrier: list = []   # passés à reporté / annulé pendant ce passage
     for fixture in fixtures:
         if fixture.kickoff_utc is None:
             continue
@@ -229,12 +230,23 @@ async def sync_fixture_status_from_bzz(session: AsyncSession) -> int:
 
         # Update status (only forward-mapped statuses)
         mapped_status = _BZZ_TO_FIXTURE_STATUS.get(best.status or "")
-        if (best.status or "") == "notstarted" and fixture.status == "postponed":
+        # « Terminé » sans score = terminé par l'horloge (coup d'envoi + 2 h),
+        # pas par un vrai résultat : un report vu en retard doit encore passer.
+        vraiment_termine = fixture.status == "finished" and fixture.home_score is not None
+        rouvrable = fixture.status == "postponed" or (
+            fixture.status == "finished" and fixture.home_score is None
+        )
+        if (
+            (best.status or "") == "notstarted" and rouvrable
+            and best.event_date is not None and best.event_date > datetime.now(UTC)
+        ):
             # Match reporté puis reprogrammé : il revient au calendrier (le
             # nouveau coup d'envoi est repris juste au-dessus).
             mapped_status = "scheduled"
-        if fixture.status == "finished" and mapped_status in _NEVER_AFTER_FINISHED:
+        if vraiment_termine and mapped_status in _NEVER_AFTER_FINISHED:
             mapped_status = None
+        if mapped_status in _NEVER_AFTER_FINISHED and fixture.status != mapped_status:
+            hors_calendrier.append(fixture)
         if mapped_status is not None and fixture.status != mapped_status:
             logger.info(
                 "Updating status for %s vs %s: %s → %s",
@@ -261,6 +273,25 @@ async def sync_fixture_status_from_bzz(session: AsyncSession) -> int:
         if changed:
             session.add(fixture)
             updated += 1
+
+    # Un match reporté ou annulé ne doit plus porter de pari « en attente » :
+    # il resterait proposé (et l'autopilot pourrait encore l'approuver) alors
+    # que le match n'aura pas lieu à cette date.
+    ids_hors = [f.id for f in hors_calendrier if isinstance(f.id, int)]
+    if ids_hors:
+        from sqlalchemy import update
+
+        from app.models.recommendations import Recommendation
+
+        await session.execute(
+            update(Recommendation)
+            .where(Recommendation.fixture_id.in_(ids_hors), Recommendation.status == "pending")
+            .values(status="expired")
+        )
+        logger.info(
+            "sync_fixture_status_from_bzz: %d match(s) reporté(s)/annulé(s), paris en attente expirés",
+            len(ids_hors),
+        )
 
     if updated:
         await session.commit()

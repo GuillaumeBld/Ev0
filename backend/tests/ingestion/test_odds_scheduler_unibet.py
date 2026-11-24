@@ -209,3 +209,30 @@ async def test_les_cotes_d_un_autre_championnat_ne_sont_jamais_collees_au_match(
     store, _ = await _tick(OddsScheduler(), _session([fx]), AsyncMock(return_value=[autre]))
     assert store.await_args_list == []
     assert fx.unibet_event_id is None
+
+
+async def test_lot_de_matchs_lointains_plafonne_les_proches_passent_tous():
+    """Tous les matchs créés ensemble deviennent « à rafraîchir » en même
+    temps : un passage n'en prend que 30 lointains, et jamais au détriment
+    des matchs proches du coup d'envoi."""
+    lointains = [_fixture(i, home=f"Club {i}", away=f"Autre {i}") for i in range(1, 81)]
+    proches = [_fixture(1000 + i, home=f"Proche {i}", away=f"Visiteur {i}") for i in range(5)]
+    for f in proches:
+        f.kickoff_utc = datetime.now(UTC) + timedelta(hours=1)
+    dus: list[int] = []
+
+    async def ps3838(session, fixture_ids):
+        dus.extend(fixture_ids)
+        return []
+
+    with (
+        patch("app.ingestion.betclic_grpc_scraper.scrape_betclic_leagues", new=AsyncMock(return_value=[])),
+        patch("app.ingestion.unibet_lvs_scraper.scrape_all_unibet", new=AsyncMock(return_value=[])),
+        patch("app.ingestion.pmu_scraper.scrape_all_pmu", new=AsyncMock(return_value=[])),
+        patch("app.ingestion.ps3838.scraper.scrape_ps3838", new=ps3838),
+        patch("app.ingestion.odds_storage.store_match_scrape_result", new=AsyncMock(return_value=(0, 0))),
+    ):
+        n, _ = await OddsScheduler().tick(_session(lointains + proches))
+    assert n == 35
+    assert {f.id for f in proches} <= set(dus)
+    assert len([i for i in dus if i < 1000]) == odds_scheduler._MAX_FAR_FIXTURES_PER_TICK == 30
