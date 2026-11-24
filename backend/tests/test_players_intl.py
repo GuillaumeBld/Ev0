@@ -260,3 +260,45 @@ def test_league_groups_disjoint():
     )
     assert INTL_CLUB_COMP_LEAGUE_IDS.isdisjoint(SELECTION_STATS_LEAGUE_IDS)
     assert 7 in INTL_CLUB_COMP_LEAGUE_IDS and 27 in SELECTION_STATS_LEAGUE_IDS
+
+
+@pytest.mark.asyncio
+async def test_squad_table_excludes_national_team_stats():
+    """Tableau des effectifs = stats EN CLUB. Les matchs en sélection (Ligue
+    des nations…) ont leur onglet dans la fiche : la requête de stats doit
+    écarter toute compétition `leagues.kind = 'selection'`, sinon un joueur
+    d'Allsvenskan (aucun xG chez Bzzoiro) affiche le xG de sa sélection."""
+    import app.api.players as mod
+    from app.api.players import list_players
+
+    p1 = _player(api_id=1)
+    players_res = MagicMock()
+    players_res.scalars.return_value.all.return_value = [p1]
+    stats_res = MagicMock()
+    stats_res.scalars.return_value.all.return_value = [_season_stat(1, 26, goals=3)]
+    crest_res = MagicMock()
+    crest_res.all.return_value = []
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(side_effect=[players_res, stats_res, crest_res])
+
+    async def _team_ids(session, league_api_id, season):
+        return [100]
+
+    async def _saison_courante(session):
+        return "2025-2026"
+
+    original, original_saison = mod.team_ids_for_league, mod.current_season
+    mod.team_ids_for_league, mod.current_season = _team_ids, _saison_courante
+    try:
+        await list_players(
+            session=mock_db, league_api_id=26, team_api_id=None, position=None,
+            min_minutes=0, season="2025-2026", sort_by="xg_per_90",
+            sort_order="desc", limit=50, offset=0,
+        )
+    finally:
+        mod.team_ids_for_league, mod.current_season = original, original_saison
+
+    stats_stmt = mock_db.execute.call_args_list[1].args[0]
+    sql = str(stats_stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "NOT IN" in sql
+    assert "leagues.kind = 'selection'" in sql
