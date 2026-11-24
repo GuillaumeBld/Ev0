@@ -317,7 +317,7 @@ class TestScrapeAllUnibet:
         ligue_1_matches = [MagicMock(), MagicMock()]
         premier_league_matches = [MagicMock(), MagicMock(), MagicMock()]
 
-        async def fake_scrape_league(self, league: str):
+        async def fake_scrape_league(self, league: str, *_args):
             if league == "ligue_1":
                 return ligue_1_matches
             if league == "premier_league":
@@ -329,3 +329,94 @@ class TestScrapeAllUnibet:
                 result = await scrape_all_unibet(["ligue_1", "premier_league"])
 
         assert len(result) == len(ligue_1_matches) + len(premier_league_matches)
+
+
+# ── Lecture par identifiant, reprises de la liste ────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _reprises_sans_attente(monkeypatch):
+    import app.ingestion.unibet_lvs_scraper as u
+
+    monkeypatch.setattr(u, "_LIST_RETRY_DELAYS", (0.0, 0.0))
+    monkeypatch.setattr(u, "_EVENT_SLEEP", 0)
+
+
+def _reponse(status: int, items: dict | None = None):
+    r = MagicMock()
+    r.status_code = status
+    r.json.return_value = {"items": items or {}}
+    if status >= 400:
+        r.raise_for_status.side_effect = httpx.HTTPStatusError("refus", request=MagicMock(), response=r)
+    return r
+
+
+_LISTE = {
+    "e1": {"a": "PSG", "b": "Marseille", "start": "3011301945"},
+    "e2": {"a": "Lyon", "b": "Nice", "start": "3011301500"},
+    "e3": {"a": "Lille", "b": "Lens", "start": "3012062000"},
+}
+_MATCH = {
+    "e1": {"a": "PSG", "b": "Marseille", "start": "3011301945"},
+    "m1": {"parent": "e1", "markettypeId": 31, "desc": "Buteur"},
+    "o1": {"parent": "m1", "desc": "Mbappé", "price": "2,75"},
+}
+
+
+class TestRepriseEtIdentifiant:
+    def _scraper(self, reponses):
+        client = MagicMock()
+        client.get = AsyncMock(side_effect=reponses)
+        s = UnibetLVSScraper(client)
+        s._token = "tok"
+        return s, client
+
+    @pytest.mark.asyncio
+    async def test_liste_refusee_puis_acceptee_a_la_reprise(self):
+        s, client = self._scraper([_reponse(403), _reponse(200, _LISTE)])
+        events = await s._fetch_event_list("ligue_1")
+        assert [e[0] for e in events] == [1, 2, 3]
+        assert client.get.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_liste_refusee_trois_fois_signalee_pas_prise_pour_aucun_match(self):
+        from app.ingestion.unibet_lvs_scraper import UnibetReport
+
+        s, client = self._scraper([_reponse(403), _reponse(403), _reponse(403)])
+        report = UnibetReport()
+        assert await s.scrape_league("ligue_1", None, report) == []
+        assert report.failed_leagues == {"ligue_1"}
+        assert client.get.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_seuls_les_matchs_attendus_sont_lus(self):
+        """Un match à rafraîchir : une lecture, pas tout le championnat."""
+        s, client = self._scraper([_reponse(200, _LISTE), _reponse(200, _MATCH)])
+        ko = datetime(2030, 11, 30, 19, 45, tzinfo=timezone.utc)
+        out = await s.scrape_league("ligue_1", [ko], None)
+        assert client.get.await_count == 2  # la liste + PSG-Marseille ; Lyon (15 h) et Lille (autre jour) ne sont pas lus
+        assert [(r.home_team, r.book_event_id) for r in out] == [("PSG", 1)]
+
+    @pytest.mark.asyncio
+    async def test_match_accroche_relu_sans_liste_avec_son_fixture(self):
+        from app.ingestion.unibet_lvs_scraper import UnibetReport
+
+        s, client = self._scraper([_reponse(200, _MATCH)])
+        report = UnibetReport()
+        out = await s.scrape_known_events({1: (42, "ligue_1")}, report)
+        assert client.get.await_count == 1
+        assert "/ff/e1?" in client.get.await_args.args[0]
+        assert [(r.fixture_id, r.book_event_id, r.goalscorer[0].player_name) for r in out] == [(42, 1, "Mbappé")]
+        assert not report.failed_events and not report.gone_events
+
+    @pytest.mark.asyncio
+    async def test_match_disparu_et_lecture_en_erreur_distingues(self):
+        from app.ingestion.unibet_lvs_scraper import UnibetReport
+
+        s, _ = self._scraper([_reponse(404), _reponse(403), _reponse(200, {})])
+        report = UnibetReport()
+        out = await s.scrape_known_events(
+            {1: (42, "ligue_1"), 2: (43, "ligue_1"), 3: (44, "ligue_1")}, report,
+        )
+        assert out == []
+        assert report.gone_events == {1, 3}     # introuvable / réponse sans le match
+        assert report.failed_events == {2}      # refus passager : à réessayer

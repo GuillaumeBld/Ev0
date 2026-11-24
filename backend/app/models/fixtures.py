@@ -22,6 +22,12 @@ class Fixture(Base, TimestampMixin):
     # sont recuperees par cet identifiant, jamais par nom.
     ps3838_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True)
 
+    # Accrochage Unibet : identifiant du match chez Unibet, posé la première
+    # fois que le match est reconnu dans la liste d'un championnat. Ensuite le
+    # match est relu par cet identifiant : plus de liste (qu'Unibet refuse par
+    # moments au serveur), plus de rapprochement par noms.
+    unibet_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True)
+
     # Match info
     league: Mapped[str] = mapped_column(String(50), index=True)  # ligue1, premier_league
     season: Mapped[str] = mapped_column(String(10))  # 2024-25
