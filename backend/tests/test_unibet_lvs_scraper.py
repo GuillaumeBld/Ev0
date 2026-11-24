@@ -433,3 +433,24 @@ class TestRepriseEtIdentifiant:
         ko = datetime(2030, 11, 30, 19, 45, tzinfo=timezone.utc)
         out = await s.scrape_league("ligue_1", [ko], None, {1})
         assert out == [] and client.get.await_count == 1   # la liste seule
+
+
+@pytest.mark.asyncio
+async def test_coupe_circuit_une_liste_refusee_arrete_le_passage():
+    """Unibet bloque le serveur : on ne redemande pas les 40 autres listes."""
+    from app.ingestion.unibet_lvs_scraper import UnibetReport
+
+    demandes: list[str] = []
+
+    async def fake_list(self, league):
+        demandes.append(league)
+        return None if league == "premier_league" else []
+
+    report = UnibetReport()
+    with patch.object(UnibetLVSScraper, "_get_token", new=AsyncMock(return_value="tok")), \
+            patch.object(UnibetLVSScraper, "_fetch_event_list", new=fake_list):
+        await scrape_all_unibet(
+            ["ligue_1", "premier_league", "comp_18", "comp_15"], report=report,
+        )
+    assert demandes == ["ligue_1", "premier_league"]
+    assert report.failed_leagues == {"premier_league", "comp_18", "comp_15"}   # tous repris plus tard

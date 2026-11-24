@@ -516,8 +516,9 @@ async def scrape_all_unibet(
         all_results: list[MatchScrapeResult] = []
         if known_events:
             all_results.extend(await scraper.scrape_known_events(known_events, report))
-        for league in leagues:
+        for i, league in enumerate(leagues):
             try:
+                refused_before = len(report.failed_leagues) if report is not None else 0
                 results = await scraper.scrape_league(
                     league,
                     wanted_kickoffs.get(league) if wanted_kickoffs is not None else None,
@@ -525,6 +526,21 @@ async def scrape_all_unibet(
                     skip_event_ids,
                 )
                 all_results.extend(results)
+                # Coupe-circuit : une liste refusée après ses reprises, c'est
+                # Unibet qui bloque le serveur pour l'instant. Inutile de lui
+                # redemander les 40 autres championnats dans le même passage
+                # (13 s d'attente chacun : le passage durait 3 min au lieu de
+                # 1 le 24/11, avec 256 refus en 30 min). Les matchs concernés
+                # sont repris 5 min plus tard.
+                if report is not None and len(report.failed_leagues) > refused_before:
+                    remaining = leagues[i + 1:]
+                    if remaining:
+                        report.failed_leagues.update(remaining)
+                        logger.warning(
+                            "UnibetLVSScraper: liste %s refusée, %d autre(s) championnat(s) "
+                            "reporté(s) au prochain passage", league, len(remaining),
+                        )
+                    break
             except Exception as exc:
                 if report is not None:
                     report.failed_leagues.add(league)
