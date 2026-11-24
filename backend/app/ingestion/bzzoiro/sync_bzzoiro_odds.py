@@ -52,6 +52,10 @@ async def sync_bzzoiro_odds(
             Fixture.kickoff_utc >= now,
             Fixture.kickoff_utc <= cutoff,
             Fixture.external_id.like("bzz_%"),
+            # Championnats et sélections historiques seulement : un appel par
+            # match, et tout l'Atlas est désormais au calendrier (630 matchs à
+            # 7 jours). Ces cotes ne sont qu'un repli, le xG vient de PS3838.
+            Fixture.league.notlike("comp\\_%", escape="\\"),
         )
     )
     fixtures = result.scalars().all()

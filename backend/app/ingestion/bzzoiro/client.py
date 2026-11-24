@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -16,6 +18,69 @@ logger = logging.getLogger(__name__)
 
 class PaginationTronqueeError(RuntimeError):
     """Le parcours des pages n'a pas ramene tout ce que l'API annonce."""
+
+
+class BzzoiroQuotaExhausted(RuntimeError):
+    """Quota quotidien Bzzoiro épuisé : plus aucune réponse avant minuit UTC."""
+
+
+# Quota quotidien. Le 24/11/2026 Bzzoiro a répondu « daily limit reached — the
+# free football API allows 7,500 requests a day, it resets at midnight UTC » :
+# plus de compos, de scores ni de statuts jusqu'à minuit. Tant que le quota est
+# épuisé, on ne rappelle plus l'API (chaque appel attendait 155 s de reprises
+# pour rien) ; les compteurs disent qui consomme quoi.
+_quota_exhausted_until: datetime | None = None
+_calls_day: str | None = None
+_calls_today: Counter[str] = Counter()
+
+
+def _endpoint(path: str) -> str:
+    """Famille d'un appel, pour le compteur : « events », « events/incidents »..."""
+    parts = [p for p in urlparse(path).path.split("/") if p and p not in ("api", "v2")]
+    return "/".join(p for p in parts if not p.isdigit()) or "?"
+
+
+def _count_call(path: str) -> None:
+    global _calls_day
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    if today != _calls_day:
+        _calls_day = today
+        _calls_today.clear()
+    _calls_today[_endpoint(path)] += 1
+
+
+def calls_today() -> dict[str, int]:
+    """Appels Bzzoiro de la journée UTC en cours (depuis le démarrage du worker), par famille."""
+    if _calls_day != datetime.now(UTC).strftime("%Y-%m-%d"):
+        return {}
+    return dict(_calls_today)
+
+
+def quota_exhausted() -> bool:
+    return _quota_exhausted_until is not None and datetime.now(UTC) < _quota_exhausted_until
+
+
+def _mark_quota_exhausted() -> None:
+    global _quota_exhausted_until
+    first = not quota_exhausted()
+    now = datetime.now(UTC)
+    _quota_exhausted_until = (now + timedelta(days=1)).replace(hour=0, minute=0, second=5, microsecond=0)
+    if first:
+        logger.error(
+            "Bzzoiro : quota quotidien épuisé, plus aucun appel avant minuit UTC. "
+            "Appels du jour par famille : %s", dict(_calls_today.most_common()),
+        )
+        try:
+            from app.alerts import alert_bg
+
+            alert_bg(
+                "🚨 <b>[Ev0] Quota Bzzoiro épuisé</b>\n\nPlus de compos, de scores ni de statuts "
+                "jusqu'à minuit UTC (1 h à Paris). Le xG (PS3838) et les cotes des books ne sont "
+                f"pas touchés.\nAppels du jour : {dict(_calls_today.most_common(6))}",
+                "incidents",
+            )
+        except Exception:
+            pass
 
 
 class BzzoiroClient:
@@ -39,9 +104,16 @@ class BzzoiroClient:
     async def get_page(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self._client:
             raise RuntimeError("Use BzzoiroClient as async context manager")
+        if quota_exhausted():
+            raise BzzoiroQuotaExhausted("quota quotidien Bzzoiro épuisé")
         for attempt in range(5):
             try:
+                _count_call(path)
                 response = await self._client.get(path, params=params or None)
+                if response.status_code == 429 and "daily limit" in response.text.lower():
+                    # Pas une limite de débit passagère : inutile de réessayer.
+                    _mark_quota_exhausted()
+                    raise BzzoiroQuotaExhausted("quota quotidien Bzzoiro épuisé")
                 if response.status_code in (429, 502, 503, 504):
                     wait = 2 ** attempt * 5  # 5s, 10s, 20s, 40s, 80s
                     logger.warning("HTTP %d on %s — retry %d in %ds", response.status_code, path, attempt + 1, wait)
@@ -54,6 +126,7 @@ class BzzoiroClient:
                 logger.warning("Timeout on %s — retry %d in %ds", path, attempt + 1, wait)
                 await asyncio.sleep(wait)
         # Final attempt — let it raise
+        _count_call(path)
         response = await self._client.get(path, params=params or None)
         response.raise_for_status()
         return response.json()
