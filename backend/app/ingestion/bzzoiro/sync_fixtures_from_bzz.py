@@ -310,7 +310,10 @@ async def sync_fixtures_from_bzz(
                 home_team=home_name,
                 away_team=away_name,
                 kickoff_utc=ev.event_date,
-                status="scheduled",
+                # Un match déjà reporté ou annulé chez Bzzoiro n'entre pas au
+                # calendrier comme « à venir ».
+                status={"postponed": "postponed", "canceled": "cancelled",
+                        "cancelled": "cancelled"}.get(ev.status or "", "scheduled"),
                 matchweek=ev.round_number,
                 home_bzz_team_id=ev.home_team_api_id,
                 away_bzz_team_id=ev.away_team_api_id,

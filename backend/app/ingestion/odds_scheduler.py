@@ -777,7 +777,24 @@ def _league_key(league_name: str | None) -> str | None:
         "uefa_super_cup": "uefa_super_cup",
         "uefa super cup": "uefa_super_cup",
     }
-    return mapping.get(league_name.lower())
+    key = mapping.get(league_name.lower())
+    if key:
+        return key
+    # Compétitions de la table commune : l'étiquette du match (« comp_<id> »)
+    # est la clé des scrapers, sauf compétition partagée (Liga MX).
+    from app.ingestion.book_competitions import SCRAPER_KEY_BY_LEAGUE
+
+    return SCRAPER_KEY_BY_LEAGUE.get(league_name)
+
+
+# Matchs lointains (coup d'envoi à plus de 6 h) rafraîchis par passage, au
+# plus. Tous les matchs créés ensemble (mise en ligne, synchro du calendrier)
+# deviennent « à rafraîchir » en même temps : sans plafond, un seul passage
+# lisait 600 matchs chez chaque book pendant 15 à 20 minutes, et les matchs
+# proches du coup d'envoi perdaient leur rafraîchissement toutes les 2 minutes.
+# Les matchs en trop restent « à rafraîchir » et passent aux tours suivants,
+# les plus anciens d'abord : le lot se disperse tout seul.
+_MAX_FAR_FIXTURES_PER_TICK = 30
 
 
 # Unibet a raté un match (liste refusée, lecture en erreur) : on réessaie ce
@@ -843,6 +860,7 @@ class OddsScheduler:
             league_by_fid[f.id] for f in targets
             if f.id in league_by_fid and f.id not in event_by_fid
         }
+        a_signaler: list[str] = []
         for league in asked:
             if league not in report.failed_leagues:
                 self._unibet_fail_streak.pop(league, None)
@@ -850,12 +868,17 @@ class OddsScheduler:
             streak = self._unibet_fail_streak.get(league, 0) + 1
             self._unibet_fail_streak[league] = streak
             if streak == _UNIBET_ALERT_AFTER:
-                alert_bg(
-                    f"⚠️ Unibet refuse la liste des matchs ({league}) depuis "
-                    f"{streak} passages d'affilée : les matchs pas encore accrochés "
-                    "de ce championnat n'ont plus de cotes Unibet fraîches.",
-                    "incidents",
-                )
+                a_signaler.append(league)
+        if a_signaler:
+            # UNE alerte par passage, quel que soit le nombre de championnats :
+            # si Unibet bloque le serveur, 40 championnats tombent ensemble.
+            alert_bg(
+                f"⚠️ Unibet refuse la liste des matchs depuis {_UNIBET_ALERT_AFTER} passages "
+                f"d'affilée sur {len(a_signaler)} championnat(s) : "
+                f"{', '.join(sorted(a_signaler)[:8])}{'…' if len(a_signaler) > 8 else ''}. "
+                "Leurs matchs pas encore accrochés n'ont plus de cotes Unibet fraîches.",
+                "incidents",
+            )
 
     async def tick(self, session: AsyncSession) -> tuple[int, list[int]]:
         """Process all fixtures due for a scrape. Returns (count_due, stored_fixture_ids)."""
@@ -909,6 +932,23 @@ class OddsScheduler:
             )
         ]
 
+        proches = [f for f in due if f.kickoff_utc - now <= _MID_FREQ_THRESHOLD]
+        lointains = [f for f in due if f.kickoff_utc - now > _MID_FREQ_THRESHOLD]
+        if len(lointains) > _MAX_FAR_FIXTURES_PER_TICK:
+            jamais = datetime.min.replace(tzinfo=UTC)
+
+            def _anciennete(f) -> datetime:
+                last = states[f.id].last_scraped_at if f.id in states else None
+                return last or jamais
+
+            lointains.sort(key=lambda f: (_anciennete(f), f.kickoff_utc))
+            logger.info(
+                "OddsScheduler.tick: %d matchs lointains à rafraîchir, %d traités ce passage",
+                len(lointains), _MAX_FAR_FIXTURES_PER_TICK,
+            )
+            lointains = lointains[:_MAX_FAR_FIXTURES_PER_TICK]
+        due = proches + lointains
+
         # Reprises Unibet : matchs dont la dernière lecture Unibet a raté et
         # dont le délai de reprise est écoulé. Seul Unibet est relu pour eux.
         due_ids = {f.id for f in due}
@@ -937,6 +977,9 @@ class OddsScheduler:
         # each tuple carries both the normalized names AND the canonical ids so
         # a side can match by strict / canonical / fuzzy independently.
         leagues_needed: set[str] = set()
+        # Horaires des matchs à rafraîchir, par championnat : Betclic et PMU ne
+        # lisent que ces matchs-là, pas tout le championnat.
+        due_kickoffs: dict[str, list[datetime]] = {}
         match_candidates: list[tuple[int, str, int | None, str, int | None]] = []
         unibet_targets = [*due, *unibet_retry]
         fixture_by_id = {f.id: f for f in unibet_targets}
@@ -957,6 +1000,7 @@ class OddsScheduler:
                     unibet_kickoffs.setdefault(league, []).append(f.kickoff_utc)
                 if f.id in due_ids:
                     leagues_needed.add(league)
+                    due_kickoffs.setdefault(league, []).append(f.kickoff_utc)
             match_candidates.append(
                 (
                     f.id,
@@ -1002,7 +1046,7 @@ class OddsScheduler:
             # rafraîchir. Unibet : ceux-là plus ses reprises.
             regular = bool(leagues_needed)
             betclic_results, unibet_results, pmu_results = await asyncio.gather(
-                scrape_betclic_leagues(list(leagues_needed)) if regular else _none(),
+                scrape_betclic_leagues(list(leagues_needed), due_kickoffs) if regular else _none(),
                 scrape_all_unibet(
                     list(unibet_kickoffs),
                     known_events=unibet_known,
@@ -1010,7 +1054,7 @@ class OddsScheduler:
                     report=unibet_report,
                     skip_event_ids=taken_event_ids,
                 ),
-                scrape_all_pmu(list(leagues_needed)) if regular else _none(),
+                scrape_all_pmu(list(leagues_needed), due_kickoffs) if regular else _none(),
                 return_exceptions=True,
             )
 
@@ -1063,9 +1107,16 @@ class OddsScheduler:
             # Unified per-team matcher: identity / token-containment / anchor /
             # fuzzy, each side graded, both sides required (except anchoring),
             # strict tier priority + unique-candidate guard.
+            # Seuls les matchs de la MÊME compétition sont candidats. Avec
+            # tout l'Atlas au calendrier (70 matchs par jour), comparer les
+            # noms d'un match de book à ceux de tous les championnats collait
+            # des cotes au mauvais match.
+            same_league = [
+                c for c in match_candidates if league_by_fid.get(c[0]) == r.league
+            ]
             fixture_id, reason, competing_fids, detail = _match_result_to_fixture(
                 r.home_team, r.away_team,
-                _candidates_near_kickoff(match_candidates, kickoff_by_fid, r.kickoff_utc),
+                _candidates_near_kickoff(same_league, kickoff_by_fid, r.kickoff_utc),
                 canonical_alias_map, canonical_names_by_id,
             )
             if fixture_id and reason == "anchor":

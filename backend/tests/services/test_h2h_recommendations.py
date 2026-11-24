@@ -194,7 +194,7 @@ class TestProcessScrapedFixturesH2h:
                 mock_res.scalars.return_value.all.return_value = []
             elif call_count == 4:  # SELECT PlayerOddsSnapshot (player pipeline)
                 mock_res.scalars.return_value.all.return_value = []
-            elif call_count == 5:  # SELECT MatchOddsSnapshot (h2h)
+            elif call_count in (5, 6):  # présence d'une cote 1N2 de book, puis SELECT MatchOddsSnapshot (h2h)
                 mock_res.scalars.return_value.all.return_value = h2h_snaps
             else:
                 mock_res.scalars.return_value.all.return_value = []

@@ -29,11 +29,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 
+from app.ingestion.book_competitions import PMU_DOMESTIC, PMU_NO_COUNTRY
 from app.ingestion.scrape_result import AVEC_SUB, SANS_SUB, MatchScrapeResult, PlayerOdds
 
 logger = logging.getLogger(__name__)
@@ -44,15 +45,31 @@ BOOKMAKER = "pmu"
 # Nombre de requêtes betoffer en parallèle (API publique, pas de rate limit strict)
 _CONCURRENCY = 8
 
-# Kambi group englishName → notre league key
+# Championnats nationaux : (pays, nom) → notre league key. Le pays est
+# OBLIGATOIRE : le flux PMU contient aussi « Ukraine > Premier League »,
+# « Wales > Premier League » et « Austria > Bundesliga », que le seul nom
+# rangeait en Premier League anglaise et en Bundesliga allemande (22 matchs
+# lus en « Premier League » au lieu de 10, le 24/11/2026).
+_KAMBI_DOMESTIC_MAP: dict[tuple[str, str], str] = {
+    ("France", "Ligue 1"):          "ligue_1",
+    ("England", "Premier League"):  "premier_league",
+    ("Germany", "Bundesliga"):      "bundesliga",
+    ("Germany", "1. Bundesliga"):   "bundesliga",
+    ("Spain", "La Liga"):           "la_liga",
+    ("Italy", "Serie A"):           "serie_a",
+    ("Italy", "Serie A TIM"):       "serie_a",
+    **PMU_DOMESTIC,   # table commune (clé « comp_<id> »)
+}
+
+# Noms de compétitions de sélections, reconnus même sous un groupe parent.
+_KAMBI_INTERNATIONAL_NAMES: frozenset[str] = frozenset({
+    "International Friendly Matches", "World Cup 2026", "UEFA Super Cup",
+})
+
+# Compétitions sans pays (rangées directement sous « Football ») :
+# englishName → notre league key.
 _KAMBI_LEAGUE_MAP: dict[str, str] = {
-    "Ligue 1":                       "ligue_1",
-    "Premier League":                "premier_league",
-    "Bundesliga":                    "bundesliga",
-    "1. Bundesliga":                 "bundesliga",
-    "La Liga":                       "la_liga",
-    "Serie A":                       "serie_a",
-    "Serie A TIM":                   "serie_a",
+    **PMU_NO_COUNTRY,  # table commune (clé « comp_<id> »)
     "Champions League":              "champions_league",
     "UEFA Champions League":         "champions_league",
     "International Friendly Matches": "friendly_international",
@@ -89,6 +106,17 @@ def player_variant(league: str) -> str:
     return AVEC_SUB if league in PMU_GARANTIE_COACHING_LEAGUES else SANS_SUB
 
 
+# Un match de la liste est lu s'il démarre à moins de ça d'un match attendu.
+_KICKOFF_WINDOW = timedelta(hours=1)
+
+
+def _parse_start(raw: str | None) -> datetime | None:
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")) if raw else None
+    except ValueError:
+        return None
+
+
 def _kambi_odds(raw: int | None) -> float | None:
     """Convertit les cotes Kambi (entier×1000) en décimal. Retourne None si invalide."""
     if not raw or raw <= 1000:
@@ -98,10 +126,26 @@ def _kambi_odds(raw: int | None) -> float | None:
 
 def _league_from_event(event: dict[str, Any]) -> str | None:
     """Déduit la league key depuis le path hiérarchique de l'événement Kambi."""
-    for part in reversed(event.get("path", [])):
-        league = _KAMBI_LEAGUE_MAP.get(part.get("englishName", ""))
+    names = [part.get("englishName", "") for part in event.get("path", [])]
+    if names and names[0] == "Football":
+        names = names[1:]
+    if not names:
+        return None
+    # Championnat national : la paire (pays, nom), où qu'elle soit dans le
+    # chemin (Kambi ajoute parfois une phase : « Belgium > Jupiler Pro League >
+    # Championship Round »).
+    for pays, nom in zip(names, names[1:]):
+        league = _KAMBI_DOMESTIC_MAP.get((pays, nom))
         if league:
             return league
+    # Compétition sans pays : directement sous « Football », phases comprises
+    # (« Champions League > League Phase »).
+    if names[0] in _KAMBI_LEAGUE_MAP:
+        return _KAMBI_LEAGUE_MAP[names[0]]
+    # Sélections : rangées sous un groupe (« International »...), nom sans homonyme.
+    for nom in names:
+        if nom in _KAMBI_INTERNATIONAL_NAMES:
+            return _KAMBI_LEAGUE_MAP[nom]
     return None
 
 
@@ -223,8 +267,12 @@ def _parse_betoffers(
 async def _fetch_events(
     client: httpx.AsyncClient,
     leagues: set[str],
+    wanted_kickoffs: dict[str, list[datetime]] | None = None,
 ) -> list[tuple[dict[str, Any], str]]:
     """Retourne la liste des événements Kambi filtrés sur les leagues cibles.
+
+    `wanted_kickoffs[ligue]` : ne garde que les matchs qui démarrent à moins
+    de 3 h d'un de ces horaires (None = tous).
 
     Returns: list of (event_dict, league_key)
     """
@@ -246,8 +294,14 @@ async def _fetch_events(
     for entry in data.get("events", []):
         ev = entry.get("event", {})
         league = _league_from_event(ev)
-        if league and league in leagues:
-            result.append((ev, league))
+        if not league or league not in leagues:
+            continue
+        if wanted_kickoffs is not None:
+            start = _parse_start(ev.get("start"))
+            wanted = wanted_kickoffs.get(league, [])
+            if start is not None and not any(abs(start - ko) <= _KICKOFF_WINDOW for ko in wanted):
+                continue
+        result.append((ev, league))
 
     return result
 
@@ -270,7 +324,10 @@ async def _fetch_betoffers(
             return []
 
 
-async def scrape_all_pmu(leagues: list[str]) -> list[MatchScrapeResult]:
+async def scrape_all_pmu(
+    leagues: list[str],
+    wanted_kickoffs: dict[str, list[datetime]] | None = None,
+) -> list[MatchScrapeResult]:
     """Scrape les cotes PMU pour les leagues données.
 
     Retourne une liste de MatchScrapeResult (fixture_id=-1, sera résolu par OddsScheduler).
@@ -279,7 +336,7 @@ async def scrape_all_pmu(leagues: list[str]) -> list[MatchScrapeResult]:
     scraped_at = datetime.now(UTC)
 
     async with httpx.AsyncClient(headers=_HEADERS, timeout=20) as client:
-        events = await _fetch_events(client, target)
+        events = await _fetch_events(client, target, wanted_kickoffs)
         if not events:
             logger.info("PMU: aucun événement trouvé pour les leagues %s", target)
             return []

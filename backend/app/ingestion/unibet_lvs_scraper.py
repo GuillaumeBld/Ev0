@@ -29,6 +29,7 @@ from typing import Any
 
 import httpx
 
+from app.ingestion.book_competitions import UNIBET_NODES
 from app.ingestion.scrape_result import (
     AVEC_SUB,
     SANS_SUB,
@@ -53,6 +54,8 @@ LVS_NODE_IDS: dict[str, int] = {
     "world_cup_2026":        59096156,
     "uefa_super_cup":        58545066,  # Supercoupe d'Europe (Coupes d'Europe) — buteur + passes décisives
 }
+# + toutes les compétitions de la table commune (clé « comp_<id> »).
+LVS_NODE_IDS.update(UNIBET_NODES)
 
 # markettypeId → market_type Ev0
 _MARKET_TYPES: dict[int, str] = {
@@ -83,7 +86,7 @@ _EVENT_SLEEP = 0.3
 _LIST_RETRY_DELAYS = (3.0, 10.0)
 
 # Un match de la liste est lu s'il démarre à moins de ça d'un match attendu.
-_KICKOFF_WINDOW = timedelta(hours=3)
+_KICKOFF_WINDOW = timedelta(hours=1)
 
 
 @dataclass
@@ -420,7 +423,7 @@ class UnibetLVSScraper:
         `skip_event_ids` : matchs déjà accrochés, relus par identifiant de leur
         côté — les relire ici doublerait les demandes.
 
-        `wanted_kickoffs` : ne lit que les matchs qui démarrent à moins de 3 h
+        `wanted_kickoffs` : ne lit que les matchs qui démarrent à moins d'1 h
         d'un de ces horaires (None = tous). Lire les 18 matchs d'un championnat
         pour en rafraîchir un seul, c'était 17 demandes inutiles à Unibet.
         """

@@ -99,9 +99,16 @@ function CalculatorInner() {
   // Matchs à venir et en cours (compétitions de clubs : une sélection n'a ni effectif ni stats).
   useEffect(() => {
     Promise.all([
-      // À partir d'aujourd'hui, sans plafond bas : 200 coupait déjà les derniers jours (360 matchs à venir le 23/11).
-      getFixtures({ status: 'scheduled', limit: 1000, from_date: dayKey(new Date().toISOString()), clubs_only: true }),
-      getFixtures({ status: 'live', limit: 50, clubs_only: true }),
+      // 14 jours à partir d'aujourd'hui. Toutes les compétitions de clubs de l'Atlas sont au
+      // calendrier : environ 70 matchs par jour, 1 000 sur la fenêtre.
+      getFixtures({
+        status: 'scheduled',
+        limit: 3000,
+        from_date: dayKey(new Date().toISOString()),
+        to_date: dayKey(new Date(Date.now() + 13 * 86_400_000).toISOString()),
+        clubs_only: true,
+      }),
+      getFixtures({ status: 'live', limit: 300, clubs_only: true }),
     ])
       .then(([sched, live]) => {
         const seen = new Set<number>()
@@ -117,7 +124,13 @@ function CalculatorInner() {
         const days = Array.from(new Set(merged.map((f) => dayKey(f.kickoff_utc)))).sort()
         const d = sel ? dayKey(sel.kickoff_utc) : days.find((k) => k >= today) ?? days[0] ?? null
         setDay(d)
-        const first = sel ?? merged.filter((f) => dayKey(f.kickoff_utc) === d).sort((a, b) => compName(a).localeCompare(compName(b), 'fr'))[0]
+        const first = sel ?? merged
+          .filter((f) => dayKey(f.kickoff_utc) === d)
+          .sort(
+            (a, b) =>
+              (a.competition_rank ?? Number.MAX_SAFE_INTEGER) - (b.competition_rank ?? Number.MAX_SAFE_INTEGER) ||
+              compName(a).localeCompare(compName(b), 'fr'),
+          )[0]
         if (first) setOpen({ [compName(first)]: true })
       })
       .catch(() => setFixturesError(true))

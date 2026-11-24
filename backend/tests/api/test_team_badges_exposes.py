@@ -52,4 +52,5 @@ def test_badge_fields_sans_ids():
     assert f == {
         "home_badge": None, "away_badge": None,
         "competition_api_id": None, "competition_name": None,
+        "competition_rank": None,
     }

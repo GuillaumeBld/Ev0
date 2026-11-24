@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.atlas_source import TeamBadge, team_badges
-from app.services.competitions import competition_name
+from app.services.competitions import competition_name, competition_rank
 
 
 class TeamBadgeOut(BaseModel):
@@ -40,6 +40,8 @@ class MatchBadges(BaseModel):
     away_badge: TeamBadgeOut | None = None
     competition_api_id: int | None = None
     competition_name: str | None = None
+    # Rang d'importance dans l'Atlas (1 = la plus haute) : ordre des groupes du calculateur.
+    competition_rank: int | None = None
 
 
 def badge_fields(
@@ -54,6 +56,7 @@ def badge_fields(
         "away_badge": badge_out(badges.get(away_bzz_team_id)) if away_bzz_team_id is not None else None,
         "competition_api_id": competition_api_id,
         "competition_name": competition_name(competition_api_id),
+        "competition_rank": competition_rank(competition_api_id),
     }
 
 

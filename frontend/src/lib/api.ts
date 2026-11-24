@@ -49,6 +49,8 @@ export interface MatchBadges {
   away_badge?: TeamBadgeOut | null
   competition_api_id?: number | null
   competition_name?: string | null
+  /** Rang d'importance de la compétition (1 = la plus haute). */
+  competition_rank?: number | null
 }
 
 export interface Recommendation extends MatchBadges {
