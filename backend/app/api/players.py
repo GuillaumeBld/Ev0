@@ -21,7 +21,7 @@ from app.ingestion.bzzoiro.constants import (
     TARGET_LEAGUE_API_ID_LIST,
     TARGET_LEAGUE_INTERNAL_ID_LIST,
 )
-from app.ingestion.bzzoiro.league_registry import LEAGUE_REGISTRY, TIER_SELECTION
+from app.ingestion.bzzoiro.league_registry import KIND_SELECTION, LEAGUE_REGISTRY, TIER_SELECTION
 from app.ingestion.competition_identity import tm_code_to_league_api_id
 from app.models.bzzoiro import (
     BzzEvent,
@@ -31,6 +31,7 @@ from app.models.bzzoiro import (
     BzzPlayerSeasonStat,
     BzzTeam,
 )
+from app.models.leagues import League
 from app.models.player_career import PlayerCareerSeason
 from app.models.selection_stats import PlayerSelectionSeasonStat
 from app.pricing.career_blend import blended_rhythm
@@ -779,6 +780,12 @@ async def list_player_teams(
     return [{"api_id": api_id, "name": name} for api_id, name in rows]
 
 
+def _selection_league_ids_subq():
+    """Compétitions de sélection nationale : `leagues.kind = 'selection'`
+    (référentiel en base, qui couvre aussi les ids hors LEAGUE_REGISTRY)."""
+    return select(League.id).where(League.kind == KIND_SELECTION)
+
+
 # ---------------------------------------------------------------------------
 # Legacy export endpoint — kept for backwards compatibility
 # ---------------------------------------------------------------------------
@@ -957,6 +964,11 @@ async def list_players(
     stats_filter = [
         BzzPlayerSeasonStat.player_api_id.in_(player_id_subq),
         BzzPlayerSeasonStat.season == season,
+        # Tableau des effectifs = stats EN CLUB : les matchs en sélection
+        # (Ligue des nations, qualifs, amicaux…) ont leur propre onglet dans la
+        # fiche. Les compter ici prêtait au club un xG venu de la sélection
+        # (Allsvenskan sans xG chez Bzzoiro mais xG affiché, 24/11).
+        BzzPlayerSeasonStat.league_api_id.not_in(_selection_league_ids_subq()),
     ]
     if restrict_stats_league is not None:
         # Compétition internationale de clubs : n'afficher que les stats de
@@ -975,6 +987,7 @@ async def list_players(
         stats_prec_filter = [
             BzzPlayerSeasonStat.player_api_id.in_(player_id_subq),
             BzzPlayerSeasonStat.season == saison_prec,
+            BzzPlayerSeasonStat.league_api_id.not_in(_selection_league_ids_subq()),
         ]
         if restrict_stats_league is not None:
             stats_prec_filter.append(
