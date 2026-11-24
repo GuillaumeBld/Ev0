@@ -147,6 +147,10 @@ class ErrorAlertHandler(logging.Handler):
         try:
             if record.name.startswith(self._IGNORED):
                 return
+            # Quota Bzzoiro épuisé : une alerte dédiée est déjà partie, les
+            # échecs de chaque job jusqu'à minuit n'apprennent rien de plus.
+            if "quota quotidien Bzzoiro" in record.getMessage():
+                return
 
             now = time.monotonic()
             self._sent_at = [t for t in self._sent_at if now - t < self._WINDOW_S]

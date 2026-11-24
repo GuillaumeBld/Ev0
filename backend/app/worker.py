@@ -1350,9 +1350,11 @@ async def job_sync_bzzoiro_events(
     try:
         from app.services.competitions import SYNCED_COMPETITION_IDS
 
-        ligues = (
-            sorted(SYNCED_COMPETITION_IDS) if league_internal_ids is None
-            else sorted(league_internal_ids)
+        # Compétitions historiques d'abord : si le quota Bzzoiro s'épuise en
+        # cours de passage, ce sont elles qui auront été relues.
+        ligues = sorted(
+            SYNCED_COMPETITION_IDS if league_internal_ids is None else league_internal_ids,
+            key=lambda c: (c not in _COMPETITIONS_APPROCHE_10_MIN, c),
         )
         async with async_session() as session, BzzoiroClient(settings.bzzoiro_api_key) as client:
             result = await sync_events(
@@ -1675,6 +1677,13 @@ _APPROCHE_AVANT = timedelta(hours=3)
 _APPROCHE_APRES = timedelta(hours=3)
 
 
+# Compétitions relues en premier : celles dont le calculateur lit les compos
+# officielles, plus les coupes d'Europe.
+_COMPETITIONS_APPROCHE_10_MIN: frozenset[int] = frozenset(
+    TARGET_LEAGUE_INTERNAL_ID_LIST + INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST + [8, 83]
+)
+
+
 async def competitions_en_approche(session) -> list[int]:
     """Compétitions qui ont un match proche du coup d'envoi ou en cours."""
     from app.models.fixtures import Fixture
@@ -1797,6 +1806,15 @@ async def job_sync_fixture_status() -> None:
             updated = await sync_fixture_status_from_bzz(session)
         if updated:
             logger.info("job_sync_fixture_status: %d fixtures updated", updated)
+        # Suivi du quota Bzzoiro (7 500 appels par jour) : qui consomme quoi.
+        from app.ingestion.bzzoiro.client import calls_today
+
+        appels = calls_today()
+        if appels:
+            logger.info(
+                "Bzzoiro : %d appels depuis minuit UTC (ou le démarrage) — %s",
+                sum(appels.values()), dict(sorted(appels.items(), key=lambda kv: -kv[1])[:8]),
+            )
     except Exception as exc:
         logger.exception("job_sync_fixture_status failed: %s", exc)
 

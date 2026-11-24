@@ -250,6 +250,13 @@ async def sync_incidents(
             SELECT f.id FROM fixtures f
             WHERE f.status = 'finished'
               AND f.external_id LIKE 'bzz\\_%'
+              -- Seulement les matchs où un pari peut être réglé (cotes
+              -- joueur ou reco) : un appel par match, et le quota Bzzoiro
+              -- est de 7 500 par jour pour 70 matchs terminés par jour.
+              AND (
+                  EXISTS (SELECT 1 FROM player_odds_snapshots p WHERE p.fixture_id = f.id)
+                  OR EXISTS (SELECT 1 FROM recommendations r WHERE r.fixture_id = f.id)
+              )
               AND NOT EXISTS (
                   SELECT 1 FROM match_events e2
                   WHERE e2.fixture_id = f.id

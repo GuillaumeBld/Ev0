@@ -56,10 +56,10 @@ async def test_job_sync_bzzoiro_events_calls_sync():
         assert mock_sync.call_count == 1
         appel = mock_sync.call_args_list[0]
         assert appel.args == (mock_session, mock_client)
-        assert appel.kwargs == {
-            "days_back": 3, "days_forward": 30,
-            "league_internal_ids": sorted(SYNCED_COMPETITION_IDS),
-        }
+        assert appel.kwargs["days_back"] == 3 and appel.kwargs["days_forward"] == 30
+        assert sorted(appel.kwargs["league_internal_ids"]) == sorted(SYNCED_COMPETITION_IDS)
+        # Compétitions historiques en tête : relues même si le quota s'épuise en route.
+        assert set(appel.kwargs["league_internal_ids"][:6]) <= {1, 3, 4, 5, 6, 7, 8}
         # MLS, Suisse, sélections : toutes relues toutes les 6 h, plus une fois par jour.
         assert {18, 15, 27} <= set(appel.kwargs["league_internal_ids"])
 
