@@ -1677,8 +1677,8 @@ _APPROCHE_AVANT = timedelta(hours=3)
 _APPROCHE_APRES = timedelta(hours=3)
 
 
-# Compétitions relues toutes les 10 min à l'approche d'un match : celles dont
-# le calculateur lit les compos officielles, plus les coupes d'Europe.
+# Compétitions relues en premier : celles dont le calculateur lit les compos
+# officielles, plus les coupes d'Europe.
 _COMPETITIONS_APPROCHE_10_MIN: frozenset[int] = frozenset(
     TARGET_LEAGUE_INTERNAL_ID_LIST + INTERNATIONAL_LEAGUE_INTERNAL_ID_LIST + [8, 83]
 )
@@ -1717,11 +1717,6 @@ async def job_sync_bzzoiro_events_approche() -> None:
     try:
         async with async_session() as session:
             ligues = await competitions_en_approche(session)
-        # Quota Bzzoiro (7 500 appels par jour) : les compétitions historiques,
-        # dont on lit les compos, gardent les 10 minutes ; les autres ne sont
-        # relues qu'une fois sur trois (toutes les 30 minutes).
-        if (datetime.now(UTC).minute // 10) % 3 != 0:
-            ligues = [c for c in ligues if c in _COMPETITIONS_APPROCHE_10_MIN]
         if not ligues:
             return
         # Seulement les compétitions qui jouent, sur 3 jours : avec tout
@@ -3130,11 +3125,10 @@ def create_scheduler() -> AsyncIOScheduler:
         replace_existing=True,
     )
 
-    # Bzzoiro odds sync — toutes les 6 heures (un appel par match : à l'heure,
-    # c'était 3 000 appels par jour sur un quota de 7 500, pour un simple repli).
+    # Bzzoiro odds sync — toutes les heures
     scheduler.add_job(
         job_sync_bzzoiro_odds,
-        trigger=IntervalTrigger(hours=6),
+        trigger=IntervalTrigger(hours=1),
         id="sync_bzzoiro_odds",
         replace_existing=True,
         max_instances=1,

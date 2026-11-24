@@ -536,29 +536,16 @@ async def test_job_approche_ne_synchronise_pas_sans_match_proche():
 async def test_job_approche_synchronise_quand_un_match_approche():
     from app.worker import job_sync_bzzoiro_events_approche
 
-    class _Horloge(datetime):
-        minute_voulue = 0
-
-        @classmethod
-        def now(cls, tz=None):
-            return datetime(2026, 11, 28, 15, cls.minute_voulue, tzinfo=tz)
-
-    async def _passe(minute: int):
-        _Horloge.minute_voulue = minute
-        with patch("app.worker.settings") as mock_settings, patch(
-            "app.worker.competitions_en_approche", new=AsyncMock(return_value=[6, 18])
-        ), patch(
-            "app.worker.job_sync_bzzoiro_events", new=AsyncMock()
-        ) as mock_sync, patch("app.worker.datetime", _Horloge):
-            mock_settings.bzzoiro_api_key = "cle"
-            await job_sync_bzzoiro_events_approche()
-        return mock_sync
+    with patch("app.worker.settings") as mock_settings, patch(
+        "app.worker.competitions_en_approche", new=AsyncMock(return_value=[6, 18])
+    ), patch(
+        "app.worker.job_sync_bzzoiro_events", new=AsyncMock()
+    ) as mock_sync:
+        mock_settings.bzzoiro_api_key = "cle"
+        await job_sync_bzzoiro_events_approche()
 
     # Seulement les compétitions qui jouent, sur 3 jours — pas tout le calendrier.
-    (await _passe(5)).assert_awaited_once_with([6, 18], days_back=1, days_forward=2)
-    # Quota Bzzoiro : la MLS (18) n'est relue qu'une fois sur trois, la Ligue 1 (6) toutes les 10 min.
-    (await _passe(15)).assert_awaited_once_with([6], days_back=1, days_forward=2)
-    (await _passe(35)).assert_awaited_once_with([6, 18], days_back=1, days_forward=2)
+    mock_sync.assert_awaited_once_with([6, 18], days_back=1, days_forward=2)
 
 
 async def test_job_approche_sans_cle_ne_fait_rien():
