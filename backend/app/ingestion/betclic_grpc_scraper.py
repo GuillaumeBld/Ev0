@@ -47,6 +47,10 @@ BETCLIC_COMPETITION_IDS: dict[str, int] = {
     "serie_a":               6,
     "champions_league":      8,
     "europa_league":         3453,
+    "conference_league":     28946,
+    "saudi_pro_league":      4684,   # « Arabie Saoudite PL »
+    "romania_superliga":     552,    # « Roumanie Liga 1 »
+    "nations_league_uefa":   22676,
     "ligue_2":               19,
     "coupe_de_france":       36,
     "friendly_international": 79,

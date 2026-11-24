@@ -32,7 +32,9 @@ def test_noms():
 
 def test_perimetre_de_synchro():
     # 6 championnats + internationales + Europa League (8) + Conference League (83)
-    assert SYNCED_COMPETITION_IDS == {1, 3, 4, 5, 6, 7, 27, 31, 64, 65, 90, 8, 83}
+    # + Saudi Pro League (17) + Superliga roumaine (23)
+    assert SYNCED_COMPETITION_IDS == {1, 3, 4, 5, 6, 7, 27, 31, 64, 65, 90, 8, 83, 17, 23}
+    assert league_key_for(17) == "comp_17" and league_key_for(23) == "comp_23"
     assert league_key_for(83) == "comp_83"
     assert competition_name(83) == "Conference League"
 

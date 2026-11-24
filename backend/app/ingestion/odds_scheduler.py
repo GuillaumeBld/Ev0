@@ -766,6 +766,12 @@ def _league_key(league_name: str | None) -> str | None:
         "la liga": "la_liga", "la_liga": "la_liga",
         "serie a": "serie_a", "serie_a": "serie_a",
         "champions league": "champions_league", "champions_league": "champions_league",
+        # Compétitions sans étiquette historique : la clé du match est
+        # « comp_<identifiant Atlas> » (services/competitions.league_key_for).
+        "comp_8": "europa_league", "europa_league": "europa_league",
+        "comp_83": "conference_league", "conference_league": "conference_league",
+        "comp_17": "saudi_pro_league", "saudi_pro_league": "saudi_pro_league",
+        "comp_23": "romania_superliga", "romania_superliga": "romania_superliga",
         "friendly_international": "friendly_international",
         "friendly international": "friendly_international",
         "world_cup_2026": "world_cup_2026",

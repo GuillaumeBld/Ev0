@@ -26,6 +26,11 @@ for _cle, _id in INTERNATIONAL_LEAGUE_INTERNAL_IDS.items():
 # Etiquette derivee : comp_8 / comp_83 (pas d'etiquette historique).
 EUROPA_LEAGUE_COMPETITION_API_ID: int = 8
 CONFERENCE_LEAGUE_COMPETITION_API_ID: int = 83
+# Deja au calendrier et pricees (matchs crees avant le 14/11), mais hors
+# synchro : leurs statuts restaient figes (9 matchs reportes passes a la main
+# le 23/11) et aucun nouveau match n'arrivait.
+SAUDI_PRO_LEAGUE_COMPETITION_API_ID: int = 17
+ROMANIA_SUPERLIGA_COMPETITION_API_ID: int = 23
 
 # Perimetre de synchro du calendrier : 6 championnats + internationales +
 # Europa League + Conference League. L'elargissement a toutes les competitions
@@ -33,6 +38,8 @@ CONFERENCE_LEAGUE_COMPETITION_API_ID: int = 83
 SYNCED_COMPETITION_IDS: frozenset[int] = frozenset(_ETIQUETTE_HISTORIQUE) | {
     EUROPA_LEAGUE_COMPETITION_API_ID,
     CONFERENCE_LEAGUE_COMPETITION_API_ID,
+    SAUDI_PRO_LEAGUE_COMPETITION_API_ID,
+    ROMANIA_SUPERLIGA_COMPETITION_API_ID,
 }
 
 
