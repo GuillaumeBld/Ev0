@@ -107,3 +107,60 @@ PMU_NO_COUNTRY: dict[str, str] = {
     m.pmu[0]: book_key(cid) for cid, m in BOOK_COMPETITIONS.items()
     if m.pmu is not None and len(m.pmu) == 1
 }
+
+
+# ── Liste ANJ des supports de paris autorisés (football masculin de clubs) ────
+#
+# Un book français ne peut proposer que les compétitions inscrites sur la liste
+# de l'Autorité nationale des jeux. Source : « Compétitions et manifestations
+# sportives supports de paris autorisés », annexe 1 de la décision ANJ
+# 2026-159 (https://ressources.anj.fr/sport/competitions_sportives_support_paris_autorises.pdf),
+# lue le 24/11/2026. Clé : identifiant Atlas de la compétition.
+#
+# Une compétition absente de la liste n'aura JAMAIS de cotes chez Betclic,
+# Unibet ou PMU : ce n'est pas un trou du scraper. Elle garde son xG (PS3838)
+# dans le calendrier.
+
+# Compétitions de l'Atlas qui ne sont PAS sur la liste ANJ.
+ANJ_NON_AUTORISEES: frozenset[int] = frozenset({
+    86, 87, 91,        # Angleterre : League One, League Two, National League
+    101, 102, 103,     # Italie : Serie C (trois groupes)
+    82, 95,            # Portugal : Liga 3, Campeonato de Portugal
+    97,                # Belgique : Challenger Pro League
+    108,               # Pays-Bas : Eerste Divisie
+    106,               # Suède : Superettan
+    107,               # Turquie : 1. Lig
+    34,                # Brésil : Série B
+    28,                # Nigeria : NPFL
+    98,                # Angola : Girabola
+    47,                # Tunisie : Ligue 1
+    113,               # Pérou : Liga 1
+    57,                # USA : USL Championship
+    70,                # Australie : NPL Queensland
+    79,                # Matchs amicaux de clubs
+    46, 110, 48, 51, 56, 81,   # Coupes : Pologne, Turquie, Tunisie, Japon, Finlande, Colombie
+})
+
+# Compétitions autorisées seulement à partir d'une phase (libellé ANJ).
+ANJ_PHASES_AUTORISEES: dict[int, str] = {
+    44: "à partir des 32es de finale",                    # Coupe de France
+    43: "à partir des 32es de finale",                    # DFB-Pokal
+    42: "à partir des 8es de finale",                     # Coppa Italia
+    41: "à partir des 16es de finale",                    # Copa del Rey
+    39: "à partir des 32es de finale (third round proper)",  # FA Cup
+    92: "à partir du 3e tour",                            # Taça de Portugal
+    35: "à partir des demi-finales",                      # Copa do Brasil
+    33: "à partir du tournoi final",                      # Copa Sudamericana
+    29: "à partir du tournoi final",                      # Ligue des champions CAF
+    105: "barrages d'accession seulement",                # Ligue 3 (France)
+    83: "sauf le 1er tour de qualification",              # Conference League
+}
+
+
+def anj_status(competition_api_id: int) -> str:
+    """« autorisée », « restreinte » (phase) ou « non autorisée » chez les books français."""
+    if competition_api_id in ANJ_NON_AUTORISEES:
+        return "non autorisée"
+    if competition_api_id in ANJ_PHASES_AUTORISEES:
+        return "restreinte"
+    return "autorisée"
