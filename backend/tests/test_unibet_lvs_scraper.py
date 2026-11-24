@@ -409,14 +409,27 @@ class TestRepriseEtIdentifiant:
         assert not report.failed_events and not report.gone_events
 
     @pytest.mark.asyncio
-    async def test_match_disparu_et_lecture_en_erreur_distingues(self):
+    async def test_match_disparu_panne_et_marches_fermes_distingues(self):
         from app.ingestion.unibet_lvs_scraper import UnibetReport
 
-        s, _ = self._scraper([_reponse(404), _reponse(403), _reponse(200, {})])
+        autre_match = {"e99": {"a": "X", "b": "Y", "start": "3011301945"}}
+        sans_marche = {"e5": {"a": "PSG", "b": "Marseille", "start": "3011301945"}}
+        s, _ = self._scraper([
+            _reponse(404), _reponse(403), _reponse(200, {}),
+            _reponse(200, autre_match), _reponse(200, sans_marche),
+        ])
         report = UnibetReport()
         out = await s.scrape_known_events(
-            {1: (42, "ligue_1"), 2: (43, "ligue_1"), 3: (44, "ligue_1")}, report,
+            {n: (40 + n, "ligue_1") for n in (1, 2, 3, 4, 5)}, report,
         )
         assert out == []
-        assert report.gone_events == {1, 3}     # introuvable / réponse sans le match
-        assert report.failed_events == {2}      # refus passager : à réessayer
+        assert report.gone_events == {1, 4}     # introuvable / réponse sans ce match
+        assert report.failed_events == {2, 3}   # refus ou réponse vide : à réessayer
+        # e5 : le match est là, ses marchés pas encore — on garde l'accrochage.
+
+    @pytest.mark.asyncio
+    async def test_match_deja_accroche_pas_relu_par_la_liste(self):
+        s, client = self._scraper([_reponse(200, _LISTE), _reponse(200, _MATCH)])
+        ko = datetime(2030, 11, 30, 19, 45, tzinfo=timezone.utc)
+        out = await s.scrape_league("ligue_1", [ko], None, {1})
+        assert out == [] and client.get.await_count == 1   # la liste seule

@@ -788,6 +788,8 @@ _UNIBET_ALERT_AFTER = 3
 # Un match relu par identifiant doit démarrer à peu près quand on l'attend ;
 # au-delà, l'identifiant ne désigne plus ce match et l'accrochage est défait.
 _UNIBET_ANCHOR_MAX_DRIFT = timedelta(hours=36)
+# Écart d'horaire maximal entre le match et l'événement Unibet pour poser l'accrochage.
+_UNIBET_ANCHOR_KICKOFF_TOLERANCE = timedelta(hours=2)
 
 
 class OddsScheduler:
@@ -972,6 +974,17 @@ class OddsScheduler:
         # pouvoir tourner meme quand betclic/unibet/pmu n'ont rien a scraper.
         all_results = []
         unibet_report = UnibetReport()
+        # Identifiants Unibet déjà posés sur un match, quel qu'il soit : un
+        # identifiant ne sert jamais deux fois (contrainte unique en base), et
+        # un match déjà accroché n'est pas relu une seconde fois par la liste.
+        taken_event_ids = set(unibet_known)
+        if unibet_kickoffs:
+            taken_event_ids |= {
+                e for e in (await session.execute(
+                    select(Fixture.unibet_event_id).where(Fixture.unibet_event_id.isnot(None))
+                )).scalars().all()
+                if isinstance(e, int)
+            }
         if not leagues_needed and not unibet_known and not unibet_kickoffs:
             logger.warning("OddsScheduler.tick: no recognized leagues in due fixtures")
         else:
@@ -995,6 +1008,7 @@ class OddsScheduler:
                     known_events=unibet_known,
                     wanted_kickoffs=unibet_kickoffs,
                     report=unibet_report,
+                    skip_event_ids=taken_event_ids,
                 ),
                 scrape_all_pmu(list(leagues_needed)) if regular else _none(),
                 return_exceptions=True,
@@ -1026,16 +1040,6 @@ class OddsScheduler:
         stored_fixture_ids: set[int] = set()
         unibet_fids_ok: set[int] = set()
         anchored_fids = {fid for fid, _ in unibet_known.values()}
-        # Identifiants Unibet déjà posés sur un match, quel qu'il soit : un
-        # identifiant ne sert jamais deux fois (contrainte unique en base).
-        taken_event_ids = set(unibet_known)
-        if unibet_kickoffs:
-            taken_event_ids |= {
-                e for e in (await session.execute(
-                    select(Fixture.unibet_event_id).where(Fixture.unibet_event_id.isnot(None))
-                )).scalars().all()
-                if isinstance(e, int)
-            }
         for r in all_results:
             # Unibet, match déjà accroché : le résultat porte son fixture_id,
             # aucun rapprochement par noms.
@@ -1094,10 +1098,14 @@ class OddsScheduler:
                 # Premier rapprochement réussi : on retient l'identifiant
                 # Unibet du match pour le relire directement ensuite.
                 fx = fixture_by_id.get(fixture_id)
+                # Seulement si l'horaire colle : aller et retour d'une même
+                # affiche ne doivent jamais échanger leurs identifiants.
                 if (
                     fx is not None and r.book_event_id is not None
                     and fixture_id not in anchored_fids
                     and r.book_event_id not in taken_event_ids
+                    and r.kickoff_utc is not None
+                    and abs(r.kickoff_utc - fx.kickoff_utc) <= _UNIBET_ANCHOR_KICKOFF_TOLERANCE
                 ):
                     fx.unibet_event_id = r.book_event_id
                     anchored_fids.add(fixture_id)

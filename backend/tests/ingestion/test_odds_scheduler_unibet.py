@@ -104,7 +104,7 @@ async def test_liste_refusee_reprise_cinq_minutes_plus_tard_unibet_seul():
     fx = _fixture(1)
     scheduler = OddsScheduler()
 
-    async def liste_refusee(leagues, *, known_events, wanted_kickoffs, report):
+    async def liste_refusee(leagues, *, known_events, wanted_kickoffs, report, **_):
         report.failed_leagues.update(leagues)
         return []
 
@@ -143,7 +143,7 @@ async def test_match_disparu_l_accrochage_est_defait():
     fx = _fixture(1, unibet_event_id=3377083)
     scheduler = OddsScheduler()
 
-    async def disparu(leagues, *, known_events, wanted_kickoffs, report):
+    async def disparu(leagues, *, known_events, wanted_kickoffs, report, **_):
         report.gone_events.update(known_events)
         return []
 
@@ -176,7 +176,7 @@ async def test_alerte_apres_trois_listes_refusees_d_affilee():
     fx = _fixture(1)
     scheduler = OddsScheduler()
 
-    async def liste_refusee(leagues, *, known_events, wanted_kickoffs, report):
+    async def liste_refusee(leagues, *, known_events, wanted_kickoffs, report, **_):
         report.failed_leagues.update(leagues)
         return []
 
@@ -188,3 +188,12 @@ async def test_alerte_apres_trois_listes_refusees_d_affilee():
     assert "ligue_1" in alerte.call_args.args[0]
     assert alerte.call_args.args[1] == "incidents"
     assert odds_scheduler._UNIBET_ALERT_AFTER == 3
+
+
+async def test_aller_et_retour_l_identifiant_n_est_pose_que_si_l_horaire_colle():
+    """Seul le retour est attendu ; Unibet renvoie l'aller, 7 jours plus tôt."""
+    retour = _fixture(1, home="Marseille", away="Paris Saint-Germain")
+    aller = _unibet(retour, 700, home="PSG", away="Marseille")
+    aller.kickoff_utc = retour.kickoff_utc - timedelta(days=7)
+    await _tick(OddsScheduler(), _session([retour]), AsyncMock(return_value=[aller]))
+    assert retour.unibet_event_id is None
