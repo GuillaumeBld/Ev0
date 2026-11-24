@@ -23,7 +23,8 @@ import argparse
 import asyncio
 import logging
 import re
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -75,6 +76,23 @@ _MARKET_TYPES: dict[int, str] = {
 _GOALSCORER_VARIANTS: dict[int, str] = {100002264: AVEC_SUB, 31: SANS_SUB}
 
 _EVENT_SLEEP = 0.3
+
+# Unibet refuse par moments la LISTE des matchs d'un championnat (403, environ
+# 4 demandes sur 10 le 24/11/2026) alors que la lecture d'un match précis
+# passe. Deux reprises espacées avant d'abandonner la liste pour ce passage.
+_LIST_RETRY_DELAYS = (3.0, 10.0)
+
+# Un match de la liste est lu s'il démarre à moins de ça d'un match attendu.
+_KICKOFF_WINDOW = timedelta(hours=3)
+
+
+@dataclass
+class UnibetReport:
+    """Ce qui a raté pendant un passage, pour que le planificateur réessaie
+    vite au lieu d'attendre le prochain passage normal (jusqu'à 2 h)."""
+    failed_leagues: set[str] = field(default_factory=set)   # liste refusée, reprises comprises
+    failed_events: set[int] = field(default_factory=set)    # lecture d'un match en erreur
+    gone_events: set[int] = field(default_factory=set)      # match disparu chez Unibet
 
 _HEADERS = {
     "User-Agent": (
@@ -149,18 +167,35 @@ class UnibetLVSScraper:
 
     async def fetch_event_ids(self, league: str) -> list[tuple[int, str, str, datetime | None]]:
         """Retourne (event_id, home, away, kickoff) pour les matchs à venir d'une ligue."""
+        return await self._fetch_event_list(league) or []
+
+    async def _fetch_event_list(
+        self, league: str,
+    ) -> list[tuple[int, str, str, datetime | None]] | None:
+        """Comme fetch_event_ids, mais None quand Unibet a refusé la liste
+        (reprises comprises) : « liste refusée » n'est pas « aucun match »."""
         node_id = LVS_NODE_IDS.get(league)
         if not node_id:
             logger.warning("UnibetLVSScraper: ligue inconnue %s", league)
             return []
 
         url = f"{LVS_BASE}/lvs-api/next/50/p{node_id}?{_LIST_PARAMS}"
-        try:
-            r = await self._client.get(url, headers=self._auth_headers(), timeout=15)
-            r.raise_for_status()
-        except Exception as exc:
-            logger.warning("UnibetLVSScraper: fetch_event_ids %s: %s", league, exc)
-            return []
+        r = None
+        for attempt, delay in enumerate((0.0, *_LIST_RETRY_DELAYS)):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                r = await self._client.get(url, headers=self._auth_headers(), timeout=15)
+                r.raise_for_status()
+                break
+            except Exception as exc:
+                logger.warning(
+                    "UnibetLVSScraper: liste %s refusée (essai %d/%d): %s",
+                    league, attempt + 1, len(_LIST_RETRY_DELAYS) + 1, exc,
+                )
+                r = None
+        if r is None:
+            return None
 
         items = r.json().get("items", {})
         results = []
@@ -322,9 +357,87 @@ class UnibetLVSScraper:
             assist=list(selections_assist.values()),
         )
 
-    async def scrape_league(self, league: str) -> list[MatchScrapeResult]:
-        """Scrape une ligue : liste événements → marchés → MatchScrapeResult."""
-        events = await self.fetch_event_ids(league)
+    async def _scrape_event(
+        self, event_id: int, league: str, label: str, report: UnibetReport | None = None,
+    ) -> MatchScrapeResult | None:
+        """Lit un match par son identifiant Unibet. None si rien d'exploitable ;
+        la cause (erreur passagère ou match disparu) est notée dans `report`."""
+        url = f"{LVS_BASE}/lvs-api/ff/e{event_id}?{_LIST_PARAMS}"
+        try:
+            r = await self._client.get(url, headers=self._auth_headers(), timeout=15)
+            if r.status_code == 404:
+                if report is not None:
+                    report.gone_events.add(event_id)
+                logger.warning("UnibetLVSScraper: match e%d introuvable (%s)", event_id, label)
+                return None
+            r.raise_for_status()
+            items = r.json().get("items", {})
+        except Exception as exc:
+            if report is not None:
+                report.failed_events.add(event_id)
+            logger.warning("UnibetLVSScraper: ff/e%d échoué (%s): %s", event_id, label, exc)
+            return None
+
+        if not items:
+            # Réponse vide : on ne sait rien du match. Panne à réessayer, pas
+            # une disparition (sinon une réponse vide défait l'accrochage).
+            if report is not None:
+                report.failed_events.add(event_id)
+            logger.warning("UnibetLVSScraper: ff/e%d réponse vide (%s)", event_id, label)
+            return None
+        if f"e{event_id}" not in items:
+            # Réponse pleine mais sans ce match : il n'existe plus sous cet identifiant.
+            if report is not None:
+                report.gone_events.add(event_id)
+            logger.warning("UnibetLVSScraper: match e%d absent de la réponse (%s)", event_id, label)
+            return None
+
+        result = self._parse_match_items(items, league)
+        if result is None:
+            # Le match est là mais sans marché suivi (pas encore ouvert, ou
+            # retiré un moment) : ni panne ni disparition, on garde l'accrochage.
+            return None
+        result.book_event_id = event_id
+        if not (result.h2h or result.totals or result.btts or result.goalscorer or result.assist):
+            return None
+        if not result.assist:
+            logger.warning(
+                "UnibetLVSScraper: 0 assist odds for %s vs %s [%s] — "
+                "markettypeId=100001899 absent from LVS response",
+                result.home_team, result.away_team, league,
+            )
+        return result
+
+    async def scrape_league(
+        self,
+        league: str,
+        wanted_kickoffs: list[datetime] | None = None,
+        report: UnibetReport | None = None,
+        skip_event_ids: set[int] | None = None,
+    ) -> list[MatchScrapeResult]:
+        """Scrape une ligue : liste événements → marchés → MatchScrapeResult.
+
+        `skip_event_ids` : matchs déjà accrochés, relus par identifiant de leur
+        côté — les relire ici doublerait les demandes.
+
+        `wanted_kickoffs` : ne lit que les matchs qui démarrent à moins de 3 h
+        d'un de ces horaires (None = tous). Lire les 18 matchs d'un championnat
+        pour en rafraîchir un seul, c'était 17 demandes inutiles à Unibet.
+        """
+        events = await self._fetch_event_list(league)
+        if events is None:
+            if report is not None:
+                report.failed_leagues.add(league)
+            logger.warning("UnibetLVSScraper %s: liste indisponible ce passage", league)
+            return []
+        if skip_event_ids:
+            events = [e for e in events if e[0] not in skip_event_ids]
+        if wanted_kickoffs is not None:
+            events = [
+                e for e in events
+                if e[3] is None
+                or any(abs(e[3] - ko) <= _KICKOFF_WINDOW for ko in wanted_kickoffs)
+            ]
         if not events:
             logger.info("UnibetLVSScraper %s: 0 événements", league)
             return []
@@ -332,27 +445,10 @@ class UnibetLVSScraper:
         logger.info("UnibetLVSScraper %s: %d événements à traiter", league, len(events))
         results: list[MatchScrapeResult] = []
 
-        for event_id, home, away, kickoff in events:
-            url = f"{LVS_BASE}/lvs-api/ff/e{event_id}?{_LIST_PARAMS}"
-            try:
-                r = await self._client.get(url, headers=self._auth_headers(), timeout=15)
-                r.raise_for_status()
-                items = r.json().get("items", {})
-            except Exception as exc:
-                logger.warning("UnibetLVSScraper: ff/e%d échoué (%s vs %s): %s", event_id, home, away, exc)
-                await asyncio.sleep(_EVENT_SLEEP)
-                continue
-
-            result = self._parse_match_items(items, league)
-            if result and (result.h2h or result.totals or result.btts or result.goalscorer or result.assist):
-                if not result.assist:
-                    logger.warning(
-                        "UnibetLVSScraper: 0 assist odds for %s vs %s [%s] — "
-                        "markettypeId=100001899 absent from LVS response",
-                        result.home_team, result.away_team, league,
-                    )
+        for event_id, home, away, _kickoff in events:
+            result = await self._scrape_event(event_id, league, f"{home} vs {away}", report)
+            if result:
                 results.append(result)
-
             await asyncio.sleep(_EVENT_SLEEP)
 
         total_sel = sum(len(r.goalscorer) for r in results)
@@ -362,9 +458,46 @@ class UnibetLVSScraper:
         )
         return results
 
+    async def scrape_known_events(
+        self,
+        known_events: dict[int, tuple[int, str]],
+        report: UnibetReport | None = None,
+    ) -> list[MatchScrapeResult]:
+        """Relit des matchs déjà accrochés : {identifiant Unibet: (fixture_id, ligue)}.
 
-async def scrape_all_unibet(leagues: list[str]) -> list[MatchScrapeResult]:
-    """Scrape les cotes Unibet pour toutes les ligues via l'API LVS."""
+        Aucune liste demandée, aucun nom comparé : le résultat porte
+        directement le fixture_id.
+        """
+        results: list[MatchScrapeResult] = []
+        for event_id, (fixture_id, league) in known_events.items():
+            result = await self._scrape_event(event_id, league, f"fixture {fixture_id}", report)
+            if result:
+                result.fixture_id = fixture_id
+                results.append(result)
+            await asyncio.sleep(_EVENT_SLEEP)
+        if known_events:
+            logger.info(
+                "UnibetLVSScraper: %d/%d matchs relus par identifiant",
+                len(results), len(known_events),
+            )
+        return results
+
+
+async def scrape_all_unibet(
+    leagues: list[str],
+    *,
+    known_events: dict[int, tuple[int, str]] | None = None,
+    wanted_kickoffs: dict[str, list[datetime]] | None = None,
+    report: UnibetReport | None = None,
+    skip_event_ids: set[int] | None = None,
+) -> list[MatchScrapeResult]:
+    """Scrape les cotes Unibet via l'API LVS.
+
+    - `known_events` : matchs déjà accrochés, relus par identifiant.
+    - `leagues` : championnats où chercher les matchs pas encore accrochés ;
+      `wanted_kickoffs[ligue]` limite la lecture aux matchs attendus.
+    - `report` : rempli avec ce qui a raté, pour une reprise rapide.
+    """
     async with httpx.AsyncClient(follow_redirects=True) as client:
         scraper = UnibetLVSScraper(client)
 
@@ -372,21 +505,33 @@ async def scrape_all_unibet(leagues: list[str]) -> list[MatchScrapeResult]:
             await scraper._get_token()
         except Exception as exc:
             logger.error("UnibetLVSScraper: impossible d'obtenir le token LVS: %s", exc)
+            if report is not None:
+                report.failed_leagues.update(leagues)
+                report.failed_events.update(known_events or {})
             return []
 
         all_results: list[MatchScrapeResult] = []
+        if known_events:
+            all_results.extend(await scraper.scrape_known_events(known_events, report))
         for league in leagues:
             try:
-                results = await scraper.scrape_league(league)
+                results = await scraper.scrape_league(
+                    league,
+                    wanted_kickoffs.get(league) if wanted_kickoffs is not None else None,
+                    report,
+                    skip_event_ids,
+                )
                 all_results.extend(results)
             except Exception as exc:
+                if report is not None:
+                    report.failed_leagues.add(league)
                 logger.error(
                     "UnibetLVSScraper: erreur sur %s: %s", league, exc, exc_info=True
                 )
 
     logger.info(
-        "scrape_all_unibet: %d matchs sur %d ligues",
-        len(all_results), len(leagues),
+        "scrape_all_unibet: %d matchs (%d par identifiant, %d ligues)",
+        len(all_results), len(known_events or {}), len(leagues),
     )
     return all_results
 

@@ -780,8 +780,82 @@ def _league_key(league_name: str | None) -> str | None:
     return mapping.get(league_name.lower())
 
 
+# Unibet a raté un match (liste refusée, lecture en erreur) : on réessaie ce
+# délai plus tard, sans attendre le prochain passage normal (jusqu'à 2 h).
+_UNIBET_RETRY = timedelta(minutes=5)
+# Nombre de passages ratés d'affilée sur un championnat avant d'alerter.
+_UNIBET_ALERT_AFTER = 3
+# Un match relu par identifiant doit démarrer à peu près quand on l'attend ;
+# au-delà, l'identifiant ne désigne plus ce match et l'accrochage est défait.
+_UNIBET_ANCHOR_MAX_DRIFT = timedelta(hours=36)
+# Écart d'horaire maximal entre le match et l'événement Unibet pour poser l'accrochage.
+_UNIBET_ANCHOR_KICKOFF_TOLERANCE = timedelta(hours=2)
+
+
 class OddsScheduler:
     """Drives adaptive scraping of Betclic + Unibet + PMU for upcoming fixtures."""
+
+    def __init__(self) -> None:
+        # fixture_id -> heure à partir de laquelle retenter Unibet seul.
+        self._unibet_retry: dict[int, datetime] = {}
+        # championnat -> passages ratés d'affilée (liste refusée).
+        self._unibet_fail_streak: dict[str, int] = {}
+
+    def _unibet_follow_up(
+        self,
+        targets: Sequence,
+        league_by_fid: dict[int, str],
+        known: dict[int, tuple[int, str]],
+        report,
+        fids_ok: set[int],
+        now: datetime,
+    ) -> None:
+        """Après un passage : programme les reprises Unibet, défait les
+        accrochages morts, alerte si un championnat reste refusé.
+
+        Une reprise n'est programmée que pour une vraie panne (liste refusée,
+        lecture en erreur, match disparu) — jamais parce qu'Unibet ne propose
+        tout simplement pas le match, sinon on le redemanderait sans fin.
+        """
+        from app.alerts import alert_bg
+
+        event_by_fid = {fid: event_id for event_id, (fid, _) in known.items()}
+        for f in targets:
+            league = league_by_fid.get(f.id)
+            if league is None:
+                continue
+            event_id = event_by_fid.get(f.id)
+            if event_id is not None and event_id in report.gone_events:
+                # L'identifiant ne désigne plus ce match : on l'oublie, le
+                # prochain passage le recherche dans la liste du championnat.
+                f.unibet_event_id = None
+                failed = True
+            elif event_id is not None:
+                failed = event_id in report.failed_events
+            else:
+                failed = league in report.failed_leagues
+            if failed and f.id not in fids_ok:
+                self._unibet_retry[f.id] = now + _UNIBET_RETRY
+            else:
+                self._unibet_retry.pop(f.id, None)
+
+        asked = {
+            league_by_fid[f.id] for f in targets
+            if f.id in league_by_fid and f.id not in event_by_fid
+        }
+        for league in asked:
+            if league not in report.failed_leagues:
+                self._unibet_fail_streak.pop(league, None)
+                continue
+            streak = self._unibet_fail_streak.get(league, 0) + 1
+            self._unibet_fail_streak[league] = streak
+            if streak == _UNIBET_ALERT_AFTER:
+                alert_bg(
+                    f"⚠️ Unibet refuse la liste des matchs ({league}) depuis "
+                    f"{streak} passages d'affilée : les matchs pas encore accrochés "
+                    "de ce championnat n'ont plus de cotes Unibet fraîches.",
+                    "incidents",
+                )
 
     async def tick(self, session: AsyncSession) -> tuple[int, list[int]]:
         """Process all fixtures due for a scrape. Returns (count_due, stored_fixture_ids)."""
@@ -789,7 +863,7 @@ class OddsScheduler:
         from app.ingestion.odds_storage import store_match_scrape_result
         from app.ingestion.pmu_scraper import scrape_all_pmu
         from app.ingestion.ps3838.scraper import scrape_ps3838
-        from app.ingestion.unibet_lvs_scraper import scrape_all_unibet
+        from app.ingestion.unibet_lvs_scraper import UnibetReport, scrape_all_unibet
         from app.models.canonical_teams import CanonicalTeam
         from app.models.fixtures import Fixture
         from app.models.odds_scrape_state import OddsScrapeState
@@ -835,11 +909,28 @@ class OddsScheduler:
             )
         ]
 
-        if not due:
+        # Reprises Unibet : matchs dont la dernière lecture Unibet a raté et
+        # dont le délai de reprise est écoulé. Seul Unibet est relu pour eux.
+        due_ids = {f.id for f in due}
+        live_ids = {f.id for f in fixtures}
+        self._unibet_retry = {
+            fid: t for fid, t in self._unibet_retry.items() if fid in live_ids
+        }
+        unibet_retry = [
+            f for f in fixtures
+            if f.id not in due_ids
+            and self._unibet_retry.get(f.id, now + _UNIBET_RETRY) <= now
+            and f.kickoff_utc - now > _STOP_BEFORE_KO
+        ]
+
+        if not due and not unibet_retry:
             logger.debug("OddsScheduler.tick: 0 fixtures due")
             return 0, []
 
-        logger.info("OddsScheduler.tick: %d fixtures due for scraping", len(due))
+        logger.info(
+            "OddsScheduler.tick: %d fixtures due for scraping, %d reprise(s) Unibet",
+            len(due), len(unibet_retry),
+        )
 
         # Collect leagues needed + per-team match candidates for due fixtures.
         # A single candidate list drives the unified per-team matcher below —
@@ -847,11 +938,25 @@ class OddsScheduler:
         # a side can match by strict / canonical / fuzzy independently.
         leagues_needed: set[str] = set()
         match_candidates: list[tuple[int, str, int | None, str, int | None]] = []
-        kickoff_by_fid = {f.id: f.kickoff_utc for f in due}
-        for f in due:
+        unibet_targets = [*due, *unibet_retry]
+        fixture_by_id = {f.id: f for f in unibet_targets}
+        kickoff_by_fid = {f.id: f.kickoff_utc for f in unibet_targets}
+        # Unibet : matchs déjà accrochés (relus par identifiant) / championnats
+        # où chercher ceux qui ne le sont pas encore.
+        unibet_known: dict[int, tuple[int, str]] = {}
+        unibet_kickoffs: dict[str, list[datetime]] = {}
+        league_by_fid: dict[int, str] = {}
+        for f in unibet_targets:
             league = _league_key(f.league)
             if league:
-                leagues_needed.add(league)
+                league_by_fid[f.id] = league
+                event_id = getattr(f, "unibet_event_id", None)
+                if event_id is not None:
+                    unibet_known[event_id] = (f.id, league)
+                else:
+                    unibet_kickoffs.setdefault(league, []).append(f.kickoff_utc)
+                if f.id in due_ids:
+                    leagues_needed.add(league)
             match_candidates.append(
                 (
                     f.id,
@@ -868,7 +973,19 @@ class OddsScheduler:
         # et travaille par identifiant (ps3838_event_id) — donc il doit
         # pouvoir tourner meme quand betclic/unibet/pmu n'ont rien a scraper.
         all_results = []
-        if not leagues_needed:
+        unibet_report = UnibetReport()
+        # Identifiants Unibet déjà posés sur un match, quel qu'il soit : un
+        # identifiant ne sert jamais deux fois (contrainte unique en base), et
+        # un match déjà accroché n'est pas relu une seconde fois par la liste.
+        taken_event_ids = set(unibet_known)
+        if unibet_kickoffs:
+            taken_event_ids |= {
+                e for e in (await session.execute(
+                    select(Fixture.unibet_event_id).where(Fixture.unibet_event_id.isnot(None))
+                )).scalars().all()
+                if isinstance(e, int)
+            }
+        if not leagues_needed and not unibet_known and not unibet_kickoffs:
             logger.warning("OddsScheduler.tick: no recognized leagues in due fixtures")
         else:
             # Canonical-team indexes for the per-team matcher. Small table —
@@ -878,10 +995,22 @@ class OddsScheduler:
             canonical_names_by_id = _build_canonical_names_by_id(canonical_teams)
 
             # Scrape les 3 books en parallèle
+            async def _none() -> list:
+                return []
+
+            # Betclic et PMU : seulement pour les matchs normalement à
+            # rafraîchir. Unibet : ceux-là plus ses reprises.
+            regular = bool(leagues_needed)
             betclic_results, unibet_results, pmu_results = await asyncio.gather(
-                scrape_betclic_leagues(list(leagues_needed)),
-                scrape_all_unibet(list(leagues_needed)),
-                scrape_all_pmu(list(leagues_needed)),
+                scrape_betclic_leagues(list(leagues_needed)) if regular else _none(),
+                scrape_all_unibet(
+                    list(unibet_kickoffs),
+                    known_events=unibet_known,
+                    wanted_kickoffs=unibet_kickoffs,
+                    report=unibet_report,
+                    skip_event_ids=taken_event_ids,
+                ),
+                scrape_all_pmu(list(leagues_needed)) if regular else _none(),
                 return_exceptions=True,
             )
 
@@ -895,6 +1024,8 @@ class OddsScheduler:
                 logger.error(
                     "OddsScheduler: unibet scrape failed: %s", unibet_results, exc_info=unibet_results
                 )
+                unibet_report.failed_leagues.update(unibet_kickoffs)
+                unibet_report.failed_events.update(unibet_known)
             else:
                 all_results.extend(unibet_results)
             if isinstance(pmu_results, BaseException):
@@ -907,7 +1038,28 @@ class OddsScheduler:
         # Match scraped results to fixture_ids and store
         scraped = 0
         stored_fixture_ids: set[int] = set()
+        unibet_fids_ok: set[int] = set()
+        anchored_fids = {fid for fid, _ in unibet_known.values()}
         for r in all_results:
+            # Unibet, match déjà accroché : le résultat porte son fixture_id,
+            # aucun rapprochement par noms.
+            if r.bookmaker == "unibet" and r.book_event_id in unibet_known:
+                fid = unibet_known[r.book_event_id][0]
+                expected = kickoff_by_fid[fid]
+                if r.kickoff_utc and abs(r.kickoff_utc - expected) > _UNIBET_ANCHOR_MAX_DRIFT:
+                    logger.warning(
+                        "OddsScheduler: accrochage Unibet e%s défait pour le fixture %s "
+                        "(coup d'envoi %s chez Unibet, %s attendu)",
+                        r.book_event_id, fid, r.kickoff_utc, expected,
+                    )
+                    unibet_report.gone_events.add(r.book_event_id)
+                    continue
+                r.fixture_id = fid
+                await store_match_scrape_result(r, session, squad_cache=squad_cache)
+                stored_fixture_ids.add(fid)
+                unibet_fids_ok.add(fid)
+                scraped += 1
+                continue
             # Unified per-team matcher: identity / token-containment / anchor /
             # fuzzy, each side graded, both sides required (except anchoring),
             # strict tier priority + unique-candidate guard.
@@ -941,15 +1093,39 @@ class OddsScheduler:
                 )
                 continue
             r.fixture_id = fixture_id
+            if r.bookmaker == "unibet":
+                unibet_fids_ok.add(fixture_id)
+                # Premier rapprochement réussi : on retient l'identifiant
+                # Unibet du match pour le relire directement ensuite.
+                fx = fixture_by_id.get(fixture_id)
+                # Seulement si l'horaire colle : aller et retour d'une même
+                # affiche ne doivent jamais échanger leurs identifiants.
+                if (
+                    fx is not None and r.book_event_id is not None
+                    and fixture_id not in anchored_fids
+                    and r.book_event_id not in taken_event_ids
+                    and r.kickoff_utc is not None
+                    and abs(r.kickoff_utc - fx.kickoff_utc) <= _UNIBET_ANCHOR_KICKOFF_TOLERANCE
+                ):
+                    fx.unibet_event_id = r.book_event_id
+                    anchored_fids.add(fixture_id)
+                    taken_event_ids.add(r.book_event_id)
             await store_match_scrape_result(r, session, squad_cache=squad_cache)
             stored_fixture_ids.add(fixture_id)
             scraped += 1
+
+        self._unibet_follow_up(
+            unibet_targets, league_by_fid, unibet_known, unibet_report, unibet_fids_ok, now,
+        )
 
         # PS3838 — source unique du xG d'equipe. Les resultats portent deja le
         # bon fixture_id (ancrage par identifiant) : ils NE PASSENT PAS par le
         # rapprochement de noms, qui ecraserait fixture_id.
         try:
-            ps_results = await scrape_ps3838(session, [f.id for f in due])
+            # Passage de reprise Unibet seul (aucun match « à rafraîchir ») :
+            # PS3838 n'est pas relu — une liste vide lui ferait lire TOUS les
+            # matchs accrochés.
+            ps_results = await scrape_ps3838(session, [f.id for f in due]) if due else []
         except Exception as exc:
             logger.error("OddsScheduler: ps3838 scrape failed: %s", exc, exc_info=exc)
             ps_results = []

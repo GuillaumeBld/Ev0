@@ -56,6 +56,9 @@ class MatchScrapeResult:
     # Player props
     goalscorer: list[PlayerOdds] = field(default_factory=list)
     assist: list[PlayerOdds] = field(default_factory=list)
+    # Identifiant du match chez le book, quand il en donne un. Sert à relire
+    # le match directement au passage suivant, sans repasser par les noms.
+    book_event_id: int | None = None
 
     @property
     def is_complete(self) -> bool:
