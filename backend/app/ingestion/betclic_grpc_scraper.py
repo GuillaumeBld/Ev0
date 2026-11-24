@@ -23,6 +23,7 @@ from typing import Any
 
 import httpx
 
+from app.ingestion.book_competitions import BETCLIC_IDS
 from app.ingestion.scrape_result import AVEC_SUB, SANS_SUB, PlayerOdds, prefer_avec_sub
 
 logger = logging.getLogger(__name__)
@@ -47,16 +48,14 @@ BETCLIC_COMPETITION_IDS: dict[str, int] = {
     "serie_a":               6,
     "champions_league":      8,
     "europa_league":         3453,
-    "conference_league":     28946,
-    "saudi_pro_league":      4684,   # « Arabie Saoudite PL »
-    "romania_superliga":     552,    # « Roumanie Liga 1 »
-    "nations_league_uefa":   22676,
     "ligue_2":               19,
     "coupe_de_france":       36,
     "friendly_international": 79,
     "world_cup_2026":        1,
     "uefa_super_cup":        228,  # Supercoupe de l'UEFA — buteur + cotes équipe (passeur pur non exposé dans le flux gRPC)
 }
+# + toutes les compétitions de la table commune (clé « comp_<id> »).
+BETCLIC_COMPETITION_IDS.update(BETCLIC_IDS)
 
 _GRPC_HEADERS = {
     "User-Agent": (
@@ -118,6 +117,8 @@ _TOTALS_LABELS = ("nombre total de buts",)
 _BTTS_LABELS = ("les 2 équipes marquent",)
 
 _MATCH_SLEEP = 0.3  # between match gRPC calls (used by scrape_league)
+# Un match de la liste est lu s'il démarre à moins de ça d'un match attendu.
+_KICKOFF_WINDOW = _dt.timedelta(hours=3)
 
 
 # ---------------------------------------------------------------------------
@@ -887,10 +888,22 @@ class BetclicGrpcScraper:
         )
         return result
 
-    async def scrape_league(self, league: str) -> list:
-        """Scrape all upcoming matches for a league: match list → gRPC per match."""
+    async def scrape_league(self, league: str, wanted_kickoffs: list[datetime] | None = None) -> list:
+        """Scrape all upcoming matches for a league: match list → gRPC per match.
+
+        `wanted_kickoffs` : ne lit que les matchs qui démarrent à moins de 3 h
+        d'un de ces horaires (None = tous). Avec 40 compétitions, relire tout
+        un championnat (2 à 3 demandes par match) pour un seul match à
+        rafraîchir ferait des centaines de demandes inutiles par passage.
+        """
         from app.ingestion.scrape_result import MatchScrapeResult
         matches = await self.fetch_competition_matches(league)
+        if wanted_kickoffs is not None:
+            matches = [
+                mx for mx in matches
+                if mx.get("kickoff_utc") is None
+                or any(abs(mx["kickoff_utc"] - ko) <= _KICKOFF_WINDOW for ko in wanted_kickoffs)
+            ]
         if not matches:
             return []
 
@@ -925,7 +938,10 @@ class BetclicGrpcScraper:
 # ---------------------------------------------------------------------------
 
 
-async def scrape_betclic_leagues(leagues: list[str] | None = None) -> list:
+async def scrape_betclic_leagues(
+    leagues: list[str] | None = None,
+    wanted_kickoffs: dict[str, list[datetime]] | None = None,
+) -> list:
     """Scrape all odds from Betclic via gRPC-web for the given leagues.
 
     Default: all leagues in BETCLIC_COMPETITION_IDS.
@@ -942,7 +958,9 @@ async def scrape_betclic_leagues(leagues: list[str] | None = None) -> list:
         all_results: list[MatchScrapeResult] = []
         for i, league in enumerate(leagues):
             try:
-                results = await scraper.scrape_league(league)
+                results = await scraper.scrape_league(
+                    league, wanted_kickoffs.get(league) if wanted_kickoffs is not None else None,
+                )
                 all_results.extend(results)
             except Exception as exc:
                 logger.error(

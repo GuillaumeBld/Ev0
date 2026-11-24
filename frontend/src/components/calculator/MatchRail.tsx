@@ -101,9 +101,13 @@ export function MatchRail({
     return Array.from(by.entries())
       .map(([name, matches]) => ({
         name,
+        rank: matches[0].competition_rank ?? Number.MAX_SAFE_INTEGER,
         matches: matches.sort((a, b) => a.kickoff_utc.localeCompare(b.kickoff_utc)),
       }))
-      .sort((a, b) => (a.name === UNKNOWN_COMP ? 1 : b.name === UNKNOWN_COMP ? -1 : a.name.localeCompare(b.name, 'fr')))
+      // Les compétitions les plus importantes en tête (Big 5, coupes d'Europe), puis l'ordre alphabétique.
+      .sort((a, b) =>
+        a.name === UNKNOWN_COMP ? 1 : b.name === UNKNOWN_COMP ? -1 : a.rank - b.rank || a.name.localeCompare(b.name, 'fr'),
+      )
   }, [fixtures, day, query])
 
   const searching = query.trim() !== ''

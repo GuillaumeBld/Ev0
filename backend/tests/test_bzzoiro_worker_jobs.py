@@ -677,3 +677,46 @@ async def test_sync_fixture_status_rereads_recently_finished_fixtures():
 
     first_query = str(session.execute.await_args_list[0].args[0])
     assert "fixtures.kickoff_utc >=" in first_query
+
+
+# ── Statuts reporté / annulé / mi-temps (24/11/2026) ─────────────────────────
+
+async def _sync_un_match(statut_fixture: str, statut_bzz: str, decalage_jours: int = 0):
+    from app.ingestion.bzzoiro.sync_fixture_status import sync_fixture_status_from_bzz
+
+    ko = datetime(2026, 11, 28, 19, 0, 0, tzinfo=UTC)
+    fixture = _make_fixture("Al Hilal", "Al Nassr", ko, status=statut_fixture)
+    event = _make_bzz_event(10, 20, ko + timedelta(days=decalage_jours), status=statut_bzz)
+    session = _make_session_for_sync(
+        [fixture], [event], [_make_bzz_team(10, "Al Hilal"), _make_bzz_team(20, "Al Nassr")],
+    )
+    await sync_fixture_status_from_bzz(session)
+    return fixture, ko
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("statut_bzz, attendu", [
+    ("postponed", "postponed"),
+    ("canceled", "cancelled"),
+    ("cancelled", "cancelled"),
+    ("1st_half", "live"),
+    ("2nd_half", "live"),
+    ("unresolved", "scheduled"),   # statut inconnu : on ne touche à rien
+    ("notstarted", "scheduled"),
+])
+async def test_statut_bzzoiro_suivi(statut_bzz, attendu):
+    fixture, _ = await _sync_un_match("scheduled", statut_bzz)
+    assert fixture.status == attendu
+
+
+@pytest.mark.asyncio
+async def test_match_reporte_puis_reprogramme_revient_au_calendrier():
+    fixture, ko = await _sync_un_match("postponed", "notstarted", decalage_jours=3)
+    assert fixture.status == "scheduled"
+    assert fixture.kickoff_utc == ko + timedelta(days=3)
+
+
+@pytest.mark.asyncio
+async def test_match_termine_ne_redevient_jamais_reporte():
+    fixture, _ = await _sync_un_match("finished", "postponed")
+    assert fixture.status == "finished"

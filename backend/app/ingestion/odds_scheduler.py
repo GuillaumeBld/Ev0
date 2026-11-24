@@ -766,12 +766,6 @@ def _league_key(league_name: str | None) -> str | None:
         "la liga": "la_liga", "la_liga": "la_liga",
         "serie a": "serie_a", "serie_a": "serie_a",
         "champions league": "champions_league", "champions_league": "champions_league",
-        # Compétitions sans étiquette historique : la clé du match est
-        # « comp_<identifiant Atlas> » (services/competitions.league_key_for).
-        "comp_8": "europa_league", "europa_league": "europa_league",
-        "comp_83": "conference_league", "conference_league": "conference_league",
-        "comp_17": "saudi_pro_league", "saudi_pro_league": "saudi_pro_league",
-        "comp_23": "romania_superliga", "romania_superliga": "romania_superliga",
         "friendly_international": "friendly_international",
         "friendly international": "friendly_international",
         "world_cup_2026": "world_cup_2026",
@@ -783,7 +777,14 @@ def _league_key(league_name: str | None) -> str | None:
         "uefa_super_cup": "uefa_super_cup",
         "uefa super cup": "uefa_super_cup",
     }
-    return mapping.get(league_name.lower())
+    key = mapping.get(league_name.lower())
+    if key:
+        return key
+    # Compétitions de la table commune : l'étiquette du match (« comp_<id> »)
+    # est la clé des scrapers, sauf compétition partagée (Liga MX).
+    from app.ingestion.book_competitions import SCRAPER_KEY_BY_LEAGUE
+
+    return SCRAPER_KEY_BY_LEAGUE.get(league_name)
 
 
 # Unibet a raté un match (liste refusée, lecture en erreur) : on réessaie ce
@@ -943,6 +944,9 @@ class OddsScheduler:
         # each tuple carries both the normalized names AND the canonical ids so
         # a side can match by strict / canonical / fuzzy independently.
         leagues_needed: set[str] = set()
+        # Horaires des matchs à rafraîchir, par championnat : Betclic et PMU ne
+        # lisent que ces matchs-là, pas tout le championnat.
+        due_kickoffs: dict[str, list[datetime]] = {}
         match_candidates: list[tuple[int, str, int | None, str, int | None]] = []
         unibet_targets = [*due, *unibet_retry]
         fixture_by_id = {f.id: f for f in unibet_targets}
@@ -963,6 +967,7 @@ class OddsScheduler:
                     unibet_kickoffs.setdefault(league, []).append(f.kickoff_utc)
                 if f.id in due_ids:
                     leagues_needed.add(league)
+                    due_kickoffs.setdefault(league, []).append(f.kickoff_utc)
             match_candidates.append(
                 (
                     f.id,
@@ -1008,7 +1013,7 @@ class OddsScheduler:
             # rafraîchir. Unibet : ceux-là plus ses reprises.
             regular = bool(leagues_needed)
             betclic_results, unibet_results, pmu_results = await asyncio.gather(
-                scrape_betclic_leagues(list(leagues_needed)) if regular else _none(),
+                scrape_betclic_leagues(list(leagues_needed), due_kickoffs) if regular else _none(),
                 scrape_all_unibet(
                     list(unibet_kickoffs),
                     known_events=unibet_known,
@@ -1016,7 +1021,7 @@ class OddsScheduler:
                     report=unibet_report,
                     skip_event_ids=taken_event_ids,
                 ),
-                scrape_all_pmu(list(leagues_needed)) if regular else _none(),
+                scrape_all_pmu(list(leagues_needed), due_kickoffs) if regular else _none(),
                 return_exceptions=True,
             )
 
@@ -1069,9 +1074,16 @@ class OddsScheduler:
             # Unified per-team matcher: identity / token-containment / anchor /
             # fuzzy, each side graded, both sides required (except anchoring),
             # strict tier priority + unique-candidate guard.
+            # Seuls les matchs de la MÊME compétition sont candidats. Avec
+            # tout l'Atlas au calendrier (70 matchs par jour), comparer les
+            # noms d'un match de book à ceux de tous les championnats collait
+            # des cotes au mauvais match.
+            same_league = [
+                c for c in match_candidates if league_by_fid.get(c[0]) == r.league
+            ]
             fixture_id, reason, competing_fids, detail = _match_result_to_fixture(
                 r.home_team, r.away_team,
-                _candidates_near_kickoff(match_candidates, kickoff_by_fid, r.kickoff_utc),
+                _candidates_near_kickoff(same_league, kickoff_by_fid, r.kickoff_utc),
                 canonical_alias_map, canonical_names_by_id,
             )
             if fixture_id and reason == "anchor":

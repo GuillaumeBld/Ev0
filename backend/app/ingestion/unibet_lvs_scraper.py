@@ -29,6 +29,7 @@ from typing import Any
 
 import httpx
 
+from app.ingestion.book_competitions import UNIBET_NODES
 from app.ingestion.scrape_result import (
     AVEC_SUB,
     SANS_SUB,
@@ -49,14 +50,12 @@ LVS_NODE_IDS: dict[str, int] = {
     "la_liga":               58532237,
     "serie_a":               58529754,
     "champions_league":      58532497,
-    "europa_league":         58532492,
-    "conference_league":     58554102,
-    "saudi_pro_league":      58986505,  # « D1 Arabie Saoudite »
-    "romania_superliga":     58528328,  # « D1 Roumanie »
     "friendly_international": 58541367,
     "world_cup_2026":        59096156,
     "uefa_super_cup":        58545066,  # Supercoupe d'Europe (Coupes d'Europe) — buteur + passes décisives
 }
+# + toutes les compétitions de la table commune (clé « comp_<id> »).
+LVS_NODE_IDS.update(UNIBET_NODES)
 
 # markettypeId → market_type Ev0
 _MARKET_TYPES: dict[int, str] = {

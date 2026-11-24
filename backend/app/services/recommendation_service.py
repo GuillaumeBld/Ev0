@@ -401,7 +401,7 @@ async def get_recommendations_for_date(
         )
         # 1er passage (trié du plus récent au plus ancien) = dernier snapshot par book
         latest_per_book: dict[tuple[str, str, str], dict[str, Any]] = {}
-        for o in odds_result.scalars().all():
+        for o in odds_rows:
             bk_key = (o.player_name, o.market_type, o.bookmaker)
             if bk_key not in latest_per_book:
                 latest_per_book[bk_key] = {
@@ -629,6 +629,26 @@ async def process_scraped_fixtures(
     for fixture_orm in fixtures:
         pen_home, pen_away = pen_takers_by_fixture.get(fixture_orm.id, (None, None))
 
+        # Cotes joueur du match, lues AVANT le calcul : un match qu'aucun book
+        # ne cote (ni joueur, ni 1N2) ne peut produire aucune reco, on ne le
+        # calcule pas. Avec tout l'Atlas au calendrier (700 matchs sur 10
+        # jours), un tiers des matchs est dans ce cas.
+        odds_rows = (await session.execute(
+            select(PlayerOddsSnapshot).where(
+                PlayerOddsSnapshot.fixture_id == fixture_orm.id
+            )
+        )).scalars().all()
+        if not odds_rows:
+            has_book_h2h = (await session.execute(
+                select(MatchOddsSnapshot.id).where(
+                    MatchOddsSnapshot.fixture_id == fixture_orm.id,
+                    MatchOddsSnapshot.bookmaker.in_(FR_H2H_BOOKMAKERS),
+                ).limit(1)
+            )).scalars().all()
+            if not has_book_h2h:
+                stats["sans_books"] = stats.get("sans_books", 0) + 1
+                continue
+
         pricing = await load_match_pricing(
             session, fixture_orm,
             home_pen_taker_override=pen_home,
@@ -675,11 +695,6 @@ async def process_scraped_fixtures(
 
         # Meilleure cote par (joueur Atlas, marché) tous bookmakers confondus.
         # Une cote non reliée (player_api_id vide) ne produit aucune reco.
-        odds_result = await session.execute(
-            select(PlayerOddsSnapshot).where(
-                PlayerOddsSnapshot.fixture_id == fixture_orm.id
-            )
-        )
         # Meilleure cote par joueur x marché x VARIANTE (avec sub / sans sub).
         best_odds_map: dict[tuple[int, str, str], dict] = {}
         odds_total = 0
@@ -688,7 +703,7 @@ async def process_scraped_fixtures(
         # Le taux d'alerte ne compte que les cotes fraîches : une vieille ligne
         # d'un bookmaker qui ne cote plus ce match n'est pas un incident actuel.
         fresh_cutoff = now - timedelta(hours=_ODDS_MAX_AGE_HOURS)
-        for o in odds_result.scalars().all():
+        for o in odds_rows:
             is_fresh = o.scraped_at is not None and o.scraped_at >= fresh_cutoff
             if is_fresh:
                 odds_total += 1

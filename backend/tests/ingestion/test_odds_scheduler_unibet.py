@@ -197,3 +197,15 @@ async def test_aller_et_retour_l_identifiant_n_est_pose_que_si_l_horaire_colle()
     aller.kickoff_utc = retour.kickoff_utc - timedelta(days=7)
     await _tick(OddsScheduler(), _session([retour]), AsyncMock(return_value=[aller]))
     assert retour.unibet_event_id is None
+
+
+async def test_les_cotes_d_un_autre_championnat_ne_sont_jamais_collees_au_match():
+    """Même affiche « Sporting – Benfica » lue dans un autre championnat : pas
+    candidate. Avec tout l'Atlas au calendrier, comparer les noms tous
+    championnats confondus collait des cotes au mauvais match."""
+    fx = _fixture(1, home="Sporting", away="Benfica")
+    autre = _unibet(fx, 900, home="Sporting", away="Benfica")
+    autre.league = "comp_2"          # le match attendu est en ligue_1 dans ce test
+    store, _ = await _tick(OddsScheduler(), _session([fx]), AsyncMock(return_value=[autre]))
+    assert store.await_args_list == []
+    assert fx.unibet_event_id is None

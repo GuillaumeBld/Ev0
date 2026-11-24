@@ -31,10 +31,15 @@ def test_noms():
 
 
 def test_perimetre_de_synchro():
-    # 6 championnats + internationales + Europa League (8) + Conference League (83)
-    # + Saudi Pro League (17) + Superliga roumaine (23)
-    assert SYNCED_COMPETITION_IDS == {1, 3, 4, 5, 6, 7, 27, 31, 64, 65, 90, 8, 83, 17, 23}
-    assert league_key_for(17) == "comp_17" and league_key_for(23) == "comp_23"
+    # Toutes les compétitions de clubs de l'Atlas + les sélections historiques.
+    from app.ingestion.bzzoiro.league_registry import LEAGUE_REGISTRY
+
+    assert {1, 3, 4, 5, 6, 7, 27, 31, 64, 65, 90, 8, 83} <= SYNCED_COMPETITION_IDS
+    # MLS, Super League suisse, Saudi, Roumanie, Championship, Coupe de France.
+    assert {18, 15, 17, 23, 12, 44} <= SYNCED_COMPETITION_IDS
+    # Les championnats féminins restent hors calendrier.
+    assert not [c for c in SYNCED_COMPETITION_IDS if LEAGUE_REGISTRY[c].kind == "women"]
+    assert league_key_for(18) == "comp_18"
     assert league_key_for(83) == "comp_83"
     assert competition_name(83) == "Conference League"
 

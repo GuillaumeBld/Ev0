@@ -37,11 +37,24 @@ from app.models.fixtures import Fixture
 
 logger = logging.getLogger(__name__)
 
+# Statuts Bzzoiro réellement vus en base (24/11/2026) : finished, notstarted,
+# postponed, canceled, cancelled, 1st_half, 2nd_half, unresolved.
+# « reporté », « annulé » et les mi-temps n'étaient pas suivis : un match
+# reporté restait « à venir » dans le calculateur (9 matchs saoudiens passés à
+# la main le 23/11). « unresolved » reste volontairement ignoré.
 _BZZ_TO_FIXTURE_STATUS = {
     "finished": "finished",
     "inprogress": "live",
     "live": "live",
+    "1st_half": "live",
+    "2nd_half": "live",
+    "halftime": "live",
+    "postponed": "postponed",
+    "canceled": "cancelled",
+    "cancelled": "cancelled",
 }
+# Un match terminé ne redevient jamais reporté ou annulé.
+_NEVER_AFTER_FINISHED = frozenset({"postponed", "cancelled"})
 _DATE_WINDOW = timedelta(days=5)
 # Un match termine reste relu ce temps-la : Bzzoiro corrige le score apres
 # coup (score a 90' publie apres une prolongation, but annule par la VAR).
@@ -216,6 +229,12 @@ async def sync_fixture_status_from_bzz(session: AsyncSession) -> int:
 
         # Update status (only forward-mapped statuses)
         mapped_status = _BZZ_TO_FIXTURE_STATUS.get(best.status or "")
+        if (best.status or "") == "notstarted" and fixture.status == "postponed":
+            # Match reporté puis reprogrammé : il revient au calendrier (le
+            # nouveau coup d'envoi est repris juste au-dessus).
+            mapped_status = "scheduled"
+        if fixture.status == "finished" and mapped_status in _NEVER_AFTER_FINISHED:
+            mapped_status = None
         if mapped_status is not None and fixture.status != mapped_status:
             logger.info(
                 "Updating status for %s vs %s: %s → %s",

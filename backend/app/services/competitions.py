@@ -13,7 +13,15 @@ from app.ingestion.bzzoiro.constants import (
     INTERNATIONAL_LEAGUE_INTERNAL_IDS,
     TARGET_LEAGUE_INTERNAL_IDS,
 )
-from app.ingestion.bzzoiro.league_registry import KIND_SELECTION, LEAGUE_REGISTRY
+from app.ingestion.bzzoiro.league_registry import (
+    KIND_CUP,
+    KIND_DOMESTIC_1,
+    KIND_DOMESTIC_2,
+    KIND_SELECTION,
+    KIND_UEFA_CLUB,
+    KIND_WORLD,
+    LEAGUE_REGISTRY,
+)
 
 # id interne -> etiquette historique (6 championnats + internationales).
 _ETIQUETTE_HISTORIQUE: dict[int, str] = {
@@ -22,24 +30,19 @@ _ETIQUETTE_HISTORIQUE: dict[int, str] = {
 for _cle, _id in INTERNATIONAL_LEAGUE_INTERNAL_IDS.items():
     _ETIQUETTE_HISTORIQUE.setdefault(_id, _cle)
 
-# Coupes d'Europe ajoutees au calendrier le 23/11/2026 (ids internes Bzzoiro).
-# Etiquette derivee : comp_8 / comp_83 (pas d'etiquette historique).
-EUROPA_LEAGUE_COMPETITION_API_ID: int = 8
-CONFERENCE_LEAGUE_COMPETITION_API_ID: int = 83
-# Deja au calendrier et pricees (matchs crees avant le 14/11), mais hors
-# synchro : leurs statuts restaient figes (9 matchs reportes passes a la main
-# le 23/11) et aucun nouveau match n'arrivait.
-SAUDI_PRO_LEAGUE_COMPETITION_API_ID: int = 17
-ROMANIA_SUPERLIGA_COMPETITION_API_ID: int = 23
+# Perimetre de synchro du calendrier : TOUTES les competitions de clubs de
+# l'Atlas (championnats de 1re et 2e division, coupes d'Europe, reste du
+# monde, coupes nationales) + les competitions de selections historiques.
+# Decide le 24/11/2026 : on price le xG de tous les matchs que l'Atlas connait
+# (715 matchs de clubs sur 10 jours, contre 134 avec l'ancien perimetre de
+# 9 competitions). Les championnats feminins restent hors calendrier.
+# Etiquette derivee : comp_<id> (pas d'etiquette historique).
+CALENDAR_KINDS: frozenset[str] = frozenset({
+    KIND_DOMESTIC_1, KIND_DOMESTIC_2, KIND_UEFA_CLUB, KIND_WORLD, KIND_CUP,
+})
 
-# Perimetre de synchro du calendrier : 6 championnats + internationales +
-# Europa League + Conference League. L'elargissement a toutes les competitions
-# de l'Atlas se fait dans l'etape C de la roadmap.
 SYNCED_COMPETITION_IDS: frozenset[int] = frozenset(_ETIQUETTE_HISTORIQUE) | {
-    EUROPA_LEAGUE_COMPETITION_API_ID,
-    CONFERENCE_LEAGUE_COMPETITION_API_ID,
-    SAUDI_PRO_LEAGUE_COMPETITION_API_ID,
-    ROMANIA_SUPERLIGA_COMPETITION_API_ID,
+    cid for cid, meta in LEAGUE_REGISTRY.items() if meta.kind in CALENDAR_KINDS
 }
 
 
@@ -48,12 +51,39 @@ def league_key_for(competition_api_id: int) -> str:
     return _ETIQUETTE_HISTORIQUE.get(competition_api_id, f"comp_{competition_api_id}")
 
 
+def _noms_affiches() -> dict[int, str]:
+    """Nom affiche de chaque competition, sans homonyme.
+
+    L'Atlas a deux « Bundesliga » (Allemagne, Autriche) et deux « Superliga »
+    (Roumanie, Danemark) : la mieux classee garde le nom nu, les autres
+    portent leur pays, sinon leurs matchs se melangent dans le calculateur.
+    """
+    par_nom: dict[str, list[int]] = {}
+    for cid, meta in LEAGUE_REGISTRY.items():
+        par_nom.setdefault(meta.name, []).append(cid)
+    out: dict[int, str] = {}
+    for nom, ids in par_nom.items():
+        ids.sort(key=lambda c: (LEAGUE_REGISTRY[c].rank, c))
+        for i, cid in enumerate(ids):
+            pays = LEAGUE_REGISTRY[cid].country
+            out[cid] = nom if i == 0 or not pays else f"{nom} ({pays})"
+    return out
+
+
+_NOM_AFFICHE: dict[int, str] = _noms_affiches()
+
+
 def competition_name(competition_api_id: int | None) -> str | None:
     """Nom de la competition, None si inconnue de l'Atlas."""
     if competition_api_id is None:
         return None
-    meta = LEAGUE_REGISTRY.get(competition_api_id)
-    return meta.name if meta else None
+    return _NOM_AFFICHE.get(competition_api_id)
+
+
+def competition_rank(competition_api_id: int | None) -> int | None:
+    """Rang d'importance de la competition dans l'Atlas (1 = la plus haute)."""
+    meta = LEAGUE_REGISTRY.get(competition_api_id) if competition_api_id is not None else None
+    return meta.rank if meta else None
 
 
 # ── Raisonnement par competition (et non par etiquette) ───────────────────────

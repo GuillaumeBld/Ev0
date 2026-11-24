@@ -280,20 +280,23 @@ async def _run_process(odds_rows, allocs, existing_recs=None, reset_memo=True):
     added: list = []
     session.add = lambda rec: added.append(rec)
     session.commit = AsyncMock()
-    calls = 0
-
     async def fake_execute(stmt):
-        nonlocal calls
-        calls += 1
+        # Aiguillage par table lue, pas par ordre d'appel.
+        from app.models.fixtures import Fixture
+        from app.models.player_odds_snapshot import PlayerOddsSnapshot
+        from app.models.recommendations import Recommendation
+
         res = MagicMock()
-        if calls == 1:
-            res.scalars.return_value.all.return_value = [fixture]
-        elif calls == 2:
-            res.scalars.return_value.all.return_value = existing_recs or []
-        elif calls == 4:
-            res.scalars.return_value.all.return_value = odds_rows
-        else:
-            res.scalars.return_value.all.return_value = []
+        try:
+            entity = stmt.column_descriptions[0]["entity"]
+        except Exception:
+            entity = None
+        rows = {
+            Fixture: [fixture],
+            Recommendation: existing_recs or [],
+            PlayerOddsSnapshot: odds_rows,
+        }.get(entity, [])
+        res.scalars.return_value.all.return_value = rows
         return res
 
     session.execute = fake_execute
@@ -391,6 +394,19 @@ async def test_cote_sans_sub_plus_haute_ne_masque_pas_la_cote_avec_sub():
     par_marche = {r.market_type.value: (r.best_odds, r.best_bookmaker)
                   for r in added if r.market_type != "h2h"}
     assert par_marche == {"supersub": (2.4, "betclic"), "standard": (3.0, "unibet")}
+
+
+@pytest.mark.asyncio
+async def test_match_sans_aucune_cote_de_book_n_est_pas_calcule():
+    """Tout l'Atlas est au calendrier : un match qu'aucun book ne cote ne
+    déclenche ni calcul de cotes ni reco."""
+    from app.services import recommendation_service as rs
+
+    pricing_mock = AsyncMock()
+    with patch.object(rs, "load_match_pricing", pricing_mock):
+        stats, added, _ = await _run_process([], [_alloc(10, "Phil Foden")])
+    assert stats.get("sans_books") == 1
+    assert added == []
 
 
 @pytest.mark.asyncio
