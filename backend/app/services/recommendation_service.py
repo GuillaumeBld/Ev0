@@ -35,6 +35,19 @@ logger = logging.getLogger(__name__)
 # ligne bougée, scraper arrêté) — elle n'entre plus dans le calcul d'edge.
 _ODDS_MAX_AGE_HOURS = 24
 
+# Books qui ne sont pas lus en continu par le serveur. Bet365 est lu par
+# tournées depuis un navigateur : passé ce délai, sa cote n'est plus jouable et
+# ne doit ni produire de reco ni compter comme « meilleure cote ».
+_BOOK_MAX_AGE: dict[str, timedelta] = {"bet365": timedelta(hours=4)}
+
+
+def odds_too_old(bookmaker: str | None, scraped_at: datetime | None, now: datetime) -> bool:
+    """Cote d'un book lu par tournées, trop ancienne pour être utilisée."""
+    max_age = _BOOK_MAX_AGE.get((bookmaker or "").lower())
+    if max_age is None:
+        return False
+    return scraped_at is None or now - scraped_at > max_age
+
 # Une value déjà signalée ne resonne que si le marché dépasse de 5 % la cote
 # sur laquelle l'utilisateur a été alerté. Évite le flood : le scraping
 # réévalue toutes les recos toutes les 60 secondes.
@@ -401,7 +414,10 @@ async def get_recommendations_for_date(
         )
         # 1er passage (trié du plus récent au plus ancien) = dernier snapshot par book
         latest_per_book: dict[tuple[str, str, str], dict[str, Any]] = {}
-        for o in odds_rows:
+        maintenant = datetime.now(UTC)
+        for o in odds_result.scalars().all():
+            if odds_too_old(o.bookmaker, o.scraped_at, maintenant):
+                continue
             bk_key = (o.player_name, o.market_type, o.bookmaker)
             if bk_key not in latest_per_book:
                 latest_per_book[bk_key] = {
@@ -704,6 +720,8 @@ async def process_scraped_fixtures(
         # d'un bookmaker qui ne cote plus ce match n'est pas un incident actuel.
         fresh_cutoff = now - timedelta(hours=_ODDS_MAX_AGE_HOURS)
         for o in odds_rows:
+            if odds_too_old(o.bookmaker, o.scraped_at, now):
+                continue
             is_fresh = o.scraped_at is not None and o.scraped_at >= fresh_cutoff
             if is_fresh:
                 odds_total += 1

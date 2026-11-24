@@ -6,7 +6,7 @@ quand le nom est absent ou ambigu. Jamais de rapprochement approximatif.
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -394,6 +394,53 @@ async def test_cote_sans_sub_plus_haute_ne_masque_pas_la_cote_avec_sub():
     par_marche = {r.market_type.value: (r.best_odds, r.best_bookmaker)
                   for r in added if r.market_type != "h2h"}
     assert par_marche == {"supersub": (2.4, "betclic"), "standard": (3.0, "unibet")}
+
+
+@pytest.mark.asyncio
+async def test_cote_bet365_trop_ancienne_ne_produit_pas_de_reco():
+    """Bet365 est lu par tournées : une cote lue il y a 5 h n'est plus jouable."""
+    vieille = _odds("Phil Foden", 10, odds=3.5, bookmaker="bet365", variant="avec_sub")
+    vieille.scraped_at = datetime.now(UTC) - timedelta(hours=5)
+    _, added, _ = await _run_process([vieille], [_alloc_sub(10, "Phil Foden")])
+    assert not [r for r in added if r.market_type != "h2h"]
+
+    fraiche = _odds("Phil Foden", 10, odds=3.5, bookmaker="bet365", variant="avec_sub")
+    _, added, _ = await _run_process([fraiche], [_alloc_sub(10, "Phil Foden")])
+    assert [(r.best_bookmaker, r.market_type.value) for r in added if r.market_type != "h2h"] == [("bet365", "supersub")]
+
+
+async def test_recos_par_date_lisent_bien_les_cotes_en_base():
+    """Régression du 24/11/2026 (PR #103) : `get_recommendations_for_date`
+    lisait une variable qui n'existait pas et plantait pour toute date ayant
+    un match. Ici : un match, une cote, la fonction va au bout."""
+    from app.services import recommendation_service as rs
+
+    fx = MagicMock()
+    fx.id, fx.external_id = 42, "ext42"
+    fx.home_team, fx.away_team, fx.league = "A", "B", "ligue_1"
+    fx.kickoff_utc = datetime.now(UTC) + timedelta(days=1)
+    cote = _odds("Phil Foden", 10, odds=3.0, bookmaker="betclic", variant="avec_sub")
+
+    async def execute(stmt):
+        from app.models.fixtures import Fixture
+        from app.models.player_odds_snapshot import PlayerOddsSnapshot
+
+        res = MagicMock()
+        entity = stmt.column_descriptions[0]["entity"]
+        res.scalars.return_value.all.return_value = {Fixture: [fx], PlayerOddsSnapshot: [cote]}.get(entity, [])
+        return res
+
+    db = AsyncMock()
+    db.execute = execute
+    recu = {}
+
+    async def fake_generate(fixtures, odds_data, **k):
+        recu.update(odds_data)
+        return []
+
+    with patch.object(rs, "generate_recommendations", fake_generate):
+        await rs.get_recommendations_for_date(datetime.now(UTC), db)
+    assert [e["player_name"] for e in next(iter(recu.values()))] == ["Phil Foden"]
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,7 @@ import { useCrestColor } from './useCrestColor'
 import s from './calculateur.module.css'
 
 export type TeamMode = 'squad' | 'xi'
-type SortCol = 'alpha' | 'beta' | 'betclic' | 'unibet' | 'pmu'
+type SortCol = 'alpha' | 'beta' | 'betclic' | 'unibet' | 'pmu' | 'bet365'
 type SortKey = 'name' | `${Market}-${SortCol}`
 
 const cx = (...names: (string | false | null | undefined)[]) =>
@@ -124,12 +124,18 @@ export function TeamOddsTable({
       ...BOOKS.map((bk, i) => {
         const b = books[bk]
         const ref = b?.sansSub ? sansSub : { alpha, beta }
-        const cls = b == null ? 'dn' : isValue(b.odds, ref.alpha, ref.beta) ? 'up' : null
+        // Cote Bet365 trop ancienne : affichée en gris, jamais signalée comme value.
+        const cls = b == null || b.perimee ? 'dn' : isValue(b.odds, ref.alpha, ref.beta) ? 'up' : null
+        const heure = b ? new Date(b.lueA).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : ''
+        const titre = [
+          b?.perimee ? `Cote lue à ${heure}, trop ancienne pour être jouée.` : bk === 'bet365' && b ? `Lue à ${heure}.` : '',
+          b?.sansSub ? 'Cote sans sub : ce book ne propose pas le pari avec remplaçant pour ce joueur. Comparée à notre cote sans sub.' : '',
+        ].filter(Boolean).join(' ')
         return (
           <td
             key={`${market}-${bk}`}
             className={cx(i === 0 && 's', 'book', cls)}
-            title={b?.sansSub ? 'Cote sans sub : ce book ne propose pas le pari avec remplaçant pour ce joueur. Comparée à notre cote sans sub.' : undefined}
+            title={titre || undefined}
           >
             {fmtOdds(b?.odds)}
             {b?.sansSub && <span className={s.sansSub} aria-label="cote sans sub">•</span>}
@@ -183,10 +189,10 @@ export function TeamOddsTable({
           <thead>
             <tr className={s.top}>
               <th className={s.l}></th>
-              <th className={cx('s', 'gB')} colSpan={5}>
+              <th className={cx('s', 'gB')} colSpan={6}>
                 Buteur
               </th>
-              <th className={cx('s', 'gP')} colSpan={5}>
+              <th className={cx('s', 'gP')} colSpan={6}>
                 Passeur
               </th>
             </tr>
@@ -198,13 +204,14 @@ export function TeamOddsTable({
                 sortTh(`${m}-betclic`, 'Betclic', ['s', 'bk']),
                 sortTh(`${m}-unibet`, 'Unibet', ['bk']),
                 sortTh(`${m}-pmu`, 'PMU', ['bk']),
+                sortTh(`${m}-bet365`, 'Bet365', ['bk']),
               ])}
             </tr>
           </thead>
           <tbody>
             {isXi && (
               <tr className={s.sec}>
-                <td className={s.l} colSpan={11}>
+                <td className={s.l} colSpan={13}>
                   Titulaires
                 </td>
               </tr>
@@ -236,7 +243,7 @@ export function TeamOddsTable({
             ))}
             {isXi && (
               <tr className={s.sec}>
-                <td className={s.l} colSpan={11}>
+                <td className={s.l} colSpan={13}>
                   Remplaçants
                 </td>
               </tr>
@@ -258,7 +265,7 @@ export function TeamOddsTable({
             ))}
             {squad.length === 0 && (
               <tr>
-                <td className={s.l} colSpan={11}>
+                <td className={s.l} colSpan={13}>
                   Aucun joueur dans l&apos;effectif
                 </td>
               </tr>

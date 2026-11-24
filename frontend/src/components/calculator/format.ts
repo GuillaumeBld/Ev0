@@ -1,7 +1,10 @@
 import type { FixturePlayerOdd, PlayerAllocationOut } from '@/lib/api'
 
 /** Books affichés, dans l'ordre des colonnes de la maquette D. */
-export const BOOKS = ['betclic', 'unibet', 'pmu'] as const
+export const BOOKS = ['betclic', 'unibet', 'pmu', 'bet365'] as const
+
+/** Bet365 est lu par tournées, pas en continu : passé ce délai sa cote n'est plus jouable. */
+export const TOURNEE_MAX_AGE_MS: Partial<Record<(typeof BOOKS)[number], number>> = { bet365: 4 * 3_600_000 }
 export type Book = (typeof BOOKS)[number]
 export type Market = 'goal' | 'assist'
 
@@ -9,6 +12,10 @@ export type Market = 'goal' | 'assist'
 export interface BookOdd {
   odds: number
   sansSub: boolean
+  /** Cote d'un book lu par tournées (Bet365), trop ancienne pour être jouée. */
+  perimee: boolean
+  /** Heure de lecture (ISO). */
+  lueA: string
 }
 
 /** Cotes books d'un joueur : marché → book → cote. */
@@ -20,7 +27,13 @@ export function indexBookOdds(rows: FixturePlayerOdd[]): BookOddsByPlayer {
   for (const r of rows) {
     if (!(BOOKS as readonly string[]).includes(r.bookmaker)) continue
     const cur = out.get(r.player_api_id) ?? { goal: {}, assist: {} }
-    cur[r.market][r.bookmaker as Book] = { odds: r.odds, sansSub: r.variant === 'sans_sub' }
+    const maxAge = TOURNEE_MAX_AGE_MS[r.bookmaker as Book]
+    cur[r.market][r.bookmaker as Book] = {
+      odds: r.odds,
+      sansSub: r.variant === 'sans_sub',
+      perimee: maxAge != null && Date.now() - new Date(r.scraped_at).getTime() > maxAge,
+      lueA: r.scraped_at,
+    }
     out.set(r.player_api_id, cur)
   }
   return out
