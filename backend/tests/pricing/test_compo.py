@@ -15,6 +15,7 @@ jamais recalculé sur la compo.
 from __future__ import annotations
 
 import inspect
+import math
 from datetime import UTC
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -82,20 +83,39 @@ STARTERS = set(range(1, 11))
 
 # ── (a) xG réparti entre les titulaires ─────────────────────────────
 
-def test_preconditions_cas_city_somme_des_poids_sous_le_xg():
-    shares = compute_player_shares(_squad(), "City", lambda_team=TEAM_XG)
-    assert sum(s.npxg_share for s in shares) < 0.9  # plancher λ actif
+def _lambda_poste_but(a) -> float:
+    return -math.log(1.0 - a.p_goal_supersub)
+
+
+def _lambda_poste_passe(a) -> float:
+    return -math.log(1.0 - a.p_assist_supersub)
+
+
+def test_effectif_les_onze_postes_probables_totalisent_le_xg():
+    """Sans compo : le onze probable se partage exactement le xG du match,
+    même quand la somme des rythmes reste sous ce xG (cas City)."""
+    squad = _squad()
+    onze = team_xg.onze_probable(squad)
+    assert onze == set(range(1, 12)), "titulaires habituels, pas les remplaçants"
+    shares = compute_player_shares(squad, "City", lambda_team=TEAM_XG)
+    allocs = [team_xg.allocate_player(s, TEAM_XG, False, TEAM_XG * team_xg.ASSIST_GOAL_RATE)
+              for s in shares if s.player_id in onze]
+    assert sum(_lambda_poste_but(a) for a in allocs) == pytest.approx(TEAM_XG, rel=0.01)
 
 
 def test_compo_repartit_tout_le_xg_entre_les_titulaires():
+    """Avec remplaçant, les postes de la compo totalisent EXACTEMENT le xG de
+    l'équipe et le budget de passes décisives — finition comprise."""
     allocs = compute_lineup_allocation(_squad(), STARTERS, "City", TEAM_XG)
     assert {a.player_id for a in allocs} == STARTERS
-    assert sum(a.npxg_share for a in allocs) == pytest.approx(1.0, abs=1e-3)
-    # λ avant multiplicateur de finition = part × xG d'équipe : la somme des
-    # titulaires redonne le xG de l'équipe.
-    budget = sum(a.lambda_open_play / a.quality_multiplier for a in allocs)
-    assert budget == pytest.approx(TEAM_XG, abs=0.01)
-    assert sum(a.xa_share for a in allocs) == pytest.approx(1.0, abs=1e-3)
+    assert sum(_lambda_poste_but(a) for a in allocs) == pytest.approx(TEAM_XG, rel=0.01)
+    budget = TEAM_XG * team_xg.ASSIST_GOAL_RATE
+    assert sum(_lambda_poste_passe(a) for a in allocs) == pytest.approx(budget, rel=0.01)
+
+
+def test_compo_penalty_pris_dans_le_xg_pas_ajoute():
+    allocs = compute_lineup_allocation(_squad(), STARTERS, "City", TEAM_XG, pen_taker_id=1)
+    assert sum(_lambda_poste_but(a) for a in allocs) == pytest.approx(TEAM_XG, rel=0.01)
 
 
 def test_compo_raccourcit_les_cotes_avec_sub_y_compris_minutes_partielles():
@@ -202,9 +222,9 @@ async def test_beta_compo_differe_de_beta_effectif():
     assert away_lineup_beta == {}
     # Joueur avec carrière : Beta compo ≠ Beta effectif complet
     assert home_lineup_beta[1].fair_odds_goal_supersub < home_beta[1].fair_odds_goal_supersub
-    # Joueur sans carrière : Beta compo = Alpha compo (repli littéral)
-    alpha_lineup_by_id = {a.player_id: a for a in alpha_lineup}
-    assert home_lineup_beta[5] is alpha_lineup_by_id[5]
+    # Beta suit la même règle : ses postes totalisent le xG de l'équipe
+    total = sum(_lambda_poste_but(a) for a in home_lineup_beta.values())
+    assert total == pytest.approx(TEAM_XG, rel=0.01)
 
 
 @pytest.mark.asyncio

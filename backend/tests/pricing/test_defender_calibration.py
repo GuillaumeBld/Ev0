@@ -131,17 +131,18 @@ class TestPositionBuckets:
         # No flat discount applied — ratio should be ~1.0 (same npxg_per_90 input)
         assert ratio == pytest.approx(1.0, abs=0.05)
 
-    def test_fw_share_unaffected_by_df(self):
-        """npxg_share d'un FW est identique avec ou sans DF dans l'équipe."""
+    def test_un_poste_de_plus_partage_le_meme_xg(self):
+        """Depuis le 26/11/2026 les postes se partagent exactement le xG de
+        l'equipe : ajouter un defenseur reduit la part de l'attaquant, sans
+        jamais faire depasser le total."""
         fw = self._make_player("FW1", "FW", 0.30)
-        shares_solo = compute_player_shares([fw], "TeamA", lambda_team=1.5)
-        share_solo = shares_solo[0].npxg_share
+        share_solo = compute_player_shares([fw], "TeamA", lambda_team=1.5)[0].npxg_share
 
         df = self._make_player("DF1", "DF", 0.10)
         shares_with_df = compute_player_shares([fw, df], "TeamA", lambda_team=1.5)
         share_with_df = next(s for s in shares_with_df if s.player_name == "FW1").npxg_share
 
-        assert share_solo == pytest.approx(share_with_df, abs=0.0001)
+        assert share_with_df < share_solo
 
     def test_low_npxg_df_has_lower_share_than_fw(self):
         """DF with realistic low npxg_per_90 (0.02) has much lower share than FW (0.30)."""

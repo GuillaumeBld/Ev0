@@ -202,6 +202,10 @@ class PlayerShare:
     expected_minutes: float
     matches_played: int
     is_pen_taker: bool = False
+    # Part du xG d'equipe reservee au penalty (0 si aucun tireur parmi les
+    # postes). Le xG du marche compte deja les penalties : on les retire du
+    # jeu ouvert au lieu de les ajouter par-dessus.
+    reserve_penalty: float = 0.0
     npxg_per_90: float = 0.0
     xa_per_90: float = 0.0
     xgchain_per_90: float = 0.0
@@ -496,12 +500,86 @@ async def _enrichir_rythme_carriere(db: AsyncSession, players: list[dict[str, An
         p["carriere_xa_per_90"] = r.assist_rate_per_90
 
 
+def onze_probable(players: list[dict[str, Any]]) -> set[int]:
+    """Les 11 postes d'un effectif sans compo connue : le gardien et les 10
+    joueurs de champ les plus souvent titulaires (a egalite : le plus de temps
+    de jeu, puis le plus de matchs).
+
+    Sert uniquement a choisir QUI occupe les postes, jamais a reduire une part.
+    """
+    def cle(p: dict[str, Any]) -> tuple:
+        return (
+            p.get("starts") or 0,
+            p.get("minutes_played") or 0,
+            p.get("matches_played") or 0,
+            -(p.get("player_id") or 0),
+        )
+
+    gardiens = sorted((p for p in players if p.get("position") == "GK"), key=cle, reverse=True)
+    champ = sorted((p for p in players if p.get("position") != "GK"), key=cle, reverse=True)
+    onze = gardiens[:1] + champ[: 11 - min(1, len(gardiens))]
+    return {p["player_id"] for p in onze}
+
+
+def _goal_stats(share: PlayerShare) -> dict[str, Any]:
+    return {
+        "shot_accuracy": share.shot_accuracy,
+        "xg_per_shot": share.xg_per_shot,
+        "avg_rating": share.avg_rating,        # brut (0-10)
+        "matches_played": share.matches_played,
+        "npxg_total": share.npxg_total,
+        "goals": share.goals_total,
+    }
+
+
+def _assist_stats(share: PlayerShare) -> dict[str, Any]:
+    return {
+        "xa_per_90": share.xa_per_90,
+        "key_pass_per_90": share.key_pass_per_90,
+        "accurate_cross_per_90": share.accurate_cross_per_90,
+        "cross_accuracy": share.cross_accuracy,
+        "matches_played": share.matches_played,
+        "xa_total": share.xa_total,
+        "assists": share.assists_total,
+    }
+
+
+def _multiplicateur_but(share: PlayerShare) -> float:
+    return calculate_finishing_multiplier(_goal_stats(share), share.position)
+
+
+def _multiplicateur_passe(share: PlayerShare) -> float:
+    stats = _assist_stats(share)
+    return (
+        calculate_creation_multiplier_v2(stats, share.position)
+        * calculate_xa_conversion(stats, share.position)
+    )
+
+
 def compute_player_shares(
     players: list[dict[str, Any]],
     team: str,
     lambda_team: float,
+    xi_ids: set[int] | list[int] | None = None,
 ) -> list[PlayerShare]:
-    """Compute top-down shares via form-blended rates. denominator = max(sum weights, λ_team)."""
+    """Parts de chaque joueur, raisonnees PAR POSTE SUR 90 MINUTES.
+
+    Le pari de reference est « avec remplacant » : il couvre le poste pendant
+    tout le match. Le poids d'un joueur est donc son rythme par 90 minutes
+    (melange saison / forme, ramene vers carriere ou poste si l'echantillon
+    est mince) — jamais multiplie par ses minutes habituelles.
+
+    Les parts sont normalisees sur les 11 postes (`xi_ids` : la compo ; par
+    defaut le onze probable) de sorte que, multiplicateurs de finition et de
+    creation compris, les 11 postes totalisent EXACTEMENT le xG de l'equipe
+    et le budget de passes decisives. Un joueur hors des 11 recoit la part
+    qu'il aurait s'il occupait un poste (meme denominateur).
+
+    Correction du 26/11/2026 : l'ancienne regle reduisait la part par les
+    minutes puis regonflait chaque joueur a 90 minutes pour la cote avec
+    remplacant — 1,66 but distribue pour 1,40 attendu (Chelsea) et jusqu'a
+    +78 % de passes decisives.
+    """
     # Pass 1 — compute blended weights per player
     entries = []
     for p in players:
@@ -509,7 +587,6 @@ def compute_player_shares(
         mins = p.get("minutes_played", 0) or 0
         avg_mins = p.get("avg_minutes_per_match") or ((mins / matches) if matches > 0 else 75.0)
         exp_mins = min(90.0, max(1.0, avg_mins))
-        mins_ratio = exp_mins / 90.0
 
         # Goal weight — blend season xg_per_90 + form_xg_5 (position-specific form weight)
         pos = p.get("position")
@@ -528,7 +605,7 @@ def compute_player_shares(
             blended_xg, mins, pos, POSITION_PRIOR_XG, _PRIOR_XG_FALLBACK,
             carriere=p.get("carriere_xg_per_90"),
         )
-        goal_weight = blended_xg * mins_ratio
+        goal_weight = blended_xg
 
         # Assist weight — blend season xa_per_90 + form_assists_5
         xa_per_90 = p.get("xa_per_90") or 0.0
@@ -542,18 +619,11 @@ def compute_player_shares(
             blended_xa, mins, pos, POSITION_PRIOR_XA, _PRIOR_XA_FALLBACK,
             carriere=p.get("carriere_xa_per_90"),
         )
-        assist_weight = blended_xa * mins_ratio
+        assist_weight = blended_xa
 
         entries.append((p, exp_mins, goal_weight, assist_weight, poids_xg, poids_xa))
 
-    # Pass 2 — denominators
-    total_goal = sum(e[2] for e in entries)
-    total_assist = sum(e[3] for e in entries)
-    budget_assists = lambda_team * ASSIST_GOAL_RATE
-    goal_denom = max(total_goal, lambda_team) or 1e-9
-    assist_denom = max(total_assist, budget_assists) or 1e-9
-
-    # Pass 3 — build PlayerShare objects
+    # Pass 2 — PlayerShare objects (parts brutes = poids, normalisees ensuite)
     shares = []
     for p, exp_mins, goal_weight, assist_weight, poids_xg, poids_xa in entries:
         pos = p.get("position")
@@ -566,8 +636,8 @@ def compute_player_shares(
             player_name=p["player_name"],
             team=team,
             position=pos,
-            npxg_share=goal_weight / goal_denom,
-            xa_share=assist_weight / assist_denom,
+            npxg_share=goal_weight,
+            xa_share=assist_weight,
             expected_minutes=exp_mins,
             matches_played=matches,
             npxg_per_90=p.get("npxg_per_90") or p.get("xg_per_90") or 0.0,
@@ -597,7 +667,28 @@ def compute_player_shares(
             poids_mesure_assist=round(poids_xa, 4),
             stats_season=p.get("stats_season"),
         ))
+
+    # Pass 3 — normalisation sur les 11 postes, multiplicateurs compris
+    postes = {int(i) for i in xi_ids} if xi_ids is not None else onze_probable(players)
+    denom_but = sum(s.npxg_share * _multiplicateur_but(s) for s in shares if s.player_id in postes)
+    denom_passe = sum(s.xa_share * _multiplicateur_passe(s) for s in shares if s.player_id in postes)
+    for s in shares:
+        s.npxg_share = s.npxg_share / denom_but if denom_but > 0 else 0.0
+        s.xa_share = s.xa_share / denom_passe if denom_passe > 0 else 0.0
     return shares
+
+
+def marquer_tireur(shares: list[PlayerShare], pen_id: int | None, postes: set[int] | None = None) -> None:
+    """Designe le tireur de penalty et reserve sa part dans le xG d'equipe.
+
+    La reserve n'est prise que si le tireur occupe un des postes (`postes`,
+    tous les joueurs fournis si None) : sinon personne sur le terrain ne tire.
+    """
+    ids = postes if postes is not None else {s.player_id for s in shares}
+    reserve = PEN_CONVERSION * PENS_PER_MATCH if pen_id is not None and pen_id in ids else 0.0
+    for s in shares:
+        s.is_pen_taker = s.player_id == pen_id
+        s.reserve_penalty = reserve
 
 
 def detect_penalty_taker(players: list[dict[str, Any]]) -> int | None:
@@ -633,21 +724,21 @@ def allocate_player(
     p_sub: float = 0.35,
     avg_sub_time: float = 65.0,
 ) -> PlayerAllocation:
-    """Compute Poisson lambdas using new top-down formulas."""
+    """Lambdas de Poisson du POSTE sur 90 minutes (cote avec remplacant),
+    puis du joueur seul sur ses minutes habituelles (cote sans remplacant).
+
+    Les parts viennent de compute_player_shares, deja normalisees pour que
+    les 11 postes totalisent le xG d'equipe (penalty reserve compris) et le
+    budget de passes decisives.
+    """
     mins_ratio = share.expected_minutes / 90.0
 
     # ── Goalscorer ────────────────────────────────────────────────
-    goal_stats = {
-        "shot_accuracy": share.shot_accuracy,
-        "xg_per_shot": share.xg_per_shot,
-        "avg_rating": share.avg_rating,        # brut (0-10)
-        "matches_played": share.matches_played,
-        "npxg_total": share.npxg_total,
-        "goals": share.goals_total,
-    }
+    goal_stats = _goal_stats(share)
     finishing_mult = calculate_finishing_multiplier(goal_stats, share.position)
-    lambda_open_play = share.npxg_share * team_match_xg * finishing_mult
-    lambda_penalty = PEN_CONVERSION * PENS_PER_MATCH * mins_ratio if is_pen_taker else 0.0
+    xg_jeu = max(team_match_xg - share.reserve_penalty, 0.0)
+    lambda_open_play = share.npxg_share * xg_jeu * finishing_mult
+    lambda_penalty = PEN_CONVERSION * PENS_PER_MATCH if is_pen_taker else 0.0
 
     # Part nulle du xG d'equipe = aucune statistique exploitable. Le plancher
     # qui suit (0.001) protege d'une division par zero ; il ne doit JAMAIS
@@ -656,12 +747,11 @@ def allocate_player(
     # les 30 jours au 06/11/2026 — toutes avec lambda au plancher.
     has_signal_goal = share.npxg_share > 0.0 or is_pen_taker
 
-    # Le lambda BRUT, avant tout plancher : c'est lui qui sert a normaliser a
-    # 90 minutes plus bas. Plafonner d'abord puis diviser par mins_ratio
-    # multipliait le plancher par 90 -- un joueur a une minute attendue
-    # ressortait a 1.69 passeur ou 11.62 buteur (06/11/2026). Le plancher
-    # protege d'une division par zero ; il ne doit jamais etre normalise.
-    lambda_total_brut = lambda_open_play + lambda_penalty
+    # Lambda du poste sur 90 minutes (brut, avant plancher), puis celui du
+    # joueur seul sur ses minutes. Le plancher (0.001) protege d'une division
+    # par zero ; il n'est jamais mis a l'echelle.
+    lambda_poste_brut = lambda_open_play + lambda_penalty
+    lambda_total_brut = lambda_poste_brut * mins_ratio
     lambda_total = max(0.001, min(lambda_total_brut, 3.0))
     if has_signal_goal:
         prob_goal = 1 - math.exp(-lambda_total)
@@ -673,22 +763,15 @@ def allocate_player(
         fair_odds_goal = 0.0
 
     # ── Assist ────────────────────────────────────────────────────
-    assist_stats = {
-        "xa_per_90": share.xa_per_90,
-        "key_pass_per_90": share.key_pass_per_90,
-        "accurate_cross_per_90": share.accurate_cross_per_90,
-        "cross_accuracy": share.cross_accuracy,
-        "matches_played": share.matches_played,
-        "xa_total": share.xa_total,
-        "assists": share.assists_total,
-    }
+    assist_stats = _assist_stats(share)
     creation_mult = calculate_creation_multiplier_v2(assist_stats, share.position)
     xa_conversion = calculate_xa_conversion(assist_stats, share.position)
-    # Brut d'abord, pour la meme raison que le buteur : le plancher passeur
-    # (0.01) normalise a 90 minutes donnait 1.69 -- 867 recommandations sur
-    # 30 jours. On normalise le brut, on plafonne apres.
-    lambda_assist_brut = share.xa_share * budget_assists * creation_mult * xa_conversion
-    lambda_assist = calculate_assist_lambda(share.xa_share, budget_assists, creation_mult, xa_conversion)
+    # Poste sur 90 minutes (brut), puis joueur seul sur ses minutes ; le
+    # plancher passeur (0.01) n'est jamais mis a l'echelle.
+    lambda_assist_poste_brut = share.xa_share * budget_assists * creation_mult * xa_conversion
+    lambda_assist = calculate_assist_lambda(
+        share.xa_share * mins_ratio, budget_assists, creation_mult, xa_conversion,
+    )
 
     has_signal_assist = share.xa_share > 0.0
 
@@ -699,25 +782,13 @@ def allocate_player(
         prob_assist = 0.0
         fair_odds_assist = 0.0
 
-    # ── Supersub (qualité 90 min) ─────────────────────────────────
-    # C.But+Sub = cote si le joueur jouait 90 minutes à son rythme actuel.
-    # Signal de qualité pure, indépendant du rôle (titulaire / entrant).
-    # Toujours ≤ C.But (meilleures cotes) car 90 min ≥ expected_minutes.
-    #
-    # C'est cette normalisation qui transformait un plancher en prix : diviser
-    # par mins_ratio multiplie par 90 quand une seule minute est attendue.
-    # Elle reste juste tant que lambda porte un vrai signal — sans signal, on
-    # ne normalise rien.
-    # On normalise le BRUT, puis on plafonne : l'inverse multipliait le
-    # plancher par 90 quand une seule minute etait attendue.
-    lambda_total_90 = (
-        max(0.001, min(lambda_total_brut / mins_ratio, 3.0))
-        if mins_ratio > 0 else lambda_total
-    )
-    lambda_assist_90 = (
-        max(CLAMP_LAMBDA_MIN_ASSIST, min(lambda_assist_brut / mins_ratio, 2.0))
-        if mins_ratio > 0 else lambda_assist
-    )
+    # ── Avec remplacant (le poste sur 90 minutes) ────────────────
+    # C'est la cote de reference : le pari couvre le poste tout le match.
+    # Elle vient directement de la part du poste, sans aucune division par
+    # les minutes (l'ancienne division gonflait chaque joueur a 90 minutes
+    # apres avoir reduit sa part : le total depassait le xG d'equipe).
+    lambda_total_90 = max(0.001, min(lambda_poste_brut, 3.0))
+    lambda_assist_90 = max(CLAMP_LAMBDA_MIN_ASSIST, min(lambda_assist_poste_brut, 2.0))
 
     if has_signal_goal:
         p_goal_ss = 1.0 - math.exp(-lambda_total_90)
@@ -835,6 +906,7 @@ def _player_dict_from_merged(
         "position": _norm_pos(_bzz_pos_to_raw(player.position)),
         "matches_played": _num("matches_played", 0),
         "minutes_played": _num("minutes_played", 0),
+        "starts": _num("starts", 0),
         # Shared numeric fields (mapped to existing compute_player_shares keys)
         "goals": goals_total,
         "xg": xg_total,
@@ -1394,14 +1466,11 @@ def lineup_pen_taker(starters: list[dict[str, Any]], override: int | None) -> in
 def lineup_shares(
     starters: list[dict[str, Any]], team: str, match_xg: float,
 ) -> list[PlayerShare]:
-    """Parts des titulaires, renormalisées pour sommer à 1 (tout le xG réparti)."""
-    shares = compute_player_shares(starters, team, lambda_team=match_xg)
-    sum_goal = sum(s.npxg_share for s in shares)
-    sum_assist = sum(s.xa_share for s in shares)
-    for s in shares:
-        s.npxg_share = s.npxg_share / sum_goal if sum_goal > 0 else 0.0
-        s.xa_share = s.xa_share / sum_assist if sum_assist > 0 else 0.0
-    return shares
+    """Parts des titulaires : les postes de la compo se partagent exactement
+    le xG de l'équipe et le budget de passes décisives."""
+    return compute_player_shares(
+        starters, team, lambda_team=match_xg, xi_ids={p["player_id"] for p in starters},
+    )
 
 
 def compute_lineup_allocation(
@@ -1431,8 +1500,9 @@ def compute_lineup_allocation(
     pen_id = lineup_pen_taker(starters, pen_taker_id)
     budget_assists = team_xg * ASSIST_GOAL_RATE
     allocs = []
-    for s in lineup_shares(starters, team, team_xg):
-        s.is_pen_taker = s.player_id == pen_id
+    shares = lineup_shares(starters, team, team_xg)
+    marquer_tireur(shares, pen_id)
+    for s in shares:
         p_sub, avg_sub_time = (sub_by_id or {}).get(s.player_id, (0.35, 65.0))
         allocs.append(allocate_player(
             s, team_xg, s.is_pen_taker, budget_assists,
@@ -1611,10 +1681,8 @@ async def load_match_pricing(
 
     home_pen_id = home_pen_taker_override or detect_penalty_taker(home_players_db)
     away_pen_id = away_pen_taker_override or detect_penalty_taker(away_players_db)
-    for s in home_shares:
-        s.is_pen_taker = s.player_id == home_pen_id
-    for s in away_shares:
-        s.is_pen_taker = s.player_id == away_pen_id
+    marquer_tireur(home_shares, home_pen_id, onze_probable(home_players_db))
+    marquer_tireur(away_shares, away_pen_id, onze_probable(away_players_db))
 
     budget_assists_home = home_match_xg * ASSIST_GOAL_RATE
     budget_assists_away = away_match_xg * ASSIST_GOAL_RATE

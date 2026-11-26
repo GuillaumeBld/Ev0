@@ -22,7 +22,12 @@ CLAMP_LAMBDA_MAX = 2.0
 
 # ── Top-down assist constants (Bzzoiro v2) ────────────────────────
 
-ASSIST_GOAL_RATE: float = 0.72
+# Part des buts accompagnes d'une passe decisive : budget de passes d'un
+# match = xG de l'equipe x ce taux. Mesure le 26/11/2026 sur nos matchs
+# 2025-26 + 2026-27 (Big 5, LdC, C3, C4, Eredivisie, Liga Portugal, Ligue 2) :
+# 6 486 passes pour 9 323 buts = 69,6 % (de 68,5 % en Liga a 72,4 % en
+# Bundesliga). Ancienne valeur : 0.72.
+ASSIST_GOAL_RATE: float = 0.70
 
 ASSIST_POSITION_AVGS: dict[str, dict[str, float]] = {
     # Calibrated on Bzzoiro 2025-2026 (≥450 min, Big5 + UCL)

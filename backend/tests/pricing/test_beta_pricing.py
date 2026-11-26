@@ -144,7 +144,11 @@ class TestApplyBlendedRhythm:
 
 
 class TestBuildBetaAllocations:
-    def test_player_without_career_falls_back_to_literal_alpha_alloc(self):
+    def test_player_without_career_is_recomputed_on_beta_shares(self):
+        """Depuis le 26/11/2026 : plus de repli littéral sur Alpha. Les postes
+        Beta doivent totaliser exactement le xG de l'équipe ; un joueur sans
+        carrière est donc recalculé sur les parts Beta (son rythme ne change
+        pas, mais celui de ses coéquipiers oui)."""
         players_beta = [
             _player_dict(1, "No Career", npxg_per_90=0.30, xa_per_90=0.10),
             _player_dict(2, "Has Career", npxg_per_90=0.80, xa_per_90=0.10),
@@ -162,9 +166,9 @@ class TestBuildBetaAllocations:
             alpha_by_id=alpha_by_id,
         )
 
-        # Player 1 (no career): identical object to Alpha's allocation.
-        assert out[1] is alpha_alloc_1
-        assert out[1].fair_odds_goal_supersub == pytest.approx(4.2)
+        assert out[1] is not alpha_alloc_1
+        # Son coéquipier a un rythme carrière plus fort : sa part baisse.
+        assert out[1].p_goal_supersub < out[2].p_goal_supersub
 
     def test_player_with_career_gets_freshly_computed_allocation(self):
         players_beta = [
@@ -291,8 +295,8 @@ class TestComputeBetaAllocationsFullFlow:
                 home_match_xg=1.6, away_match_xg=1.2,
             )
 
-        # Player 1: no career -> Beta strictly equals Alpha (literal fallback).
-        assert home_beta[1] is alpha_home[0]
+        # Player 1 : sans carrière, recalculé lui aussi sur les parts Beta.
+        assert home_beta[1] is not alpha_home[0]
         # Player 2: has career -> recomputed, distinct from Alpha's alloc.
         assert home_beta[2] is not alpha_home[1]
         # Away side wired too.

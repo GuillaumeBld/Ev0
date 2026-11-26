@@ -1,16 +1,16 @@
 """Beta pricing — même moteur Alpha (team_xg.py, gelé), rythme mélangé carrière.
 
 Beta = EXACTEMENT le même pipeline top-down que Alpha (load_match_pricing) :
-même xG d'équipe, mêmes minutes attendues, mêmes pen takers, même p_sub /
+même xG d'équipe, mêmes postes, mêmes pen takers, même p_sub /
 avg_sub_time. La SEULE différence : le rythme de référence de chaque joueur
 (npxg_per_90 / xg_per_90 / xa_per_90) est remplacé par son rythme mélangé
 carrière (app.pricing.career_blend.blended_rhythm) quand une carrière a été
 importée pour ce joueur.
 
-Fallback : un joueur sans rythme mélangé (blended_rhythm -> None) obtient un
-alloc Beta strictement identique à son alloc Alpha (même objet réutilisé) —
-pas de dérive due au partage du budget d'équipe avec des coéquipiers dont le
-rythme, lui, a changé.
+Un joueur sans rythme mélangé garde son rythme Alpha mais est recalculé sur
+les parts Beta (depuis le 26/11/2026) : les 11 postes de chaque modèle
+totalisent exactement le xG de l'équipe, ce qu'un repli sur l'allocation
+Alpha, calculée sur d'autres parts, empêcherait.
 
 team_xg.py n'est JAMAIS modifié : ce module se contente d'importer ses
 fonctions pures (compute_player_shares, allocate_player, detect_penalty_taker)
@@ -47,6 +47,8 @@ from app.pricing.team_xg import (
     detect_penalty_taker,
     lineup_pen_taker,
     lineup_shares,
+    marquer_tireur,
+    onze_probable,
 )
 from app.services.competitions import is_international_fixture
 
@@ -122,29 +124,29 @@ def _build_beta_allocations(
     alpha_by_id: dict[int, PlayerAllocation],
     shares: list | None = None,
 ) -> dict[int, PlayerAllocation]:
-    """Run the pure Alpha engine (compute_player_shares + allocate_player) over
-    a team's beta-rate player pool, falling back to the literal Alpha
-    allocation for any player without a blended rhythm.
+    """Moteur Alpha (compute_player_shares + allocate_player) sur les rythmes
+    Beta, pour TOUS les joueurs.
 
-    `shares` : parts déjà calculées (compo : parts renormalisées des seuls
-    titulaires, cf. team_xg.lineup_shares) ; par défaut, l'effectif complet.
+    Depuis le 26/11/2026, les 11 postes doivent totaliser exactement le xG de
+    l'équipe dans chaque modèle : un joueur sans carrière n'hérite plus de sa
+    cote Alpha (calculée sur d'autres parts), il est recalculé sur les parts
+    Beta. `ids_with_career` reste accepté pour compatibilité.
+
+    `shares` : parts déjà calculées (compo, cf. team_xg.lineup_shares) ; par
+    défaut, l'effectif complet normalisé sur le onze probable.
     """
     if shares is None:
         shares = compute_player_shares(players_beta, team, lambda_team=lambda_team)
+        marquer_tireur(shares, pen_id, onze_probable(players_beta))
+    else:
+        marquer_tireur(shares, pen_id)
     out: dict[int, PlayerAllocation] = {}
     for s in shares:
         alpha_alloc = alpha_by_id.get(s.player_id)
-        if s.player_id not in ids_with_career and alpha_alloc is not None:
-            # No career data for this player -> Beta must equal Alpha exactly,
-            # regardless of how teammates' rhythm changes shifted the team's
-            # shared xG/xA budget.
-            out[s.player_id] = alpha_alloc
-            continue
         p_sub = alpha_alloc.p_sub if alpha_alloc is not None else 0.35
         avg_sub_time = alpha_alloc.avg_sub_time if alpha_alloc is not None else 65.0
-        is_pen = s.player_id == pen_id
         out[s.player_id] = allocate_player(
-            s, lambda_team, is_pen, budget_assists,
+            s, lambda_team, s.is_pen_taker, budget_assists,
             p_sub=p_sub, avg_sub_time=avg_sub_time,
         )
     return out
@@ -254,9 +256,4 @@ def _build_lineup_beta(
         lambda_team * ASSIST_GOAL_RATE, context,
         shares=lineup_shares(starters, team, lambda_team),
     )
-    # Repli littéral : un titulaire sans carrière reçoit la compo Alpha, pas
-    # l'allocation Alpha de l'effectif complet.
-    for pid in list(out):
-        if pid not in ids_with_career and pid not in alpha_lineup_by_id:
-            out.pop(pid)
     return out

@@ -36,10 +36,37 @@ SAMPLE_MF = {
 }
 
 
+def _onze(*vedettes):
+    """Les vedettes + des coequipiers etablis pour remplir 11 postes."""
+    out = list(vedettes)
+    for i in range(11 - len(out)):
+        out.append({**SAMPLE_MF, "player_id": 100 + i, "player_name": f"Coequipier {i}",
+                    "npxg_per_90": 0.06, "xg_per_90": 0.06, "xa_per_90": 0.07})
+    return out
+
+
+def _lambda_poste(alloc):
+    return -math.log(1.0 - alloc.p_goal_supersub)
+
+
 class TestComputePlayerSharesTopDown:
-    def test_shares_sum_le_one(self):
-        shares = compute_player_shares([SAMPLE_FW, SAMPLE_MF], "Team", lambda_team=1.5)
-        assert sum(s.npxg_share for s in shares) <= 1.001
+    def test_les_onze_postes_totalisent_exactement_le_xg_equipe(self):
+        """Regle du 26/11/2026 : avec remplacant, les 11 postes se partagent
+        EXACTEMENT le xG de l'equipe et le budget de passes decisives."""
+        onze = _onze(SAMPLE_FW, SAMPLE_MF)
+        shares = compute_player_shares(onze, "Team", lambda_team=1.5)
+        budget = 1.5 * ASSIST_GOAL_RATE
+        allocs = [allocate_player(sh, 1.5, False, budget) for sh in shares]
+        assert sum(_lambda_poste(a) for a in allocs) == pytest.approx(1.5, rel=0.01)
+        assert sum(-math.log(1.0 - a.p_assist_supersub) for a in allocs) == pytest.approx(budget, rel=0.01)
+
+    def test_les_minutes_ne_reduisent_pas_la_part_du_poste(self):
+        """Le pari couvre le poste 90 minutes : un titulaire qui sort a l'heure
+        de jeu garde la meme part que s'il jouait tout le match."""
+        complet = compute_player_shares(_onze(SAMPLE_FW, SAMPLE_MF), "Team", lambda_team=1.5)
+        partiel_fw = {**SAMPLE_FW, "minutes_played": 15 * 55}
+        partiel = compute_player_shares(_onze(partiel_fw, SAMPLE_MF), "Team", lambda_team=1.5)
+        assert complet[0].npxg_share == pytest.approx(partiel[0].npxg_share, rel=1e-6)
 
     def test_fw_has_higher_goal_share_than_mf(self):
         shares = compute_player_shares([SAMPLE_FW, SAMPLE_MF], "Team", lambda_team=1.5)
@@ -55,17 +82,19 @@ class TestComputePlayerSharesTopDown:
         fw_form = next(s for s in shares_form if s.position == "FW")
         assert fw_form.npxg_share > fw_base.npxg_share
 
-    def test_single_player_denom_equals_lambda_when_weight_less(self):
-        small_fw = {**SAMPLE_FW, "npxg_per_90": 0.10, "xg_per_90": 0.10}
-        shares = compute_player_shares([small_fw], "Team", lambda_team=2.0)
-        # weight = 0.10 * (75/90) < 2.0 → denom = 2.0
-        expected_weight = 0.10 * (75.0 / 90.0)
-        assert abs(shares[0].npxg_share - expected_weight / 2.0) < 0.01
+    def test_aucun_xg_perdu_quand_les_rythmes_sont_faibles(self):
+        """Avant le 26/11, une equipe aux rythmes faibles ne recevait qu'une
+        partie du xG du match (denominateur = xG du match). Desormais tout le
+        xG est reparti entre les postes."""
+        faible = [{**p, "npxg_per_90": 0.02, "xg_per_90": 0.02} for p in _onze(SAMPLE_FW)]
+        shares = compute_player_shares(faible, "Team", lambda_team=2.0)
+        allocs = [allocate_player(sh, 2.0, False, 2.0 * ASSIST_GOAL_RATE) for sh in shares]
+        assert sum(_lambda_poste(a) for a in allocs) == pytest.approx(2.0, rel=0.01)
 
 
 class TestAllocatePlayerTopDown:
     def _get_share(self, player=SAMPLE_FW):
-        shares = compute_player_shares([player], "Team", lambda_team=1.5)
+        shares = compute_player_shares(_onze(player, SAMPLE_MF), "Team", lambda_team=1.5)
         return shares[0]
 
     def test_average_fw_fair_odds_goal_reasonable(self):
@@ -88,7 +117,7 @@ class TestAllocatePlayerTopDown:
 
     def test_form_data_sets_flag(self):
         fw_form = {**SAMPLE_FW, "form_xg_5": 2.0, "form_assists_5": 1.0}
-        shares = compute_player_shares([fw_form], "Team", lambda_team=1.5)
+        shares = compute_player_shares(_onze(fw_form), "Team", lambda_team=1.5)
         alloc = allocate_player(shares[0], 1.5, False, 1.5 * ASSIST_GOAL_RATE)
         assert alloc.has_form_goal is True
         assert alloc.has_form_assist is True
