@@ -60,8 +60,25 @@ def _joueur(nom, poste, xg90, xa90, minutes, matchs=None):
     }
 
 
+def _coequipiers():
+    """Onze ordinaire et etabli (gardien + 10 joueurs de champ). Depuis le
+    26/11/2026 les parts sont normalisees sur les 11 postes : un joueur seul
+    dans son effectif occuperait tous les postes et recevrait tout le xG."""
+    postes = ["GK", "DF", "DF", "DF", "DF", "MF", "MF", "MF", "FW", "FW", "FW"]
+    rythmes = {"GK": (0.0, 0.0), "DF": (0.05, 0.05), "MF": (0.10, 0.12), "FW": (0.30, 0.12)}
+    out = []
+    for i, poste in enumerate(postes):
+        j = _joueur(f"Coequipier {i}", poste, *rythmes[poste], minutes=1500.0, matchs=17)
+        j["player_id"] = 900000 + i
+        j["starts"] = 17
+        out.append(j)
+    return out
+
+
 def _alloc(joueur, is_pen_taker=False):
-    share = compute_player_shares([joueur], "Equipe", lambda_team=1.5)[0]
+    effectif = _coequipiers() + [joueur]
+    shares = compute_player_shares(effectif, "Equipe", lambda_team=1.5)
+    share = next(s for s in shares if s.player_id == joueur["player_id"])
     return allocate_player(share, team_match_xg=1.5, is_pen_taker=is_pen_taker,
                            budget_assists=BUDGET)
 
