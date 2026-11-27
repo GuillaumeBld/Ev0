@@ -285,6 +285,10 @@ export interface PlayerBreakdownRow {
   kind: 'domestic_1' | 'domestic_2' | 'world' | 'uefa_club' | 'selection' | string
   matches_played: number | null
   minutes_played: number | null
+  /** Temps de jeu / buts / passes dans les matchs où le xG est mesuré. */
+  minutes_xg?: number | null
+  goals_xg?: number | null
+  assists_xg?: number | null
   starts: number | null
   goals: number | null
   goal_assist: number | null

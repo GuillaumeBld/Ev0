@@ -226,6 +226,9 @@ class PlayerShare:
     form_xg_5: float | None = None
     form_assists_5: float | None = None
     finishing_delta: float = 0.0
+    # Aucun match mesure en xG : rythme tire des vrais buts, et pas de donnees
+    # de tir pour juger la finition -> multiplicateur neutre (1.0).
+    rythme_sans_xg: bool = False
     has_bzz_stats: bool = False  # True when loaded from bzz_player_season_stats
     # Part du rythme qui vient du joueur lui-meme, le reste venant de l'a priori
     # de son poste. 0 = la cote est celle du poste, 1 = elle est entierement
@@ -413,6 +416,13 @@ def assess_inputs(players: list[dict[str, Any]], team: str) -> list[InputWarning
 # docs/superpowers/specs/2026-11-06-cote-par-defaut-a-priori-poste-design.md
 SEUIL_MINUTES: float = 450.0
 
+# Joueur sans aucun match ou le xG est mesure : son rythme vient de ses vrais
+# buts / passes, rappeles vers son repli (carriere, sinon poste) comme
+# 15 matchs d'a priori. Calibre le 27/11/2026 hors echantillon (2 929 joueurs,
+# saison derniere -> saison en cours) : K=15 bat 0/3/5/10/20/30 et fait meme
+# mieux que le xG brut (erreur 0,112 contre 0,118).
+RAPPEL_SANS_XG_MATCHS: float = 15.0
+
 POSITION_PRIOR_XG: dict[str, float] = {"FW": 0.347, "MF": 0.132, "DF": 0.056, "GK": 0.035}
 POSITION_PRIOR_XA: dict[str, float] = {"FW": 0.115, "MF": 0.126, "DF": 0.059, "GK": 0.006}
 
@@ -465,6 +475,20 @@ def regress_to_position(
         return repli, 0.0
     poids = minutes / SEUIL_MINUTES
     return poids * rate + (1.0 - poids) * repli, poids
+
+
+def _rappel_sans_xg(
+    taux_reel: float, minutes: float, position: str | None,
+    priors: dict[str, float], fallback: float, carriere: float | None,
+) -> tuple[float, float]:
+    """Rythme d'un joueur sans aucun match mesure en xG : ses vrais buts (ou
+    passes) par 90, rappeles vers sa carriere (sinon son poste) comme
+    RAPPEL_SANS_XG_MATCHS matchs d'a priori. Evite les deux exces : 0 but en
+    6 matchs ne vaut pas « jamais buteur », 2 buts en 3 matchs pas « 0,67/90 »."""
+    repli = carriere if carriere is not None else position_prior(position, priors, fallback)
+    n90 = max(minutes, 0.0) / 90.0
+    poids = n90 / (n90 + RAPPEL_SANS_XG_MATCHS)
+    return poids * taux_reel + (1.0 - poids) * repli, poids
 
 
 async def _enrichir_rythme_carriere(db: AsyncSession, players: list[dict[str, Any]]) -> None:
@@ -543,6 +567,10 @@ def _assist_stats(share: PlayerShare) -> dict[str, Any]:
 
 
 def _multiplicateur_but(share: PlayerShare) -> float:
+    # Sans match mesure, ni tirs ni xG par tir : une donnee absente n'est pas
+    # une mauvaise finition (sinon plancher x0,5 -> defenseurs cotes 150).
+    if share.rythme_sans_xg:
+        return 1.0
     return calculate_finishing_multiplier(_goal_stats(share), share.position)
 
 
@@ -591,10 +619,17 @@ def compute_player_shares(
         # Regression vers le poste APRES le melange de forme : form_rate divise
         # aussi par les minutes attendues, donc il souffre de la meme
         # amplification. Une seule intervention couvre les deux.
-        blended_xg, poids_xg = regress_to_position(
-            blended_xg, mins, pos, POSITION_PRIOR_XG, _PRIOR_XG_FALLBACK,
-            carriere=p.get("carriere_xg_per_90"),
-        )
+        sans_xg = bool(p.get("rythme_sans_xg"))
+        # Echantillon du xG/xA = matchs mesures seulement (repli : tout).
+        mins_xg = mins if sans_xg else (p.get("minutes_xg") if p.get("minutes_xg") is not None else mins)
+        if sans_xg:
+            blended_xg, poids_xg = _rappel_sans_xg(
+                xg_per_90, mins, pos, POSITION_PRIOR_XG, _PRIOR_XG_FALLBACK, p.get("carriere_xg_per_90"))
+        else:
+            blended_xg, poids_xg = regress_to_position(
+                blended_xg, mins_xg, pos, POSITION_PRIOR_XG, _PRIOR_XG_FALLBACK,
+                carriere=p.get("carriere_xg_per_90"),
+            )
         goal_weight = blended_xg
 
         # Assist weight — blend season xa_per_90 + form_assists_5
@@ -605,10 +640,14 @@ def compute_player_shares(
             blended_xa = (1 - form_w) * xa_per_90 + form_w * form_xa_rate
         else:
             blended_xa = xa_per_90
-        blended_xa, poids_xa = regress_to_position(
-            blended_xa, mins, pos, POSITION_PRIOR_XA, _PRIOR_XA_FALLBACK,
-            carriere=p.get("carriere_xa_per_90"),
-        )
+        if sans_xg:
+            blended_xa, poids_xa = _rappel_sans_xg(
+                xa_per_90, mins, pos, POSITION_PRIOR_XA, _PRIOR_XA_FALLBACK, p.get("carriere_xa_per_90"))
+        else:
+            blended_xa, poids_xa = regress_to_position(
+                blended_xa, mins_xg, pos, POSITION_PRIOR_XA, _PRIOR_XA_FALLBACK,
+                carriere=p.get("carriere_xa_per_90"),
+            )
         # Regle du 27/11/2026 (Alpha ET Beta) : le rythme passeur est celui de
         # la carriere — saison en cours comprise et la plus lourde, chaque
         # saison melant xA et passes reellement donnees (career_blend). Teste
@@ -661,6 +700,7 @@ def compute_player_shares(
             form_xg_5=p.get("form_xg_5"),
             form_assists_5=p.get("form_assists_5"),
             finishing_delta=p.get("finishing_delta") or 0.0,
+            rythme_sans_xg=bool(p.get("rythme_sans_xg")),
             has_bzz_stats=p.get("has_bzz_stats", False),
             poids_mesure_goal=round(poids_xg, 4),
             poids_mesure_assist=round(poids_xa, 4),
@@ -669,12 +709,45 @@ def compute_player_shares(
 
     # Pass 3 — normalisation sur les 11 postes, multiplicateurs compris
     postes = {int(i) for i in xi_ids} if xi_ids is not None else onze_probable(players)
-    denom_but = sum(s.npxg_share * _multiplicateur_but(s) for s in shares if s.player_id in postes)
-    denom_passe = sum(s.xa_share for s in shares if s.player_id in postes)
+    xi = [s for s in shares if s.player_id in postes]
+    poids_but = {s.player_id: s.npxg_share * _multiplicateur_but(s) for s in shares}
+    poids_passe = {s.player_id: s.xa_share for s in shares}
+    denom_but = sum(poids_but[s.player_id] for s in xi)
+    denom_passe = sum(poids_passe[s.player_id] for s in xi)
+    # Un joueur hors des 11 est cote comme s'il PRENAIT LA PLACE d'un titulaire
+    # (celui de son poste qui pese le moins) : il entre dans le denominateur et
+    # le remplace s'en retire, donc les 11 postes totalisent toujours le xG de
+    # l'equipe. Correction du 27/11/2026 : diviser par les 11 SANS lui donnait a
+    # un remplacant efficace plus que toute l'equipe (Cano 1,15 buteur, Etta
+    # Eyong 1,31, recos a +200 % d'edge).
+    def remplace(s: PlayerShare) -> PlayerShare | None:
+        if not xi:
+            return None
+        meme_poste = [t for t in xi if t.position == s.position]
+        meme_famille = [t for t in xi if _famille(t.position) == _famille(s.position)]
+        candidats = meme_poste or meme_famille or [t for t in xi if t.position != "GK"] or xi
+        return min(candidats, key=lambda t: poids_but[t.player_id])
     for s in shares:
-        s.npxg_share = s.npxg_share / denom_but if denom_but > 0 else 0.0
-        s.xa_share = s.xa_share / denom_passe if denom_passe > 0 else 0.0
+        d_but, d_passe = denom_but, denom_passe
+        if s.player_id not in postes:
+            r = remplace(s)
+            if r is not None:
+                d_but += poids_but[s.player_id] - poids_but[r.player_id]
+                d_passe += poids_passe[s.player_id] - poids_passe[r.player_id]
+        s.npxg_share = s.npxg_share / d_but if d_but > 0 else 0.0
+        s.xa_share = s.xa_share / d_passe if d_passe > 0 else 0.0
     return shares
+
+
+def _famille(position: str | None) -> str:
+    """Famille de poste (GK / DEF / MIL / ATT) pour choisir qui un remplacant remplace."""
+    if position == "GK":
+        return "GK"
+    if position in {"CB", "FB", "WB", "DF"}:
+        return "DEF"
+    if position in {"CF_lone", "CF_pair", "SS", "FW", "winger"}:
+        return "ATT"
+    return "MIL"
 
 
 def marquer_tireur(shares: list[PlayerShare], pen_id: int | None, postes: set[int] | None = None) -> None:
@@ -733,8 +806,7 @@ def allocate_player(
     mins_ratio = share.expected_minutes / 90.0
 
     # ── Goalscorer ────────────────────────────────────────────────
-    goal_stats = _goal_stats(share)
-    finishing_mult = calculate_finishing_multiplier(goal_stats, share.position)
+    finishing_mult = _multiplicateur_but(share)
     xg_jeu = max(team_match_xg - share.reserve_penalty, 0.0)
     lambda_open_play = share.npxg_share * xg_jeu * finishing_mult
     lambda_penalty = PEN_CONVERSION * PENS_PER_MATCH if is_pen_taker else 0.0
@@ -751,6 +823,10 @@ def allocate_player(
     # par zero ; il n'est jamais mis a l'echelle.
     lambda_poste_brut = lambda_open_play + lambda_penalty
     lambda_total_brut = lambda_poste_brut * mins_ratio
+    # Meme regle que le passeur (27/11/2026) : sous le plancher (0.001), pas
+    # de cote du tout -- jamais 1000.50 servi comme un prix.
+    has_signal_goal_90 = has_signal_goal and lambda_poste_brut >= 0.001
+    has_signal_goal = has_signal_goal_90 and lambda_total_brut >= 0.001
     lambda_total = max(0.001, min(lambda_total_brut, 3.0))
     if has_signal_goal:
         prob_goal = 1 - math.exp(-lambda_total)
@@ -797,7 +873,7 @@ def allocate_player(
     lambda_total_90 = max(0.001, min(lambda_poste_brut, 3.0))
     lambda_assist_90 = max(CLAMP_LAMBDA_MIN_ASSIST, min(lambda_assist_poste_brut, 2.0))
 
-    if has_signal_goal:
+    if has_signal_goal_90:
         p_goal_ss = 1.0 - math.exp(-lambda_total_90)
         fair_odds_goal_ss = round(1.0 / p_goal_ss, 2) if p_goal_ss > 0 else 99.0
     else:
@@ -903,6 +979,16 @@ def _player_dict_from_merged(
     goals_total = _num("goals", 0)
     xa_total = _num("expected_assists")
     xg_per_90 = _num("xg_per_90")
+    xa_per_90 = _num("xa_per_90")
+    # Aucun match ou Bzzoiro mesure le xG (championnat non couvert, petite
+    # selection) : on prend ses vrais buts / passes par 90 plutot qu'un faux 0,
+    # rappeles vers le poste dans compute_player_shares (RAPPEL_SANS_XG_MATCHS).
+    minutes = merged.get("minutes_played") or 0
+    rythme_sans_xg = merged.get("xg_per_90") is None and minutes > 0
+    if rythme_sans_xg:
+        xg_per_90 = 90.0 * (merged.get("goals") or 0) / minutes
+        xa_per_90 = 90.0 * (merged.get("goal_assist") or 0) / minutes
+    minutes_xg = merged.get("minutes_xg")
     accurate_cross_per_90 = _num("accurate_cross_per_90")
     form_xg_5 = merged.get("form_xg_5")
     ratios = {k: _stored_ratio_weighted(rows, k) or 0.0 for k in _RATIOS_MOYENNE_PAR_MATCH}
@@ -920,7 +1006,7 @@ def _player_dict_from_merged(
         "npxg": xg_total,  # no penalty split in bzz — use total xG
         "xa": xa_total,
         "npxg_per_90": xg_per_90,
-        "xa_per_90": _num("xa_per_90"),
+        "xa_per_90": xa_per_90,
         "xgchain_per_90": 0.0,  # not available in bzz
         # Bzzoiro-specific quality/creation fields
         "xg_per_90": xg_per_90,
@@ -946,6 +1032,10 @@ def _player_dict_from_merged(
         # Flag to indicate bzz-sourced stats (triggers new multiplier formulas)
         "has_bzz_stats": True,
         "stats_season": season,
+        # Temps de jeu des matchs ou le xG est mesure : taille d'echantillon du
+        # xG/xA (un rythme mesure sur 1 match de coupe n'est pas fiable).
+        "minutes_xg": minutes if minutes_xg is None else minutes_xg,
+        "rythme_sans_xg": rythme_sans_xg,
     }
 
 

@@ -233,6 +233,11 @@ class BzzPlayerSeasonStat(Base, TimestampMixin):
     # Totals (Integer)
     matches_played: Mapped[int | None] = mapped_column(Integer, nullable=True)
     minutes_played: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Temps de jeu passe dans des matchs ou Bzzoiro a mesure le xG (au moins
+    # un joueur du match a un xG). Denominateur du xG/xA par 90 : un match non
+    # mesure ne compte pas comme 0 xG. NULL = pas encore calcule (repli :
+    # minutes_played, l'ancien comportement).
+    minutes_xg: Mapped[int | None] = mapped_column(Integer, nullable=True)
     starts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     goals: Mapped[int | None] = mapped_column(Integer, nullable=True)
     goal_assist: Mapped[int | None] = mapped_column(Integer, nullable=True)

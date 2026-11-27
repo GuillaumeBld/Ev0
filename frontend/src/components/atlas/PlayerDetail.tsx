@@ -267,6 +267,10 @@ function Ring({ note, size = 84 }: { note: number | null; size?: number }) {
 
 interface AggRow {
   m: number | null; min: number | null
+  // Temps de jeu / buts / passes des seuls matchs où Bzzoiro mesure le xG :
+  // un match non mesuré (Allsvenskan, sélection CONCACAF…) ne compte pas
+  // comme 0 xG dans « xG / 90 » ni dans « Buts − xG ».
+  minxg: number | null; gxg: number | null; axg: number | null
   g: number | null; a: number | null
   xg: number | null; xa: number | null
   sh: number | null; sot: number | null; kp: number | null
@@ -287,7 +291,7 @@ interface AggRow {
 }
 
 const EMPTY_AGG: AggRow = {
-  m: null, min: null, g: null, a: null, xg: null, xa: null, sh: null, sot: null, kp: null,
+  m: null, min: null, minxg: null, gxg: null, axg: null, g: null, a: null, xg: null, xa: null, sh: null, sot: null, kp: null,
   tp: null, ap: null, tc: null, ac: null, tlb: null, alb: null, dw: null, dl: null, aw: null, al: null,
   disp: null, plost: null, cj: null, rj: null, fc: null, wf: null, note: null,
   st: null, tkl: null, off: null,
@@ -296,6 +300,8 @@ const EMPTY_AGG: AggRow = {
 function rowToAgg(r: PlayerBreakdownRow): AggRow {
   return {
     m: r.matches_played, min: r.minutes_played,
+    minxg: r.minutes_xg ?? r.minutes_played,
+    gxg: r.goals_xg ?? r.goals, axg: r.assists_xg ?? r.goal_assist,
     g: r.goals, a: r.goal_assist,
     xg: r.expected_goals, xa: r.expected_assists,
     sh: r.total_shots, sot: r.shots_on_target, kp: r.key_pass,
@@ -321,6 +327,10 @@ function rowToAgg(r: PlayerBreakdownRow): AggRow {
 function seasonStatsToAgg(s: SeasonStatsOut): AggRow {
   return {
     m: s.matches_played, min: s.minutes_played,
+    minxg: s.minutes_xg ?? s.minutes_played,
+    // Buts/passes des seuls matchs mesurés : connus seulement si tout est mesuré.
+    gxg: (s.minutes_xg ?? s.minutes_played) === s.minutes_played ? s.goals : null,
+    axg: (s.minutes_xg ?? s.minutes_played) === s.minutes_played ? s.goal_assist : null,
     g: s.goals, a: s.goal_assist,
     xg: s.expected_goals, xa: s.expected_assists,
     sh: s.total_shots, sot: s.shots_on_target, kp: s.key_pass,
@@ -338,7 +348,7 @@ function seasonStatsToAgg(s: SeasonStatsOut): AggRow {
 }
 
 const AGG_SUM_KEYS: (keyof AggRow)[] = [
-  'm', 'min', 'g', 'a', 'xg', 'xa', 'sh', 'sot', 'kp', 'tp', 'ap', 'tc', 'ac', 'tlb', 'alb',
+  'm', 'min', 'minxg', 'gxg', 'axg', 'g', 'a', 'xg', 'xa', 'sh', 'sot', 'kp', 'tp', 'ap', 'tc', 'ac', 'tlb', 'alb',
   'dw', 'dl', 'aw', 'al', 'disp', 'plost', 'cj', 'rj', 'fc', 'wf', 'st', 'tkl', 'off',
 ]
 
@@ -397,8 +407,8 @@ function buildAggCategories(d: AggRow, scope: 'club' | 'selection'): Category[] 
   const kpPer90 = per90(d.kp, d.min)
   const dr = sd(d.dw, (d.dw ?? 0) + (d.dl ?? 0))
   const ar = sd(d.aw, (d.aw ?? 0) + (d.al ?? 0))
-  const goalsMinusXg = d.g != null && d.xg != null ? d.g - d.xg : null
-  const assistsMinusXa = d.a != null && d.xa != null ? d.a - d.xa : null
+  const goalsMinusXg = d.gxg != null && d.xg != null ? d.gxg - d.xg : null
+  const assistsMinusXa = d.axg != null && d.xa != null ? d.axg - d.xa : null
 
   return [
     {
@@ -407,7 +417,7 @@ function buildAggCategories(d: AggRow, scope: 'club' | 'selection'): Category[] 
         R('Buts', d.g, isClub ? 56 : 22),
         R('Buts / 90', goalsPer90, 1.4, { decimals: 2 }),
         R('xG', d.xg, isClub ? 46 : 8, { decimals: 1 }),
-        R('xG / 90', per90(d.xg, d.min), 1, { decimals: 2 }),
+        R('xG / 90', per90(d.xg, d.minxg), 1, { decimals: 2 }),
         R('Buts − xG', goalsMinusXg, undefined, { decimals: 1, sign: true }),
         R('xG par tir', sd(d.xg, d.sh), 0.4, { decimals: 2 }),
         R('Tirs', d.sh, isClub ? 250 : 45),
@@ -421,7 +431,7 @@ function buildAggCategories(d: AggRow, scope: 'club' | 'selection'): Category[] 
         R('Passes décisives', d.a, isClub ? 28 : 14),
         R('Passes déc. / 90', assistsPer90, 1, { decimals: 2 }),
         R('xA', d.xa, isClub ? 12 : 6, { decimals: 1 }),
-        R('xA / 90', per90(d.xa, d.min), 0.6, { decimals: 2 }),
+        R('xA / 90', per90(d.xa, d.minxg), 0.6, { decimals: 2 }),
         R('Passes déc. − xA', assistsMinusXa, undefined, { decimals: 1, sign: true }),
         R('Passes clés', d.kp, isClub ? 130 : 20),
         R('Passes clés / 90', kpPer90, 4, { decimals: 1 }),
@@ -478,7 +488,7 @@ function buildAggCategories(d: AggRow, scope: 'club' | 'selection'): Category[] 
 function buildAggRadar(d: AggRow): RadarAxis[] {
   const clamp = (v: number) => Math.max(0, Math.min(100, v))
   const goalsPer90 = per90(d.g, d.min) ?? 0
-  const xgPer90 = per90(d.xg, d.min) ?? 0
+  const xgPer90 = per90(d.xg, d.minxg) ?? 0
   const assistsPer90 = per90(d.a, d.min) ?? 0
   const kpPer90 = per90(d.kp, d.min) ?? 0
   const shPer90 = per90(d.sh, d.min) ?? 0

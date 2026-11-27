@@ -97,8 +97,8 @@ class TestBlendedRhythm:
     async def test_bzz_only_no_career_data(self):
         # Two competitions in bzz for the same season -> aggregated toutes comp.
         bzz_rows = [
-            ("2025-2026", 1000, 5.0, 2.0, 2.0),
-            ("2025-2026", 200, 1.0, 0.4, 0.4),
+            ("2025-2026", 1000, 5.0, 2.0, 2.0, 0, None),
+            ("2025-2026", 200, 1.0, 0.4, 0.4, 0, None),
         ]
         session = _make_session(bzz_rows, career_rows=[])
 
@@ -116,7 +116,7 @@ class TestBlendedRhythm:
     @pytest.mark.asyncio
     async def test_anti_double_counting_bzz_covered_season_excluded_from_career(self):
         # bzz covers 2025-2026 (age 1 relative to current season 2026-2027).
-        bzz_rows = [("2025-2026", 1000, 5.0, 2.0, 2.0)]  # xg_per_90=0.45, xa_per_90=0.18
+        bzz_rows = [("2025-2026", 1000, 5.0, 2.0, 2.0, 0, None)]  # xg_per_90=0.45, xa_per_90=0.18
         career_rows = [
             # Same season as bzz — MUST be ignored even though present in
             # player_career_seasons (outlier values would blow up the blend
@@ -151,7 +151,7 @@ class TestBlendedRhythm:
         # bzz season under 90 minutes -> excluded (and, since it's excluded
         # from the blend, the season is still "seen" by bzz so it must not
         # leak into career even though it contributes nothing itself).
-        bzz_rows = [("2025-2026", 50, 3.0, 1.0, 1.0)]
+        bzz_rows = [("2025-2026", 50, 3.0, 1.0, 1.0, 0, None)]
         # Career season under 90 minutes -> excluded too.
         career_rows = [(2024, 1, 1, 80)]
         session = _make_session(bzz_rows, career_rows)
@@ -165,7 +165,7 @@ class TestBlendedRhythm:
     async def test_career_only_used_when_bzz_season_under_threshold(self):
         # bzz season excluded (< 90 min) but a DIFFERENT, older career season
         # (not bzz-covered) has enough minutes -> must still be used.
-        bzz_rows = [("2025-2026", 50, 3.0, 1.0, 1.0)]
+        bzz_rows = [("2025-2026", 50, 3.0, 1.0, 1.0, 0, None)]
         career_rows = [(2023, 9, 3, 1000)]  # goal_rate = 0.81, assist_rate=0.27
         session = _make_session(bzz_rows, career_rows)
 
@@ -189,7 +189,7 @@ class TestBlendedRhythm:
 
     @pytest.mark.asyncio
     async def test_blended_rhythm_is_a_blended_rhythm_instance(self):
-        bzz_rows = [("2025-2026", 1000, 5.0, 2.0, 2.0)]
+        bzz_rows = [("2025-2026", 1000, 5.0, 2.0, 2.0, 0, None)]
         session = _make_session(bzz_rows, career_rows=[])
 
         with patch(f"{MODULE}.current_season", new=AsyncMock(return_value="2026-2027")):
@@ -206,7 +206,7 @@ class TestRegleePasseur:
         """Une saison Bzzoiro : moitié xA, moitié passes réellement données."""
         from app.pricing.career_blend import ASSIST_XA_WEIGHT
         # 900 min = 10 matchs ; xA 0.5 (0.05/90) ; 2 passes réelles (0.20/90)
-        session = _make_session([("2025-2026", 900, 1.0, 0.5, 2)], career_rows=[])
+        session = _make_session([("2025-2026", 900, 1.0, 0.5, 2, 0, None)], career_rows=[])
         with patch(f"{MODULE}.current_season", new=AsyncMock(return_value="2026-2027")):
             result = await blended_rhythm(session, player_api_id=1)
         assert ASSIST_XA_WEIGHT == 0.50
@@ -219,8 +219,33 @@ class TestRegleePasseur:
         assert ASSIST_BLEND_DECAY == 0.70
         # deux saisons de 900 min : récente 0.10/90 (xA=passes), ancienne 0.30/90
         session = _make_session(
-            [("2025-2026", 900, 1.0, 1.0, 1), ("2024-2025", 900, 3.0, 3.0, 3)], career_rows=[])
+            [("2025-2026", 900, 1.0, 1.0, 1, 0, None), ("2024-2025", 900, 3.0, 3.0, 3, 0, None)], career_rows=[])
         with patch(f"{MODULE}.current_season", new=AsyncMock(return_value="2026-2027")):
             result = await blended_rhythm(session, player_api_id=1)
         assert result.assist_rate_per_90 == pytest.approx((0.7 * 0.10 + 0.49 * 0.30) / 1.19)
         assert result.goal_rate_per_90 == pytest.approx((0.5 * 0.10 + 0.25 * 0.30) / 0.75)
+
+
+# ── Matchs non mesurés (27/11/2026) ───────────────────────────────
+
+class TestMatchsNonMesures:
+    @pytest.mark.asyncio
+    async def test_un_match_non_mesure_ne_compte_pas_comme_zero_xg(self):
+        """Svanback : 1 269 min en Allsvenskan (pas de xG) + 329 min mesurées (1,59 xG)."""
+        session = _make_session([
+            ("2026-2027", 1269, 0.0, 0.0, 4, 4, 0),
+            ("2026-2027", 329, 1.59, 0.72, 2, 4, 329),
+        ], career_rows=[])
+        with patch(f"{MODULE}.current_season", new=AsyncMock(return_value="2026-2027")):
+            r = await blended_rhythm(session, player_api_id=1)
+        assert r.goal_rate_per_90 == pytest.approx(1.59 / 329 * 90)   # 0,435 et non 0,09
+        assert r.assist_rate_per_90 == pytest.approx(0.5 * 0.72 / 329 * 90 + 0.5 * 6 / 1598 * 90)
+
+    @pytest.mark.asyncio
+    async def test_aucun_match_mesure_vrais_buts_et_passes(self):
+        """Saison 2021-22 (aucun xG chez Bzzoiro) ou championnat non couvert."""
+        session = _make_session([("2026-2027", 900, 0.0, 0.0, 2, 4, 0)], career_rows=[])
+        with patch(f"{MODULE}.current_season", new=AsyncMock(return_value="2026-2027")):
+            r = await blended_rhythm(session, player_api_id=1)
+        assert r.goal_rate_per_90 == pytest.approx(0.40)
+        assert r.assist_rate_per_90 == pytest.approx(0.20)

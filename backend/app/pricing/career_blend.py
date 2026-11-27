@@ -80,9 +80,29 @@ def blend_rate(
     return numerator / denominator
 
 
-def _taux_passe_bzz(xa: float, passes: float, minutes: float) -> float:
-    """Taux passeur par 90 d'une saison Bzzoiro : xA et passes réelles mêlés."""
-    return (ASSIST_XA_WEIGHT * xa + (1 - ASSIST_XA_WEIGHT) * passes) / (minutes / 90.0)
+def _minutes_mesurees(minutes: float, minutes_xg: float | None) -> float:
+    """Temps de jeu des matchs où le xG est mesuré ; NULL (pas encore calculé)
+    -> tout le temps de jeu, l'ancien comportement."""
+    return minutes if minutes_xg is None else minutes_xg
+
+
+def _taux_but_bzz(xg: float, buts: float, minutes: float, minutes_xg: float | None) -> float:
+    """Taux buteur par 90 d'une saison Bzzoiro : xG sur les matchs mesurés ;
+    aucun match mesuré (championnat non couvert, saison 2021-22) -> vrais buts."""
+    m_xg = _minutes_mesurees(minutes, minutes_xg)
+    if m_xg > 0:
+        return xg / (m_xg / 90.0)
+    return buts / (minutes / 90.0)
+
+
+def _taux_passe_bzz(xa: float, passes: float, minutes: float, minutes_xg: float | None = None) -> float:
+    """Taux passeur par 90 d'une saison Bzzoiro : xA (sur les matchs mesurés)
+    et passes réelles (sur tous les matchs) mêlés ; sans match mesuré, passes seules."""
+    m_xg = _minutes_mesurees(minutes, minutes_xg)
+    taux_passes = passes / (minutes / 90.0)
+    if m_xg <= 0:
+        return taux_passes
+    return ASSIST_XA_WEIGHT * xa / (m_xg / 90.0) + (1 - ASSIST_XA_WEIGHT) * taux_passes
 
 
 def _season_start_year(season: str) -> int | None:
@@ -124,6 +144,8 @@ async def blended_rhythms_for(
             BzzPlayerSeasonStat.expected_goals,
             BzzPlayerSeasonStat.expected_assists,
             BzzPlayerSeasonStat.goal_assist,
+            BzzPlayerSeasonStat.goals,
+            BzzPlayerSeasonStat.minutes_xg,
         ).where(
             BzzPlayerSeasonStat.player_api_id.in_(ids),
             # Amicaux exclus : enjeu nul, ils fausseraient les taux par 90.
@@ -135,12 +157,14 @@ async def blended_rhythms_for(
     )).all()
 
     bzz: dict[int, dict[str, dict[str, float]]] = {}
-    for pid, season, minutes, xg, xa, ast in bzz_rows:
+    for pid, season, minutes, xg, xa, ast, buts, m_xg in bzz_rows:
         if season is None:
             continue
         bucket = bzz.setdefault(pid, {}).setdefault(
-            season, {"minutes": 0.0, "xg": 0.0, "xa": 0.0, "ast": 0.0}
+            season, {"minutes": 0.0, "xg": 0.0, "xa": 0.0, "ast": 0.0, "buts": 0.0, "m_xg": 0.0}
         )
+        bucket["buts"] += buts or 0
+        bucket["m_xg"] += _minutes_mesurees(minutes or 0, m_xg)
         bucket["minutes"] += minutes or 0
         bucket["xg"] += xg or 0.0
         bucket["xa"] += xa or 0.0
@@ -188,8 +212,8 @@ async def blended_rhythms_for(
             if year is None or b["minutes"] < MIN_SEASON_MINUTES:
                 continue
             age = current_year - year
-            entries_goal.append((age, b["minutes"], b["xg"] / (b["minutes"] / 90.0)))
-            entries_assist.append((age, b["minutes"], _taux_passe_bzz(b["xa"], b["ast"], b["minutes"])))
+            entries_goal.append((age, b["minutes"], _taux_but_bzz(b["xg"], b["buts"], b["minutes"], b["m_xg"])))
+            entries_assist.append((age, b["minutes"], _taux_passe_bzz(b["xa"], b["ast"], b["minutes"], b["m_xg"])))
 
         n_carriere = 0
         for year, b in par_annee.items():
@@ -225,6 +249,8 @@ async def blended_rhythm(session: AsyncSession, player_api_id: int) -> BlendedRh
             BzzPlayerSeasonStat.expected_goals,
             BzzPlayerSeasonStat.expected_assists,
             BzzPlayerSeasonStat.goal_assist,
+            BzzPlayerSeasonStat.goals,
+            BzzPlayerSeasonStat.minutes_xg,
         ).where(
             BzzPlayerSeasonStat.player_api_id == player_api_id,
             or_(
@@ -237,10 +263,14 @@ async def blended_rhythm(session: AsyncSession, player_api_id: int) -> BlendedRh
     # Agrégation toutes compétitions confondues, par saison (une ligne bzz
     # par (joueur, ligue, saison) -> plusieurs lignes possibles par saison).
     bzz_by_season: dict[str, dict[str, float]] = {}
-    for season, minutes, xg, xa, ast in bzz_result.all():
+    for season, minutes, xg, xa, ast, buts, m_xg in bzz_result.all():
         if season is None:
             continue
-        bucket = bzz_by_season.setdefault(season, {"minutes": 0.0, "xg": 0.0, "xa": 0.0, "ast": 0.0})
+        bucket = bzz_by_season.setdefault(
+            season, {"minutes": 0.0, "xg": 0.0, "xa": 0.0, "ast": 0.0, "buts": 0.0, "m_xg": 0.0}
+        )
+        bucket["buts"] += buts or 0
+        bucket["m_xg"] += _minutes_mesurees(minutes or 0, m_xg)
         bucket["minutes"] += minutes or 0
         bucket["xg"] += xg or 0.0
         bucket["xa"] += xa or 0.0
@@ -263,8 +293,8 @@ async def blended_rhythm(session: AsyncSession, player_api_id: int) -> BlendedRh
         if minutes < MIN_SEASON_MINUTES:
             continue
         age = current_year - year
-        goal_rate = bucket["xg"] / (minutes / 90.0)
-        assist_rate = _taux_passe_bzz(bucket["xa"], bucket["ast"], minutes)
+        goal_rate = _taux_but_bzz(bucket["xg"], bucket["buts"], minutes, bucket["m_xg"])
+        assist_rate = _taux_passe_bzz(bucket["xa"], bucket["ast"], minutes, bucket["m_xg"])
         goal_entries.append((age, minutes, goal_rate))
         assist_entries.append((age, minutes, assist_rate))
 

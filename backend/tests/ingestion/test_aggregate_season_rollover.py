@@ -26,6 +26,6 @@ def test_agregation_bornee_des_deux_cotes():
     from pathlib import Path
 
     src = Path("app/ingestion/bzzoiro/aggregate.py").read_text()
-    assert src.count("BzzEvent.event_date >= cutoff_date") == 2
-    assert src.count("BzzEvent.event_date < cutoff_end") == 2
+    assert src.count("BzzEvent.event_date >= cutoff_date") == 3  # + matchs mesures
+    assert src.count("BzzEvent.event_date < cutoff_end") == 3
     assert "cutoff_end = season_end_of(season)" in src

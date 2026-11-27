@@ -729,6 +729,7 @@ export interface SeasonStatsOut {
   league_api_id: number | null
   matches_played: number | null
   minutes_played: number | null
+  minutes_xg?: number | null
   starts: number | null
   goals: number | null
   goal_assist: number | null

@@ -57,6 +57,7 @@ async def test_aggregate_season_stats_basic():
         player_api_id=101,
         matches_played=3,
         minutes_played=270,
+        minutes_xg=270,
         starts=3,
         goals=2,
         goal_assist=1,
@@ -100,6 +101,7 @@ async def test_aggregate_season_stats_basic():
         player_api_id=102,
         matches_played=1,
         minutes_played=85,
+        minutes_xg=85,
         starts=0,
         goals=0,
         goal_assist=1,
@@ -184,7 +186,8 @@ async def test_aggregate_season_stats_per90_computed():
     player_agg = _make_mapping(
         player_api_id=201,
         matches_played=2,
-        minutes_played=180,  # 2 full 90-min games → divisor = 2
+        minutes_played=180,
+        minutes_xg=180,  # 2 full 90-min games → divisor = 2
         starts=2,
         goals=2,
         goal_assist=0,
@@ -258,6 +261,7 @@ async def test_aggregate_all_leagues():
             player_api_id=player_api_id,
             matches_played=1,
             minutes_played=90,
+            minutes_xg=90,
             starts=1,
             goals=1,
             goal_assist=0,
