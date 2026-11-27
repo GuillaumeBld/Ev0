@@ -155,10 +155,38 @@ def merge_season_stats(rows: list[Any], season: str) -> dict[str, Any] | None:
     red_card = _sum("red_card")
     saves = _sum("saves")
 
+    # Temps de jeu passe dans des matchs ou le xG est mesure (repli ligne par
+    # ligne sur minutes_played tant que la colonne n'est pas calculee).
+    minutes_xg = sum(
+        (getattr(r, "minutes_xg", None) if getattr(r, "minutes_xg", None) is not None
+         else (r.minutes_played or 0))
+        for r in rows
+    )
+
+    # Buts / passes marques dans les matchs mesures (repli ligne par ligne :
+    # tout, tant que la colonne n'est pas calculee).
+    def _dans_mesures(attr_mesure: str, attr_total: str) -> int:
+        tot = 0
+        for r in rows:
+            v = getattr(r, attr_mesure, None)
+            m_xg = getattr(r, "minutes_xg", None)
+            if m_xg is None:
+                v = getattr(r, attr_total) or 0           # pas encore calcule : tout
+            elif v is None:                                # ligne sans le detail
+                v = (getattr(r, attr_total) or 0) if m_xg >= (r.minutes_played or 0) else 0
+            tot += v
+        return tot
+    goals_xg = _dans_mesures("goals_xg", "goals")
+    assists_xg = _dans_mesures("assists_xg", "goal_assist")
+
     # Per-90 — recalculated from aggregated totals
     mins_per_90 = minutes_played / 90 if minutes_played else None
-    xg_per_90 = _safe_div(expected_goals, mins_per_90)
-    xa_per_90 = _safe_div(expected_assists, mins_per_90)
+    # xG/xA par 90 : sur les seuls matchs mesures. Un match ou Bzzoiro ne
+    # mesure pas le xG (Allsvenskan, selections CONCACAF...) ne compte pas
+    # comme 0 xG. Aucun match mesure -> None (jamais un faux 0).
+    mins_xg_per_90 = minutes_xg / 90 if minutes_xg else None
+    xg_per_90 = _safe_div(expected_goals or 0.0, mins_xg_per_90)
+    xa_per_90 = _safe_div(expected_assists or 0.0, mins_xg_per_90)
     shots_per_90 = _safe_div(total_shots, mins_per_90)
     shots_on_target_per_90 = _safe_div(shots_on_target, mins_per_90)
     key_pass_per_90 = _safe_div(key_pass, mins_per_90)
@@ -215,6 +243,9 @@ def merge_season_stats(rows: list[Any], season: str) -> dict[str, Any] | None:
         "league_api_id": league_api_id,
         "matches_played": matches_played,
         "minutes_played": minutes_played,
+        "minutes_xg": minutes_xg,
+        "goals_xg": goals_xg,
+        "assists_xg": assists_xg,
         "starts": starts,
         "goals": goals,
         "goal_assist": goal_assist,

@@ -54,12 +54,45 @@ async def aggregate_season_stats(
     # verse (rattrapage 5 saisons du 21/08/2026).
     cutoff_end = season_end_of(season)
 
+    # Matchs « mesures » : au moins un joueur du match a un xG. Dans un match
+    # mesure, Bzzoiro laisse la case VIDE (pas 0) au joueur qui n'a pas tire :
+    # le test se fait donc au niveau du match, jamais du joueur.
+    matchs_mesures = (
+        select(BzzPlayerMatchStat.event_api_id)
+        .join(BzzEvent, BzzPlayerMatchStat.event_api_id == BzzEvent.api_id)
+        .where(
+            BzzEvent.league_api_id.in_(all_league_ids),
+            BzzEvent.event_date >= cutoff_date,
+            BzzEvent.event_date < cutoff_end,
+        )
+        .group_by(BzzPlayerMatchStat.event_api_id)
+        .having(func.count(BzzPlayerMatchStat.expected_goals) > 0)
+    )
+
     # Step 1: Query aggregated stats grouped by player
     agg_stmt = (
         select(
             BzzPlayerMatchStat.player_api_id,
             func.count(BzzPlayerMatchStat.event_api_id.distinct()).label("matches_played"),
             func.sum(BzzPlayerMatchStat.minutes_played).label("minutes_played"),
+            func.coalesce(
+                func.sum(BzzPlayerMatchStat.minutes_played).filter(
+                    BzzPlayerMatchStat.event_api_id.in_(matchs_mesures)
+                ),
+                0,
+            ).label("minutes_xg"),
+            func.coalesce(
+                func.sum(BzzPlayerMatchStat.goals).filter(
+                    BzzPlayerMatchStat.event_api_id.in_(matchs_mesures)
+                ),
+                0,
+            ).label("goals_xg"),
+            func.coalesce(
+                func.sum(BzzPlayerMatchStat.goal_assist).filter(
+                    BzzPlayerMatchStat.event_api_id.in_(matchs_mesures)
+                ),
+                0,
+            ).label("assists_xg"),
             # starts: approximated as matches with >= 60 minutes played
             func.count(
                 BzzPlayerMatchStat.event_api_id.distinct()
@@ -160,11 +193,15 @@ async def aggregate_season_stats(
         minutes_played_total = row_dict["minutes_played"] or 0
         starts = row_dict["starts"] or 0
 
+        minutes_xg = row_dict["minutes_xg"] or 0
+
         # Per-90 calculations
         mins_per_90 = minutes_played_total / 90 if minutes_played_total else None
+        # xG/xA : sur les seuls matchs mesures (un match non mesure n'est pas 0 xG)
+        mins_xg_per_90 = minutes_xg / 90 if minutes_xg else None
 
-        xg_per_90 = _safe_div(row_dict["expected_goals"], mins_per_90)
-        xa_per_90 = _safe_div(row_dict["expected_assists"], mins_per_90)
+        xg_per_90 = _safe_div(row_dict["expected_goals"] or 0.0, mins_xg_per_90)
+        xa_per_90 = _safe_div(row_dict["expected_assists"] or 0.0, mins_xg_per_90)
         shots_per_90 = _safe_div(row_dict["total_shots"], mins_per_90)
         shots_on_target_per_90 = _safe_div(row_dict["shots_on_target"], mins_per_90)
         key_pass_per_90 = _safe_div(row_dict["key_pass"], mins_per_90)
@@ -209,6 +246,9 @@ async def aggregate_season_stats(
             "as_of_utc": now,
             "matches_played": matches_played,
             "minutes_played": minutes_played_total,
+            "minutes_xg": minutes_xg,
+            "goals_xg": row_dict.get("goals_xg"),
+            "assists_xg": row_dict.get("assists_xg"),
             "starts": starts,
             "goals": row_dict["goals"],
             "goal_assist": row_dict["goal_assist"],

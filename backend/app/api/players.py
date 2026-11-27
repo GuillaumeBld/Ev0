@@ -224,6 +224,7 @@ class SeasonStatsOut(BaseModel):
     league_api_id: int | None  # None when stats span multiple leagues
     matches_played: int | None
     minutes_played: int | None
+    minutes_xg: int | None = None  # temps de jeu des matchs ou le xG est mesure
     starts: int | None
     goals: int | None
     goal_assist: int | None
@@ -387,6 +388,10 @@ class BreakdownRow(BaseModel):
     kind: str
     matches_played: int | None
     minutes_played: int | None
+    # Temps de jeu / buts / passes dans les matchs ou le xG est mesure
+    minutes_xg: int | None = None
+    goals_xg: int | None = None
+    assists_xg: int | None = None
     starts: int | None
     goals: int | None
     goal_assist: int | None
@@ -1298,6 +1303,18 @@ async def list_selection_players(
 
 
 _BREAKDOWN_SQL = text("""
+    -- Matchs « mesures » (au moins un joueur du match a un xG) parmi ceux du
+    -- joueur : xG/xA par 90 et buts − xG se calculent sur eux seuls. Dans un
+    -- match mesure, Bzzoiro laisse VIDE (pas 0) la case du joueur sans tir.
+    WITH mesures AS (
+        SELECT m2.event_api_id
+        FROM bzz_player_match_stats m2
+        WHERE m2.event_api_id IN (
+            SELECT event_api_id FROM bzz_player_match_stats WHERE player_api_id = :player_api_id
+        )
+        GROUP BY m2.event_api_id
+        HAVING COUNT(m2.expected_goals) > 0
+    )
     SELECT
         CASE WHEN EXTRACT(MONTH FROM e.event_date) >= 8
              THEN EXTRACT(YEAR FROM e.event_date)::int
@@ -1308,6 +1325,9 @@ _BREAKDOWN_SQL = text("""
         l.kind AS kind,
         COUNT(DISTINCT ms.event_api_id) AS matches_played,
         SUM(ms.minutes_played) AS minutes_played,
+        COALESCE(SUM(ms.minutes_played) FILTER (WHERE ms.event_api_id IN (SELECT event_api_id FROM mesures)), 0) AS minutes_xg,
+        COALESCE(SUM(ms.goals) FILTER (WHERE ms.event_api_id IN (SELECT event_api_id FROM mesures)), 0) AS goals_xg,
+        COALESCE(SUM(ms.goal_assist) FILTER (WHERE ms.event_api_id IN (SELECT event_api_id FROM mesures)), 0) AS assists_xg,
         COUNT(DISTINCT ms.event_api_id) FILTER (WHERE ms.minutes_played >= 60) AS starts,
         SUM(ms.goals) AS goals,
         SUM(ms.goal_assist) AS goal_assist,
@@ -1377,6 +1397,9 @@ async def get_player_breakdown(
             kind=row["kind"],
             matches_played=row["matches_played"],
             minutes_played=row["minutes_played"],
+            minutes_xg=row.get("minutes_xg"),
+            goals_xg=row.get("goals_xg"),
+            assists_xg=row.get("assists_xg"),
             starts=row["starts"],
             goals=row["goals"],
             goal_assist=row["goal_assist"],

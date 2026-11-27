@@ -192,7 +192,7 @@ def test_la_cote_supersub_reste_coherente():
     assert math.isclose(
         a.p_goal_supersub,
         1.0 - math.exp(-a.lambda_total / (a.expected_minutes / 90.0)),
-        abs_tol=1e-4,
+        abs_tol=1e-3,  # lambda_total et expected_minutes sont arrondis
     )
 
 

@@ -18,13 +18,13 @@ from app.pricing.career_blend import (
     blended_rhythms_for,
 )
 
-# (joueur, saison, minutes, xg, xa, passes decisives reelles)
+# (joueur, saison, minutes, xg, xa, passes, buts, minutes_xg, buts_mesures, passes_mesurees)
 LIGNES_BZZ = [
-    (10, "2025-2026", 1800, 12.0, 4.0, 7),
-    (10, "2025-2026",  900,  6.0, 2.0, 1),   # 2e competition, meme saison
-    (10, "2024-2025", 2700, 15.0, 6.0, 4),
-    (10, "2023-2024",   45,  0.5, 0.1, 0),   # sous le seuil -> ecartee du melange
-    (20, "2025-2026",  120,  0.8, 0.3, 1),
+    (10, "2025-2026", 1800, 12.0, 4.0, 7, 5, 1800, 5, 7),
+    (10, "2025-2026",  900,  0.0, 0.0, 1, 2, 0, 0, 0),      # 2e competition, sans xG mesure
+    (10, "2024-2025", 2700, 15.0, 6.0, 4, 0, None, None, None),
+    (10, "2023-2024",   45,  0.5, 0.1, 0, 0, None, None, None),   # sous le seuil -> ecartee du melange
+    (20, "2025-2026",  120,  0.0, 0.0, 1, 1, 0, 0, 0),      # aucun match mesure -> vrais buts
 ]
 
 # (joueur, annee, buts, passes, minutes)
@@ -116,7 +116,7 @@ async def test_saison_sous_le_seuil_de_minutes_ecartee(monkeypatch):
     monkeypatch.setattr(
         "app.pricing.career_blend.current_season", AsyncMock(return_value="2026-2027")
     )
-    maigre = [(50, "2025-2026", MIN_SEASON_MINUTES - 1, 5.0, 2.0, 1)]
+    maigre = [(50, "2025-2026", MIN_SEASON_MINUTES - 1, 5.0, 2.0, 1, 0, None, None, None)]
     lot = await blended_rhythms_for(_session(maigre, []), [50])
     assert 50 not in lot, "une saison sous le seuil ne doit rien produire"
 
