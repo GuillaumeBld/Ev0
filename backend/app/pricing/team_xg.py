@@ -27,8 +27,6 @@ from app.pricing.assist import (
     ASSIST_GOAL_RATE,
     CLAMP_LAMBDA_MIN as CLAMP_LAMBDA_MIN_ASSIST,
     calculate_assist_lambda,
-    calculate_creation_multiplier_v2,
-    calculate_xa_conversion,
     calculate_supersub_prob_assist,
 )
 from app.pricing.goalscorer import (
@@ -548,14 +546,6 @@ def _multiplicateur_but(share: PlayerShare) -> float:
     return calculate_finishing_multiplier(_goal_stats(share), share.position)
 
 
-def _multiplicateur_passe(share: PlayerShare) -> float:
-    stats = _assist_stats(share)
-    return (
-        calculate_creation_multiplier_v2(stats, share.position)
-        * calculate_xa_conversion(stats, share.position)
-    )
-
-
 def compute_player_shares(
     players: list[dict[str, Any]],
     team: str,
@@ -619,6 +609,15 @@ def compute_player_shares(
             blended_xa, mins, pos, POSITION_PRIOR_XA, _PRIOR_XA_FALLBACK,
             carriere=p.get("carriere_xa_per_90"),
         )
+        # Regle du 27/11/2026 (Alpha ET Beta) : le rythme passeur est celui de
+        # la carriere — saison en cours comprise et la plus lourde, chaque
+        # saison melant xA et passes reellement donnees (career_blend). Teste
+        # hors echantillon : il bat le xA de la saison seule, surtout pour les
+        # avant-centres que le xA sous-estimait de moitie. Sans carriere
+        # exploitable, repli sur la saison ramenee vers l'a priori du poste.
+        carriere_xa = p.get("carriere_xa_per_90")
+        if carriere_xa is not None:
+            blended_xa, poids_xa = carriere_xa, 1.0
         assist_weight = blended_xa
 
         entries.append((p, exp_mins, goal_weight, assist_weight, poids_xg, poids_xa))
@@ -671,7 +670,7 @@ def compute_player_shares(
     # Pass 3 — normalisation sur les 11 postes, multiplicateurs compris
     postes = {int(i) for i in xi_ids} if xi_ids is not None else onze_probable(players)
     denom_but = sum(s.npxg_share * _multiplicateur_but(s) for s in shares if s.player_id in postes)
-    denom_passe = sum(s.xa_share * _multiplicateur_passe(s) for s in shares if s.player_id in postes)
+    denom_passe = sum(s.xa_share for s in shares if s.player_id in postes)
     for s in shares:
         s.npxg_share = s.npxg_share / denom_but if denom_but > 0 else 0.0
         s.xa_share = s.xa_share / denom_passe if denom_passe > 0 else 0.0
@@ -763,9 +762,12 @@ def allocate_player(
         fair_odds_goal = 0.0
 
     # ── Assist ────────────────────────────────────────────────────
-    assist_stats = _assist_stats(share)
-    creation_mult = calculate_creation_multiplier_v2(assist_stats, share.position)
-    xa_conversion = calculate_xa_conversion(assist_stats, share.position)
+    # Plus de multiplicateurs de creation ni de conversion (27/11/2026) : ils
+    # recomptaient le xA deja present dans la part et, plafonnes a x1.50 /
+    # x1.40 ou planches a x0.70 / x0.75, exageraient les ecarts (Olise 0.89
+    # passe/match annoncee pour 0.38 reelle, Isidor 0.01 pour 0.18).
+    creation_mult = 1.0
+    xa_conversion = 1.0
     # Poste sur 90 minutes (brut), puis joueur seul sur ses minutes ; le
     # plancher passeur (0.01) n'est jamais mis a l'echelle.
     lambda_assist_poste_brut = share.xa_share * budget_assists * creation_mult * xa_conversion
@@ -773,7 +775,12 @@ def allocate_player(
         share.xa_share * mins_ratio, budget_assists, creation_mult, xa_conversion,
     )
 
-    has_signal_assist = share.xa_share > 0.0
+    # Le plancher passeur (CLAMP_LAMBDA_MIN_ASSIST) protege d'une division par
+    # zero ; il ne doit JAMAIS devenir un prix (cote 100.50 servie a des
+    # avant-centres que les books proposaient entre 4 et 7). Sous le plancher :
+    # pas de cote, donc ni recommandation ni alerte.
+    has_signal_assist_90 = share.xa_share > 0.0 and lambda_assist_poste_brut >= CLAMP_LAMBDA_MIN_ASSIST
+    has_signal_assist = has_signal_assist_90 and lambda_assist_poste_brut * mins_ratio >= CLAMP_LAMBDA_MIN_ASSIST
 
     if has_signal_assist:
         prob_assist = 1 - math.exp(-lambda_assist)
@@ -797,7 +804,7 @@ def allocate_player(
         p_goal_ss = 0.0
         fair_odds_goal_ss = 0.0
 
-    if has_signal_assist:
+    if has_signal_assist_90:
         p_assist_ss = 1.0 - math.exp(-lambda_assist_90)
         fair_odds_assist_ss = round(1.0 / p_assist_ss, 2) if p_assist_ss > 0 else 99.0
     else:
