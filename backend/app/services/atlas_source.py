@@ -163,6 +163,22 @@ def merge_season_stats(rows: list[Any], season: str) -> dict[str, Any] | None:
         for r in rows
     )
 
+    # Buts / passes marques dans les matchs mesures (repli ligne par ligne :
+    # tout, tant que la colonne n'est pas calculee).
+    def _dans_mesures(attr_mesure: str, attr_total: str) -> int:
+        tot = 0
+        for r in rows:
+            v = getattr(r, attr_mesure, None)
+            m_xg = getattr(r, "minutes_xg", None)
+            if m_xg is None:
+                v = getattr(r, attr_total) or 0           # pas encore calcule : tout
+            elif v is None:                                # ligne sans le detail
+                v = (getattr(r, attr_total) or 0) if m_xg >= (r.minutes_played or 0) else 0
+            tot += v
+        return tot
+    goals_xg = _dans_mesures("goals_xg", "goals")
+    assists_xg = _dans_mesures("assists_xg", "goal_assist")
+
     # Per-90 — recalculated from aggregated totals
     mins_per_90 = minutes_played / 90 if minutes_played else None
     # xG/xA par 90 : sur les seuls matchs mesures. Un match ou Bzzoiro ne
@@ -228,6 +244,8 @@ def merge_season_stats(rows: list[Any], season: str) -> dict[str, Any] | None:
         "matches_played": matches_played,
         "minutes_played": minutes_played,
         "minutes_xg": minutes_xg,
+        "goals_xg": goals_xg,
+        "assists_xg": assists_xg,
         "starts": starts,
         "goals": goals,
         "goal_assist": goal_assist,

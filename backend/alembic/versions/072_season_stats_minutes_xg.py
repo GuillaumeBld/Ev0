@@ -39,7 +39,9 @@ WITH mesures AS (
 feuilles AS (
     SELECT s.id,
            sum(ms.minutes_played) AS m_feuilles,
-           sum(ms.minutes_played) FILTER (WHERE ms.event_api_id IN (SELECT event_api_id FROM mesures)) AS m_mesurees
+           sum(ms.minutes_played) FILTER (WHERE ms.event_api_id IN (SELECT event_api_id FROM mesures)) AS m_mesurees,
+           sum(ms.goals) FILTER (WHERE ms.event_api_id IN (SELECT event_api_id FROM mesures)) AS b_mesures,
+           sum(ms.goal_assist) FILTER (WHERE ms.event_api_id IN (SELECT event_api_id FROM mesures)) AS p_mesurees
     FROM bzz_player_season_stats s
     JOIN bzz_events e
       ON e.league_api_id = s.league_api_id
@@ -61,6 +63,18 @@ SET minutes_xg = CASE
         THEN coalesce(f.m_mesurees, 0)
     WHEN lm.league_api_id IS NOT NULL THEN s.minutes_played
     ELSE 0
+END,
+goals_xg = CASE
+    WHEN f.m_feuilles IS NOT NULL AND f.m_feuilles >= 0.9 * coalesce(s.minutes_played, 0)
+        THEN coalesce(f.b_mesures, 0)
+    WHEN lm.league_api_id IS NOT NULL THEN s.goals
+    ELSE 0
+END,
+assists_xg = CASE
+    WHEN f.m_feuilles IS NOT NULL AND f.m_feuilles >= 0.9 * coalesce(s.minutes_played, 0)
+        THEN coalesce(f.p_mesurees, 0)
+    WHEN lm.league_api_id IS NOT NULL THEN s.goal_assist
+    ELSE 0
 END
 FROM bzz_player_season_stats s2
 LEFT JOIN feuilles f ON f.id = s2.id
@@ -71,8 +85,12 @@ WHERE s2.id = s.id
 
 def upgrade() -> None:
     op.add_column("bzz_player_season_stats", sa.Column("minutes_xg", sa.Integer(), nullable=True))
+    op.add_column("bzz_player_season_stats", sa.Column("goals_xg", sa.Integer(), nullable=True))
+    op.add_column("bzz_player_season_stats", sa.Column("assists_xg", sa.Integer(), nullable=True))
     op.execute(BACKFILL)
 
 
 def downgrade() -> None:
+    op.drop_column("bzz_player_season_stats", "assists_xg")
+    op.drop_column("bzz_player_season_stats", "goals_xg")
     op.drop_column("bzz_player_season_stats", "minutes_xg")

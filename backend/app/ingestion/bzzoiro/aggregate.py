@@ -81,6 +81,18 @@ async def aggregate_season_stats(
                 ),
                 0,
             ).label("minutes_xg"),
+            func.coalesce(
+                func.sum(BzzPlayerMatchStat.goals).filter(
+                    BzzPlayerMatchStat.event_api_id.in_(matchs_mesures)
+                ),
+                0,
+            ).label("goals_xg"),
+            func.coalesce(
+                func.sum(BzzPlayerMatchStat.goal_assist).filter(
+                    BzzPlayerMatchStat.event_api_id.in_(matchs_mesures)
+                ),
+                0,
+            ).label("assists_xg"),
             # starts: approximated as matches with >= 60 minutes played
             func.count(
                 BzzPlayerMatchStat.event_api_id.distinct()
@@ -235,6 +247,8 @@ async def aggregate_season_stats(
             "matches_played": matches_played,
             "minutes_played": minutes_played_total,
             "minutes_xg": minutes_xg,
+            "goals_xg": row_dict.get("goals_xg"),
+            "assists_xg": row_dict.get("assists_xg"),
             "starts": starts,
             "goals": row_dict["goals"],
             "goal_assist": row_dict["goal_assist"],

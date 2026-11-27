@@ -480,6 +480,7 @@ def regress_to_position(
 def _rappel_sans_xg(
     taux_reel: float, minutes: float, position: str | None,
     priors: dict[str, float], fallback: float, carriere: float | None,
+    part_non_mesuree: float = 1.0,
 ) -> tuple[float, float]:
     """Rythme d'un joueur sans aucun match mesure en xG : ses vrais buts (ou
     passes) par 90, rappeles vers sa carriere (sinon son poste) comme
@@ -487,7 +488,12 @@ def _rappel_sans_xg(
     6 matchs ne vaut pas « jamais buteur », 2 buts en 3 matchs pas « 0,67/90 »."""
     repli = carriere if carriere is not None else position_prior(position, priors, fallback)
     n90 = max(minutes, 0.0) / 90.0
-    poids = n90 / (n90 + RAPPEL_SANS_XG_MATCHS)
+    # Le rappel ne porte que sur la part de la saison jouee sans xG (Lukic :
+    # 91 % non mesure -> ~14 matchs de rappel ; saison toute mesuree -> 0).
+    k = RAPPEL_SANS_XG_MATCHS * max(0.0, min(1.0, part_non_mesuree))
+    if n90 + k <= 0:
+        return repli, 0.0
+    poids = n90 / (n90 + k)
     return poids * taux_reel + (1.0 - poids) * repli, poids
 
 
@@ -619,12 +625,16 @@ def compute_player_shares(
         # Regression vers le poste APRES le melange de forme : form_rate divise
         # aussi par les minutes attendues, donc il souffre de la meme
         # amplification. Une seule intervention couvre les deux.
-        sans_xg = bool(p.get("rythme_sans_xg"))
-        # Echantillon du xG/xA = matchs mesures seulement (repli : tout).
-        mins_xg = mins if sans_xg else (p.get("minutes_xg") if p.get("minutes_xg") is not None else mins)
+        # Part de la saison jouee dans des matchs sans xG mesure : son rythme y
+        # vient des vrais buts / passes (voir _player_dict_from_merged).
+        part_nm = p.get("part_non_mesuree")
+        if part_nm is None:
+            part_nm = 1.0 if p.get("rythme_sans_xg") else 0.0
+        sans_xg = part_nm > 0.0
+        mins_xg = p.get("minutes_xg") if p.get("minutes_xg") is not None else mins
         if sans_xg:
             blended_xg, poids_xg = _rappel_sans_xg(
-                xg_per_90, mins, pos, POSITION_PRIOR_XG, _PRIOR_XG_FALLBACK, p.get("carriere_xg_per_90"))
+                xg_per_90, mins, pos, POSITION_PRIOR_XG, _PRIOR_XG_FALLBACK, p.get("carriere_xg_per_90"), part_nm)
         else:
             blended_xg, poids_xg = regress_to_position(
                 blended_xg, mins_xg, pos, POSITION_PRIOR_XG, _PRIOR_XG_FALLBACK,
@@ -642,7 +652,7 @@ def compute_player_shares(
             blended_xa = xa_per_90
         if sans_xg:
             blended_xa, poids_xa = _rappel_sans_xg(
-                xa_per_90, mins, pos, POSITION_PRIOR_XA, _PRIOR_XA_FALLBACK, p.get("carriere_xa_per_90"))
+                xa_per_90, mins, pos, POSITION_PRIOR_XA, _PRIOR_XA_FALLBACK, p.get("carriere_xa_per_90"), part_nm)
         else:
             blended_xa, poids_xa = regress_to_position(
                 blended_xa, mins_xg, pos, POSITION_PRIOR_XA, _PRIOR_XA_FALLBACK,
@@ -984,11 +994,18 @@ def _player_dict_from_merged(
     # selection) : on prend ses vrais buts / passes par 90 plutot qu'un faux 0,
     # rappeles vers le poste dans compute_player_shares (RAPPEL_SANS_XG_MATCHS).
     minutes = merged.get("minutes_played") or 0
-    rythme_sans_xg = merged.get("xg_per_90") is None and minutes > 0
-    if rythme_sans_xg:
-        xg_per_90 = 90.0 * (merged.get("goals") or 0) / minutes
-        xa_per_90 = 90.0 * (merged.get("goal_assist") or 0) / minutes
     minutes_xg = merged.get("minutes_xg")
+    m_xg = minutes if minutes_xg is None else minutes_xg
+    rythme_sans_xg = minutes > 0 and (merged.get("xg_per_90") is None or m_xg <= 0)
+    part_non_mesuree = (minutes - m_xg) / minutes if minutes > 0 and m_xg < minutes else 0.0
+    if part_non_mesuree > 0:
+        # Production du joueur sur TOUTE la saison : xG/xA la ou ils sont
+        # mesures, vrais buts/passes ailleurs (Lukic : 1 match mesure, 8 buts
+        # dans les autres -> ne plus l'evaluer sur ce seul match).
+        buts_hors = max(0, (merged.get("goals") or 0) - (merged.get("goals_xg") or 0))
+        passes_hors = max(0, (merged.get("goal_assist") or 0) - (merged.get("assists_xg") or 0))
+        xg_per_90 = 90.0 * ((merged.get("expected_goals") or 0.0) + buts_hors) / minutes
+        xa_per_90 = 90.0 * ((merged.get("expected_assists") or 0.0) + passes_hors) / minutes
     accurate_cross_per_90 = _num("accurate_cross_per_90")
     form_xg_5 = merged.get("form_xg_5")
     ratios = {k: _stored_ratio_weighted(rows, k) or 0.0 for k in _RATIOS_MOYENNE_PAR_MATCH}
@@ -1036,6 +1053,7 @@ def _player_dict_from_merged(
         # xG/xA (un rythme mesure sur 1 match de coupe n'est pas fiable).
         "minutes_xg": minutes if minutes_xg is None else minutes_xg,
         "rythme_sans_xg": rythme_sans_xg,
+        "part_non_mesuree": part_non_mesuree,
     }
 
 

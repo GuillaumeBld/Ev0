@@ -94,3 +94,22 @@ def test_un_remplacant_efficace_ne_vaut_pas_plus_que_l_equipe():
     # il est coté exactement comme s'il occupait le poste du titulaire qu'il remplace
     seul = {s.player_id: s for s in compute_player_shares(joueurs, "X", 1.5, xi_ids={1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12})}
     assert abs(shares[12].npxg_share - seul[12].npxg_share) < 1e-12
+
+
+def test_lukic_ses_buts_des_matchs_non_mesures_comptent():
+    """Lukić (Cluj) : 1 match mesuré (0,08 xG), 8 buts dans les autres -> coté 4,71.
+    Sa production = xG mesuré + vrais buts ailleurs, rappelée selon la part non mesurée."""
+    ligne_nm = _ligne(947, 0, None, None, 8, 1)
+    ligne_m = _ligne(93, 93, 0.08, 0.02, 0, 0, 2)
+    ligne_nm.goals_xg, ligne_nm.assists_xg = 0, 0
+    ligne_m.goals_xg, ligne_m.assists_xg = 0, 0
+    m = merge_season_stats([ligne_nm, ligne_m], "2026-2027")
+    d = _player_dict_from_merged(SimpleNamespace(api_id=8, name="Lukic", position="F"), m, "2026-2027", [ligne_nm, ligne_m])
+    assert abs(d["xg_per_90"] - 90 * (0.08 + 8) / 1040) < 1e-9      # 0,70 et non 0,08
+    assert abs(d["part_non_mesuree"] - 947 / 1040) < 1e-9
+    d["player_name"] = "Lukic"
+    equipe = [_sans_xg(1, "GK", 0, 0)] + [_sans_xg(i, "CB", 0, 0) for i in range(2, 6)] + [_sans_xg(i, "CM", 1, 2) for i in range(6, 10)] + [_sans_xg(10, "CF_lone", 3, 1)] + [d]
+    d["starts"] = 12
+    shares = {s.player_id: s for s in compute_player_shares(equipe, "X", 1.3)}
+    a = allocate_player(shares[8], 1.3, False, 0.91)
+    assert a.fair_odds_goal_supersub < 4.0   # 4,71 avant ; cote réelle vérifiée sur Cluj
