@@ -154,7 +154,8 @@ def test_aucune_cote_juste_sous_le_plausible():
         a = _alloc(_joueur(f"J{minutes}", "DF", xg90=3.34, xa90=2.0, minutes=minutes, matchs=1))
         for cote in (a.fair_odds_goal, a.fair_odds_goal_supersub,
                      a.fair_odds_assist, a.fair_odds_assist_supersub):
-            assert cote > 1.80, f"cote {cote} a {minutes} minutes"
+            # 0.0 = pas de prix (sous le plancher) : jamais une cote servie.
+            assert cote == 0.0 or cote > 1.80, f"cote {cote} a {minutes} minutes"
 
 
 def test_les_valeurs_exactes_des_deux_bugs_ne_sortent_plus():

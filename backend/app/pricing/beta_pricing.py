@@ -109,6 +109,7 @@ async def _apply_blended_rhythm(
             q["npxg_per_90"] = rhythm.goal_rate_per_90
             q["xg_per_90"] = rhythm.goal_rate_per_90
             q["xa_per_90"] = rhythm.assist_rate_per_90
+            q["carriere_xa_per_90"] = rhythm.assist_rate_per_90
             ids_with_career.add(p["player_id"])
         out.append(q)
     return out, ids_with_career
